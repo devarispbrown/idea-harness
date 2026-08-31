@@ -1,0 +1,70 @@
+// Package security enforces security outside the LLM (§43): redaction, path
+// guards, HTML sanitization, trust classification, and the local-API token.
+package security
+
+import (
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// credentialPatterns is the redaction catalog (§48). Order matters only for
+// readability; all matches are replaced with [REDACTED].
+var credentialPatterns = []*regexp.Regexp{
+	// PEM private keys (multiline).
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
+	// JWTs (three base64url segments).
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
+	// AWS access key id.
+	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+	// GitHub personal access token.
+	regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`),
+	// OpenAI / generic sk- keys.
+	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+	// Generic key=value credentials in text/URLs.
+	regexp.MustCompile(`(?i)\b(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}["']?`),
+}
+
+const redacted = "[REDACTED]"
+
+// Redactor redacts known secret values and credential patterns from content.
+type Redactor struct {
+	known []string // sorted by length desc for longest-match replacement
+}
+
+// NewRedactor builds a Redactor with the given known secret values.
+func NewRedactor(knownValues ...string) *Redactor {
+	known := make([]string, 0, len(knownValues))
+	seen := map[string]bool{}
+	for _, v := range knownValues {
+		v = strings.TrimSpace(v)
+		if v != "" && !seen[v] {
+			seen[v] = true
+			known = append(known, v)
+		}
+	}
+	sort.Slice(known, func(i, j int) bool { return len(known[i]) > len(known[j]) })
+	return &Redactor{known: known}
+}
+
+// Redact implements the blob.Redactor contract ([]byte in, []byte out).
+func (r *Redactor) Redact(content []byte) ([]byte, error) {
+	return []byte(r.RedactString(string(content))), nil
+}
+
+// RedactString redacts a string. It is safe to call concurrently.
+func (r *Redactor) RedactString(s string) string {
+	for _, v := range r.known {
+		s = strings.ReplaceAll(s, v, redacted)
+	}
+	for _, re := range credentialPatterns {
+		s = re.ReplaceAllString(s, redacted)
+	}
+	return s
+}
+
+// Redact applies pattern-based redaction only (no known values). Used as a
+// convenience for callers without resolved secrets.
+func Redact(s string) string {
+	return (&Redactor{}).RedactString(s)
+}
