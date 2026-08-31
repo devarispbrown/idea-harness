@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # manual trigger (used for the opt-in agent tier)
+
+jobs:
+  backend:
+    name: Go (vet + test + smoke)
+    runs-on: ubuntu-latest # Docker is preinstalled, so the sandbox test RUNS
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build web UI and embed into the binary
+        run: make embed-web
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (unit + Docker sandbox + fsdiff + executors)
+        run: go test ./...
+
+      - name: Smoke (end-to-end, deterministic demo — no secrets)
+        run: bash scripts/smoke.sh
+
+  web:
+    name: Web (build + unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: web
+        run: pnpm build
+
+      - name: Unit test
+        working-directory: web
+        run: pnpm test
+
+  agent:
+    name: Agent integration (opt-in — real Hermes + model)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      HERMES_IMAGE: ${{ vars.HERMES_IMAGE }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Run a real Hermes task and assert a real diff
+        run: bash scripts/agent-smoke.sh
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -1,0 +1,36 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+
+# Local Go caches (workspace-local to avoid sandboxed home dir writes)
+/.buildcache/
+/.modcache/
+/.gopath/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Node / web
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
+internal/web/dist/
+.pnpm-store/
+
+# idea-harness runtime state (must not be committed)
+/.idea-harness/state/
+/idea.db
+/.smoke/
+/.smoke-*/
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# go install output (local)
+/.gobin/

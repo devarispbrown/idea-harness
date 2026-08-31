@@ -1,0 +1,277 @@
+package workflow
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/idea-harness/idea-harness/internal/config"
+	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/idea-harness/idea-harness/internal/model"
+	"github.com/idea-harness/idea-harness/internal/store"
+)
+
+func newExecuteFixture(t *testing.T) (*Engine, *store.DB, string) {
+	t.Helper()
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	// Isolate both the executor work root and the canonical workspace per test.
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	return eng, db, ini.ID
+}
+
+func TestExecuteCreatesReviewRequiredChangeSet(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.HumanID != "CHG-1" {
+		t.Fatalf("expected CHG-1, got %q", cs.HumanID)
+	}
+	if cs.TaskID != task.ID {
+		t.Fatalf("expected task id %q, got %q", task.ID, cs.TaskID)
+	}
+	if cs.PatchDigest == "" {
+		t.Fatal("expected a patch digest")
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected review_required, got %q", cs.Status)
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected persisted review_required, got %q", got.Status)
+	}
+}
+
+func TestExecuteRejectsOnSecretMarker(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Store password in vault", Statement: "secret", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (secret marker), got %q", cs.Status)
+	}
+
+	// The rejection must be traceable via a blocking secret_sweep finding.
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocked bool
+	for _, f := range findings {
+		if f.TargetID == cs.ID && f.Category == "secret_sweep" && f.Severity == domain.SeverityCritical {
+			blocked = true
+		}
+	}
+	if !blocked {
+		t.Fatal("expected a critical secret_sweep finding explaining the rejection")
+	}
+}
+
+func TestExecuteRecordsDeterministicCheckFindings(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected review_required, got %q", cs.Status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With a real diff (BaseSnapshotID now always set), the diff-dependent checks
+	// flip from "not applicable" to a deferred "runner not wired" state (review
+	// B5 — the actual runners land in a later Track A step).
+	var deferred int
+	categories := map[string]bool{}
+	for _, f := range findings {
+		if f.TargetID == cs.ID && f.Disposition == domain.DispositionDeferred {
+			deferred++
+			categories[f.Category] = true
+		}
+	}
+	if deferred != 3 {
+		t.Fatalf("expected 3 deferred deterministic-check findings, got %d", deferred)
+	}
+	for _, c := range []string{"patch_applies", "build", "tests"} {
+		if !categories[c] {
+			t.Errorf("missing deferred finding for category %q", c)
+		}
+	}
+}
+
+func TestApplyRequiresApproval(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err == nil {
+		t.Fatal("expected apply of a non-approved change set to fail")
+	}
+}
+
+func TestReviewApproveThenApply(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The demo reviewer emits no findings, so approval is not blocked.
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetApproved {
+		t.Fatalf("expected approved, got %q", got.Status)
+	}
+
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetApplied {
+		t.Fatalf("expected applied, got %q", got.Status)
+	}
+
+	journal, err := db.ListJournal(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(journal) != 1 || journal[0].State != domain.ApplyCommitted {
+		t.Fatalf("expected one committed journal row, got %+v", journal)
+	}
+
+	// The real file must have been written into the canonical workspace.
+	data, err := os.ReadFile(filepath.Join(eng.workspaceRoot, "hello.txt"))
+	if err != nil {
+		t.Fatalf("read applied hello.txt: %v", err)
+	}
+	if string(data) != "task: Implement core\n" {
+		t.Fatalf("hello.txt = %q, want %q", string(data), "task: Implement core\n")
+	}
+}
+
+func TestRevertAppendsRolledBackJournal(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RevertChangeSet(ctx, iniID, cs.ID); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := db.ListJournal(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(journal) != 2 || journal[1].State != domain.ApplyRolledBack {
+		t.Fatalf("expected committed then rolled_back journal rows, got %+v", journal)
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetReverted {
+		t.Fatalf("expected reverted status after rollback, got %q", got.Status)
+	}
+
+	// The applied file must have been removed on revert (it did not exist before).
+	if _, err := os.Stat(filepath.Join(eng.workspaceRoot, "hello.txt")); !os.IsNotExist(err) {
+		t.Fatalf("hello.txt should be removed after revert, stat err = %v", err)
+	}
+}
+
+func TestSelectExecutor(t *testing.T) {
+	cases := []struct {
+		kind config.ExecutorKind
+		want string
+	}{
+		{config.ExecutorInternal, "internal"},
+		{config.ExecutorContainer, "container"},
+		{config.ExecutorOMP, "omp"},
+		{config.ExecutorHermes, "hermes"},
+		{config.ExecutorKind(""), "internal"},  // empty/unknown fails closed to internal
+		{config.ExecutorKind("bogus"), "internal"},
+	}
+	for _, tc := range cases {
+		e := &Engine{cfg: config.HarnessConfig{Executor: config.ExecutorConfig{Kind: tc.kind}}}
+		exec := e.selectExecutor()
+		if exec == nil {
+			t.Fatalf("selectExecutor(%q) returned nil", tc.kind)
+		}
+		if got := exec.Name(); got != tc.want {
+			t.Errorf("selectExecutor(%q).Name() = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
