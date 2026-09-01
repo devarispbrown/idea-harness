@@ -68,3 +68,15 @@ func (r *Redactor) RedactString(s string) string {
 func Redact(s string) string {
 	return (&Redactor{}).RedactString(s)
 }
+
+// FindCredential returns the first credential-like pattern found in s, or "" if
+// none. It is the detection counterpart to Redact: the same catalog, used as a
+// hard rejection signal (§45) rather than a redaction.
+func FindCredential(s string) string {
+	for _, re := range credentialPatterns {
+		if m := re.FindString(s); m != "" {
+			return m
+		}
+	}
+	return ""
+}

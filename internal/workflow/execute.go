@@ -18,6 +18,7 @@ import (
 	"github.com/idea-harness/idea-harness/internal/review"
 	"github.com/idea-harness/idea-harness/internal/risk"
 	"github.com/idea-harness/idea-harness/internal/schema"
+	"github.com/idea-harness/idea-harness/internal/security"
 	"github.com/idea-harness/idea-harness/internal/store"
 )
 
@@ -218,11 +219,18 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 
 	// Secret/credential/pii sweep gates rejection. The scan runs over the actual
 	// produced file contents (rendered from the persisted diff), so it reflects
-	// what apply will write.
-	signals := risk.RiskSignals(ctx, patchDigest, e.renderDiffText(files))
-	if checksBlocked || hasBlockingRiskSignal(signals) {
+	// what apply will write. It combines the whole-word marker scan with the
+	// strong credential-pattern detector (review M1).
+	diffText := e.renderDiffText(files)
+	signals := risk.RiskSignals(ctx, patchDigest, diffText)
+	credential := security.FindCredential(diffText)
+	if checksBlocked || hasBlockingRiskSignal(signals) || credential != "" {
 		// Record a blocking finding so the rejection is traceable.
-		if hasBlockingRiskSignal(signals) {
+		if hasBlockingRiskSignal(signals) || credential != "" {
+			reason := detectedRiskNames(signals)
+			if credential != "" {
+				reason = "credential pattern detected: " + credential
+			}
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:   cs.InitiativeID,
 				TargetType:     "change_set",
@@ -230,8 +238,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 				Severity:       domain.SeverityCritical,
 				Confidence:     domain.ConfidenceHigh,
 				Category:       "secret_sweep",
-				Finding:        "blocking risk signal detected: " + detectedRiskNames(signals),
-				Evidence:       "deterministic marker scan of the produced patch",
+				Finding:        "blocking risk signal detected: " + reason,
+				Evidence:       "deterministic scan of the produced patch",
 				Impact:         "change set rejected before review",
 				Recommendation: "remove the sensitive content and re-execute",
 				Disposition:    domain.DispositionRejected,
@@ -523,6 +531,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	if err != nil {
 		base.Severity = domain.SeverityHigh
 		base.Finding = description + " — FAIL"
+		base.Disposition = domain.DispositionRejected // review M5: a rejected change set's findings are closed, not left open
 		if checkCtx.Err() == context.DeadlineExceeded {
 			base.Evidence = "timed out after 10m\n" + truncateOutput(string(out))
 			base.Recommendation = "the " + category + " command hung; fix it or raise the timeout"
@@ -691,7 +700,25 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 	if err := fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get); err != nil {
 		return fmt.Errorf("workflow: revert files: %w", err)
 	}
-	return e.db.MarkChangeSetReverted(ctx, changeSetID, store.ActorOrchestrator)
+	if err := e.db.MarkChangeSetReverted(ctx, changeSetID, store.ActorOrchestrator); err != nil {
+		return err
+	}
+	// Review M2: rolling back the implementation must also roll back the
+	// verification verdict — the requirement returns to approved and the
+	// initiative leaves complete.
+	if cs.TaskID != "" {
+		edges, err := e.db.ListGraphEdgesFrom(ctx, initiativeID, "task", cs.TaskID)
+		if err != nil {
+			return err
+		}
+		for _, edge := range edges {
+			if edge.EdgeType == domain.EdgeImplements && edge.ToType == "requirement" {
+				_ = e.db.UnverifyRequirement(ctx, edge.ToID, store.ActorOrchestrator)
+			}
+		}
+	}
+	_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativePlanApproved, store.ActorOrchestrator)
+	return nil
 }
 
 // ReviewChangeSet applies a human review verdict. "approved" runs the
