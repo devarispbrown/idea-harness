@@ -510,15 +510,27 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		return base
 	}
 
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	// Run the config-supplied command with a bounded timeout and a sanitized
+	// environment (the check executes the agent's code, so it must not inherit
+	// the daemon's secrets). Full OS sandboxing is a follow-up requiring a
+	// project-toolchain image (review H3).
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	c := exec.CommandContext(checkCtx, "sh", "-c", cmd)
 	c.Dir = workRoot
+	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
 	out, err := c.CombinedOutput()
 	if err != nil {
 		base.Severity = domain.SeverityHigh
 		base.Finding = description + " — FAIL"
-		base.Evidence = fmt.Sprintf("exit: %v\n%s", err, truncateOutput(string(out)))
+		if checkCtx.Err() == context.DeadlineExceeded {
+			base.Evidence = "timed out after 10m\n" + truncateOutput(string(out))
+			base.Recommendation = "the " + category + " command hung; fix it or raise the timeout"
+		} else {
+			base.Evidence = fmt.Sprintf("exit: %v\n%s", err, truncateOutput(string(out)))
+			base.Recommendation = "fix the failure and re-execute"
+		}
 		base.Impact = "deterministic check failed"
-		base.Recommendation = "fix the failure and re-execute"
 		return base
 	}
 	base.Severity = domain.SeverityObservation
