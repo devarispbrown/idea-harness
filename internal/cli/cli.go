@@ -133,6 +133,7 @@ func usage(w io.Writer) {
 	fmt.Fprintf(w, "  %-20s %s\n", accent("review <id> <verdict>"), "approve|reject|changes_requested")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("risk"), "show the deterministic risk profile")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("executors"), "list executors + capabilities")
+	fmt.Fprintf(w, "  %-20s %s\n", accent("executors setup"), "wire a coding agent (hermes|omp)")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("watch"), "watch a run live")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("cancel <op-id>"), "interrupt a running operation")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("config"), "show or validate .idea-harness config")

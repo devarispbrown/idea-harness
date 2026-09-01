@@ -980,6 +980,60 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleUpdateExecutors writes executor.kind/image/model (field-level merge) and
+// reloads the runtime so selectExecutor picks up the change. It re-reads config
+// from disk to avoid overlaying onto a stale cache, and validates kind/image.
+func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var body struct {
+		Kind  string `json:"kind"`
+		Image string `json:"image"`
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Kind != "" && !config.ExecutorKind(body.Kind).Valid() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid executor kind %q", body.Kind))
+		return
+	}
+	if body.Image != "" && strings.ContainsAny(body.Image, " \t\n\r") {
+		writeError(w, http.StatusBadRequest, "invalid executor image")
+		return
+	}
+
+	// Re-read from disk (not the daemon's cached copy) so a hand-edited
+	// harness.yaml is not clobbered, then merge only the supplied fields.
+	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if body.Kind != "" {
+		cfg.Harness.Executor.Kind = config.ExecutorKind(body.Kind)
+	}
+	if body.Image != "" {
+		cfg.Harness.Executor.Image = body.Image
+	}
+	if body.Model != "" {
+		cfg.Harness.Executor.Model = body.Model
+	}
+	if err := config.WriteHarness(filepath.Join(pr.rootPath, config.Dir), cfg.Harness); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
+		writeError(w, http.StatusConflict, "config written but not applied (reload failed): "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // changeSet resolves the project runtime + a change set by its {id} path value.
 func (s *Server) changeSet(r *http.Request) (*projectRuntime, *domain.ChangeSet, error) {
 	pr, err := s.project(r)

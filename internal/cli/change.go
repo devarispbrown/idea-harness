@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/idea-harness/idea-harness/internal/executor"
 )
 
 // cliChangeSet mirrors the change-set API response.
@@ -256,6 +259,9 @@ func cmdRisk(args []string, stdout, stderr io.Writer) error {
 
 // cmdExecutors lists the available executors and their capabilities.
 func cmdExecutors(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == "setup" {
+		return cmdExecutorSetup(args[1:], stdout, stderr)
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -278,6 +284,74 @@ func cmdExecutors(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stdout, "    · %s\n", cap)
 		}
 	}
+	return nil
+}
+
+// cmdExecutorSetup wires a real coding agent (Hermes default, OMP alternative)
+// with a single command: it verifies the CLI is present in the image (hardened,
+// no pull), then writes executor config via the daemon. Requires --yes to accept
+// the network-egress/auto-approve/key-forwarding security tradeoff.
+func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
+	kind := "hermes"
+	image := ""
+	model := ""
+	yes := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--kind":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--kind requires a value")
+			}
+			kind = args[i+1]
+			i++
+		case "--image":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--image requires a value")
+			}
+			image = args[i+1]
+			i++
+		case "--model":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--model requires a value")
+			}
+			model = args[i+1]
+			i++
+		case "--yes":
+			yes = true
+		default:
+			return fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	if kind != "hermes" && kind != "omp" {
+		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
+	}
+	if image == "" {
+		return fmt.Errorf("--image is required (the container image containing the %s CLI)", kind)
+	}
+
+	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" a "+kind+" executor runs with network egress and auto-approve, and receives its provider API key. Only use an image you trust.")
+	if !yes {
+		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
+	}
+
+	if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
+		return fmt.Errorf("verification failed: %w", err)
+	}
+
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	body := map[string]string{"kind": kind, "image": image}
+	if model != "" {
+		body["model"] = model
+	}
+	var out map[string]string
+	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/executors", body, &out); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code(kind)+" ("+code(image)+")")
+	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil
 }
 
