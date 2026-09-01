@@ -28,6 +28,7 @@ type SandboxedAgentExecutor struct {
 	name       string
 	image      string
 	model      string
+	keyEnv     string // provider API-key env var name (resolved by the engine)
 	dockerPath string
 	buildArgs  func(req Request, model string) []string
 }
@@ -37,7 +38,7 @@ type agentAttempt struct {
 	containerID string
 }
 
-func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, buildArgs func(Request, string) []string) *SandboxedAgentExecutor {
+func newSandboxedAgentExecutor(store *blob.Store, name, model, image, keyEnv string, buildArgs func(Request, string) []string) *SandboxedAgentExecutor {
 	if image == "" {
 		image = "alpine:3.20"
 	}
@@ -47,6 +48,7 @@ func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, bui
 		name:      name,
 		model:     model,
 		image:     image,
+		keyEnv:    keyEnv,
 		dockerPath: "docker",
 		buildArgs: buildArgs,
 	}
@@ -79,35 +81,15 @@ func hermesArgs(req Request, model string) []string {
 	return []string{"hermes", "--in", "/work", "--yolo", "chat", "--query", stmt, "--model", model}
 }
 
-// providerKeyForModel returns the single provider API-key env var matching the
-// agent's model, so only the one credential the agent actually needs is
-// forwarded (never every provider key — review: v1 security boundary).
-func providerKeyForModel(model string) (name, value string) {
-	provider := model
-	if i := strings.Index(model, "/"); i > 0 {
-		provider = model[:i]
+// writeProviderKeyFile writes the executor's single provider key (resolved by the
+// engine from config, not from a model-prefix switch) to a 0600 temp env-file so
+// the secret never appears in the docker run argv. Returns "" when no key is set.
+func (e *SandboxedAgentExecutor) writeProviderKeyFile() (string, error) {
+	if e.keyEnv == "" {
+		return "", nil
 	}
-	switch provider {
-	case "anthropic":
-		return "ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")
-	case "openai":
-		return "OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY")
-	case "gemini", "google":
-		return "GOOGLE_API_KEY", os.Getenv("GOOGLE_API_KEY")
-	case "openrouter":
-		return "OPENROUTER_API_KEY", os.Getenv("OPENROUTER_API_KEY")
-	case "deepseek":
-		return "DEEPSEEK_API_KEY", os.Getenv("DEEPSEEK_API_KEY")
-	}
-	return "", ""
-}
-
-// writeProviderKeyFile writes the single provider key to a 0600 temp env-file so
-// the secret never appears in the docker run argv (review: v1 security boundary).
-// It returns the file path, or "" when no key is set.
-func writeProviderKeyFile(model string) (string, error) {
-	name, value := providerKeyForModel(model)
-	if name == "" || value == "" {
+	value := os.Getenv(e.keyEnv)
+	if value == "" {
 		return "", nil
 	}
 	f, err := os.CreateTemp("", "idea-harness-key-*")
@@ -115,7 +97,7 @@ func writeProviderKeyFile(model string) (string, error) {
 		return "", fmt.Errorf("executor: create key env-file: %w", err)
 	}
 	path := f.Name()
-	if _, err := fmt.Fprintf(f, "%s=%s\n", name, value); err != nil {
+	if _, err := fmt.Fprintf(f, "%s=%s\n", e.keyEnv, value); err != nil {
 		f.Close()
 		os.Remove(path)
 		return "", err
@@ -131,16 +113,15 @@ func writeProviderKeyFile(model string) (string, error) {
 	return path, nil
 }
 
-// NewOMPExecutor returns a sandboxed OMP executor. image must contain the omp
-// CLI; the thin slice defaults to Alpine so tests can exercise the adapter
-// without a real agent image.
-func NewOMPExecutor(store *blob.Store, model, image string) *SandboxedAgentExecutor {
-	return newSandboxedAgentExecutor(store, "omp", model, image, ompArgs)
+// NewOMPExecutor returns a sandboxed OMP executor. keyEnv is the provider
+// API-key env var name resolved by the engine (empty for keyless providers).
+func NewOMPExecutor(store *blob.Store, model, image, keyEnv string) *SandboxedAgentExecutor {
+	return newSandboxedAgentExecutor(store, "omp", model, image, keyEnv, ompArgs)
 }
 
 // NewHermesExecutor returns a sandboxed Hermes (Nous Research) executor.
-func NewHermesExecutor(store *blob.Store, model, image string) *SandboxedAgentExecutor {
-	return newSandboxedAgentExecutor(store, "hermes", model, image, hermesArgs)
+func NewHermesExecutor(store *blob.Store, model, image, keyEnv string) *SandboxedAgentExecutor {
+	return newSandboxedAgentExecutor(store, "hermes", model, image, keyEnv, hermesArgs)
 }
 
 // Name reports the executor's registered name.
@@ -167,7 +148,7 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 		return Attempt{}, fmt.Errorf("executor: %s: mkdir work root: %w", e.name, err)
 	}
 	// Forward only the agent's own provider key via a 0600 env-file (not argv).
-	keyFile, err := writeProviderKeyFile(e.model)
+	keyFile, err := e.writeProviderKeyFile()
 	if err != nil {
 		return Attempt{}, err
 	}
