@@ -153,6 +153,12 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 		return err
 	}
 	for _, r := range reqs {
+		// Removed/superseded requirements are not part of the active set and can
+		// never reach "verified"; skip them (review H1) so a revise cycle does not
+		// permanently wedge the completion gate.
+		if r.Status == domain.RequirementRemoved {
+			continue
+		}
 		if r.Status != domain.RequirementVerified {
 			return nil // not done yet; no error
 		}
