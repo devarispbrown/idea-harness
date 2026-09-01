@@ -395,6 +395,9 @@ func (r *Runtime) ListProjects(ctx context.Context) ([]store.ProjectRecord, erro
 // reconcileStaleOperations marks any unfinished operations (and their
 // initiatives) as failed. Called once per project on daemon startup: an
 // operation still "running"/"pending" means its driving goroutine was lost.
+// It also reconciles interrupted applies: any non-terminal (prepared /
+// workspace_mutated) journal row is marked recovery_required so a half-applied
+// workspace is surfaced instead of silently left mutated (review H2).
 func reconcileStaleOperations(ctx context.Context, db *store.DB) {
 	ops, err := db.ListUnfinishedOperations(ctx)
 	if err != nil {
@@ -406,6 +409,7 @@ func reconcileStaleOperations(ctx context.Context, db *store.DB) {
 			_ = db.SetInitiativeStatus(ctx, op.InitiativeID, domain.InitiativeFailed, store.ActorOrchestrator)
 		}
 	}
+	_, _ = db.ReconcileJournal(ctx)
 }
 
 // lookupEnv resolves a secret from the process environment first, then the
