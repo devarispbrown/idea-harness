@@ -126,10 +126,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	if actual == "" {
 		actual = req.Model
 	}
+	in, out := int64(parsed.Usage.PromptTokens), int64(parsed.Usage.CompletionTokens)
 	return Response{
 		Text:        content,
 		RawJSON:     content,
-		Usage:       Usage{InputTokens: int64(parsed.Usage.PromptTokens), OutputTokens: int64(parsed.Usage.CompletionTokens)},
+		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: CostUSD(actual, in, out)},
 		ActualModel: actual,
 	}, nil
 }

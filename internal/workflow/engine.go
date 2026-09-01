@@ -72,6 +72,11 @@ type Engine struct {
 	// mu serializes the state-mutating operations (execute/apply/revert) so two
 	// concurrent invocations cannot race on the same task or workspace.
 	mu sync.Mutex
+
+	// costMu guards the per-pipeline cost budget (review M4 cost pricing).
+	costMu    sync.Mutex
+	budgetUSD float64 // 0 = no budget
+	spentUSD  float64
 }
 
 // redact applies the engine's known-values redactor to a free-text string at the
@@ -114,6 +119,30 @@ func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
 // reaches a network-egress model unredacted (review SRE regression).
 func (e *Engine) SetRedactor(r *security.Redactor) { e.redactor = r }
 
+// beginBudget resets the per-pipeline cost accumulator to the configured
+// review budget. Called at the start of each top-level pipeline entry point.
+func (e *Engine) beginBudget() {
+	e.costMu.Lock()
+	defer e.costMu.Unlock()
+	e.spentUSD = 0
+	e.budgetUSD = e.cfg.Review.MaxCostUSD
+}
+
+// chargeUSD accumulates a model call's cost and fails once the running total
+// exceeds the budget (a cumulative cap, not a per-call cap — review M4).
+func (e *Engine) chargeUSD(cost float64) error {
+	e.costMu.Lock()
+	defer e.costMu.Unlock()
+	if e.budgetUSD <= 0 {
+		return nil
+	}
+	e.spentUSD += cost
+	if e.spentUSD > e.budgetUSD {
+		return fmt.Errorf("workflow: exceeded max_cost_usd budget ($%.4f > $%.4f)", e.spentUSD, e.budgetUSD)
+	}
+	return nil
+}
+
 // Reload swaps the config-derived components in place (same DB and raw blob
 // store) after a config/provider update. It is serialized against the
 // state-mutating operations by e.mu; it does not open a new DB handle.
@@ -140,6 +169,7 @@ func (e *Engine) contentBlobs() *blob.Store {
 // Run executes the full vertical slice for an initiative and returns the final
 // initiative status.
 func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.InitiativeStatus, error) {
+	e.beginBudget()
 	start := time.Now()
 	e.log.Info("workflow started", "initiative", initiativeID)
 	if err := e.runFraming(ctx, initiativeID, idea); err != nil {
@@ -239,6 +269,11 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
 		}
+		// Charge every billed attempt (including retries) against the budget.
+		if err := e.chargeUSD(resp.Usage.CostUSD); err != nil {
+			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
+			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
+		}
 		if strings.TrimSpace(resp.RawJSON) == "" {
 			lastErr = fmt.Errorf("model returned empty output")
 			if attempt < maxAttempts {
@@ -261,11 +296,9 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		}
 		break
 	}
-	e.log.Info("model response", "stage", stageKey, "role", roleName, "model", modelSpec, "actual", resp.ActualModel, "duration", time.Since(reqStart).Round(time.Millisecond), "out_tokens", resp.Usage.OutputTokens)
+	e.log.Info("model response", "stage", stageKey, "role", roleName, "model", modelSpec, "actual", resp.ActualModel, "duration", time.Since(reqStart).Round(time.Millisecond), "out_tokens", resp.Usage.OutputTokens, "cost_usd", resp.Usage.CostUSD)
 
-	// Enforce the review token ceiling as a hard stop (review M4). max_cost_usd is
-	// parsed but not yet enforceable — no provider computes CostUSD — so it is
-	// documented, not enforced, until token→cost pricing lands.
+	// Enforce the review token ceiling as a hard stop (review M4).
 	if e.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > e.cfg.Review.MaxTokens {
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, e.cfg.Review.MaxTokens)
@@ -665,6 +698,7 @@ func (e *Engine) Resume(ctx context.Context, initiativeID string) (domain.Initia
 // (with the resolved decisions + answered questions in context), then re-runs
 // review. This is the "apply my judgment → updated PRD" loop (§8, §11).
 func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	e.beginBudget()
 	e.log.Info("revising after human decisions", "initiative", initiativeID)
 	// Capture the current active requirements before superseding so the model
 	// improves the immediately preceding set rather than re-reading the full

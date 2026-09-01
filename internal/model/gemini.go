@@ -141,10 +141,11 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 	if actual == "" {
 		actual = req.Model
 	}
+	in, out := int64(parsed.UsageMetadata.PromptTokenCount), int64(parsed.UsageMetadata.CandidatesTokenCount)
 	return Response{
 		Text:        content,
 		RawJSON:     content,
-		Usage:       Usage{InputTokens: int64(parsed.UsageMetadata.PromptTokenCount), OutputTokens: int64(parsed.UsageMetadata.CandidatesTokenCount)},
+		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: CostUSD(actual, in, out)},
 		ActualModel: actual,
 	}, nil
 }
