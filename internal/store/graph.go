@@ -138,6 +138,27 @@ func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirem
 	})
 }
 
+// AddTaskDependencies wires depends_on edges from taskID to each depTaskID in
+// one transaction. Used by the execution-plan two-pass resolution so backward
+// (and normalized) dependency references resolve after all tasks exist.
+func (db *DB) AddTaskDependencies(ctx context.Context, initiativeID, taskID string, depTaskIDs []string) error {
+	edges := make([]EdgeToWrite, 0, len(depTaskIDs))
+	for _, dep := range depTaskIDs {
+		edges = append(edges, EdgeToWrite{FromType: "task", FromID: taskID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
+	}
+	if len(edges) == 0 {
+		return nil
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.dependencies_added",
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}
+
 // SetTaskStatus updates a task's status (domain methods only, §13).
 func (db *DB) SetTaskStatus(ctx context.Context, taskID string, status domain.TaskStatus) error {
 	if !status.Valid() {

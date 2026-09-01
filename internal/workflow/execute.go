@@ -54,11 +54,55 @@ func (e *Engine) nextReadyTask(ctx context.Context, initiativeID string) (domain
 		return domain.Task{}, err
 	}
 	for _, t := range tasks {
-		if t.Status == domain.TaskReady || t.Status == domain.TaskProposed {
+		if t.Status != domain.TaskReady && t.Status != domain.TaskProposed {
+			continue
+		}
+		ready, err := e.taskDependenciesApplied(ctx, initiativeID, t.ID)
+		if err != nil {
+			return domain.Task{}, err
+		}
+		if ready {
 			return t, nil
 		}
 	}
-	return domain.Task{}, fmt.Errorf("workflow: no ready tasks for initiative %q", initiativeID)
+	return domain.Task{}, fmt.Errorf("workflow: no ready tasks for initiative %q (dependencies not satisfied)", initiativeID)
+}
+
+// taskDependenciesApplied reports whether every depends_on predecessor of taskID
+// has an applied change set (full-platform review: task-dependency ordering —
+// a task is executable only once its upstream work has actually landed).
+func (e *Engine) taskDependenciesApplied(ctx context.Context, initiativeID, taskID string) (bool, error) {
+	edges, err := e.db.ListGraphEdgesFrom(ctx, initiativeID, "task", taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, edge := range edges {
+		if edge.EdgeType != domain.EdgeDependsOn {
+			continue
+		}
+		applied, err := e.taskHasAppliedChangeSet(ctx, edge.ToID)
+		if err != nil {
+			return false, err
+		}
+		if !applied {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// taskHasAppliedChangeSet reports whether a task has any applied change set.
+func (e *Engine) taskHasAppliedChangeSet(ctx context.Context, taskID string) (bool, error) {
+	css, err := e.db.ListChangeSetsByTask(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, cs := range css {
+		if cs.Status == domain.ChangeSetApplied {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // runPlanner runs the engineering_lead planner to produce an implementation brief

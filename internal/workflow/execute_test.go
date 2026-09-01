@@ -428,3 +428,45 @@ func TestExecuteRejectsBuildWhenNoSandboxImage(t *testing.T) {
 		t.Fatalf("expected rejected (no sandbox image), got %q", cs.Status)
 	}
 }
+
+func TestTaskDependenciesApplied(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	a := &domain.Task{InitiativeID: iniID, Title: "A", Statement: "a", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, a, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	b := &domain.Task{InitiativeID: iniID, Title: "B", Statement: "b", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, b, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddTaskDependencies(ctx, iniID, b.ID, []string{a.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A has no deps -> ready.
+	readyA, err := eng.taskDependenciesApplied(ctx, iniID, a.ID)
+	if err != nil || !readyA {
+		t.Fatalf("A should be ready, got ready=%v err=%v", readyA, err)
+	}
+	// B depends on A, which has no applied change set yet -> not ready.
+	readyB, err := eng.taskDependenciesApplied(ctx, iniID, b.ID)
+	if err != nil || readyB {
+		t.Fatalf("B should be blocked (A not applied), got ready=%v err=%v", readyB, err)
+	}
+
+	// Apply A's change set (force status via SQL for the test).
+	cs := &domain.ChangeSet{InitiativeID: iniID, TaskID: a.ID, PatchDigest: "patch"}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`UPDATE change_sets SET status = 'applied' WHERE id = ?`, cs.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	readyB, err = eng.taskDependenciesApplied(ctx, iniID, b.ID)
+	if err != nil || !readyB {
+		t.Fatalf("B should now be ready (A applied), got ready=%v err=%v", readyB, err)
+	}
+}

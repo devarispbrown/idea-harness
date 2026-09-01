@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -15,6 +16,11 @@ import (
 // Advance runs the M2 slice: Design (Architecture → Product Design →
 // Verification Design, sequentially) → Execution Plan → independent plan review.
 // It returns the final initiative status.
+// errUnresolvedDependencies signals that the execution plan referenced a task
+// title that could not be resolved; the initiative is left in needs_human_judgment
+// with a blocking finding rather than failed outright.
+var errUnresolvedDependencies = errors.New("unresolved task dependency")
+
 func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	e.beginBudget()
 	if err := e.runArchitecture(ctx, initiativeID); err != nil {
@@ -30,6 +36,10 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 		return domain.InitiativeFailed, err
 	}
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
+		if errors.Is(err, errUnresolvedDependencies) {
+			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			return domain.InitiativeNeedsHumanJudgment, nil
+		}
 		return domain.InitiativeFailed, err
 	}
 	return e.runExecutionPlanReview(ctx, initiativeID)
@@ -159,17 +169,20 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 		return err
 	}
 
+	// Two-pass task creation so dependency references resolve regardless of order,
+	// with normalized title matching (full-platform review: task-dependency
+	// ordering — backward/typo'd references must not be silently dropped).
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	type pending struct {
+		task  *domain.Task
+		depTitles []string
+	}
 	titleToID := map[string]string{}
+	var pendings []pending
 	for _, t := range objSlice(obj["tasks"]) {
 		title := str(t["title"])
 		if title == "" {
 			continue
-		}
-		var deps []string
-		for _, depTitle := range strSlice(t["depends_on"]) {
-			if id, ok := titleToID[depTitle]; ok {
-				deps = append(deps, id)
-			}
 		}
 		task := &domain.Task{
 			InitiativeID:  initiativeID,
@@ -179,10 +192,45 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 			Estimate:      str(t["estimate"]),
 			ProducedByRun: runID,
 		}
-		if err := e.db.CreateTask(ctx, task, reqByCode[str(t["requirement"])], deps); err != nil {
+		// Create without deps; edges are added in the second pass.
+		if err := e.db.CreateTask(ctx, task, reqByCode[str(t["requirement"])], nil); err != nil {
 			return err
 		}
-		titleToID[title] = task.ID
+		titleToID[norm(title)] = task.ID
+		pendings = append(pendings, pending{task: task, depTitles: strSlice(t["depends_on"])})
+	}
+
+	var unresolved []string
+	for _, p := range pendings {
+		var depIDs []string
+		for _, depTitle := range p.depTitles {
+			if id, ok := titleToID[norm(depTitle)]; ok && id != p.task.ID {
+				depIDs = append(depIDs, id)
+			} else {
+				unresolved = append(unresolved, depTitle)
+			}
+		}
+		if err := e.db.AddTaskDependencies(ctx, initiativeID, p.task.ID, depIDs); err != nil {
+			return err
+		}
+	}
+
+	if len(unresolved) > 0 {
+		if err := e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   initiativeID,
+			TargetType:     "initiative",
+			TargetID:       initiativeID,
+			Severity:       domain.SeverityHigh,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "plan_dependency",
+			Finding:        "unresolved task dependency reference(s): " + strings.Join(unresolved, ", "),
+			Evidence:       "a task's depends_on referenced a title that does not match any task",
+			Impact:         "the dependency graph is incomplete and cannot be executed safely",
+			Recommendation: "correct the dependency titles and re-run the execution plan",
+		}); err != nil {
+			return err
+		}
+		return errUnresolvedDependencies
 	}
 	return nil
 }
