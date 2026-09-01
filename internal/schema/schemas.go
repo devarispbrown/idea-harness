@@ -244,6 +244,19 @@ const ExecutionPlan = `{
   "additionalProperties": true
 }`
 
+// ImplementationBrief is the planner-stage output for one task (§50).
+const ImplementationBrief = `{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string"},
+    "files": {"type": "array", "items": {"type": "string"}},
+    "changes": {"type": "array", "items": {"type": "string"}},
+    "target_requirement": {"type": "string"}
+  },
+  "required": ["summary"],
+  "additionalProperties": true
+}`
+
 // Answers is the output for suggested answers to open questions.
 const Answers = `{
   "type": "object",

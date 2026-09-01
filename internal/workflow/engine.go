@@ -40,6 +40,7 @@ const (
 	StageConvergence         = "convergence"
 	StageExecutionPlan       = "execution_plan"
 	StageExecutionPlanReview = "execution_plan_review"
+	StageImplementationBrief = "implementation_brief"
 )
 
 // Role names (must match contracts/*.yaml).

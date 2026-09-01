@@ -116,3 +116,24 @@ func TestSandboxedHermesArgs(t *testing.T) {
 		t.Errorf("docker args %q must not contain --network none", args)
 	}
 }
+
+func TestSandboxedAgentUsesBrief(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+
+	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20")
+	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
+
+	work := t.TempDir()
+	if _, err := e.Start(t.Context(), Request{TaskStatement: "Build the core", Brief: "Implementation brief\nSummary: write hello.txt", WorkRoot: work}); err != nil {
+		t.Fatal(err)
+	}
+
+	args := recordedArgs(t, record)
+	if !strings.Contains(args, "write hello.txt") {
+		t.Errorf("agent argv %q must use the planner brief, not the raw task statement", args)
+	}
+	if strings.Contains(args, "Build the core") {
+		t.Errorf("agent argv %q should not fall back to the task statement when a brief is present", args)
+	}
+}

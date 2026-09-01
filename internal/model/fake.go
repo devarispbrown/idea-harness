@@ -218,6 +218,13 @@ func demoResponse(schemaName, idea string) string {
 				map[string]any{"title": "Implement " + idea, "statement": "Build the core", "requirement": "REQ-1", "priority": "must", "estimate": "M", "depends_on": []string{}},
 			},
 		}
+	case "implementation_brief":
+		m = map[string]any{
+			"summary":            "Implement: " + idea,
+			"files":              []string{"hello.txt"},
+			"changes":            []string{"write a deterministic hello file"},
+			"target_requirement": "REQ-1",
+		}
 	case "answers":
 		m = map[string]any{
 			"answers": []any{

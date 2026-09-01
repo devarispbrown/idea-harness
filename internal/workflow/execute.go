@@ -61,11 +61,49 @@ func (e *Engine) nextReadyTask(ctx context.Context, initiativeID string) (domain
 	return domain.Task{}, fmt.Errorf("workflow: no ready tasks for initiative %q", initiativeID)
 }
 
-// Execute runs the next ready task through the configured executor and records
-// the resulting change set, advancing it through deterministic checks to either
-// review_required (clean) or rejected (a detected secret/credential/pii marker).
+// runPlanner runs the engineering_lead planner to produce an implementation brief
+// for a task, returned as rendered text for the implementer (§50). The brief is a
+// durable Run (role engineering_lead, stage implementation_brief) via runModel.
+func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domain.Task) (string, error) {
+	_, obj, err := e.runModel(ctx, initiativeID, StageImplementationBrief, RoleEngineeringLead, "implementation_brief", schema.ImplementationBrief,
+		[]ccontext.Input{
+			{Selector: "immutable_policy", Content: "Produce a short implementation brief for the task."},
+			{Selector: "task", Content: task.Statement},
+		},
+		"Task:\n"+task.Statement,
+	)
+	if err != nil {
+		return "", fmt.Errorf("workflow: planner: %w", err)
+	}
+
+	var b strings.Builder
+	b.WriteString("Implementation brief\n")
+	b.WriteString("Summary: " + str(obj["summary"]) + "\n")
+	if files := strSlice(obj["files"]); len(files) > 0 {
+		b.WriteString("Files: " + strings.Join(files, ", ") + "\n")
+	}
+	if changes := strSlice(obj["changes"]); len(changes) > 0 {
+		b.WriteString("Changes: " + strings.Join(changes, "; ") + "\n")
+	}
+	if req := str(obj["target_requirement"]); req != "" {
+		b.WriteString("Target requirement: " + req + "\n")
+	}
+	return b.String(), nil
+}
+
+// Execute runs the multi-role pipeline for the next ready task — planner
+// (engineering_lead brief) → implementer (executor writes files) → deterministic
+// checks → review_required/rejected. The adversarial reviewer runs at review time
+// (§50).
 func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.ChangeSet, error) {
 	task, err := e.nextReadyTask(ctx, initiativeID)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+
+	// Planner: engineering_lead produces an implementation brief the implementer
+	// follows. The brief is a durable Run (role engineering_lead).
+	brief, err := e.runPlanner(ctx, initiativeID, task)
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
@@ -79,6 +117,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		TaskID:        task.ID,
 		TaskTitle:     task.Title,
 		TaskStatement: task.Statement,
+		Brief:         brief,
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
 	}
 
