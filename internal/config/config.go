@@ -166,7 +166,7 @@ func Load(dir string) (Config, error) {
 		return cfg, fmt.Errorf("config: harness.network must be one of disabled|enabled, got %q", cfg.Harness.Network)
 	}
 	if !cfg.Harness.Executor.Kind.Valid() {
-		return cfg, fmt.Errorf("config: harness.executor.kind must be one of internal|container|omp, got %q", cfg.Harness.Executor.Kind)
+		return cfg, fmt.Errorf("config: harness.executor.kind must be one of internal|container|omp|hermes, got %q", cfg.Harness.Executor.Kind)
 	}
 	if cfg.Harness.Review.MaxCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
