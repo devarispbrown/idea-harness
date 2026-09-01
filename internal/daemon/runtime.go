@@ -131,15 +131,24 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	dotEnv := config.LoadDotEnv(rec.RootPath)
 
 	// Redaction choke point: the blob store redacts known secrets + patterns
-	// before any content is persisted (§47–§48).
+	// before any content is persisted (§47–§48). This store is for model
+	// artifacts/context only.
 	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
 	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	// File content (diff/apply/revert) must round-trip byte-for-byte, so it uses a
+	// redaction-free store keyed by the raw digest (review C1/C2).
+	rawBlobs, err := blob.New(filepath.Join(projDir, "raw-blobs"), nil)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
 	engine := workflow.New(db, blobs, registry, cfg.Harness, r.log)
+	engine.SetRawBlobs(rawBlobs)
 	// Point the execute pipeline's isolated work roots at this project's state
 	// directory so WorkRoot mirrors "<state-root>/work/<initiative>".
 	engine.SetWorkRoot(projDir)

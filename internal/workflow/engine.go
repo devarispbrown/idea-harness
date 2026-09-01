@@ -58,7 +58,8 @@ const (
 // Engine drives the M1 workflow.
 type Engine struct {
 	db            *store.DB
-	blobs         *blob.Store
+	blobs         *blob.Store // redacted store: model artifacts/context
+	rawBlobs      *blob.Store // redaction-free store: diff/apply/revert content
 	registry      *model.Registry
 	cfg           config.HarnessConfig
 	log           *slog.Logger
@@ -75,6 +76,20 @@ func New(db *store.DB, blobs *blob.Store, registry *model.Registry, cfg config.H
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Engine{db: db, blobs: blobs, registry: registry, cfg: cfg, log: log}
+}
+
+// SetRawBlobs sets the redaction-free content store used by the diff/apply/revert
+// path (review C1/C2). File content must round-trip byte-for-byte, so it is never
+// redacted; the redacted `blobs` store is reserved for model artifacts.
+func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
+
+// contentBlobs returns the redaction-free store for file content, falling back to
+// the engine's store when no raw store is configured (tests).
+func (e *Engine) contentBlobs() *blob.Store {
+	if e.rawBlobs != nil {
+		return e.rawBlobs
+	}
+	return e.blobs
 }
 
 // Run executes the full vertical slice for an initiative and returns the final

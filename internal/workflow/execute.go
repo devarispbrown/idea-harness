@@ -36,13 +36,13 @@ func (e *Engine) SetWorkspaceRoot(dir string) { e.workspaceRoot = dir }
 func (e *Engine) selectExecutor() executor.Executor {
 	switch e.cfg.Executor.Kind {
 	case config.ExecutorContainer:
-		return executor.NewContainerExecutor(e.blobs, e.cfg.Executor.Image)
+		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image)
 	case config.ExecutorOMP:
-		return executor.NewOMPExecutor(e.blobs, e.implementerModel(), e.cfg.Executor.Image)
+		return executor.NewOMPExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image)
 	case config.ExecutorHermes:
-		return executor.NewHermesExecutor(e.blobs, e.implementerModel(), e.cfg.Executor.Image)
+		return executor.NewHermesExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image)
 	default:
-		return executor.NewInternalExecutor(e.blobs)
+		return executor.NewInternalExecutor(e.contentBlobs())
 	}
 }
 
@@ -282,7 +282,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 // persistDiff persists each produced file's content to the blob store (keyed by
 // digest), so apply/revert can reconstruct the diff from digests alone.
 func (e *Engine) persistDiff(workRoot string, files []domain.FileChange) error {
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		return fmt.Errorf("workflow: no blob store")
 	}
 	for _, fc := range files {
@@ -293,7 +293,7 @@ func (e *Engine) persistDiff(workRoot string, files []domain.FileChange) error {
 		if err != nil {
 			return fmt.Errorf("read %q: %w", fc.Path, err)
 		}
-		if _, err := e.blobs.Put(data); err != nil {
+		if _, err := e.contentBlobs().Put(data); err != nil {
 			return fmt.Errorf("persist %q: %w", fc.Path, err)
 		}
 	}
@@ -306,16 +306,16 @@ func (e *Engine) persistPatch(patch fsdiff.Patch) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workflow: marshal patch: %w", err)
 	}
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		return fsdiff.Patch{BaseSnapshotDigest: patch.BaseSnapshotDigest, Files: patch.Files}.Digest(), nil
 	}
-	return e.blobs.Put(data)
+	return e.contentBlobs().Put(data)
 }
 
 // renderDiffText renders the file contents of a diff as one readable string (for
 // the deterministic secret sweep).
 func (e *Engine) renderDiffText(files []domain.FileChange) string {
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		return ""
 	}
 	var b strings.Builder
@@ -324,7 +324,7 @@ func (e *Engine) renderDiffText(files []domain.FileChange) string {
 			fmt.Fprintf(&b, "delete %s\n", fc.Path)
 			continue
 		}
-		content, err := e.blobs.Get(fc.Digest)
+		content, err := e.contentBlobs().Get(fc.Digest)
 		if err != nil {
 			fmt.Fprintf(&b, "%s (unreadable)\n", fc.Path)
 			continue
@@ -336,10 +336,10 @@ func (e *Engine) renderDiffText(files []domain.FileChange) string {
 
 // loadPatch reads and decodes a change set's patch manifest.
 func (e *Engine) loadPatch(cs *domain.ChangeSet) (*fsdiff.Patch, error) {
-	if cs.PatchDigest == "" || e.blobs == nil {
+	if cs.PatchDigest == "" || e.contentBlobs() == nil {
 		return &fsdiff.Patch{}, nil
 	}
-	data, err := e.blobs.Get(cs.PatchDigest)
+	data, err := e.contentBlobs().Get(cs.PatchDigest)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: load patch: %w", err)
 	}
@@ -366,10 +366,10 @@ func (e *Engine) persistManifest(m fsdiff.Manifest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workflow: marshal manifest: %w", err)
 	}
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		return m.Digest(), nil
 	}
-	return e.blobs.Put(data)
+	return e.contentBlobs().Put(data)
 }
 
 // loadManifest reads and decodes a snapshot manifest by digest.
@@ -377,10 +377,10 @@ func (e *Engine) loadManifest(digest string) (fsdiff.Manifest, error) {
 	if digest == "" {
 		return fsdiff.Manifest{}, nil
 	}
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		return nil, fmt.Errorf("workflow: no blob store")
 	}
-	data, err := e.blobs.Get(digest)
+	data, err := e.contentBlobs().Get(digest)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: load manifest: %w", err)
 	}
@@ -458,7 +458,7 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 	sev := domain.SeverityObservation
 	status := "pass"
 	evidence := fmt.Sprintf("%d file(s) in patch", len(files))
-	if e.blobs == nil {
+	if e.contentBlobs() == nil {
 		sev = domain.SeverityHigh
 		status = "FAIL"
 		evidence = "no blob store available"
@@ -467,7 +467,7 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 			if fc.IsDelete() {
 				continue
 			}
-			if _, err := e.blobs.Get(fc.Digest); err != nil {
+			if _, err := e.contentBlobs().Get(fc.Digest); err != nil {
 				sev = domain.SeverityHigh
 				status = "FAIL"
 				evidence = fmt.Sprintf("%s: content missing or corrupt: %v", fc.Path, err)
@@ -601,7 +601,7 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 
 	// Write the diff, capturing (and persisting) the pre-image of every touched
 	// path so revert can restore it byte-for-byte.
-	preImage, err := fsdiff.Apply(workspaceRoot, patch.Files, e.blobs.Get, e.blobs.Put)
+	preImage, err := fsdiff.Apply(workspaceRoot, patch.Files, e.contentBlobs().Get, e.contentBlobs().Put)
 	if err != nil {
 		return fmt.Errorf("workflow: apply files: %w", err)
 	}
@@ -656,7 +656,7 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 	if err != nil {
 		return err
 	}
-	if err := fsdiff.Restore(workspaceRoot, preImage, e.blobs.Get); err != nil {
+	if err := fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get); err != nil {
 		return fmt.Errorf("workflow: revert files: %w", err)
 	}
 	return e.db.MarkChangeSetReverted(ctx, changeSetID, store.ActorOrchestrator)
