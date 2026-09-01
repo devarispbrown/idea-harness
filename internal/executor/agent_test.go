@@ -50,7 +50,7 @@ func TestSandboxedOMPArgs(t *testing.T) {
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
-	e := NewOMPExecutor(newTestBlobStore(t), "opus", "alpine:3.20")
+	e := NewOMPExecutor(newTestBlobStore(t), "anthropic/opus", "alpine:3.20")
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -65,17 +65,22 @@ func TestSandboxedOMPArgs(t *testing.T) {
 	args := recordedArgs(t, record)
 	for _, want := range []string{
 		"--read-only",
+		"--cap-drop ALL",
 		"--tmpfs /tmp",
+		"--env-file", // single key via env-file, never -e NAME=value (argv leak)
 		"-v " + work + ":/work",
 		"-w /work",
-		"-e ANTHROPIC_API_KEY=sk-ant-test",
 		"alpine:3.20",
-		"omp --print --cwd /work --model opus --auto-approve",
+		"omp --print --cwd /work --model anthropic/opus --auto-approve",
 		"Add a changelog",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("docker args %q missing %q", args, want)
 		}
+	}
+	// The key value must NOT appear in argv.
+	if strings.Contains(args, "sk-ant-test") {
+		t.Errorf("provider key leaked into docker argv: %q", args)
 	}
 	// The agent must NOT be network-isolated (it needs model egress).
 	if strings.Contains(args, "--network none") {

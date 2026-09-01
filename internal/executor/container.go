@@ -69,9 +69,18 @@ func (e *ContainerExecutor) Start(ctx context.Context, req Request) (Attempt, er
 	if err := os.MkdirAll(filepath.Join(req.WorkRoot, "result"), 0o700); err != nil {
 		return Attempt{}, fmt.Errorf("executor: container: mkdir work root: %w", err)
 	}
+	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	args := []string{
 		"run", "-d",
+		"--rm",
 		"--network", "none",
+		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--user", uid,
+		"--memory", "2g",
+		"--pids-limit", "256",
+		"--tmpfs", "/tmp",
 		"-v", req.WorkRoot + ":/work",
 		"-e", "TASK_TITLE=" + req.TaskTitle,
 		e.image,

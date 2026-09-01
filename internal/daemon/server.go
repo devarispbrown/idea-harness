@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -38,6 +39,14 @@ func Run(addr, stateRoot string, log *slog.Logger) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
+	}
+	// Enforce loopback-only binding: the API token is the sole credential and is
+	// served to the web UI unauthenticated, so exposing the daemon beyond
+	// loopback would let any LAN/remote client read the token and take over the
+	// daemon (review: v1 security boundary). IDEA_HARNESS_ADDR must be loopback.
+	if tcp, ok := ln.Addr().(*net.TCPAddr); ok && !tcp.IP.IsLoopback() {
+		ln.Close()
+		return fmt.Errorf("daemon: refusing to bind %s: must bind to a loopback address only", addr)
 	}
 	log.Info("idea-harness daemon listening", "addr", ln.Addr().String())
 	return http.Serve(ln, NewServer(rt).Handler())

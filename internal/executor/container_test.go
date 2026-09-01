@@ -85,7 +85,8 @@ func TestContainerExecutorStartStatusCollect(t *testing.T) {
 	}
 	args := strings.Join(strings.Fields(string(raw)), " ")
 	for _, want := range []string{
-		"-d --network none",
+		"--network none",
+		"--cap-drop ALL",
 		"-v " + work + ":/work",
 		"-e TASK_TITLE=Add changelog",
 		"alpine:3.20",

@@ -120,8 +120,11 @@ func TestReloadProjectKeepsSameRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != after {
-		t.Fatal("ReloadProject opened a second runtime (double DB handle)")
+	if before == after {
+		t.Fatal("ReloadProject should swap in a fresh runtime")
+	}
+	if after.db != before.db {
+		t.Fatal("ReloadProject must reuse the same *store.DB (no second DB handle)")
 	}
 	// Reconciliation must not re-run on reload: the reconciled flag stays set.
 	rt.mu.Lock()

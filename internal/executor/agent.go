@@ -79,27 +79,56 @@ func hermesArgs(req Request, model string) []string {
 	return []string{"hermes", "--in", "/work", "--yolo", "chat", "--query", stmt, "--model", model}
 }
 
-// providerKeyEnvs are the provider API-key env vars forwarded into the agent
-// container so the agent can authenticate to its model API. Only keys that are
-// set on the host are forwarded.
-var providerKeyEnvs = []string{
-	"ANTHROPIC_API_KEY",
-	"OPENAI_API_KEY",
-	"GOOGLE_API_KEY",
-	"OPENROUTER_API_KEY",
-	"DEEPSEEK_API_KEY",
+// providerKeyForModel returns the single provider API-key env var matching the
+// agent's model, so only the one credential the agent actually needs is
+// forwarded (never every provider key — review: v1 security boundary).
+func providerKeyForModel(model string) (name, value string) {
+	provider := model
+	if i := strings.Index(model, "/"); i > 0 {
+		provider = model[:i]
+	}
+	switch provider {
+	case "anthropic":
+		return "ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")
+	case "openai":
+		return "OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY")
+	case "gemini", "google":
+		return "GOOGLE_API_KEY", os.Getenv("GOOGLE_API_KEY")
+	case "openrouter":
+		return "OPENROUTER_API_KEY", os.Getenv("OPENROUTER_API_KEY")
+	case "deepseek":
+		return "DEEPSEEK_API_KEY", os.Getenv("DEEPSEEK_API_KEY")
+	}
+	return "", ""
 }
 
-// forwardProviderKeys returns the `-e NAME=value` docker args for every set
-// provider key, so the agent has a credential inside the sandbox.
-func forwardProviderKeys() []string {
-	var args []string
-	for _, name := range providerKeyEnvs {
-		if v := os.Getenv(name); v != "" {
-			args = append(args, "-e", name+"="+v)
-		}
+// writeProviderKeyFile writes the single provider key to a 0600 temp env-file so
+// the secret never appears in the docker run argv (review: v1 security boundary).
+// It returns the file path, or "" when no key is set.
+func writeProviderKeyFile(model string) (string, error) {
+	name, value := providerKeyForModel(model)
+	if name == "" || value == "" {
+		return "", nil
 	}
-	return args
+	f, err := os.CreateTemp("", "idea-harness-key-*")
+	if err != nil {
+		return "", fmt.Errorf("executor: create key env-file: %w", err)
+	}
+	path := f.Name()
+	if _, err := fmt.Fprintf(f, "%s=%s\n", name, value); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // NewOMPExecutor returns a sandboxed OMP executor. image must contain the omp
@@ -137,14 +166,32 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	if err := os.MkdirAll(req.WorkRoot, 0o755); err != nil {
 		return Attempt{}, fmt.Errorf("executor: %s: mkdir work root: %w", e.name, err)
 	}
+	// Forward only the agent's own provider key via a 0600 env-file (not argv).
+	keyFile, err := writeProviderKeyFile(e.model)
+	if err != nil {
+		return Attempt{}, err
+	}
+	if keyFile != "" {
+		defer os.Remove(keyFile)
+	}
+
+	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	args := []string{
 		"run", "-d",
+		"--rm",
 		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--user", uid,
+		"--memory", "2g",
+		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
 		"-v", req.WorkRoot + ":/work",
 		"-w", "/work",
 	}
-	args = append(args, forwardProviderKeys()...)
+	if keyFile != "" {
+		args = append(args, "--env-file", keyFile)
+	}
 	args = append(args, e.image)
 	args = append(args, e.buildArgs(req, e.model)...)
 	out, err := exec.CommandContext(ctx, e.dockerPath, args...).Output()
