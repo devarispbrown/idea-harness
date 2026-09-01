@@ -31,6 +31,10 @@ type Runtime struct {
 
 	mu       sync.Mutex
 	projects map[string]*projectRuntime
+	// reconciled records which projects have already had startup reconciliation
+	// run in this daemon lifetime, so a reload never re-reconciles (and thereby
+	// fails) a live operation (full-platform review: project-runtime race).
+	reconciled map[string]bool
 
 	// cancelMu guards cancels: live cancellation handles for in-flight
 	// asynchronous operations, keyed by operation id (M3 cancel, §16).
@@ -66,12 +70,13 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		return nil, err
 	}
 	return &Runtime{
-		stateRoot: stateRoot,
-		token:     token,
-		global:    global,
-		log:       log,
-		projects:  map[string]*projectRuntime{},
-		cancels:   map[string]context.CancelFunc{},
+		stateRoot:  stateRoot,
+		token:      token,
+		global:     global,
+		log:        log,
+		projects:   map[string]*projectRuntime{},
+		reconciled: map[string]bool{},
+		cancels:    map[string]context.CancelFunc{},
 	}, nil
 }
 
@@ -102,13 +107,16 @@ func (r *Runtime) CreateProject(ctx context.Context, rootPath string) (string, e
 }
 
 // EnsureProject returns (opening if needed) the runtime for a project id.
+// Construction is single-flight: r.mu is held across the whole build so two
+// concurrent first-opens cannot open two *store.DB handles for one project
+// (full-platform review: project-runtime race).
 func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*projectRuntime, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if pr, ok := r.projects[projectID]; ok {
-		r.mu.Unlock()
 		return pr, nil
 	}
-	r.mu.Unlock()
 
 	rec, err := r.global.GetProject(ctx, projectID)
 	if err != nil {
@@ -161,25 +169,49 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 
 	pr := &projectRuntime{db: db, blobs: blobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine}
 
-	r.mu.Lock()
 	r.projects[projectID] = pr
-	r.mu.Unlock()
 
-	// First open in this daemon lifetime: any "running" operation is orphaned
-	// (its goroutine died with a previous daemon process). Reconcile it so
-	// initiatives never hang in a stuck "running" state (§34, §16). Runs after
-	// the engine + raw blob store exist so an interrupted apply can be restored.
-	r.reconcileStaleOperations(ctx, pr)
+	// Reconcile once per daemon lifetime (never on a reload), so a live
+	// operation is never spuriously failed by a re-open. Runs after the engine +
+	// raw blob store exist so an interrupted apply can be restored.
+	if !r.reconciled[projectID] {
+		r.reconciled[projectID] = true
+		r.reconcileStaleOperations(ctx, pr)
+	}
 	return pr, nil
 }
 
 // ReloadProject drops the cached runtime so the next EnsureProject re-reads
-// config and rebuilds the provider registry (§40).
+// config and rebuilds the provider registry (§40). It rebuilds the
+// config-derived components in place (same *store.DB and raw blob store, same
+// engine object) so a reload never opens a second DB handle or re-runs
+// reconciliation against a live operation (full-platform review).
 func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*projectRuntime, error) {
 	r.mu.Lock()
-	delete(r.projects, projectID)
+	pr, ok := r.projects[projectID]
 	r.mu.Unlock()
-	return r.EnsureProject(ctx, projectID)
+	if !ok {
+		return r.EnsureProject(ctx, projectID)
+	}
+
+	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
+	if err != nil {
+		return nil, err
+	}
+	dotEnv := config.LoadDotEnv(pr.rootPath)
+	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
+	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
+	if err != nil {
+		return nil, err
+	}
+	registry := buildRegistry(cfg, r.log, dotEnv)
+
+	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
+	pr.cfg = cfg
+	pr.dotEnv = dotEnv
+	pr.registry = registry
+	pr.blobs = blobs
+	return pr, nil
 }
 
 // registerCancel records a live cancellation handle for opID.

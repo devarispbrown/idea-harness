@@ -95,6 +95,21 @@ func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
 // reaches a network-egress model unredacted (review SRE regression).
 func (e *Engine) SetRedactor(r *security.Redactor) { e.redactor = r }
 
+// Reload swaps the config-derived components in place (same DB and raw blob
+// store) after a config/provider update. It is serialized against the
+// state-mutating operations by e.mu; it does not open a new DB handle.
+func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cfg.Review.MaxCycles <= 0 {
+		cfg.Review.MaxCycles = 3
+	}
+	e.cfg = cfg
+	e.registry = registry
+	e.redactor = redactor
+	e.blobs = blobs
+}
+
 // contentBlobs returns the redaction-free store for file content. It fails
 // closed: when no raw store was configured (SetRawBlobs), it returns nil and
 // callers surface an error rather than silently round-tripping content through
