@@ -44,6 +44,9 @@ func cmdAdvance(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ advance started")+" "+code(iniID))
+	if opID := out["operation_id"]; opID != "" {
+		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil
 }

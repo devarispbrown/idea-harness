@@ -26,11 +26,16 @@ func TestRedactPatterns(t *testing.T) {
 		"-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnopqrstuvwxyz",
 		"token=abcdefghijklmnop",
+		"sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+		"xoxb-123456789012-123456789012-abcdefghijklmnop",
 	}
 	for _, c := range cases {
 		out := Redact(c)
 		if out == c {
 			t.Errorf("pattern not redacted: %q", c)
+		}
+		if FindCredential(c) == "" {
+			t.Errorf("credential not detected: %q", c)
 		}
 	}
 }

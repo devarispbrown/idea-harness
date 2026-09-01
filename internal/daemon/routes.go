@@ -34,6 +34,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/models", s.handleListModels)
 
 	m.HandleFunc("GET /api/v1/operations/{id}", s.handleGetOperation)
+	m.HandleFunc("POST /api/v1/operations/{id}/cancel", s.handleCancelOperation)
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/decisions", s.handleListDecisions)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/decisions/{id}/resolve", s.handleResolveDecision)

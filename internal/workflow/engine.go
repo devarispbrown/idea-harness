@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/idea-harness/idea-harness/internal/blob"
@@ -67,6 +68,10 @@ type Engine struct {
 	log           *slog.Logger
 	workRoot      string
 	workspaceRoot string
+
+	// mu serializes the state-mutating operations (execute/apply/revert) so two
+	// concurrent invocations cannot race on the same task or workspace.
+	mu sync.Mutex
 }
 
 // New builds an engine.
@@ -90,13 +95,12 @@ func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
 // reaches a network-egress model unredacted (review SRE regression).
 func (e *Engine) SetRedactor(r *security.Redactor) { e.redactor = r }
 
-// contentBlobs returns the redaction-free store for file content, falling back to
-// the engine's store when no raw store is configured (tests).
+// contentBlobs returns the redaction-free store for file content. It fails
+// closed: when no raw store was configured (SetRawBlobs), it returns nil and
+// callers surface an error rather than silently round-tripping content through
+// the redacting store (which would corrupt file bytes — review C1/C2).
 func (e *Engine) contentBlobs() *blob.Store {
-	if e.rawBlobs != nil {
-		return e.rawBlobs
-	}
-	return e.blobs
+	return e.rawBlobs
 }
 
 // Run executes the full vertical slice for an initiative and returns the final

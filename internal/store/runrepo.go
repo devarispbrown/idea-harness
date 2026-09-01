@@ -151,7 +151,7 @@ func (db *DB) SetOperationStatus(ctx context.Context, opID string, status domain
 		Operation:     string(status),
 	}, func(tx *sql.Tx) error {
 		finished := sql.NullInt64{}
-		if status == domain.OperationSucceeded || status == domain.OperationFailed {
+		if status == domain.OperationSucceeded || status == domain.OperationFailed || status == domain.OperationCancelled {
 			finished = sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
 		}
 		_, err := tx.Exec(`UPDATE operations SET status = ?, result_ref = ?, finished_at = ? WHERE id = ?`,
