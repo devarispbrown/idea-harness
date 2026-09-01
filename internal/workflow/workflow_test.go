@@ -215,3 +215,62 @@ func TestResolveModelSpecPrecedence(t *testing.T) {
 		t.Errorf("implementer model (executor.model) = %q, want gpt-4o", got)
 	}
 }
+
+func TestCanarySecretRedactedFromStructuredFields(t *testing.T) {
+	const canary = "AIzaSyD-canary-google-key-1234567890abcd"
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	redactor := security.NewRedactor(canary)
+	blobs, err := blob.New(filepath.Join(t.TempDir(), "blobs"), redactor.Redact)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fp := model.NewFakeProvider()
+	fp.SetResponse("idea_brief", `{"title":"x","summary":"x"}`)
+	fp.SetResponse("research_brief", `{"summary":"x","findings":[]}`)
+	fp.SetResponse("prd", `{"summary":"PRD","requirements":[{"statement":"use key `+canary+`","priority":"must","acceptance_criteria":[{"metric":"events","target":">= 1","condition":"per request"}]}],"decisions":[{"question":"which key?","options":["`+canary+`"],"recommendation":"`+canary+`"}],"open_questions":[],"risks":[]}`)
+	fp.SetResponse("review", `{"findings":[]}`)
+
+	reg := model.NewRegistry("idea-harness-default")
+	reg.Add("idea-harness-default", fp)
+	eng := New(db, blobs, reg, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}}, nil)
+	eng.SetRedactor(redactor)
+	eng.SetRawBlobs(blobs)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Run(ctx, ini.ID, "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	reqs, err := db.ListRequirements(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range reqs {
+		if strings.Contains(r.Statement, canary) {
+			t.Fatalf("canary leaked into requirement statement: %q", r.Statement)
+		}
+		for _, ac := range r.AcceptanceCriteria {
+			if strings.Contains(ac.Metric+ac.Target+ac.Condition, canary) {
+				t.Fatalf("canary leaked into acceptance criteria: %+v", ac)
+			}
+		}
+	}
+	decisions, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range decisions {
+		if strings.Contains(d.Question+" "+strings.Join(d.Options, " ")+" "+d.Recommendation, canary) {
+			t.Fatalf("canary leaked into decision: %+v", d)
+		}
+	}
+}

@@ -101,3 +101,24 @@ func TestTokenLoadCreateAndCompare(t *testing.T) {
 		t.Fatalf("token file perms = %o, want 600", perm)
 	}
 }
+
+func TestContainsCredentialKnownValueAndPattern(t *testing.T) {
+	r := NewRedactor("AIzaSySuperSecretGoogleKey0123456789")
+	if !r.ContainsCredential("here is AIzaSySuperSecretGoogleKey0123456789 in text") {
+		t.Fatal("known value not detected")
+	}
+	if !r.ContainsCredential("sk_live_4eC39HqLyjWDarjtT1zdp7dc") {
+		t.Fatal("sk_live_ pattern not detected")
+	}
+	if r.ContainsCredential("nothing sensitive here") {
+		t.Fatal("false positive")
+	}
+	// Nil redactor falls back to patterns only.
+	var nilR *Redactor
+	if !nilR.ContainsCredential("AKIA1234567890ABCDEF") {
+		t.Fatal("nil redactor should still detect patterns")
+	}
+	if nilR.ContainsCredential("AIzaSySuperSecretGoogleKey0123456789") {
+		t.Fatal("nil redactor cannot detect known values")
+	}
+}

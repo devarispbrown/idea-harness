@@ -59,15 +59,15 @@ func (e *Engine) createDesignDecision(ctx context.Context, initiativeID, roleNam
 		if normalizeJudgment(d.Question) == norm {
 			if recommendation != "" && d.Recommendation != recommendation {
 				return e.db.CreateDissent(ctx, &domain.DecisionDissent{
-					DecisionID: d.ID, ProponentRole: roleName, Position: recommendation,
+					DecisionID: d.ID, ProponentRole: roleName, Position: e.redact(recommendation),
 				})
 			}
 			return nil
 		}
 	}
 	return e.db.CreateDecision(ctx, &domain.Decision{
-		InitiativeID: initiativeID, Type: dtype, Question: question,
-		Options: options, Recommendation: recommendation,
+		InitiativeID: initiativeID, Type: dtype, Question: e.redact(question),
+		Options: e.redactSlice(options), Recommendation: e.redact(recommendation),
 	})
 }
 
@@ -172,8 +172,8 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 		}
 		task := &domain.Task{
 			InitiativeID:  initiativeID,
-			Title:         title,
-			Statement:     str(t["statement"]),
+			Title:         e.redact(title),
+			Statement:     e.redact(str(t["statement"])),
 			Priority:      domain.RequirementPriority(str(t["priority"])),
 			Estimate:      str(t["estimate"]),
 			ProducedByRun: runID,
@@ -198,6 +198,10 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		if all[i].ReviewRunID == "" {
 			all[i].ReviewRunID = "deterministic-plan-check"
 		}
+		all[i].Finding = e.redact(all[i].Finding)
+		all[i].Evidence = e.redact(all[i].Evidence)
+		all[i].Impact = e.redact(all[i].Impact)
+		all[i].Recommendation = e.redact(all[i].Recommendation)
 		if err := e.db.CreateFinding(ctx, &all[i]); err != nil {
 			return domain.InitiativeFailed, err
 		}

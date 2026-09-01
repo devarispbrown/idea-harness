@@ -50,6 +50,7 @@ type projectRuntime struct {
 	dotEnv   map[string]string
 	registry *model.Registry
 	engine   *workflow.Engine
+	redactor *security.Redactor
 }
 
 // NewRuntime opens (creating if needed) the global state and token.
@@ -167,7 +168,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// project root (the user's real source tree).
 	engine.SetWorkspaceRoot(rec.RootPath)
 
-	pr := &projectRuntime{db: db, blobs: blobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine}
+	pr := &projectRuntime{db: db, blobs: blobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
 
 	r.projects[projectID] = pr
 
@@ -211,6 +212,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	pr.dotEnv = dotEnv
 	pr.registry = registry
 	pr.blobs = blobs
+	pr.redactor = redactor
 	return pr, nil
 }
 
@@ -298,7 +300,7 @@ func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, descrip
 	if err != nil {
 		return "", "", err
 	}
-	ini := &domain.Initiative{Title: title, Description: description, Status: domain.InitiativeRunning}
+	ini := &domain.Initiative{Title: pr.redactor.RedactString(title), Description: pr.redactor.RedactString(description), Status: domain.InitiativeRunning}
 	if err := pr.db.CreateInitiative(ctx, ini); err != nil {
 		return "", "", err
 	}
@@ -472,6 +474,10 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 		_ = pr.db.ReplaceSuggestedAnswers(bg, initiativeID, nil)
 		total := 0
 		runErr := pr.engine.SuggestAnswers(bg, initiativeID, func(answers []domain.SuggestedAnswer) {
+			for i := range answers {
+				answers[i].Question = pr.redactor.RedactString(answers[i].Question)
+				answers[i].Answer = pr.redactor.RedactString(answers[i].Answer)
+			}
 			if err := pr.db.AppendSuggestedAnswers(bg, initiativeID, answers); err != nil {
 				r.log.Error("suggest answers append failed", "initiative", initiativeID, "err", err)
 				return
@@ -548,15 +554,27 @@ func lookupEnv(key string, dotEnv map[string]string) string {
 }
 
 // collectSecrets returns resolved secret values (provider API keys) for
-// redaction, from the environment and .env (§47).
+// redaction, from the environment and .env (§47). It gathers both explicitly
+// configured providers AND the built-in presets, so a preset-only key (e.g.
+// GOOGLE_API_KEY via the gemini preset) is redacted too (full-platform review).
 func collectSecrets(cfg config.Config, dotEnv map[string]string) []string {
+	seen := map[string]bool{}
 	var out []string
+	add := func(v string) {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	// Built-in presets (used even before a provider is explicitly configured).
+	for _, p := range config.Presets {
+		add(lookupEnv(p.DefaultKeyEnv, dotEnv))
+	}
+	// Explicitly configured providers.
 	for name, p := range cfg.Harness.Providers {
 		_, _, keyEnv := config.ResolveProvider(name, p)
 		if keyEnv != "" {
-			if v := lookupEnv(keyEnv, dotEnv); v != "" {
-				out = append(out, v)
-			}
+			add(lookupEnv(keyEnv, dotEnv))
 		}
 	}
 	return out
