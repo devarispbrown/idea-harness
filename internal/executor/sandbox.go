@@ -26,13 +26,24 @@ func NewContainerSandbox(image string) *ContainerSandbox {
 	return &ContainerSandbox{image: image, dockerPath: "docker"}
 }
 
-// isolatedArgs builds the docker run args for an isolated container.
+// isolatedArgs builds the docker run args for an isolated container: no
+// network, read-only root, dropped capabilities, bounded memory/pids, and
+// writable tmpfs caches so a toolchain (Go/Node) can run its build caches
+// without writing to the read-only root (review H3 hardening).
 func isolatedArgs(workRoot, image string, cmd []string) []string {
 	args := []string{
 		"run",
+		"--rm",
 		"--network", "none",
 		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--memory", "2g",
+		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
+		"--tmpfs", "/root/.cache",
+		"--tmpfs", "/root/go",
+		"--tmpfs", "/root/.npm",
 		"-v", workRoot + ":/work",
 		"-w", "/work",
 		image,

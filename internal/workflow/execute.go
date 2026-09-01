@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -570,29 +569,49 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		return base
 	}
 
-	// Run the config-supplied command with a bounded timeout and a sanitized
-	// environment (the check executes the agent's code, so it must not inherit
-	// the daemon's secrets). Full OS sandboxing is a follow-up requiring a
-	// project-toolchain image (review H3).
+	// Fail closed: the build/test command executes the agent's code, so it must
+	// never run on the host. It requires a configured toolchain image (review H3).
+	if e.cfg.Check.Image == "" {
+		base.Severity = domain.SeverityHigh
+		base.Finding = description + " — FAIL (no sandbox image)"
+		base.Disposition = domain.DispositionRejected
+		base.Evidence = "check.image is not configured; refusing to run " + category + " on the host"
+		base.Impact = "deterministic check could not run safely"
+		base.Recommendation = "set check.image to a toolchain image (e.g. golang:1.25, node:22)"
+		return base
+	}
+
 	timeout := 10 * time.Minute
 	if e.cfg.CheckTimeoutSeconds > 0 {
 		timeout = time.Duration(e.cfg.CheckTimeoutSeconds) * time.Second
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	c := exec.CommandContext(checkCtx, "sh", "-c", cmd)
-	c.Dir = workRoot
-	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
-	out, err := c.CombinedOutput()
-	if err != nil {
+
+	// Run inside an isolated container (no network, read-only root, dropped
+	// capabilities) with only the work root mounted.
+	sandbox := executor.NewContainerSandbox(e.cfg.Check.Image)
+	stdout, stderr, exitCode, runErr := sandbox.Run(checkCtx, workRoot, []string{"sh", "-c", cmd})
+	if runErr != nil {
+		// Docker unavailable or launch failed → fail closed, never host-exec.
+		base.Severity = domain.SeverityHigh
+		base.Finding = description + " — FAIL (sandbox unavailable)"
+		base.Disposition = domain.DispositionRejected
+		base.Evidence = fmt.Sprintf("sandbox launch failed: %v\n%s", runErr, truncateOutput(stderr))
+		base.Impact = "deterministic check could not run safely"
+		base.Recommendation = "ensure Docker is available and check.image is pullable"
+		return base
+	}
+	out := stdout + stderr
+	if exitCode != 0 {
 		base.Severity = domain.SeverityHigh
 		base.Finding = description + " — FAIL"
 		base.Disposition = domain.DispositionRejected // review M5: a rejected change set's findings are closed, not left open
 		if checkCtx.Err() == context.DeadlineExceeded {
-			base.Evidence = fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(string(out)))
+			base.Evidence = fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(out))
 			base.Recommendation = "the " + category + " command hung; fix it or raise check_timeout_seconds"
 		} else {
-			base.Evidence = fmt.Sprintf("exit: %v\n%s", err, truncateOutput(string(out)))
+			base.Evidence = fmt.Sprintf("exit code %d\n%s", exitCode, truncateOutput(out))
 			base.Recommendation = "fix the failure and re-execute"
 		}
 		base.Impact = "deterministic check failed"
@@ -600,7 +619,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	}
 	base.Severity = domain.SeverityObservation
 	base.Finding = description + " — pass"
-	base.Evidence = truncateOutput(string(out))
+	base.Evidence = truncateOutput(out)
 	base.Impact = "deterministic check passed"
 	return base
 }
