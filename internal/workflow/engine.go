@@ -106,7 +106,7 @@ func New(db *store.DB, blobs *blob.Store, registry *model.Registry, cfg config.H
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Engine{db: db, blobs: blobs, registry: registry, cfg: cfg, log: log}
+	return &Engine{db: db, blobs: blobs, registry: registry, cfg: cfg, log: log, budgetUSD: cfg.Review.MaxCostUSD}
 }
 
 // SetRawBlobs sets the redaction-free content store used by the diff/apply/revert
@@ -119,17 +119,10 @@ func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
 // reaches a network-egress model unredacted (review SRE regression).
 func (e *Engine) SetRedactor(r *security.Redactor) { e.redactor = r }
 
-// beginBudget resets the per-pipeline cost accumulator to the configured
-// review budget. Called at the start of each top-level pipeline entry point.
-func (e *Engine) beginBudget() {
-	e.costMu.Lock()
-	defer e.costMu.Unlock()
-	e.spentUSD = 0
-	e.budgetUSD = e.cfg.Review.MaxCostUSD
-}
-
 // chargeUSD accumulates a model call's cost and fails once the running total
-// exceeds the budget (a cumulative cap, not a per-call cap — review M4).
+// exceeds the configured max_cost_usd budget (a cumulative ceiling per project,
+// not a per-call cap — review M4). budgetUSD is set at construction/reload and
+// never reset mid-flight, so concurrent pipelines cannot zero each other.
 func (e *Engine) chargeUSD(cost float64) error {
 	e.costMu.Lock()
 	defer e.costMu.Unlock()
@@ -156,6 +149,9 @@ func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, reda
 	e.registry = registry
 	e.redactor = redactor
 	e.blobs = blobs
+	e.costMu.Lock()
+	e.budgetUSD = cfg.Review.MaxCostUSD
+	e.costMu.Unlock()
 }
 
 // contentBlobs returns the redaction-free store for file content. It fails
@@ -169,7 +165,6 @@ func (e *Engine) contentBlobs() *blob.Store {
 // Run executes the full vertical slice for an initiative and returns the final
 // initiative status.
 func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.InitiativeStatus, error) {
-	e.beginBudget()
 	start := time.Now()
 	e.log.Info("workflow started", "initiative", initiativeID)
 	if err := e.runFraming(ctx, initiativeID, idea); err != nil {
@@ -408,7 +403,7 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 			InitiativeID:  initiativeID,
 			Type:          domain.AssertionAssumption,
 			Status:        domain.AssertionCandidate,
-			Statement:     a,
+			Statement:     e.redact(a),
 			Confidence:    domain.ConfidenceLow,
 			Source:        "framing",
 			ProducedByRun: runID,
@@ -418,7 +413,7 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 	}
 	// Record open questions from framing.
 	for _, q := range strSlice(obj["open_questions"]) {
-		if err := e.createQuestionIfNew(ctx, initiativeID, q); err != nil {
+		if err := e.createQuestionIfNew(ctx, initiativeID, e.redact(q)); err != nil {
 			return err
 		}
 	}
@@ -698,7 +693,6 @@ func (e *Engine) Resume(ctx context.Context, initiativeID string) (domain.Initia
 // (with the resolved decisions + answered questions in context), then re-runs
 // review. This is the "apply my judgment → updated PRD" loop (§8, §11).
 func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
-	e.beginBudget()
 	e.log.Info("revising after human decisions", "initiative", initiativeID)
 	// Capture the current active requirements before superseding so the model
 	// improves the immediately preceding set rather than re-reading the full

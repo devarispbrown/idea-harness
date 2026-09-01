@@ -355,3 +355,32 @@ func TestReconcileChangeSetsOnlyTouchesStuck(t *testing.T) {
 		t.Fatalf("applied change set must not be re-reconciled: %+v", byID[applied.ID])
 	}
 }
+
+func TestReconcileChangeSetsIdempotentPreImageDigest(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	cs := newTestChangeSet(t, db, "ini-1")
+	setChangeSetStatus(t, db, cs.ID, domain.ChangeSetApplying)
+	if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: cs.ID, State: domain.ApplyWorkspaceMutated, WorkspaceSnapshotDigest: "pre-digest"}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := db.ReconcileChangeSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].PreImageDigest != "pre-digest" {
+		t.Fatalf("first reconcile: %+v", first)
+	}
+
+	// A second pass (e.g. the daemon crashed before restoring) must still report
+	// the pre-image digest so it can be restored, not degrade to approved.
+	second, err := db.ReconcileChangeSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].PreImageDigest != "pre-digest" {
+		t.Fatalf("second reconcile lost the pre-image digest: %+v", second)
+	}
+}

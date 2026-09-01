@@ -427,6 +427,15 @@ func TestExecuteRejectsBuildWhenNoSandboxImage(t *testing.T) {
 	if cs.Status != domain.ChangeSetRejected {
 		t.Fatalf("expected rejected (no sandbox image), got %q", cs.Status)
 	}
+	// The task must be re-opened (proposed), not left done, so a re-execute can
+	// produce a fresh change set and dependents are not permanently blocked.
+	tasks, err := db.ListTasks(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != domain.TaskProposed {
+		t.Fatalf("expected re-opened task (proposed), got %+v", tasks)
+	}
 }
 
 func TestTaskDependenciesApplied(t *testing.T) {

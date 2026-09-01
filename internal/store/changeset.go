@@ -401,11 +401,11 @@ func (db *DB) ReconcileChangeSets(ctx context.Context) ([]ChangeSetRecovery, err
 		rows, err := tx.Query(`
 			SELECT cs.id, cs.initiative_id, cs.status, cs.task_id,
 			       (SELECT j.state FROM apply_journal j WHERE j.change_set_id = cs.id ORDER BY j.rowid DESC LIMIT 1),
-			       (SELECT j.workspace_snapshot_digest FROM apply_journal j WHERE j.change_set_id = cs.id AND j.state = ? ORDER BY j.rowid DESC LIMIT 1)
+			       (SELECT j.workspace_snapshot_digest FROM apply_journal j WHERE j.change_set_id = cs.id AND j.workspace_snapshot_digest != '' ORDER BY j.rowid DESC LIMIT 1)
 			FROM change_sets cs
 			WHERE cs.status IN (?, ?)
 			ORDER BY cs.rowid ASC`,
-			domain.ApplyWorkspaceMutated, domain.ChangeSetApplying, domain.ChangeSetChecksRunning)
+			domain.ChangeSetApplying, domain.ChangeSetChecksRunning)
 		if err != nil {
 			return err
 		}

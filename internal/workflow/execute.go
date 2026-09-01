@@ -273,6 +273,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	checks, checksBlocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
 	for _, f := range checks {
 		f := f
+		// The build/test command output is attacker-influenced (agent-produced
+		// code runs in the sandbox); redact it before persisting (review).
+		f.Finding = e.redact(f.Finding)
+		f.Evidence = e.redact(f.Evidence)
+		f.Impact = e.redact(f.Impact)
+		f.Recommendation = e.redact(f.Recommendation)
 		if err := e.db.CreateFinding(ctx, &f); err != nil {
 			return domain.ChangeSet{}, err
 		}
@@ -285,7 +291,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	diffText := e.renderDiffText(files)
 	signals := risk.RiskSignals(ctx, patchDigest, diffText)
 	hasCredential := e.detectCredential(diffText)
+	rejected := false
 	if checksBlocked || hasBlockingRiskSignal(signals) || hasCredential {
+		rejected = true
 		// Record a blocking finding so the rejection is traceable. The finding
 		// never echoes the credential value (full-platform review: secret leak).
 		if hasBlockingRiskSignal(signals) || hasCredential {
@@ -318,10 +326,19 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
-	// Mark the task done so a repeated Execute does not re-pick the same task and
-	// create a duplicate change set.
-	if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskDone); err != nil {
-		return domain.ChangeSet{}, err
+	if rejected {
+		// Re-open the task so a re-execute produces a fresh change set; leaving it
+		// done with only a rejected change set would permanently block its
+		// dependents (full-platform review: task-dependency deadlock).
+		if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskProposed); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	} else {
+		// Mark done so a repeated Execute does not re-pick the same task and
+		// create a duplicate change set (it is now awaiting review/apply).
+		if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskDone); err != nil {
+			return domain.ChangeSet{}, err
+		}
 	}
 
 	// Record the implementer run's provenance + success (review B7).
