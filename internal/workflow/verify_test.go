@@ -117,3 +117,41 @@ func TestPartialCoverageNotVerified(t *testing.T) {
 		t.Fatalf("requirement status = %q, want still approved (partial coverage)", reqs[0].Status)
 	}
 }
+
+func TestRecordAutomatedEvidenceOnApply(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "latency", Target: "<200ms", Condition: "x"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{InitiativeID: iniID, TaskID: task.ID}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.recordAutomatedEvidence(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := db.ListEvidenceByRequirement(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 evidence, got %d", len(evs))
+	}
+	if evs[0].Status != domain.VerificationNeedsManual {
+		t.Fatalf("status = %q, want needs_manual", evs[0].Status)
+	}
+	if evs[0].VerifiedBy != "verification_engineer" {
+		t.Fatalf("verified_by = %q, want verification_engineer", evs[0].VerifiedBy)
+	}
+}

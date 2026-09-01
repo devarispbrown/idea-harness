@@ -620,6 +620,12 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 			return err
 		}
 	}
+	// Track B: the verification_engineer records deterministic evidence. The
+	// checks passed (otherwise the change set would have been rejected), but the
+	// acceptance criterion itself needs a human/real measurement (§70).
+	if err := e.recordAutomatedEvidence(ctx, cs); err != nil {
+		return err
+	}
 	return nil
 }
 
