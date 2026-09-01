@@ -80,6 +80,8 @@ echo "--- CHANGE CHG-1 (after revert) ---"
 echo "--- VERIFY (B4/B10) ---"
 "$ROOT/bin/idea" verify REQ-1 --pass --note "smoke"
 "$ROOT/bin/idea" verify
+echo "--- NEXT (Track C) ---"
+"$ROOT/bin/idea" next
 echo "--- RISK ---"
 "$ROOT/bin/idea" risk
 echo "--- EXECUTORS ---"

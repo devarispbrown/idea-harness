@@ -66,6 +66,22 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdChanges lists the initiative's change sets.
+// humanStatus maps a ChangeSet status to human language (§52, Track C). Raw
+// status stays available under --json.
+var humanStatus = map[string]string{
+	"draft":            "draft",
+	"checks_running":   "checking",
+	"review_required":  "needs your approval",
+	"rejected":         "rejected",
+	"changes_requested": "changes requested",
+	"superseded":       "superseded",
+	"approved":         "approved — apply it",
+	"applying":         "applying",
+	"applied":          "applied",
+	"reverted":         "reverted",
+	"conflicted":       "conflicted",
+}
+
 func cmdChanges(args []string, stdout, stderr io.Writer) error {
 	c, projectID, err := connect()
 	if err != nil {
@@ -88,7 +104,11 @@ func cmdChanges(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, heading("Change Sets"))
 	for _, cs := range changes {
-		fmt.Fprintf(stdout, "  %s [%s]\n", code(cs.HumanID), cs.Status)
+		label := humanStatus[cs.Status]
+		if label == "" {
+			label = cs.Status
+		}
+		fmt.Fprintf(stdout, "  %s  %s\n", code(cs.HumanID), muted(label))
 	}
 	return nil
 }
@@ -234,6 +254,14 @@ func cmdExecutors(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// cliCoverage mirrors the per-requirement verification coverage.
+type cliCoverage struct {
+	Code        string `json:"code"`
+	Pass        int    `json:"pass"`
+	Total       int    `json:"total"`
+	NeedsManual int    `json:"needs_manual"`
+}
+
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(args []string, stdout, stderr io.Writer) error {
@@ -267,13 +295,23 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	if req != "" && pass {
 		body = map[string]any{"requirement": req, "pass": true, "note": note}
 	}
-	var out map[string]any
+	var out struct {
+		Status   string        `json:"status"`
+		Coverage []cliCoverage `json:"coverage"`
+	}
 	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", body, &out); err != nil {
 		return err
 	}
 	if req != "" && pass {
 		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
 	}
-	fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(fmt.Sprint(out["status"])))
+	fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))
+	for _, cov := range out.Coverage {
+		fmt.Fprintf(stdout, "  %s  %d/%d verified", code(cov.Code), cov.Pass, cov.Total)
+		if cov.NeedsManual > 0 {
+			fmt.Fprintf(stdout, "  "+muted("(%d need manual sign-off)"), cov.NeedsManual)
+		}
+		fmt.Fprintln(stdout)
+	}
 	return nil
 }

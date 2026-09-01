@@ -8,6 +8,86 @@ import (
 	"github.com/idea-harness/idea-harness/internal/store"
 )
 
+// recordAutomatedEvidence records the verification_engineer's deterministic
+// output when a change set is applied: the checks passed (or it would have been
+// rejected), but the acceptance criterion itself needs a human or a real
+// measurement to verify (§70). This makes the pending state explicit, traceable,
+// and surfaced by the verify command instead of silently absent.
+func (e *Engine) recordAutomatedEvidence(ctx context.Context, cs *domain.ChangeSet) error {
+	if cs.TaskID == "" {
+		return nil
+	}
+	edges, err := e.db.ListGraphEdgesFrom(ctx, cs.InitiativeID, "task", cs.TaskID)
+	if err != nil {
+		return err
+	}
+	for _, edge := range edges {
+		if edge.EdgeType != domain.EdgeImplements || edge.ToType != "requirement" {
+			continue
+		}
+		req, err := e.db.GetRequirementByRef(ctx, cs.InitiativeID, edge.ToID)
+		if err != nil {
+			return err
+		}
+		for i := range req.AcceptanceCriteria {
+			ev := &domain.VerificationEvidence{
+				InitiativeID:  cs.InitiativeID,
+				RequirementID: req.ID,
+				CriterionKey:  domain.CriterionKey(req.ID, i),
+				Kind:          domain.VerificationAcceptance,
+				Status:        domain.VerificationNeedsManual,
+				VerifiedBy:    "verification_engineer",
+				Note:          "change set " + cs.HumanID + " applied; criterion needs manual verification",
+			}
+			if err := e.db.CreateVerificationEvidence(ctx, ev); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Coverage is a per-requirement verification-coverage summary (§70).
+type Coverage struct {
+	Code        string `json:"code"`
+	Pass        int    `json:"pass"`
+	Total       int    `json:"total"`
+	NeedsManual int    `json:"needs_manual"`
+}
+
+// Coverage computes the verification coverage for each requirement of an
+// initiative (pass criteria / total criteria, plus how many still need a human).
+func (e *Engine) Coverage(ctx context.Context, initiativeID string) ([]Coverage, error) {
+	reqs, err := e.db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Coverage, 0, len(reqs))
+	for _, r := range reqs {
+		if r.Status == domain.RequirementRemoved {
+			continue
+		}
+		passed, err := e.db.PassedCriterionKeys(ctx, r.ID)
+		if err != nil {
+			return nil, err
+		}
+		total := len(r.AcceptanceCriteria)
+		pass := 0
+		for i := range r.AcceptanceCriteria {
+			if passed[domain.CriterionKey(r.ID, i)] {
+				pass++
+			}
+		}
+		out = append(out, Coverage{
+			Code:        r.Code,
+			Pass:        pass,
+			Total:       total,
+			NeedsManual: total - pass,
+		})
+	}
+	return out, nil
+}
+
 // RecordHumanPass records a human "pass" evidence for every acceptance criterion
 // of a requirement (§70, review B10). This is the human sign-off path: UX/security
 // criteria that the deterministic verifier marks needs_manual are cleared here by

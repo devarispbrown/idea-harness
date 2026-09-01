@@ -776,7 +776,29 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": ini.Status})
+	coverage, err := pr.engine.Coverage(r.Context(), initiativeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": ini.Status, "coverage": coverage})
+}
+
+// handleNext returns the deterministic next step for an initiative (§52).
+func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	initiativeID := r.PathValue("id")
+	pr, err := s.rt.EnsureProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	action, err := pr.engine.NextAction(r.Context(), initiativeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"action": action})
 }
 
 // handleListChangeSets returns the change sets for an initiative.
