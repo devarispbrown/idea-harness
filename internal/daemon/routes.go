@@ -68,4 +68,5 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/revert", s.handleRevertChangeSet)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/risk", s.handleRisk)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
 }

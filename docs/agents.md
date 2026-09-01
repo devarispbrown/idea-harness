@@ -21,6 +21,23 @@ Research). Both run inside an isolated Docker container, never as a host subproc
 files into the mounted work root; the engine snapshots that directory before/after to compute the
 diff.
 
+### One command (recommended)
+
+```bash
+# Hermes (default)
+idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet --yes
+
+# OMP (alternative)
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
+```
+
+`idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
+pull), prints the security tradeoff, and writes `executor.kind/image/model` to `harness.yaml` (with
+`--model` optional if a default model is already configured). It does **not** fall back silently —
+pass `--kind omp` explicitly to choose OMP.
+
+### Manual (equivalent)
+
 Edit `.idea-harness/harness.yaml`:
 
 ```yaml
