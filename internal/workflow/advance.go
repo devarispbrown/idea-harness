@@ -16,6 +16,7 @@ import (
 // Verification Design, sequentially) → Execution Plan → independent plan review.
 // It returns the final initiative status.
 func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	e.beginBudget()
 	if err := e.runArchitecture(ctx, initiativeID); err != nil {
 		return domain.InitiativeFailed, err
 	}
@@ -296,6 +297,7 @@ const suggestAnswersChunkSize = 12
 // answered in bounded chunks, and each chunk's answers are emitted via `emit`
 // as they complete (so callers can persist progress incrementally).
 func (e *Engine) SuggestAnswers(ctx context.Context, initiativeID string, emit func([]domain.SuggestedAnswer)) error {
+	e.beginBudget()
 	questions, err := e.db.ListQuestions(ctx, initiativeID)
 	if err != nil {
 		return err
