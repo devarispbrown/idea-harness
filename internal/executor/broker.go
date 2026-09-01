@@ -65,3 +65,18 @@ func TrustAllows(trust domain.ExecutorTrust, action string) bool {
 	}
 	return false
 }
+
+// TrustTierFor maps an executor's Name() (== the selected executor kind) to its
+// engine-assigned trust tier. It is the single source of truth, never the
+// executor's self-declared Capabilities().Trust, and it fails closed for any
+// unknown kind (review: system-deny / engine-assigned trust).
+func TrustTierFor(name string) domain.ExecutorTrust {
+	switch name {
+	case "internal":
+		return domain.ExecutorInternal
+	case "container", "omp", "hermes":
+		return domain.ExecutorLocalExternal
+	default:
+		return domain.ExecutorRemoteExternal // fail-closed: no actions
+	}
+}
