@@ -419,6 +419,11 @@ CREATE TABLE IF NOT EXISTS verification_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_verification_evidence_req ON verification_evidence(requirement_id);
 `,
+	// 12: findings.code carries the machine-readable system-deny code (security
+	// model), distinct from the free-text category.
+	`
+ALTER TABLE findings ADD COLUMN code TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

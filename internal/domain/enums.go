@@ -394,6 +394,31 @@ func (s OperationStatus) Valid() bool {
 	return false
 }
 
+// DenyCode is a machine-readable system-deny reason (security model, §system
+// deny). It is set on a Finding.Code when a deterministic, non-overridable
+// boundary rejects or blocks an action — independent of executor trust or human
+// approval ("system deny beats human approve").
+type DenyCode string
+
+const (
+	DenyCodeSecretSweep       DenyCode = "secret_sweep"
+	DenyCodePII               DenyCode = "pii"
+	DenyCodePathEscape        DenyCode = "path_escape"
+	DenyCodeHostExec          DenyCode = "host_exec"
+	DenyCodeBlobDigestMismatch DenyCode = "blob_digest_mismatch"
+	DenyCodeTrustDeny         DenyCode = "trust_deny"
+	DenyCodeReviewOpenBlocking DenyCode = "review_open_blocking"
+)
+
+func (d DenyCode) Valid() bool {
+	switch d {
+	case DenyCodeSecretSweep, DenyCodePII, DenyCodePathEscape, DenyCodeHostExec,
+		DenyCodeBlobDigestMismatch, DenyCodeTrustDeny, DenyCodeReviewOpenBlocking:
+		return true
+	}
+	return false
+}
+
 // ChangeSetStatus is the lifecycle of a ChangeSet (§38).
 type ChangeSetStatus string
 
