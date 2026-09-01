@@ -749,12 +749,20 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
+	pr, err := s.project(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
 	opID, err := s.rt.ExecuteInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"operation_id":  opID,
+		"executor_kind": string(pr.cfg.Harness.Executor.Kind),
+	})
 }
 
 // handleVerify runs the verification gate and, when a requirement + pass is

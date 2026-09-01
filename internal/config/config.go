@@ -110,6 +110,10 @@ type HarnessConfig struct {
 	// CheckTimeoutSeconds bounds each deterministic build/test check. Zero uses
 	// the default of 600s (10m) (review SRE).
 	CheckTimeoutSeconds int `json:"check_timeout_seconds,omitempty" yaml:"check_timeout_seconds,omitempty"`
+	// GitCommit opts into creating a git commit (with repo hooks disabled) for
+	// each applied change set (§M7). Off by default: a hook runs arbitrary code
+	// under the daemon's privileged environment, so this must never be implied.
+	GitCommit bool `json:"git_commit" yaml:"git_commit"`
 }
 
 // Config is the fully-loaded portable configuration for one project.

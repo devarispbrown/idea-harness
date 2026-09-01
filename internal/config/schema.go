@@ -41,6 +41,7 @@ const harnessSchema = `{
     "build_cmd": { "type": "string" },
     "test_cmd": { "type": "string" },
     "check_timeout_seconds": { "type": "integer", "minimum": 0 },
+    "git_commit": { "type": "boolean" },
     "executor": {
       "type": "object",
       "properties": {
