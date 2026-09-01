@@ -53,7 +53,10 @@ func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, bui
 }
 
 func ompArgs(req Request, model string) []string {
-	stmt := req.TaskStatement
+	stmt := req.Brief
+	if stmt == "" {
+		stmt = req.TaskStatement
+	}
 	if stmt == "" {
 		stmt = req.TaskTitle
 	}
@@ -64,7 +67,10 @@ func ompArgs(req Request, model string) []string {
 }
 
 func hermesArgs(req Request, model string) []string {
-	stmt := req.TaskStatement
+	stmt := req.Brief
+	if stmt == "" {
+		stmt = req.TaskStatement
+	}
 	if stmt == "" {
 		stmt = req.TaskTitle
 	}

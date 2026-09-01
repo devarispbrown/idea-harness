@@ -29,12 +29,15 @@ type Capabilities struct {
 }
 
 // Request is one execution request. The canonical workspace is never passed as a
-// writable root — the executor receives an isolated WorkRoot (§37).
+// writable root — the executor receives an isolated WorkRoot (§37). Brief is the
+// planner-produced implementation brief (rendered text) the implementer should
+// follow; when empty the executor falls back to TaskStatement.
 type Request struct {
 	InitiativeID  string `json:"initiative_id"`
 	TaskID        string `json:"task_id"`
 	TaskTitle     string `json:"task_title"`
 	TaskStatement string `json:"task_statement"`
+	Brief         string `json:"brief,omitempty"`
 	WorkRoot      string `json:"work_root"`
 }
 
