@@ -87,3 +87,16 @@ func TestAllowEnvReference(t *testing.T) {
 		t.Fatalf("expected api_key_env to be preserved, got %q", c.Harness.Providers["openai"].APIKeyEnv)
 	}
 }
+
+func TestLoadCheckImage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "project.yaml", "name: acme\n")
+	writeFile(t, dir, "harness.yaml", "network: disabled\ncheck:\n  image: golang:1.25\n")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Harness.Check.Image != "golang:1.25" {
+		t.Fatalf("expected check.image golang:1.25, got %q", c.Harness.Check.Image)
+	}
+}

@@ -83,6 +83,12 @@ type ExecutorConfig struct {
 	Model string       `json:"model,omitempty" yaml:"model,omitempty"`
 }
 
+// CheckConfig configures the deterministic build/test check sandbox (review H3).
+// The image must contain the project's toolchain (e.g. golang:1.25, node:22).
+type CheckConfig struct {
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+}
+
 // HarnessConfig is harness.yaml (portable, committable).
 type HarnessConfig struct {
 	Network      NetworkPolicy             `json:"network" yaml:"network"`
@@ -91,6 +97,7 @@ type HarnessConfig struct {
 	Providers    map[string]ProviderConfig `json:"providers" yaml:"providers"`
 	DefaultModel string                    `json:"default_model" yaml:"default_model"`
 	Executor     ExecutorConfig            `json:"executor" yaml:"executor"`
+	Check        CheckConfig               `json:"check" yaml:"check"`
 	// Models is the per-role model map: role name → "provider/model". Roles
 	// without an entry fall back to default_model (§40). The coding "implementer"
 	// role is a valid key here, letting OMP/Hermes run different models.

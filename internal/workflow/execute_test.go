@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -278,11 +279,22 @@ func TestSelectExecutor(t *testing.T) {
 	}
 }
 
+func dockerAvailable() bool {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	return exec.Command("docker", "info").Run() == nil
+}
+
 func TestExecuteRejectsOnFailingBuild(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{
 		Network:  config.NetworkDisabled,
 		Review:   config.ReviewConfig{MaxCycles: 3},
+		Check:    config.CheckConfig{Image: "alpine:3.20"},
 		BuildCmd: "exit 1",
 	})
 	eng.SetWorkRoot(t.TempDir())
@@ -307,10 +319,14 @@ func TestExecuteRejectsOnFailingBuild(t *testing.T) {
 }
 
 func TestExecutePassesConfiguredBuild(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{
 		Network:  config.NetworkDisabled,
 		Review:   config.ReviewConfig{MaxCycles: 3},
+		Check:    config.CheckConfig{Image: "alpine:3.20"},
 		BuildCmd: "echo ok",
 		TestCmd:  "echo ok",
 	})
@@ -380,5 +396,35 @@ func TestChangesRequestedReopensTaskAndSupersedes(t *testing.T) {
 	}
 	if cs2.Status != domain.ChangeSetReviewRequired {
 		t.Fatalf("expected new change set review_required, got %q", cs2.Status)
+	}
+}
+
+func TestExecuteRejectsBuildWhenNoSandboxImage(t *testing.T) {
+	// Deterministic fail-closed path: BuildCmd set but no check.image → the check
+	// refuses to run on the host and rejects the change set (no Docker needed).
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		BuildCmd: "echo ok",
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (no sandbox image), got %q", cs.Status)
 	}
 }

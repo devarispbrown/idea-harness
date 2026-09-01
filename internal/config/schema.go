@@ -49,6 +49,13 @@ const harnessSchema = `{
         "model": { "type": "string" }
       },
       "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string" }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
