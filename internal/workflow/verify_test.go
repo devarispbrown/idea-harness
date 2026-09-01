@@ -155,3 +155,38 @@ func TestRecordAutomatedEvidenceOnApply(t *testing.T) {
 		t.Fatalf("verified_by = %q, want verification_engineer", evs[0].VerifiedBy)
 	}
 }
+
+func TestCompletionSkipsRemovedRequirements(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req1 := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "latency", Target: "<200ms", Condition: "x"}},
+	}
+	if err := db.CreateRequirement(ctx, req1); err != nil {
+		t.Fatal(err)
+	}
+	// A superseded requirement can never reach verified; the gate must skip it.
+	req2 := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Old", Priority: domain.PriorityMust, Status: domain.RequirementRemoved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req2); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RecordHumanPass(ctx, iniID, req1.Code, "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativeComplete {
+		t.Fatalf("expected complete (removed skipped), got %q", ini.Status)
+	}
+}
