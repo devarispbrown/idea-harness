@@ -108,6 +108,28 @@ func (db *DB) MarkRequirementVerified(ctx context.Context, requirementID, actor 
 	})
 }
 
+// UnverifyRequirement resets a verified requirement back to approved and clears
+// verified_at (e.g. when the change set that verified it is reverted).
+func (db *DB) UnverifyRequirement(ctx context.Context, requirementID, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   requirementID,
+		Actor:         actor,
+		EventType:     "requirement.unverified",
+		Operation:     "verified->approved",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE requirements SET status = ?, verified_at = NULL WHERE id = ? AND status = ?`,
+			domain.RequirementApproved, requirementID, domain.RequirementVerified)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "requirement %q not in state verified", requirementID)
+	})
+}
+
 // ApproveRequirements transitions all draft requirements of an initiative to
 // approved (§17). Called when the PRD review passes or a human approves.
 func (db *DB) ApproveRequirements(ctx context.Context, initiativeID, actor string) error {
