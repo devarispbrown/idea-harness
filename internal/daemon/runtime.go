@@ -185,41 +185,46 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 
 // ReloadProject drops the cached runtime so the next EnsureProject re-reads
 // config and rebuilds the provider registry (§40). It rebuilds the
-// config-derived components in place (same *store.DB and raw blob store, same
-// engine object) so a reload never opens a second DB handle or re-runs
-// reconciliation against a live operation (full-platform review).
+// and rebuilds the provider registry (§40). It builds a NEW *projectRuntime
+// reusing the same *store.DB (no second DB handle) and swaps the pointer under
+// r.mu, so a reload never mutates fields that a concurrent reader/operation is
+// using (review: project-runtime / field-swap race). Reconciliation does not
+// re-run (reconciled flag stays set).
 func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*projectRuntime, error) {
 	r.mu.Lock()
-	pr, ok := r.projects[projectID]
+	old, ok := r.projects[projectID]
+	r.mu.Unlock()
 	if !ok {
-		r.mu.Unlock()
 		return r.EnsureProject(ctx, projectID)
 	}
 
-	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
+	projDir := filepath.Join(r.stateRoot, "projects", projectID)
+	cfg, err := config.Load(filepath.Join(old.rootPath, config.Dir))
 	if err != nil {
-		r.mu.Unlock()
 		return nil, err
 	}
-	dotEnv := config.LoadDotEnv(pr.rootPath)
+	dotEnv := config.LoadDotEnv(old.rootPath)
 	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
-	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
+	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
 	if err != nil {
-		r.mu.Unlock()
+		return nil, err
+	}
+	rawBlobs, err := blob.New(filepath.Join(projDir, "raw-blobs"), nil)
+	if err != nil {
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
+	engine := workflow.New(old.db, blobs, registry, cfg.Harness, r.log)
+	engine.SetRawBlobs(rawBlobs)
+	engine.SetRedactor(redactor)
+	engine.SetWorkRoot(projDir)
+	engine.SetWorkspaceRoot(old.rootPath)
 
-	// Reassign all config-derived fields under r.mu so concurrent readers never
-	// observe a torn runtime (review: project-runtime race).
-	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
-	pr.cfg = cfg
-	pr.dotEnv = dotEnv
-	pr.registry = registry
-	pr.blobs = blobs
-	pr.redactor = redactor
+	newPr := &projectRuntime{db: old.db, blobs: blobs, cfg: cfg, rootPath: old.rootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
+	r.mu.Lock()
+	r.projects[projectID] = newPr
 	r.mu.Unlock()
-	return pr, nil
+	return newPr, nil
 }
 
 // registerCancel records a live cancellation handle for opID.
