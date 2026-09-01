@@ -305,53 +305,53 @@ func TestJournalAppendAndList(t *testing.T) {
 	}
 }
 
-func TestReconcileJournalMarksNonTerminal(t *testing.T) {
+func TestReconcileChangeSetsOnlyTouchesStuck(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	cs := newTestChangeSet(t, db, "ini-1")
-
-	append := func(state domain.ApplyState) {
-		t.Helper()
-		if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: cs.ID, State: state}); err != nil {
-			t.Fatal(err)
-		}
+	// An interrupted apply: change set in applying with prepared+workspace_mutated.
+	applying := newTestChangeSet(t, db, "ini-1")
+	setChangeSetStatus(t, db, applying.ID, domain.ChangeSetApplying)
+	if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: applying.ID, State: domain.ApplyPrepared}); err != nil {
+		t.Fatal(err)
 	}
-	append(domain.ApplyPrepared)
-	append(domain.ApplyWorkspaceMutated)
-	append(domain.ApplyCommitted)
-	append(domain.ApplyRolledBack)
+	if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: applying.ID, State: domain.ApplyWorkspaceMutated, WorkspaceSnapshotDigest: "pre-digest"}); err != nil {
+		t.Fatal(err)
+	}
 
-	needs, err := db.ReconcileJournal(ctx)
+	// A cleanly APPLIED change set keeps its prepared/workspace_mutated rows but
+	// must NOT be re-reconciled.
+	applied := newTestChangeSet(t, db, "ini-1")
+	setChangeSetStatus(t, db, applied.ID, domain.ChangeSetApplied)
+	if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: applied.ID, State: domain.ApplyWorkspaceMutated, WorkspaceSnapshotDigest: "applied-digest"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: applied.ID, State: domain.ApplyCommitted}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A checks_running change set.
+	checking := newTestChangeSet(t, db, "ini-1")
+	setChangeSetStatus(t, db, checking.ID, domain.ChangeSetChecksRunning)
+
+	rec, err := db.ReconcileChangeSets(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(needs) != 2 {
-		t.Fatalf("expected 2 rows needing recovery, got %d: %+v", len(needs), needs)
+	if len(rec) != 2 {
+		t.Fatalf("expected 2 recoveries (applying + checks_running), got %d: %+v", len(rec), rec)
 	}
-	for _, e := range needs {
-		if e.State != domain.ApplyRecoveryRequired {
-			t.Fatalf("expected recovery_required, got %q", e.State)
-		}
-		if e.ChangeSetID != cs.ID {
-			t.Fatalf("unexpected change set id %q", e.ChangeSetID)
-		}
+	byID := map[string]ChangeSetRecovery{}
+	for _, r := range rec {
+		byID[r.ChangeSetID] = r
 	}
-
-	// The marking must be durable and idempotent: a second pass finds nothing.
-	needs2, err := db.ReconcileJournal(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if r, ok := byID[applying.ID]; !ok || r.LatestJournalState != domain.ApplyWorkspaceMutated || r.PreImageDigest != "pre-digest" {
+		t.Fatalf("applying change set mis-recovered: %+v", byID[applying.ID])
 	}
-	if len(needs2) != 0 {
-		t.Fatalf("expected no rows on second reconcile, got %d", len(needs2))
+	if r, ok := byID[checking.ID]; !ok || r.Status != domain.ChangeSetChecksRunning {
+		t.Fatalf("checks_running change set mis-recovered: %+v", byID[checking.ID])
 	}
-
-	list, err := db.ListJournal(ctx, cs.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 4 {
-		t.Fatalf("expected 4 journal rows, got %d", len(list))
+	if _, ok := byID[applied.ID]; ok {
+		t.Fatalf("applied change set must not be re-reconciled: %+v", byID[applied.ID])
 	}
 }

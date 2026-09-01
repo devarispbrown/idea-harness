@@ -135,3 +135,40 @@ func TestApplyRejectsPathEscape(t *testing.T) {
 		t.Fatal("Apply with a path-escape change = nil error, want error")
 	}
 }
+
+func TestPrepareIsNonMutatingAndCommitApplies(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.txt", "old")
+
+	content := map[string][]byte{}
+	get := func(d string) ([]byte, error) { return content[d], nil }
+	put := func(b []byte) (string, error) {
+		d := blob.Digest(b)
+		content[d] = b
+		return d, nil
+	}
+	newContent := []byte("new")
+	content[blob.Digest(newContent)] = newContent
+
+	changes := []domain.FileChange{{Path: "a.txt", Digest: blob.Digest(newContent), Mode: "file"}}
+
+	pre, err := Prepare(root, changes, put)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Prepare must NOT mutate: a.txt still holds the old content.
+	if readFile(t, root, "a.txt") != "old" {
+		t.Fatalf("Prepare mutated a.txt: %q", readFile(t, root, "a.txt"))
+	}
+	// But the pre-image must be persisted (recoverable).
+	if len(pre) != 1 || pre[0].Digest != blob.Digest([]byte("old")) {
+		t.Fatalf("unexpected pre-image: %+v", pre)
+	}
+
+	if err := Commit(root, changes, get); err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, root, "a.txt") != "new" {
+		t.Fatalf("Commit did not apply: %q", readFile(t, root, "a.txt"))
+	}
+}
