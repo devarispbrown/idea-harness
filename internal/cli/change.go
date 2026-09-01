@@ -60,6 +60,9 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/execute", nil, &out); err != nil {
 		return err
 	}
+	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
+		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
+	}
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
 	if opID := out["operation_id"]; opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/idea-harness/idea-harness/internal/config"
@@ -205,8 +206,8 @@ func TestReviewApproveThenApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read applied hello.txt: %v", err)
 	}
-	if string(data) != "task: Implement core\n" {
-		t.Fatalf("hello.txt = %q, want %q", string(data), "task: Implement core\n")
+	if !strings.Contains(string(data), "task: Implement core") {
+		t.Fatalf("hello.txt = %q, want it to contain %q", string(data), "task: Implement core")
 	}
 }
 

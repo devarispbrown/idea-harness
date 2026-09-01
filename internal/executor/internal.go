@@ -156,7 +156,7 @@ func (e *InternalExecutor) Collect(ctx context.Context, id string) (Result, erro
 		return Result{}, fmt.Errorf("executor: unknown attempt %q", id)
 	}
 
-	content := []byte("task: " + title + "\n")
+	content := []byte("# idea-harness placeholder — configure executor.kind = omp|hermes to generate real code\ntask: " + title + "\n")
 	if err := os.WriteFile(filepath.Join(a.req.WorkRoot, "hello.txt"), content, 0o644); err != nil {
 		return Result{}, fmt.Errorf("executor: internal: write hello.txt: %w", err)
 	}

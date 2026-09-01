@@ -925,9 +925,9 @@ export default function App() {
   const exploreDone = artifactKinds.includes("idea_brief") && artifactKinds.includes("research_brief");
   const defineDone = artifactKinds.includes("prd");
   const designDone = ["technical_design", "design_spec", "verification_plan"].every((k) => artifactKinds.includes(k));
-  const planDone = status === "plan_approved";
+  const planDone = status === "plan_approved" || status === "complete";
   const buildDone = (changeSets ?? []).some((cs) => cs.status === "applied");
-  const verifyDone = false; // no verification signal yet — keep it simple
+  const verifyDone = status === "complete";
   // The executor picks the first ready/proposed task, so gate "Run next task" on
   // the presence of one (otherwise the call would 409 from the daemon).
   const hasExecutableTask = (tasks ?? []).some((t) => t.status === "ready" || t.status === "proposed");
@@ -1114,6 +1114,11 @@ export default function App() {
               {!blockedHint && firstIncomplete >= 0 && (
                 <p className="muted small-note">
                   Next: <strong>{phaseSteps[firstIncomplete].label}</strong> — needs {phaseSteps[firstIncomplete].hint}.
+                </p>
+              )}
+              {!verifyDone && buildDone && (
+                <p className="muted small-note">
+                  verify: run <code>idea verify REQ-1 --pass</code> to record acceptance and complete the initiative.
                 </p>
               )}
 
@@ -1532,6 +1537,11 @@ export default function App() {
                           </span>
                         )}
                       </div>
+                      {cs.git_commit_sha && (
+                        <div className="muted" title={cs.git_commit_sha}>
+                          commit: {cs.git_commit_sha.slice(0, 8)}
+                        </div>
+                      )}
                       <div className="change-actions">
                         <button className="ghost small" onClick={() => viewChangeDiff(cs)}>View diff</button>
                         {cs.status === "review_required" && (

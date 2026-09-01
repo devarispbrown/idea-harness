@@ -3,6 +3,7 @@ package executor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/idea-harness/idea-harness/internal/domain"
@@ -131,8 +132,8 @@ func TestInternalExecutorCollectWritesRealFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hello.txt: %v", err)
 	}
-	if string(data) != "task: Add changelog\n" {
-		t.Errorf("hello.txt = %q, want %q", string(data), "task: Add changelog\n")
+	if !strings.Contains(string(data), "task: Add changelog") {
+		t.Errorf("hello.txt = %q, want it to contain %q", string(data), "task: Add changelog")
 	}
 }
 

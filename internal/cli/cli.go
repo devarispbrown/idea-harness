@@ -365,6 +365,17 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, ok("✓ config")+" "+muted("valid"))
 	}
 
+	// Demo mode: no model configured means synthetic output.
+	if daemonUp {
+		if c, err := newClient(); err == nil {
+			if projectID, perr := c.projectIDForCwd(); perr == nil {
+				if isDemoMode(c, projectID) {
+					fmt.Fprintln(stdout, warn("demo mode — no model configured; run `idea model set <provider>/<model>` for real output."))
+				}
+			}
+		}
+	}
+
 	// Product-graph edge audit (§M2 tail): untraced tasks/objects + cycles.
 	graphOK := true
 	if daemonUp {

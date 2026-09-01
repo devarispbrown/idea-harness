@@ -1,23 +1,67 @@
 # idea-harness
 
-A local-first AI product-development control plane that takes an idea from ambiguity to verified
-software using a coordinated team of Staff-level AI experts.
+A local-first AI product-development **control plane** that takes an idea from ambiguity to verified
+software.
 
-**Status:** Milestone 1 (Idea → Reviewed PRD) implemented end-to-end.
+**Status:** M1–M4 pipeline implemented end-to-end (governed team-of-experts + provable provenance +
+byte-for-byte revert). The build step uses a placeholder executor by default — wire OMP/Hermes for
+real code.
 
 ```text
-empty folder → idea init → idea new → framing → research → reviewed PRD
+idea → reviewed PRD → execution plan → change set → apply → verify → complete
 ```
 
-## What it is
+## Why idea-harness
+
+Two properties make idea-harness trustworthy where a raw coding agent is not.
+
+**Provable provenance.** Every requirement, decision, plan, task, change set, test, and verification
+is a node in a **Product Graph**, with edges recording *why* it exists and *what depends on it*.
+When the model says something, you can trace the chain back to evidence — and see the blast radius
+before you change it:
+
+```bash
+idea why requirement REQ-1      # the evidence → assertions → decisions behind it
+idea impact decision DEC-1      # what breaks or goes stale if you change it
+idea trace task T-3             # both directions (why + dependents)
+idea changed                    # What Changed since your last look
+```
+
+**Safe byte-for-byte revert.** Every applied change set is captured as a content-addressed patch, so
+any change can be rolled back to its exact pre-image — no guesswork about what the agent touched:
+
+```bash
+idea changes                    # list change sets
+idea apply CHG-1                # apply an approved change set
+idea revert CHG-1               # restore the previous files, byte-for-byte
+```
+
+## The governed pipeline
 
 idea-harness is **not** a coding agent, chatbot, Kanban, or project-management tool. It is a
 local-first product-development operating system: agents reason, the engine governs, experts
 challenge, and the human decides what matters.
 
-The durable asset is a **Product Graph** (Evidence → Assertions → Requirements → Decisions →
+A coordinated team of Staff-level AI experts moves an initiative through the whole lifecycle —
+framing and research produce a reviewed PRD, design produces a dependency-ordered execution plan,
+the implementer produces change sets, and independent reviewers gate each one before the human
+approves, applies, and verifies it.
+
+The durable asset is the **Product Graph** (Evidence → Assertions → Requirements → Decisions →
 Plans → Tasks → ChangeSets → Tests → Verification) that powers provenance, impact analysis, and
 requirement verification.
+
+## Execution model
+
+- **Serial per initiative.** Tasks run one at a time, in dependency order from the execution plan.
+  Multiple initiatives are supported; each advances independently, one task at a time.
+- **Placeholder executor by default.** The default `internal` executor is deterministic and hermetic
+  (no model, no network) — it writes a placeholder file, not real code. To generate real code, set
+  `executor.kind = omp | hermes` (see [`docs/agents.md`](docs/agents.md)).
+- **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
+  and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
+  git history. To also get a git commit per applied change set, set `git_commit: true` in
+  `.idea-harness/harness.yaml` (opt-in, hooks-disabled, stages only the patch's files).
 
 ## Install
 
@@ -53,18 +97,33 @@ idea doctor
 
 ## Quick start
 
+The complete loop, from idea to verified product:
+
 ```bash
 mkdir my-product && cd my-product
-idea init                              # initializes .idea-harness/ (works with no Git)
+idea init                              # creates .idea-harness/ (works with no Git)
 idea model set openai/gpt-4o-mini      # pick a model (or use the web UI Settings)
-idea new "Build usage-based billing"   # starts framing → research → reviewed PRD
+idea new "Build usage-based billing"   # M1: idea → reviewed PRD
 idea watch                             # follow the run live (Bubble Tea spinner)
+
 idea prd                               # read the reviewed PRD in your terminal (Glamour)
-idea status                            # watch progress (supports --json)
-idea changed                           # What Changed summary
-idea decisions                         # open/blocked decisions
-idea dev                               # start the daemon and open the web UI
+idea advance                           # M2: design → execution plan
+idea plan                              # (optional) render the execution plan
+idea tasks                             # (optional) list the dependency-ordered tasks
+
+idea execute                           # M3: run the next ready task → change set
+idea changes                           # list change sets (e.g. CHG-1)
+idea review CHG-1 approve              # human approves the change set
+idea apply CHG-1                       # M4: apply it to your workspace
+
+idea verify REQ-1 --pass               # record pass evidence; repeat per requirement
+idea next                              # → "✓ initiative complete"
 ```
+
+`idea next` drives the whole loop: it runs the next automatable step (`advance` → `execute` →
+`verify`) and stops at each human judgment point (`review`, `apply`, `resolve`), printing exactly
+what to run next. After you wire a real executor (see [`docs/agents.md`](docs/agents.md)),
+`execute` produces real file changes instead of a placeholder.
 
 The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/`.
 
@@ -104,16 +163,18 @@ produce a real PRD, configure a provider and — optionally — research seed UR
 cmd/idea/        CLI + daemon entrypoint
 internal/        Go packages (domain, store, blob, model, workflow, review, daemon, …)
 web/             React + TypeScript UI (built and embedded into the binary)
-docs/            architecture, configuration, cli, security, plans
+docs/            architecture, configuration, cli, security, agents, plans
+scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 ```
 
 ## Documentation
 
-- [`docs/plans/milestone-1-idea-to-reviewed-prd.md`](docs/plans/milestone-1-idea-to-reviewed-prd.md) — the approved M1 plan.
+- [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
 - [`docs/security.md`](docs/security.md) — security model and invariants.
+- [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
 
 ## Development
 

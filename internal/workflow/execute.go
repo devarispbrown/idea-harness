@@ -14,6 +14,7 @@ import (
 	"github.com/idea-harness/idea-harness/internal/domain"
 	"github.com/idea-harness/idea-harness/internal/executor"
 	"github.com/idea-harness/idea-harness/internal/fsdiff"
+	"github.com/idea-harness/idea-harness/internal/git"
 	"github.com/idea-harness/idea-harness/internal/review"
 	"github.com/idea-harness/idea-harness/internal/risk"
 	"github.com/idea-harness/idea-harness/internal/schema"
@@ -950,6 +951,22 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return fmt.Errorf("workflow: apply files: %w", err)
 	}
 
+	// Opt-in git commit-on-apply (§M7): create a commit for exactly the touched
+	// paths (hooks disabled) BEFORE the change set is marked applied. A commit
+	// failure is non-fatal at the apply level — restore the pre-image and mark
+	// conflicted, mirroring the fsdiff.Commit failure path. The byte-for-byte
+	// workspace revert is orthogonal: no revert commit is created here.
+	var commitSHA string
+	if e.cfg.GitCommit {
+		sha, err := e.commitChangeSet(ctx, cs, patch)
+		if err != nil {
+			_ = fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get)
+			_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+			return fmt.Errorf("workflow: git commit: %w", err)
+		}
+		commitSHA = sha
+	}
+
 	// applying→applied + committed journal (carrying the pre-image digest) happen
 	// in ONE transaction so status and journal never diverge (§39). Use a fresh
 	// context so a cancellation cannot strand a fully-written workspace; on
@@ -959,8 +976,8 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
 		return fmt.Errorf("workflow: mark applied: %w", err)
 	}
-	if cs.GitCommitSHA != "" {
-		if err := e.db.SetChangeSetCommit(ctx, changeSetID, cs.GitCommitSHA, store.ActorOrchestrator); err != nil {
+	if commitSHA != "" {
+		if err := e.db.SetChangeSetCommit(ctx, changeSetID, commitSHA, store.ActorOrchestrator); err != nil {
 			return err
 		}
 	}
@@ -971,6 +988,42 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return err
 	}
 	return nil
+}
+
+// commitChangeSet creates the opt-in git commit for an applied change set and
+// returns the commit SHA ("" when the workspace is not a git repository or the
+// diff was empty). The subject is "<HumanID>: <task title>" (HumanID is already
+// CHG-N), with the task title sanitized so it can never inject extra commit
+// lines or a forged header.
+// A title-lookup failure is non-fatal: the commit still proceeds with an empty
+// title rather than failing the whole apply.
+func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patch *fsdiff.Patch) (string, error) {
+	title := ""
+	if cs.TaskID != "" {
+		if tasks, err := e.db.ListTasks(ctx, cs.InitiativeID); err == nil {
+			for _, t := range tasks {
+				if t.ID == cs.TaskID {
+					title = t.Title
+					break
+				}
+			}
+		}
+	}
+	paths := make([]string, 0, len(patch.Files))
+	for _, f := range patch.Files {
+		paths = append(paths, f.Path)
+	}
+	message := fmt.Sprintf("%s: %s", cs.HumanID, sanitizeCommitTitle(title))
+	return git.Commit(ctx, e.workspaceRoot, paths, message)
+}
+
+// sanitizeCommitTitle collapses newlines and strips leading dashes from a task
+// title so a model-authored title can never smuggle extra commit-body lines or
+// an option-looking subject into the commit message.
+func sanitizeCommitTitle(title string) string {
+	title = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(title)
+	title = strings.TrimLeft(title, "-")
+	return strings.TrimSpace(title)
 }
 
 // RevertChangeSet rolls back an applied change set: it restores the pre-image
