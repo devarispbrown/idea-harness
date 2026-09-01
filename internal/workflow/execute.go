@@ -312,10 +312,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// never echoes the credential value (full-platform review: secret leak).
 		if hasBlockingRiskSignal(signals) || hasCredential {
 			reason := detectedRiskNames(signals)
-			code := domain.DenyCodePII
+			code := sweepDenyCode(hasCredential, signals)
 			if hasCredential {
 				reason = "credential detected"
-				code = domain.DenyCodeSecretSweep
 			}
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:   cs.InitiativeID,
@@ -764,6 +763,25 @@ func hasBlockingRiskSignal(signals []domain.RiskSignal) bool {
 	return false
 }
 
+// sweepDenyCode derives the machine-readable system-deny code from what the
+// sweep actually detected: secret/credential (marker OR credential pattern) →
+// secret_sweep; PII-only → pii. This keeps Finding.Code consistent with the
+// human-readable reason.
+func sweepDenyCode(hasCredential bool, signals []domain.RiskSignal) domain.DenyCode {
+	for _, s := range signals {
+		if !s.Detected {
+			continue
+		}
+		if s.Name == risk.SignalSecret || s.Name == risk.SignalCredential {
+			return domain.DenyCodeSecretSweep
+		}
+	}
+	if hasCredential {
+		return domain.DenyCodeSecretSweep
+	}
+	return domain.DenyCodePII
+}
+
 // detectedRiskNames joins the names of the detected risk signals for a readable
 // finding message.
 func detectedRiskNames(signals []domain.RiskSignal) string {
@@ -804,9 +822,13 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	}
 
 	// Re-sweep the patch content at the apply boundary (defense-in-depth): the
-	// secret/credential catalog may have grown since Execute swept it. Never
-	// mutate the workspace if a credential is now detected (system-deny).
-	if e.detectCredential(e.renderDiffText(patch.Files)) {
+	// secret/credential/PII catalog may have grown since Execute swept it. Never
+	// mutate the workspace if a signal is now detected (system-deny).
+	diffText := e.renderDiffText(patch.Files)
+	signals := risk.RiskSignals(ctx, cs.PatchDigest, diffText)
+	hasCredential := e.detectCredential(diffText)
+	if hasCredential || hasBlockingRiskSignal(signals) {
+		code := sweepDenyCode(hasCredential, signals)
 		if err := e.db.CreateFinding(ctx, &domain.Finding{
 			InitiativeID:   cs.InitiativeID,
 			TargetType:     "change_set",
@@ -814,8 +836,8 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 			Severity:       domain.SeverityCritical,
 			Confidence:     domain.ConfidenceHigh,
 			Category:       "secret_sweep",
-			Code:           domain.DenyCodeSecretSweep,
-			Finding:        "credential detected in patch at apply time",
+			Code:           code,
+			Finding:        "blocking risk signal detected in patch at apply time",
 			Evidence:       "deterministic re-sweep of the persisted patch",
 			Impact:         "apply denied before workspace mutation",
 			Recommendation: "reject the change set and re-execute without the sensitive content",
@@ -823,7 +845,13 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		}); err != nil {
 			return err
 		}
-		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
+		// Recover the change set to a terminal state and re-open the task so a
+		// corrected re-execute replaces it (review: system-deny deadlock fix).
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApproved, domain.ChangeSetRejected, store.ActorOrchestrator)
+		if cs.TaskID != "" {
+			_ = e.db.SetTaskStatus(context.Background(), cs.TaskID, domain.TaskProposed)
+		}
+		return fmt.Errorf("workflow: apply denied: system deny %s", code)
 	}
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
@@ -965,7 +993,11 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 		return err
 	}
 	for _, f := range findings {
-		if f.Disposition == "" && f.Severity.Blocking() {
+		// Mirror §11 EvaluateApproval: only fixed/accepted_risk resolve a blocking
+		// finding; deferred/duplicate/mitigate/not_applicable/rejected do NOT clear
+		// a system-deny (review: non-overridable means non-overridable).
+		resolved := f.Disposition == domain.DispositionFixed || f.Disposition == domain.DispositionAcceptedRisk
+		if !resolved && f.Severity.Blocking() {
 			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding)", domain.DenyCodeReviewOpenBlocking, f.Severity)
 		}
 	}
@@ -973,6 +1005,9 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 }
 
 func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	cs, err := e.db.GetChangeSet(ctx, changeSetID)
 	if err != nil {
 		return err
