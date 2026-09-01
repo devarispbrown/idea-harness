@@ -299,5 +299,34 @@ adopted below; these supersede the v1 text.
   to `needs_human_judgment` (not a raw `InitiativeFailed`).
 - **Readiness keyed on "applied", not "done".** A task is executable only when
   every `depends_on` predecessor has an `applied` change set (or no
-  dependencies). `TaskDone` is set only when the change set is applied, not at
-  production. A rejected/rolled-back dependency re-blocks its dependents.
+  dependencies). A rejected upstream re-opens its task so dependents are never
+  permanently wedged.
+
+---
+
+## Implementation + commit review (v3)
+
+Implemented in six commits (A–F), each green. A second six-perspective review of
+the commits found one blocker (task-dependency deadlock: a checks-rejected
+upstream was left "done" and permanently blocked its dependents) plus several
+highs. All were fixed in a follow-up commit (`4c444eb`):
+
+- checks/secret-sweep rejection re-opens the task (`proposed`)
+- reconciliation only marks `conflicted` after a successful restore; the
+  pre-image digest lookup is idempotent across re-runs
+- `ReloadProject` reassigns fields under `r.mu` (no torn runtime)
+- cost budget is a cumulative per-project ceiling (no per-entry reset, so
+  concurrent pipelines cannot zero each other, and Execute/ReviewChangeSet/
+  DiscussDecision are budgeted too)
+- deterministic-check output, framing assumptions/questions, and the
+  unresolved-dependency finding are redacted
+
+### Remaining known follow-ups (non-blocking)
+- Container sandbox: `--user`/userns remap, capture-and-kill container on
+  timeout, mount the canonical workspace read-only for real build/test.
+- `collectSecrets` still gathers only provider keys (not arbitrary `.env`
+  secrets like `AWS_SECRET_ACCESS_KEY`).
+- Rejected secret-bearing patches leave raw bytes in the redaction-free store
+  (no GC).
+- `MarkChangeSetApplied` failure between Commit and the status flip is only
+  repaired at next startup reconcile.
