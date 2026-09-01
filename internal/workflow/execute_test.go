@@ -115,23 +115,23 @@ func TestExecuteRecordsDeterministicCheckFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// With a real diff (BaseSnapshotID now always set), the diff-dependent checks
-	// flip from "not applicable" to a deferred "runner not wired" state (review
-	// B5 — the actual runners land in a later Track A step).
-	var deferred int
-	categories := map[string]bool{}
+	// B5: patch-applies now runs for real (pass), while build/tests are
+	// not_applicable because no build/test command is configured.
+	got := map[string]domain.Finding{}
 	for _, f := range findings {
-		if f.TargetID == cs.ID && f.Disposition == domain.DispositionDeferred {
-			deferred++
-			categories[f.Category] = true
+		if f.TargetID == cs.ID {
+			got[f.Category] = f
 		}
 	}
-	if deferred != 3 {
-		t.Fatalf("expected 3 deferred deterministic-check findings, got %d", deferred)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 deterministic-check findings, got %d: %+v", len(got), got)
 	}
-	for _, c := range []string{"patch_applies", "build", "tests"} {
-		if !categories[c] {
-			t.Errorf("missing deferred finding for category %q", c)
+	if got["patch_applies"].Severity.Blocking() {
+		t.Errorf("patch_applies should pass, got %+v", got["patch_applies"])
+	}
+	for _, c := range []string{"build", "tests"} {
+		if got[c].Disposition != domain.DispositionNotApplicable {
+			t.Errorf("%s should be not_applicable (no command), got %+v", c, got[c])
 		}
 	}
 }
@@ -273,5 +273,62 @@ func TestSelectExecutor(t *testing.T) {
 		if got := exec.Name(); got != tc.want {
 			t.Errorf("selectExecutor(%q).Name() = %q, want %q", tc.kind, got, tc.want)
 		}
+	}
+}
+
+func TestExecuteRejectsOnFailingBuild(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		BuildCmd: "exit 1",
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (failing build command), got %q", cs.Status)
+	}
+}
+
+func TestExecutePassesConfiguredBuild(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		BuildCmd: "echo ok",
+		TestCmd:  "echo ok",
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected review_required (build passes), got %q", cs.Status)
 	}
 }

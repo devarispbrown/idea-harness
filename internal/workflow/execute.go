@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -166,10 +167,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
-	// Record the diff-dependent deterministic checks (B6) as Findings. They are
-	// not_applicable for a changelog-only patch, so the pipeline is honest about
-	// which checks did and did not run.
-	for _, f := range e.runDeterministicChecks(cs) {
+	// Run the real deterministic checks (B5) and record their Findings. A
+	// failing check is a blocking finding and will reject the change set below.
+	checks, checksBlocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
+	for _, f := range checks {
 		f := f
 		if err := e.db.CreateFinding(ctx, &f); err != nil {
 			return domain.ChangeSet{}, err
@@ -180,22 +181,24 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// produced file contents (rendered from the persisted diff), so it reflects
 	// what apply will write.
 	signals := risk.RiskSignals(ctx, patchDigest, e.renderDiffText(files))
-	if hasBlockingRiskSignal(signals) {
+	if checksBlocked || hasBlockingRiskSignal(signals) {
 		// Record a blocking finding so the rejection is traceable.
-		if err := e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       cs.ID,
-			Severity:       domain.SeverityCritical,
-			Confidence:     domain.ConfidenceHigh,
-			Category:       "secret_sweep",
-			Finding:        "blocking risk signal detected: " + detectedRiskNames(signals),
-			Evidence:       "deterministic marker scan of the produced patch",
-			Impact:         "change set rejected before review",
-			Recommendation: "remove the sensitive content and re-execute",
-			Disposition:    domain.DispositionRejected,
-		}); err != nil {
-			return domain.ChangeSet{}, err
+		if hasBlockingRiskSignal(signals) {
+			if err := e.db.CreateFinding(ctx, &domain.Finding{
+				InitiativeID:   cs.InitiativeID,
+				TargetType:     "change_set",
+				TargetID:       cs.ID,
+				Severity:       domain.SeverityCritical,
+				Confidence:     domain.ConfidenceHigh,
+				Category:       "secret_sweep",
+				Finding:        "blocking risk signal detected: " + detectedRiskNames(signals),
+				Evidence:       "deterministic marker scan of the produced patch",
+				Impact:         "change set rejected before review",
+				Recommendation: "remove the sensitive content and re-execute",
+				Disposition:    domain.DispositionRejected,
+			}); err != nil {
+				return domain.ChangeSet{}, err
+			}
 		}
 		if err := e.db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
 			return domain.ChangeSet{}, err
@@ -389,54 +392,109 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 	}
 }
 
-// deterministicChecks enumerates the diff-dependent checks from the M3 plan
-// (B6): patch-applies, build/type-check, and tests. They cannot run against a
-// changelog-only patch, so each is recorded as an explicit not_applicable
-// Finding rather than being silently skipped. Once an executor captures a base
-// snapshot and produces a real file diff, these switch from "not applicable" to
-// their runner path.
-var deterministicChecks = []struct {
-	category       string
-	check          string
-	notApplicable  string
-	recommendation string
-}{
-	{"patch_applies", "patch applies cleanly to base snapshot", "no base snapshot captured (changelog-only patch)", "capture a base snapshot and produce a real file diff"},
-	{"build", "build/type-check passes", "no buildable artifacts (changelog-only patch)", "produce real source changes to build and type-check"},
-	{"tests", "tests pass", "no tests to run (changelog-only patch)", "produce real source changes with tests"},
+// runDeterministicChecks runs the real B5 deterministic checks against the
+// produced diff: patch-applies (content integrity), build, and tests (when a
+// command is configured). Each produces a Finding; a fail is a blocking
+// (critical/high) finding that flips `blocked`. Commands are config-supplied,
+// never model/agent output.
+func (e *Engine) runDeterministicChecks(ctx context.Context, cs *domain.ChangeSet, workRoot string, files []domain.FileChange) ([]domain.Finding, bool) {
+	out := make([]domain.Finding, 0, 3)
+	blocked := false
+	appendFinding := func(f domain.Finding) {
+		out = append(out, f)
+		if f.Severity.Blocking() {
+			blocked = true
+		}
+	}
+
+	appendFinding(e.checkPatchApplies(cs, files))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "build", "build/type-check passes", e.cfg.BuildCmd))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "tests", "tests pass", e.cfg.TestCmd))
+	return out, blocked
 }
 
-// runDeterministicChecks emits one Finding per diff-dependent deterministic
-// check. A change set with no base snapshot is a changelog-only patch, so those
-// checks are recorded as not_applicable; a base snapshot flips them to a
-// deferred "runner not wired" state until the build/test runners are implemented.
-func (e *Engine) runDeterministicChecks(cs *domain.ChangeSet) []domain.Finding {
-	out := make([]domain.Finding, 0, len(deterministicChecks))
-	for _, c := range deterministicChecks {
-		f := domain.Finding{
-			InitiativeID: cs.InitiativeID,
-			TargetType:   "change_set",
-			TargetID:     cs.ID,
-			Severity:     domain.SeverityObservation,
-			Confidence:   domain.ConfidenceHigh,
-			Category:     c.category,
+// checkPatchApplies verifies every collected file blob is retrievable and
+// digest-consistent — the file-replacement patch applies cleanly by construction.
+func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChange) domain.Finding {
+	sev := domain.SeverityObservation
+	status := "pass"
+	evidence := fmt.Sprintf("%d file(s) in patch", len(files))
+	if e.blobs == nil {
+		sev = domain.SeverityHigh
+		status = "FAIL"
+		evidence = "no blob store available"
+	} else {
+		for _, fc := range files {
+			if fc.IsDelete() {
+				continue
+			}
+			if _, err := e.blobs.Get(fc.Digest); err != nil {
+				sev = domain.SeverityHigh
+				status = "FAIL"
+				evidence = fmt.Sprintf("%s: content missing or corrupt: %v", fc.Path, err)
+				break
+			}
 		}
-		if cs.BaseSnapshotID == "" {
-			f.Finding = c.check + " — not applicable"
-			f.Evidence = c.notApplicable
-			f.Impact = "no file diff to verify; recorded for traceability"
-			f.Recommendation = c.recommendation
-			f.Disposition = domain.DispositionNotApplicable
-		} else {
-			f.Finding = c.check + " — runner not wired"
-			f.Evidence = "base snapshot present (" + cs.BaseSnapshotID + "), but the " + c.check + " runner is not yet implemented"
-			f.Impact = "cannot yet verify this check for a diff patch"
-			f.Recommendation = c.recommendation
-			f.Disposition = domain.DispositionDeferred
-		}
-		out = append(out, f)
 	}
-	return out
+	return domain.Finding{
+		InitiativeID:   cs.InitiativeID,
+		TargetType:     "change_set",
+		TargetID:       cs.ID,
+		Severity:       sev,
+		Confidence:     domain.ConfidenceHigh,
+		Category:       "patch_applies",
+		Finding:        "patch applies cleanly to base snapshot — " + status,
+		Evidence:       evidence,
+		Impact:         "deterministic check result",
+		Recommendation: "regenerate the patch if content is missing",
+	}
+}
+
+// checkCommand runs a config-supplied build/test command in the isolated work
+// root and reports pass/fail. A missing command is not_applicable, never a
+// fabricated pass.
+func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoot, category, description, cmd string) domain.Finding {
+	base := domain.Finding{
+		InitiativeID: cs.InitiativeID,
+		TargetType:   "change_set",
+		TargetID:     cs.ID,
+		Confidence:   domain.ConfidenceHigh,
+		Category:     category,
+	}
+	if cmd == "" {
+		base.Severity = domain.SeverityObservation
+		base.Finding = description + " — not applicable"
+		base.Evidence = "no " + category + " command configured"
+		base.Impact = "deterministic check skipped"
+		base.Recommendation = "set " + category + "_cmd in harness.yaml"
+		base.Disposition = domain.DispositionNotApplicable
+		return base
+	}
+
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c.Dir = workRoot
+	out, err := c.CombinedOutput()
+	if err != nil {
+		base.Severity = domain.SeverityHigh
+		base.Finding = description + " — FAIL"
+		base.Evidence = fmt.Sprintf("exit: %v\n%s", err, truncateOutput(string(out)))
+		base.Impact = "deterministic check failed"
+		base.Recommendation = "fix the failure and re-execute"
+		return base
+	}
+	base.Severity = domain.SeverityObservation
+	base.Finding = description + " — pass"
+	base.Evidence = truncateOutput(string(out))
+	base.Impact = "deterministic check passed"
+	return base
+}
+
+// truncateOutput caps command output for findings.
+func truncateOutput(s string) string {
+	if len(s) > 2000 {
+		return s[:2000] + "…"
+	}
+	return s
 }
 
 // hasBlockingRiskSignal reports whether any detected signal hard-rejects the
