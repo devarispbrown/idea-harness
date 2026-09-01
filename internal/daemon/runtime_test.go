@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,5 +143,25 @@ func TestCollectSecretsIncludesPresets(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("preset GOOGLE_API_KEY not collected: %v", secrets)
+	}
+}
+
+func TestCollectSecretsIncludesDotEnvSecrets(t *testing.T) {
+	dotEnv := map[string]string{
+		"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"DATABASE_URL":          "postgres://user:superSecretPass123@host:5432/db",
+		"NODE_ENV":             "development",
+		"PORT":                 "8080",
+	}
+	secrets := collectSecrets(config.Config{}, dotEnv)
+	joined := strings.Join(secrets, "\n")
+	if !strings.Contains(joined, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") {
+		t.Fatalf("AWS_SECRET_ACCESS_KEY value not collected: %v", secrets)
+	}
+	// NODE_ENV/PORT are short/common and must NOT be treated as known secrets.
+	for _, s := range secrets {
+		if s == "development" || s == "8080" {
+			t.Fatalf("common value %q must not be a known secret", s)
+		}
 	}
 }

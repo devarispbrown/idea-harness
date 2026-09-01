@@ -243,10 +243,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	files := fsdiff.Diff(before, after)
 
+	// Sweep the produced content BEFORE persisting it: if it carries a known
+	// secret or credential, we reject without ever writing the raw bytes to the
+	// redaction-free raw store (review: raw-blob GC for rejected patches).
+	diffText := e.renderDiffTextFromWorkRoot(req.WorkRoot, files)
+	hasCredential := e.detectCredential(diffText)
+	signals := risk.RiskSignals(ctx, "", diffText)
+
 	// Persist each produced file's content and the patch manifest to the blob
-	// store, so apply/revert can reconstruct the diff from digests alone.
-	if err := e.persistDiff(req.WorkRoot, files); err != nil {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: persist diff: %w", err)
+	// store, so apply/revert can reconstruct the diff from digests alone. Skip
+	// the raw content write when a credential was detected (nothing to apply).
+	if !hasCredential {
+		if err := e.persistDiff(req.WorkRoot, files); err != nil {
+			return domain.ChangeSet{}, fmt.Errorf("workflow: execute: persist diff: %w", err)
+		}
 	}
 	patchDigest, err := e.persistPatch(fsdiff.Patch{BaseSnapshotDigest: before.Digest(), Files: files})
 	if err != nil {
@@ -270,27 +280,29 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 
 	// Run the real deterministic checks (B5) and record their Findings. A
 	// failing check is a blocking finding and will reject the change set below.
-	checks, checksBlocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
-	for _, f := range checks {
-		f := f
-		// The build/test command output is attacker-influenced (agent-produced
-		// code runs in the sandbox); redact it before persisting (review).
-		f.Finding = e.redact(f.Finding)
-		f.Evidence = e.redact(f.Evidence)
-		f.Impact = e.redact(f.Impact)
-		f.Recommendation = e.redact(f.Recommendation)
-		if err := e.db.CreateFinding(ctx, &f); err != nil {
-			return domain.ChangeSet{}, err
+	// Skipped when a credential was already detected (the raw content was not
+	// persisted, so patch-applies would spuriously fail, and the change set is
+	// rejected on the secret sweep regardless).
+	checksBlocked := false
+	if !hasCredential {
+		checks, blocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
+		checksBlocked = blocked
+		for _, f := range checks {
+			f := f
+			// The build/test command output is attacker-influenced (agent-produced
+			// code runs in the sandbox); redact it before persisting (review).
+			f.Finding = e.redact(f.Finding)
+			f.Evidence = e.redact(f.Evidence)
+			f.Impact = e.redact(f.Impact)
+			f.Recommendation = e.redact(f.Recommendation)
+			if err := e.db.CreateFinding(ctx, &f); err != nil {
+				return domain.ChangeSet{}, err
+			}
 		}
 	}
 
-	// Secret/credential/pii sweep gates rejection. The scan runs over the actual
-	// produced file contents (rendered from the persisted diff), so it reflects
-	// what apply will write. It combines the whole-word marker scan with the
-	// strong credential-pattern detector (review M1).
-	diffText := e.renderDiffText(files)
-	signals := risk.RiskSignals(ctx, patchDigest, diffText)
-	hasCredential := e.detectCredential(diffText)
+	// Secret/credential/pii sweep gates rejection. diffText/signals/hasCredential
+	// were computed above from the work-root content, BEFORE the raw store write.
 	rejected := false
 	if checksBlocked || hasBlockingRiskSignal(signals) || hasCredential {
 		rejected = true
@@ -410,6 +422,27 @@ func (e *Engine) detectCredential(s string) bool {
 		return e.redactor.ContainsCredential(s)
 	}
 	return security.FindCredential(s) != ""
+}
+
+// renderDiffTextFromWorkRoot renders the produced file contents directly from
+// the work root (before they are persisted to the blob store), so the secret
+// sweep can run BEFORE persistDiff and rejected secret content is never written
+// to the redaction-free raw store (review: raw-blob GC).
+func (e *Engine) renderDiffTextFromWorkRoot(workRoot string, files []domain.FileChange) string {
+	var b strings.Builder
+	for _, fc := range files {
+		if fc.IsDelete() {
+			fmt.Fprintf(&b, "delete %s\n", fc.Path)
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(workRoot, filepath.FromSlash(fc.Path)))
+		if err != nil {
+			fmt.Fprintf(&b, "%s (unreadable)\n", fc.Path)
+			continue
+		}
+		fmt.Fprintf(&b, "--- %s ---\n%s\n", fc.Path, string(content))
+	}
+	return b.String()
 }
 
 func (e *Engine) renderDiffText(files []domain.FileChange) string {
@@ -652,7 +685,11 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	// Run inside an isolated container (no network, read-only root, dropped
 	// capabilities) with only the work root mounted.
 	sandbox := executor.NewContainerSandbox(e.cfg.Check.Image)
-	stdout, stderr, exitCode, runErr := sandbox.Run(checkCtx, workRoot, []string{"sh", "-c", cmd})
+	stdout, stderr, exitCode, runErr := sandbox.Run(checkCtx, executor.RunOptions{
+		WorkRoot: workRoot,
+		RepoRoot: e.workspaceRoot, // read-only /repo mount so checks can read the real project
+		Cmd:      []string{"sh", "-c", cmd},
+	})
 	if runErr != nil {
 		// Docker unavailable or launch failed → fail closed, never host-exec.
 		base.Severity = domain.SeverityHigh
@@ -806,9 +843,13 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	}
 
 	// applying→applied + committed journal (carrying the pre-image digest) happen
-	// in ONE transaction so status and journal never diverge (§39).
-	if err := e.db.MarkChangeSetApplied(ctx, changeSetID, preImageDigest, store.ActorOrchestrator); err != nil {
-		return err
+	// in ONE transaction so status and journal never diverge (§39). Use a fresh
+	// context so a cancellation cannot strand a fully-written workspace; on
+	// failure, restore the pre-image immediately (review: apply failure window).
+	if err := e.db.MarkChangeSetApplied(context.Background(), changeSetID, preImageDigest, store.ActorOrchestrator); err != nil {
+		_ = fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+		return fmt.Errorf("workflow: mark applied: %w", err)
 	}
 	if cs.GitCommitSHA != "" {
 		if err := e.db.SetChangeSetCommit(ctx, changeSetID, cs.GitCommitSHA, store.ActorOrchestrator); err != nil {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/idea-harness/idea-harness/internal/blob"
@@ -587,7 +588,54 @@ func collectSecrets(cfg config.Config, dotEnv map[string]string) []string {
 			add(lookupEnv(keyEnv, dotEnv))
 		}
 	}
+	// Arbitrary secret-bearing .env entries (e.g. AWS_SECRET_ACCESS_KEY, a
+	// DATABASE_URL with an embedded password) are redacted too (review).
+	for k, v := range dotEnv {
+		if isSecretKey(k) || looksHighEntropy(v) {
+			add(v)
+		}
+	}
 	return out
+}
+
+// isSecretKey reports whether a .env key names a secret-like value.
+func isSecretKey(k string) bool {
+	u := strings.ToUpper(k)
+	for _, tok := range []string{"SECRET", "PASSWORD", "PASSWD", "TOKEN", "API_KEY", "APIKEY", "CREDENTIAL", "CRED", "PRIVATE_KEY", "AUTH"} {
+		if strings.Contains(u, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksHighEntropy reports whether a value looks like a high-entropy secret
+// (length >= 16 and at least three character classes), so short/common values
+// like "development" are not added as known secrets.
+func looksHighEntropy(v string) bool {
+	if len(v) < 16 {
+		return false
+	}
+	var lower, upper, digit, special bool
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		default:
+			special = true
+		}
+	}
+	classes := 0
+	for _, b := range []bool{lower, upper, digit, special} {
+		if b {
+			classes++
+		}
+	}
+	return classes >= 3
 }
 
 // buildRegistry constructs a multi-provider registry from config (§40). It

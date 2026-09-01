@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // ContainerSandbox runs a command inside an isolated Docker container: no
-// network, read-only root filesystem, only the work root (mounted at /work) and
-// a /tmp tmpfs are writable (§52). This is the OS-isolation boundary for
-// external coding agents (review B2); the capability broker gates harness-
-// internal dispatch, not this boundary.
+// network, read-only root filesystem, dropped capabilities, bounded memory/pids,
+// and a non-root user. Only the work root (mounted at /work) and a /tmp tmpfs
+// are writable; an optional project root is mounted read-only at /repo. This is
+// the OS-isolation boundary for external coding agents and deterministic checks
+// (§52, review B2/H3).
 type ContainerSandbox struct {
 	image      string
 	dockerPath string
@@ -26,47 +31,86 @@ func NewContainerSandbox(image string) *ContainerSandbox {
 	return &ContainerSandbox{image: image, dockerPath: "docker"}
 }
 
-// isolatedArgs builds the docker run args for an isolated container: no
-// network, read-only root, dropped capabilities, bounded memory/pids, and
-// writable tmpfs caches so a toolchain (Go/Node) can run its build caches
-// without writing to the read-only root (review H3 hardening).
-func isolatedArgs(workRoot, image string, cmd []string) []string {
+// RunOptions configures a sandbox execution.
+type RunOptions struct {
+	WorkRoot string   // writable, mounted at /work
+	RepoRoot string   // optional, mounted read-only at /repo (the canonical workspace)
+	Cmd      []string // command + args (run with work dir /work)
+}
+
+// isolatedArgs builds the `docker run` args (after the leading "run") for an
+// isolated, non-root container with writable tmpfs caches under /tmp.
+func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
+	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	args := []string{
-		"run",
-		"--rm",
 		"--network", "none",
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
+		"--user", uid,
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
-		"--tmpfs", "/root/.cache",
-		"--tmpfs", "/root/go",
-		"--tmpfs", "/root/.npm",
-		"-v", workRoot + ":/work",
-		"-w", "/work",
-		image,
+		"--tmpfs", "/tmp/cache",
+		"-e", "HOME=/tmp",
+		"-e", "GOCACHE=/tmp/cache/go",
+		"-e", "GOMODCACHE=/tmp/cache/gomod",
+		"-e", "NPM_CONFIG_CACHE=/tmp/cache/npm",
+		"-v", opts.WorkRoot + ":/work",
 	}
-	return append(args, cmd...)
+	if opts.RepoRoot != "" {
+		args = append(args, "-v", opts.RepoRoot+":/repo:ro")
+	}
+	args = append(args, "-w", "/work", s.image)
+	return append(args, opts.Cmd...)
 }
 
-// Run executes cmd in the sandbox synchronously and returns stdout, stderr, and
-// the exit code. A non-zero exit code (e.g. a binary not present in the image)
-// is not a Go error; only a failure to launch Docker is.
-func (s *ContainerSandbox) Run(ctx context.Context, workRoot string, cmd []string) (stdout, stderr string, exitCode int, err error) {
-	c := exec.CommandContext(ctx, s.dockerPath, isolatedArgs(workRoot, s.image, cmd)...)
-	var out, errBuf bytes.Buffer
-	c.Stdout = &out
-	c.Stderr = &errBuf
-	runErr := c.Run()
-	exitCode = 0
-	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		} else {
-			return out.String(), errBuf.String(), -1, fmt.Errorf("executor: sandbox run: %w", runErr)
-		}
+// Run executes cmd in the sandbox and returns stdout, stderr, and the exit code.
+// The container is started detached so a context timeout/cancellation can be
+// enforced by `docker rm -f` (a hung build/test is genuinely killed, not left
+// orphaned). A non-zero exit code is not a Go error; only a failure to launch
+// Docker is.
+func (s *ContainerSandbox) Run(ctx context.Context, opts RunOptions) (stdout, stderr string, exitCode int, err error) {
+	name := fmt.Sprintf("idea-harness-check-%d", time.Now().UnixNano())
+
+	// Start detached and capture the container name (we already know it).
+	startArgs := append([]string{"run", "-d", "--name", name}, s.isolatedArgs(opts)...)
+	if out, err := exec.CommandContext(ctx, s.dockerPath, startArgs...).CombinedOutput(); err != nil {
+		return "", string(out), -1, fmt.Errorf("executor: sandbox start: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return out.String(), errBuf.String(), exitCode, nil
+
+	// Always remove the container on the way out (no orphans).
+	defer func() {
+		_ = exec.Command(s.dockerPath, "rm", "-f", name).Run()
+	}()
+
+	// Wait for exit, honoring ctx cancellation.
+	waitCh := make(chan int, 1)
+	go func() {
+		out, _ := exec.Command(s.dockerPath, "wait", name).CombinedOutput()
+		code := 0
+		if v := strings.TrimSpace(string(out)); v != "" {
+			if n, e := strconv.Atoi(v); e == nil {
+				code = n
+			}
+		}
+		waitCh <- code
+	}()
+
+	select {
+	case code := <-waitCh:
+		exitCode = code
+	case <-ctx.Done():
+		// Kill and remove the still-running container on timeout/cancel.
+		_ = exec.Command(s.dockerPath, "rm", "-f", name).Run()
+		return "", "", -1, ctx.Err()
+	}
+
+	// Collect the container's combined output.
+	var outBuf bytes.Buffer
+	logs := exec.Command(s.dockerPath, "logs", name)
+	logs.Stdout = &outBuf
+	logs.Stderr = &outBuf
+	_ = logs.Run()
+	return outBuf.String(), "", exitCode, nil
 }
