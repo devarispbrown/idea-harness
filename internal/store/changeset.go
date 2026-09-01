@@ -71,7 +71,10 @@ func legalChangeSetTransition(from, to domain.ChangeSetStatus) bool {
 	case domain.ChangeSetChangesRequested:
 		return to == domain.ChangeSetSuperseded
 	case domain.ChangeSetApproved:
-		return to == domain.ChangeSetApplying
+		// approved→rejected recovers a system-deny at the apply boundary (e.g. a
+		// credential newly detected on re-sweep); the task is re-opened so a
+		// corrected re-execute replaces the change set (review: system-deny).
+		return to == domain.ChangeSetApplying || to == domain.ChangeSetRejected
 	case domain.ChangeSetApplying:
 		// applying→approved recovers a crash window where the pre-image was
 		// captured but no byte was written (review: full-platform apply atomicity).

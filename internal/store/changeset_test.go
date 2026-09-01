@@ -384,3 +384,15 @@ func TestReconcileChangeSetsIdempotentPreImageDigest(t *testing.T) {
 		t.Fatalf("second reconcile lost the pre-image digest: %+v", second)
 	}
 }
+
+func TestApprovedToRejectedRecoveryTransition(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	cs := newTestChangeSet(t, db, "ini-1")
+	setChangeSetStatus(t, db, cs.ID, domain.ChangeSetApproved)
+
+	// approved→rejected is the system-deny apply-boundary recovery transition.
+	if err := db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetApproved, domain.ChangeSetRejected, HumanActor); err != nil {
+		t.Fatalf("approved→rejected should be legal: %v", err)
+	}
+}

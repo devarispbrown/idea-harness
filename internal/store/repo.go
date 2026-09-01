@@ -689,6 +689,9 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 	if f.Disposition != "" && !f.Disposition.Valid() {
 		return fmt.Errorf("store: invalid disposition %q", f.Disposition)
 	}
+	if f.Code != "" && !f.Code.Valid() {
+		return fmt.Errorf("store: invalid deny code %q", f.Code)
+	}
 	if f.DispositionActor == "" {
 		f.DispositionActor = ActorOrchestrator
 	}
