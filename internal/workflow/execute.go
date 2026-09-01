@@ -360,12 +360,21 @@ func (e *Engine) loadPatch(cs *domain.ChangeSet) (*fsdiff.Patch, error) {
 
 // RenderPatch renders a change set's patch as a readable diff (path + content
 // per file) for the adversarial reviewer and the diff endpoint.
+// RenderPatch renders a change set's patch as a readable diff (path + content
+// per file) for the adversarial reviewer and the diff endpoint. It is REDACTED
+// at this display surface so raw file content never reaches a network-egress
+// model (review SRE regression); the raw store stays redaction-free for
+// byte-for-byte apply/revert.
 func (e *Engine) RenderPatch(cs *domain.ChangeSet) string {
 	patch, err := e.loadPatch(cs)
 	if err != nil {
 		return fmt.Sprintf("(patch unreadable: %v)", err)
 	}
-	return e.renderDiffText(patch.Files)
+	raw := e.renderDiffText(patch.Files)
+	if e.redactor != nil {
+		return e.redactor.RedactString(raw)
+	}
+	return security.Redact(raw)
 }
 
 // persistManifest stores a snapshot manifest as JSON and returns its digest.
