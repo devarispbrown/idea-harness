@@ -954,8 +954,8 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	execs := []executor.Executor{
 		executor.NewInternalExecutor(pr.blobs),
 		executor.NewContainerExecutor(pr.blobs, pr.cfg.Harness.Executor.Image),
-		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image),
-		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image),
+		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, ""),
+		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, ""),
 	}
 	list := make([]map[string]any, 0, len(execs))
 	for _, exec := range execs {

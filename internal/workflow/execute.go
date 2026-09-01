@@ -30,6 +30,40 @@ func (e *Engine) SetWorkRoot(dir string) { e.workRoot = dir }
 // and RevertChangeSet restores. The daemon points this at the project root.
 func (e *Engine) SetWorkspaceRoot(dir string) { e.workspaceRoot = dir }
 
+// implementerKeyEnv resolves the provider API-key env var for the coding agent's
+// model, wired through config (presets + custom providers + default-model
+// fallback) rather than a model-prefix switch, so bare/custom model specs get
+// their key (review: v1 security boundary). Empty for keyless providers.
+func (e *Engine) implementerKeyEnv() string {
+	model := e.implementerModel()
+	provider := model
+	if i := strings.Index(model, "/"); i > 0 {
+		provider = model[:i]
+	}
+	if p := config.PresetFor(provider); p != nil {
+		return p.DefaultKeyEnv
+	}
+	if pc, ok := e.cfg.Providers[provider]; ok {
+		_, _, keyEnv := config.ResolveProvider(provider, pc)
+		return keyEnv
+	}
+	// Bare/unknown provider: fall back to the default model's provider, then to
+	// the first preset key actually present in the environment.
+	if dm := e.cfg.DefaultModel; dm != "" {
+		if i := strings.Index(dm, "/"); i > 0 {
+			if p := config.PresetFor(dm[:i]); p != nil {
+				return p.DefaultKeyEnv
+			}
+		}
+	}
+	for _, p := range config.Presets {
+		if p.DefaultKeyEnv != "" && os.Getenv(p.DefaultKeyEnv) != "" {
+			return p.DefaultKeyEnv
+		}
+	}
+	return ""
+}
+
 // selectExecutor returns the executor selected by harness.executor.kind. The
 // kind is a config field (deterministic), never model output; an unknown kind
 // fails closed to the internal executor.
@@ -38,9 +72,9 @@ func (e *Engine) selectExecutor() executor.Executor {
 	case config.ExecutorContainer:
 		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image)
 	case config.ExecutorOMP:
-		return executor.NewOMPExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image)
+		return executor.NewOMPExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image, e.implementerKeyEnv())
 	case config.ExecutorHermes:
-		return executor.NewHermesExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image)
+		return executor.NewHermesExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image, e.implementerKeyEnv())
 	default:
 		return executor.NewInternalExecutor(e.contentBlobs())
 	}

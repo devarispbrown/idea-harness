@@ -19,7 +19,7 @@ func recordedArgs(t *testing.T, record string) string {
 }
 
 func TestSandboxedAgentCapabilities(t *testing.T) {
-	e := NewOMPExecutor(nil, "", "")
+	e := NewOMPExecutor(nil, "", "", "")
 	if got := e.Name(); got != "omp" {
 		t.Fatalf("Name() = %q, want omp", got)
 	}
@@ -36,7 +36,7 @@ func TestSandboxedAgentCapabilities(t *testing.T) {
 		t.Error("Network = false, want true (agent needs model egress)")
 	}
 
-	h := NewHermesExecutor(nil, "", "")
+	h := NewHermesExecutor(nil, "", "", "")
 	if h.Name() != "hermes" {
 		t.Errorf("Name() = %q, want hermes", h.Name())
 	}
@@ -50,7 +50,7 @@ func TestSandboxedOMPArgs(t *testing.T) {
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
-	e := NewOMPExecutor(newTestBlobStore(t), "anthropic/opus", "alpine:3.20")
+	e := NewOMPExecutor(newTestBlobStore(t), "anthropic/opus", "alpine:3.20", "ANTHROPIC_API_KEY")
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -100,7 +100,7 @@ func TestSandboxedHermesArgs(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
-	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20")
+	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", "")
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -126,7 +126,7 @@ func TestSandboxedAgentUsesBrief(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
-	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20")
+	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", "")
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()

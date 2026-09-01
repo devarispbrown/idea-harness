@@ -198,6 +198,14 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 		return r.EnsureProject(ctx, projectID)
 	}
 
+	// Refuse to swap config while an operation is in flight: a pipeline goroutine
+	// (Run/Advance/SuggestAnswers) reads the engine's config/registry/redactor
+	// without holding e.mu, so a concurrent reload would race those reads. This
+	// keeps the swap safe without serializing every pipeline (review: v1).
+	if ops, err := pr.db.ListUnfinishedOperations(ctx); err == nil && len(ops) > 0 {
+		return nil, fmt.Errorf("daemon: cannot reload project while %d operation(s) are running", len(ops))
+	}
+
 	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
 	if err != nil {
 		return nil, err
