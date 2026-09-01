@@ -241,13 +241,14 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// strong credential-pattern detector (review M1).
 	diffText := e.renderDiffText(files)
 	signals := risk.RiskSignals(ctx, patchDigest, diffText)
-	credential := security.FindCredential(diffText)
-	if checksBlocked || hasBlockingRiskSignal(signals) || credential != "" {
-		// Record a blocking finding so the rejection is traceable.
-		if hasBlockingRiskSignal(signals) || credential != "" {
+	hasCredential := e.detectCredential(diffText)
+	if checksBlocked || hasBlockingRiskSignal(signals) || hasCredential {
+		// Record a blocking finding so the rejection is traceable. The finding
+		// never echoes the credential value (full-platform review: secret leak).
+		if hasBlockingRiskSignal(signals) || hasCredential {
 			reason := detectedRiskNames(signals)
-			if credential != "" {
-				reason = "credential pattern detected: " + credential
+			if hasCredential {
+				reason = "credential detected"
 			}
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:   cs.InitiativeID,
@@ -340,6 +341,17 @@ func (e *Engine) persistPatch(patch fsdiff.Patch) (string, error) {
 
 // renderDiffText renders the file contents of a diff as one readable string (for
 // the deterministic secret sweep).
+// detectCredential reports whether s contains a known secret value or a
+// credential pattern, using the engine's redactor (nil-safe fallback to the
+// pattern-only detector). The matched value is intentionally NOT returned so it
+// cannot leak into a finding.
+func (e *Engine) detectCredential(s string) bool {
+	if e.redactor != nil {
+		return e.redactor.ContainsCredential(s)
+	}
+	return security.FindCredential(s) != ""
+}
+
 func (e *Engine) renderDiffText(files []domain.FileChange) string {
 	if e.contentBlobs() == nil {
 		return ""

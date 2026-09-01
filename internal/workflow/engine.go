@@ -74,6 +74,25 @@ type Engine struct {
 	mu sync.Mutex
 }
 
+// redact applies the engine's known-values redactor to a free-text string at the
+// write boundary, so a secret that reached the model in any context is not
+// persisted/re-served in structured columns (full-platform review: secret-catalog
+// completion). Nil-safe: without a redactor it returns s unchanged.
+func (e *Engine) redact(s string) string {
+	if s == "" || e.redactor == nil {
+		return s
+	}
+	return e.redactor.RedactString(s)
+}
+
+// redactSlice redacts every element of a string slice in place.
+func (e *Engine) redactSlice(ss []string) []string {
+	for i := range ss {
+		ss[i] = e.redact(ss[i])
+	}
+	return ss
+}
+
 // New builds an engine.
 func New(db *store.DB, blobs *blob.Store, registry *model.Registry, cfg config.HarnessConfig, log *slog.Logger) *Engine {
 	if cfg.Review.MaxCycles <= 0 {
@@ -479,9 +498,9 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 			InitiativeID:  initiativeID,
 			Type:          ftype,
 			Status:        domain.AssertionCandidate,
-			Statement:     str(f["statement"]),
+			Statement:     e.redact(str(f["statement"])),
 			Confidence:    domain.Confidence(str(f["confidence"])),
-			Source:        str(f["source"]),
+			Source:        e.redact(str(f["source"])),
 			ProducedByRun: runID,
 		}); err != nil {
 			return err
@@ -531,12 +550,12 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		var acs []domain.AcceptanceCriterion
 		for _, ac := range objSlice(r["acceptance_criteria"]) {
 			acs = append(acs, domain.AcceptanceCriterion{
-				Metric: str(ac["metric"]), Target: str(ac["target"]), Condition: str(ac["condition"]),
+				Metric: e.redact(str(ac["metric"])), Target: e.redact(str(ac["target"])), Condition: e.redact(str(ac["condition"])),
 			})
 		}
 		if err := e.db.CreateRequirement(ctx, &domain.Requirement{
 			InitiativeID:       initiativeID,
-			Statement:          str(r["statement"]),
+			Statement:          e.redact(str(r["statement"])),
 			Priority:           domain.RequirementPriority(str(r["priority"])),
 			AcceptanceCriteria: acs,
 			ProducedByRun:      runID,
@@ -548,15 +567,15 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		if err := e.createDecisionIfNew(ctx, initiativeID, &domain.Decision{
 			InitiativeID:   initiativeID,
 			Type:           domain.DecisionProduct,
-			Question:       str(d["question"]),
-			Options:        strSlice(d["options"]),
-			Recommendation: str(d["recommendation"]),
+			Question:       e.redact(str(d["question"])),
+			Options:        e.redactSlice(strSlice(d["options"])),
+			Recommendation: e.redact(str(d["recommendation"])),
 		}); err != nil {
 			return err
 		}
 	}
 	for _, q := range strSlice(obj["open_questions"]) {
-		if err := e.createQuestionIfNew(ctx, initiativeID, q); err != nil {
+		if err := e.createQuestionIfNew(ctx, initiativeID, e.redact(q)); err != nil {
 			return err
 		}
 	}
@@ -587,6 +606,10 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			if all[i].ReviewRunID == "" {
 				all[i].ReviewRunID = "deterministic-check"
 			}
+			all[i].Finding = e.redact(all[i].Finding)
+			all[i].Evidence = e.redact(all[i].Evidence)
+			all[i].Impact = e.redact(all[i].Impact)
+			all[i].Recommendation = e.redact(all[i].Recommendation)
 			if err := e.db.CreateFinding(ctx, &all[i]); err != nil {
 				return domain.InitiativeFailed, err
 			}
@@ -691,11 +714,11 @@ func (e *Engine) DiscussDecision(ctx context.Context, decisionID, message string
 	}
 	response := strings.TrimSpace(str(obj["response"]))
 
-	if err := e.db.CreateDecisionDiscussion(ctx, &domain.DecisionDiscussion{DecisionID: decisionID, Author: store.HumanActor, Message: message}); err != nil {
+	if err := e.db.CreateDecisionDiscussion(ctx, &domain.DecisionDiscussion{DecisionID: decisionID, Author: store.HumanActor, Message: e.redact(message)}); err != nil {
 		return "", err
 	}
 	if response != "" {
-		if err := e.db.CreateDecisionDiscussion(ctx, &domain.DecisionDiscussion{DecisionID: decisionID, Author: RoleProductManager, Message: response}); err != nil {
+		if err := e.db.CreateDecisionDiscussion(ctx, &domain.DecisionDiscussion{DecisionID: decisionID, Author: RoleProductManager, Message: e.redact(response)}); err != nil {
 			return "", err
 		}
 	}

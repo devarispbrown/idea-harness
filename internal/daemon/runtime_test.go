@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idea-harness/idea-harness/internal/config"
 	"github.com/idea-harness/idea-harness/internal/project"
 )
 
@@ -127,5 +128,19 @@ func TestReloadProjectKeepsSameRuntime(t *testing.T) {
 	rt.mu.Unlock()
 	if !reconciled {
 		t.Fatal("expected reconciled flag to remain set after reload")
+	}
+}
+
+func TestCollectSecretsIncludesPresets(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "AIzaSyTestPresetKey0123456789")
+	secrets := collectSecrets(config.Config{}, nil)
+	found := false
+	for _, s := range secrets {
+		if s == "AIzaSyTestPresetKey0123456789" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("preset GOOGLE_API_KEY not collected: %v", secrets)
 	}
 }

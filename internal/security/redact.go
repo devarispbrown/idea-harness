@@ -67,6 +67,25 @@ func (r *Redactor) RedactString(s string) string {
 	return s
 }
 
+// ContainsCredential reports whether s contains any known secret value or
+// credential pattern. It is the detection counterpart to RedactString, used as a
+// hard-reject signal (nil-safe: a nil Redactor falls back to patterns only).
+func (r *Redactor) ContainsCredential(s string) bool {
+	if r != nil {
+		for _, v := range r.known {
+			if strings.Contains(s, v) {
+				return true
+			}
+		}
+	}
+	for _, re := range credentialPatterns {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // Redact applies pattern-based redaction only (no known values). Used as a
 // convenience for callers without resolved secrets.
 func Redact(s string) string {

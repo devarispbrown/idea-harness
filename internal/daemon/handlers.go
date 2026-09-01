@@ -720,7 +720,7 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "note is required")
 		return
 	}
-	if err := pr.db.SetFindingNote(r.Context(), r.PathValue("id"), strings.TrimSpace(body.Note), store.HumanActor); err != nil {
+	if err := pr.db.SetFindingNote(r.Context(), r.PathValue("id"), pr.redactor.RedactString(strings.TrimSpace(body.Note)), store.HumanActor); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
