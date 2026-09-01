@@ -126,19 +126,17 @@ func Diff(before, after Manifest) []domain.FileChange {
 	return out
 }
 
-// Apply writes changes into root and returns the pre-image manifest of every
-// touched path (for revert). get resolves a content digest to bytes; put
-// persists pre-image content so revert can retrieve it by digest. Every Path is
-// containment-checked against root before any write, and writes are atomic
-// (temp file + rename).
-func Apply(root string, changes []domain.FileChange, get func(digest string) ([]byte, error), put func(content []byte) (string, error)) (Manifest, error) {
+// Prepare captures the pre-image of every touched path (persisting each via put)
+// WITHOUT mutating root. It returns the pre-image manifest so a caller can
+// persist it BEFORE any byte is written, making an interrupted apply recoverable
+// (review: full-platform apply atomicity).
+func Prepare(root string, changes []domain.FileChange, put func(content []byte) (string, error)) (Manifest, error) {
 	var pre Manifest
 	for _, c := range changes {
 		dest, err := security.ResolveWithin(root, c.Path)
 		if err != nil {
-			return nil, fmt.Errorf("fsdiff: apply %q: %w", c.Path, err)
+			return nil, fmt.Errorf("fsdiff: prepare %q: %w", c.Path, err)
 		}
-
 		preDigest := ""
 		if old, err := os.ReadFile(dest); err == nil {
 			if put != nil {
@@ -152,22 +150,48 @@ func Apply(root string, changes []domain.FileChange, get func(digest string) ([]
 			return nil, fmt.Errorf("fsdiff: read pre-image %q: %w", c.Path, err)
 		}
 		pre = append(pre, Entry{Path: c.Path, Digest: preDigest})
+	}
+	sort.Slice(pre, func(i, j int) bool { return pre[i].Path < pre[j].Path })
+	return pre, nil
+}
 
+// Commit writes (and deletes) the changes into root, assuming the pre-image was
+// already captured by Prepare. Every Path is containment-checked against root
+// before any write, and writes are atomic (temp file + rename).
+func Commit(root string, changes []domain.FileChange, get func(digest string) ([]byte, error)) error {
+	for _, c := range changes {
+		dest, err := security.ResolveWithin(root, c.Path)
+		if err != nil {
+			return fmt.Errorf("fsdiff: commit %q: %w", c.Path, err)
+		}
 		if c.IsDelete() {
 			if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
-				return nil, fmt.Errorf("fsdiff: remove %q: %w", c.Path, err)
+				return fmt.Errorf("fsdiff: remove %q: %w", c.Path, err)
 			}
 			continue
 		}
 		content, err := get(c.Digest)
 		if err != nil {
-			return nil, fmt.Errorf("fsdiff: get %q: %w", c.Digest, err)
+			return fmt.Errorf("fsdiff: get %q: %w", c.Digest, err)
 		}
 		if err := writeAtomic(dest, content); err != nil {
-			return nil, fmt.Errorf("fsdiff: write %q: %w", c.Path, err)
+			return fmt.Errorf("fsdiff: write %q: %w", c.Path, err)
 		}
 	}
-	sort.Slice(pre, func(i, j int) bool { return pre[i].Path < pre[j].Path })
+	return nil
+}
+
+// Apply writes changes into root and returns the pre-image manifest of every
+// touched path (for revert). It is the two-phase Prepare+Commit composed for
+// callers that do not need the crash-safety window between them.
+func Apply(root string, changes []domain.FileChange, get func(digest string) ([]byte, error), put func(content []byte) (string, error)) (Manifest, error) {
+	pre, err := Prepare(root, changes, put)
+	if err != nil {
+		return nil, err
+	}
+	if err := Commit(root, changes, get); err != nil {
+		return nil, err
+	}
 	return pre, nil
 }
 

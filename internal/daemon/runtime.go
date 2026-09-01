@@ -123,10 +123,6 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	if err != nil {
 		return nil, err
 	}
-	// First open in this daemon lifetime: any "running" operation is orphaned
-	// (its goroutine died with a previous daemon process). Reconcile it so
-	// initiatives never hang in a stuck "running" state (§34, §16).
-	reconcileStaleOperations(ctx, db)
 
 	cfg, err := config.Load(filepath.Join(rec.RootPath, config.Dir))
 	if err != nil {
@@ -168,6 +164,12 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	r.mu.Lock()
 	r.projects[projectID] = pr
 	r.mu.Unlock()
+
+	// First open in this daemon lifetime: any "running" operation is orphaned
+	// (its goroutine died with a previous daemon process). Reconcile it so
+	// initiatives never hang in a stuck "running" state (§34, §16). Runs after
+	// the engine + raw blob store exist so an interrupted apply can be restored.
+	r.reconcileStaleOperations(ctx, pr)
 	return pr, nil
 }
 
@@ -460,23 +462,45 @@ func (r *Runtime) ListProjects(ctx context.Context) ([]store.ProjectRecord, erro
 }
 
 // reconcileStaleOperations marks any unfinished operations (and their
-// initiatives) as failed. Called once per project on daemon startup: an
-// operation still "running"/"pending" means its driving goroutine was lost.
-// It also reconciles interrupted applies: any non-terminal (prepared /
-// workspace_mutated) journal row is marked recovery_required so a half-applied
-// workspace is surfaced instead of silently left mutated (review H2).
-func reconcileStaleOperations(ctx context.Context, db *store.DB) {
-	ops, err := db.ListUnfinishedOperations(ctx)
+// initiatives) as failed, and recovers change sets stuck mid-apply or
+// mid-checks (full-platform review: apply atomicity + change-set reconciliation).
+// It runs after the engine + raw blob store exist so the workspace can be
+// restored from a persisted pre-image.
+func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRuntime) {
+	ops, err := pr.db.ListUnfinishedOperations(ctx)
+	if err == nil {
+		for _, op := range ops {
+			_ = pr.db.SetOperationStatus(ctx, op.ID, domain.OperationFailed, "")
+			if op.InitiativeID != "" {
+				_ = pr.db.SetInitiativeStatus(ctx, op.InitiativeID, domain.InitiativeFailed, store.ActorOrchestrator)
+			}
+		}
+	}
+
+	recoveries, err := pr.db.ReconcileChangeSets(ctx)
 	if err != nil {
 		return
 	}
-	for _, op := range ops {
-		_ = db.SetOperationStatus(ctx, op.ID, domain.OperationFailed, "")
-		if op.InitiativeID != "" {
-			_ = db.SetInitiativeStatus(ctx, op.InitiativeID, domain.InitiativeFailed, store.ActorOrchestrator)
+	for _, rec := range recoveries {
+		switch rec.Status {
+		case domain.ChangeSetApplying:
+			if rec.LatestJournalState == domain.ApplyWorkspaceMutated && rec.PreImageDigest != "" {
+				// A byte may have been written: restore the pre-image, then mark
+				// conflicted (terminal, legal applying→conflicted).
+				_ = pr.engine.RestoreWorkspace(ctx, rec.PreImageDigest)
+				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+			} else {
+				// No bytes were written (prepared/absent): revert applying→approved
+				// so a human can re-apply.
+				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+			}
+		case domain.ChangeSetChecksRunning:
+			_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator)
+			if rec.TaskID != "" {
+				_ = pr.db.SetTaskStatus(ctx, rec.TaskID, domain.TaskProposed)
+			}
 		}
 	}
-	_, _ = db.ReconcileJournal(ctx)
 }
 
 // lookupEnv resolves a secret from the process environment first, then the

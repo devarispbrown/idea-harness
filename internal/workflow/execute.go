@@ -426,6 +426,19 @@ func (e *Engine) loadManifest(digest string) (fsdiff.Manifest, error) {
 	return m, nil
 }
 
+// RestoreWorkspace restores the canonical workspace from a persisted pre-image
+// manifest digest. Used by startup reconciliation to unwind an interrupted apply.
+func (e *Engine) RestoreWorkspace(ctx context.Context, manifestDigest string) error {
+	pre, err := e.loadManifest(manifestDigest)
+	if err != nil {
+		return err
+	}
+	if e.workspaceRoot == "" {
+		return fmt.Errorf("workflow: no canonical workspace root configured")
+	}
+	return fsdiff.Restore(e.workspaceRoot, pre, e.contentBlobs().Get)
+}
+
 // waitForCompletion polls the executor until the attempt reaches a terminal
 // state. It never exposes chain-of-thought: only the terminal status is used.
 // External executors (container, OMP) can take minutes, so it polls with
@@ -661,28 +674,43 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		State:                   domain.ApplyPrepared,
 		WorkspaceSnapshotDigest: patch.BaseSnapshotDigest,
 	}); err != nil {
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
 		return err
 	}
 
-	// Write the diff, capturing (and persisting) the pre-image of every touched
-	// path so revert can restore it byte-for-byte.
-	preImage, err := fsdiff.Apply(workspaceRoot, patch.Files, e.contentBlobs().Get, e.contentBlobs().Put)
+	// Phase 1 — Prepare (non-mutating): capture and persist the pre-image of
+	// every touched path. No byte is written here, so a failure is recoverable
+	// by reverting applying→approved (full-platform review: apply atomicity).
+	preImage, err := fsdiff.Prepare(workspaceRoot, patch.Files, e.contentBlobs().Put)
 	if err != nil {
-		return fmt.Errorf("workflow: apply files: %w", err)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+		return fmt.Errorf("workflow: apply prepare: %w", err)
 	}
 	preImageDigest, err := e.persistManifest(preImage)
 	if err != nil {
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
 		return err
 	}
 
-	// Record "workspace_mutated" with the pre-image digest, then advance to
-	// "committed" atomically with the status flip.
+	// Record "workspace_mutated" (with the pre-image digest) BEFORE the first
+	// write, so the workspace can be restored if Commit fails or the daemon
+	// crashes mid-apply.
 	if err := e.db.AppendJournal(ctx, &domain.ApplyJournalEntry{
 		ChangeSetID:             changeSetID,
 		State:                   domain.ApplyWorkspaceMutated,
 		WorkspaceSnapshotDigest: preImageDigest,
 	}); err != nil {
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
 		return err
+	}
+
+	// Phase 2 — Commit: write the diff. On failure, restore the pre-image
+	// immediately and mark conflicted (do not rely on next-startup reconciliation
+	// to repair the user's source tree).
+	if err := fsdiff.Commit(workspaceRoot, patch.Files, e.contentBlobs().Get); err != nil {
+		_ = fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+		return fmt.Errorf("workflow: apply files: %w", err)
 	}
 
 	// applying→applied + committed journal (carrying the pre-image digest) happen

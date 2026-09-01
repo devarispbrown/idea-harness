@@ -73,7 +73,9 @@ func legalChangeSetTransition(from, to domain.ChangeSetStatus) bool {
 	case domain.ChangeSetApproved:
 		return to == domain.ChangeSetApplying
 	case domain.ChangeSetApplying:
-		return to == domain.ChangeSetApplied || to == domain.ChangeSetConflicted
+		// applying→approved recovers a crash window where the pre-image was
+		// captured but no byte was written (review: full-platform apply atomicity).
+		return to == domain.ChangeSetApplied || to == domain.ChangeSetConflicted || to == domain.ChangeSetApproved
 	case domain.ChangeSetApplied:
 		// A change set that has been applied may be rolled back; this is the
 		// only way an applied change set leaves the applied state.
@@ -369,62 +371,81 @@ func (db *DB) JournalSnapshotDigest(ctx context.Context, changeSetID string) (st
 	return digest, nil
 }
 
-// ReconcileJournal is the startup-reconciliation surface for interrupted
-// applies: it returns every non-terminal (prepared/workspace_mutated) journal
-// row, marks each recovery_required, and appends a reconciliation event.
-func (db *DB) ReconcileJournal(ctx context.Context) ([]domain.ApplyJournalEntry, error) {
-	var out []domain.ApplyJournalEntry
+// ChangeSetRecovery describes a change set stuck in a non-terminal state that
+// startup reconciliation must move to a terminal state (and, for an interrupted
+// apply, restore the workspace).
+type ChangeSetRecovery struct {
+	ChangeSetID  string
+	InitiativeID string
+	Status       domain.ChangeSetStatus
+	TaskID       string
+	// LatestJournalState is the most recent apply-journal state, or "" if none.
+	LatestJournalState domain.ApplyState
+	// PreImageDigest is the workspace pre-image to restore (workspace_mutated
+	// rows only); empty when no mutation was recorded.
+	PreImageDigest string
+}
+
+// ReconcileChangeSets finds change sets stuck in applying/checks_running and
+// marks the non-terminal journal rows of the applying ones recovery_required.
+// It only touches change sets that are themselves non-terminal, so the journal
+// history of already-applied/reverted change sets is left intact.
+func (db *DB) ReconcileChangeSets(ctx context.Context) ([]ChangeSetRecovery, error) {
+	var out []ChangeSetRecovery
 	err := db.Apply(ctx, Event{
-		AggregateType: "apply_journal",
+		AggregateType: "change_set",
 		AggregateID:   "reconcile",
 		Actor:         ActorOrchestrator,
-		EventType:     "apply_journal.reconciled",
+		EventType:     "change_sets.reconciled",
 	}, func(tx *sql.Tx) error {
-		var err error
-		out, err = reconcileJournalTx(tx)
-		return err
+		rows, err := tx.Query(`
+			SELECT cs.id, cs.initiative_id, cs.status, cs.task_id,
+			       (SELECT j.state FROM apply_journal j WHERE j.change_set_id = cs.id ORDER BY j.rowid DESC LIMIT 1),
+			       (SELECT j.workspace_snapshot_digest FROM apply_journal j WHERE j.change_set_id = cs.id AND j.state = ? ORDER BY j.rowid DESC LIMIT 1)
+			FROM change_sets cs
+			WHERE cs.status IN (?, ?)
+			ORDER BY cs.rowid ASC`,
+			domain.ApplyWorkspaceMutated, domain.ChangeSetApplying, domain.ChangeSetChecksRunning)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var r ChangeSetRecovery
+			var latest sql.NullString
+			var preDigest sql.NullString
+			if err := rows.Scan(&r.ChangeSetID, &r.InitiativeID, &r.Status, &r.TaskID, &latest, &preDigest); err != nil {
+				rows.Close()
+				return err
+			}
+			if latest.Valid {
+				r.LatestJournalState = domain.ApplyState(latest.String)
+			}
+			if preDigest.Valid {
+				r.PreImageDigest = preDigest.String
+			}
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+
+		// Mark the interrupted-apply journal rows recovery_required (only for
+		// change sets still in applying).
+		for _, r := range out {
+			if r.Status != domain.ChangeSetApplying {
+				continue
+			}
+			if _, err := tx.Exec(`UPDATE apply_journal SET state = ? WHERE change_set_id = ? AND state IN (?, ?)`,
+				domain.ApplyRecoveryRequired, r.ChangeSetID, domain.ApplyPrepared, domain.ApplyWorkspaceMutated); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	return out, nil
-}
-
-// reconcileJournalTx selects and marks the non-terminal journal rows that need
-// recovery, returning them with their updated recovery_required state.
-func reconcileJournalTx(tx *sql.Tx) ([]domain.ApplyJournalEntry, error) {
-	rows, err := tx.Query(`
-		SELECT id, change_set_id, state, workspace_snapshot_digest, created_at
-		FROM apply_journal
-		WHERE state IN (?, ?)
-		ORDER BY created_at ASC`, domain.ApplyPrepared, domain.ApplyWorkspaceMutated)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]domain.ApplyJournalEntry, 0)
-	for rows.Next() {
-		var e domain.ApplyJournalEntry
-		var created int64
-		if err := rows.Scan(&e.ID, &e.ChangeSetID, &e.State, &e.WorkspaceSnapshotDigest, &created); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		e.CreatedAt = time.UnixMilli(created)
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	// Close before issuing UPDATEs on the same connection (§ single-writer pool).
-	rows.Close()
-
-	for i := range out {
-		if _, err := tx.Exec(`UPDATE apply_journal SET state = ? WHERE id = ?`, domain.ApplyRecoveryRequired, out[i].ID); err != nil {
-			return nil, err
-		}
-		out[i].State = domain.ApplyRecoveryRequired
 	}
 	return out, nil
 }
