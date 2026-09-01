@@ -136,6 +136,25 @@ func (e *Engine) chargeUSD(cost float64) error {
 	return nil
 }
 
+// Reload swaps the config-derived components in place on the SAME engine, so the
+// engine's mutex continues to serialize execute/apply/revert across a reload. It
+// is guarded by e.mu, which ALL entry points now hold (see below), so no field
+// read races the swap.
+func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cfg.Review.MaxCycles <= 0 {
+		cfg.Review.MaxCycles = 3
+	}
+	e.cfg = cfg
+	e.registry = registry
+	e.redactor = redactor
+	e.blobs = blobs
+	e.costMu.Lock()
+	e.budgetUSD = cfg.Review.MaxCostUSD
+	e.costMu.Unlock()
+}
+
 // contentBlobs returns the redaction-free store for file content. It fails
 // closed: when no raw store was configured (SetRawBlobs), it returns nil and
 // callers surface an error rather than silently round-tripping content through
