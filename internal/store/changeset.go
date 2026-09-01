@@ -227,18 +227,62 @@ func (db *DB) GetChangeSet(ctx context.Context, changeSetID string) (*domain.Cha
 }
 
 // GetChangeSetByRef resolves a change set by its UUID or its HumanID (CHG-N),
-// so CLI/UI can reference change sets by the human-facing id.
+// so CLI/UI can reference change sets by the human-facing id. HumanID is only
+// unique per-initiative, so a bare CHG-N that matches more than one initiative
+// fails closed with an ambiguity error instead of silently returning an
+// arbitrary (possibly wrong) change set — review: full-platform authorization.
 func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.ChangeSet, error) {
 	if cs, err := db.GetChangeSet(ctx, ref); err == nil {
 		return cs, nil
 	}
-	var cs domain.ChangeSet
-	var created int64
-	if err := scanChangeSet(db.SQL().QueryRowContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE human_id = ?`, ref), &cs, &created); err != nil {
+	rows, err := db.SQL().QueryContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE human_id = ? ORDER BY created_at ASC`, ref)
+	if err != nil {
 		return nil, err
 	}
-	cs.CreatedAt = time.UnixMilli(created)
-	return &cs, nil
+	defer rows.Close()
+	var found *domain.ChangeSet
+	count := 0
+	for rows.Next() {
+		var cs domain.ChangeSet
+		var created int64
+		if err := scanChangeSet(rows, &cs, &created); err != nil {
+			return nil, err
+		}
+		cs.CreatedAt = time.UnixMilli(created)
+		found = &cs
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	switch count {
+	case 0:
+		return nil, sql.ErrNoRows
+	case 1:
+		return found, nil
+	default:
+		return nil, fmt.Errorf("ambiguous change set reference %q: matches %d change sets across initiatives; use the full change set id", ref, count)
+	}
+}
+
+// ListChangeSetsByTask returns change sets for a task, oldest first.
+func (db *DB) ListChangeSetsByTask(ctx context.Context, taskID string) ([]domain.ChangeSet, error) {
+	rows, err := db.SQL().QueryContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE task_id = ? ORDER BY created_at ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.ChangeSet, 0)
+	for rows.Next() {
+		var cs domain.ChangeSet
+		var created int64
+		if err := scanChangeSet(rows, &cs, &created); err != nil {
+			return nil, err
+		}
+		cs.CreatedAt = time.UnixMilli(created)
+		out = append(out, cs)
+	}
+	return out, rows.Err()
 }
 
 // ListChangeSets returns change sets for an initiative, oldest first.

@@ -580,6 +580,13 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		blocked, reason := review.EvaluateApproval(all)
 		if !blocked {
 			e.log.Info("review passed", "cycle", cycle, "findings", len(all))
+			// Close prior cycles' still-open findings: the review has converged,
+			// so their concerns are resolved. Without this, hasOpenBlockingFindings
+			// (verify gate) would see stale critical/high findings from earlier
+			// cycles and wedge completion (full-platform review: non-monotonic gate).
+			if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionFixed, RoleAdversarialReviewer); err != nil {
+				return domain.InitiativeFailed, err
+			}
 			if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, RoleAdversarialReviewer); err != nil {
 				return domain.InitiativeFailed, err
 			}

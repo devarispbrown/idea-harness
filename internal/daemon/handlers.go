@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -495,9 +496,11 @@ func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// handleListTasks returns the execution-plan tasks for an initiative.
+// handleListTasks returns the execution-plan tasks for an initiative. The
+// initiative is taken from the {id} path parameter (review: full-platform
+// UX/API — it previously read ?initiative_id=/oldest-initiative fallback).
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -835,7 +838,7 @@ func (s *Server) handleGetChangeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	cs, err := pr.db.GetChangeSetByRef(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "change set not found")
+		writeError(w, http.StatusNotFound, changeSetRefError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, cs)
@@ -851,7 +854,7 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	cs, err := pr.db.GetChangeSetByRef(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "change set not found")
+		writeError(w, http.StatusNotFound, changeSetRefError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"patch": pr.engine.RenderPatch(cs)})
@@ -977,6 +980,15 @@ func (s *Server) changeSet(r *http.Request) (*projectRuntime, *domain.ChangeSet,
 	}
 	cs, err := pr.db.GetChangeSetByRef(r.Context(), r.PathValue("id"))
 	return pr, cs, err
+}
+
+// changeSetRefError maps a change-set resolution error to a user-facing message,
+// preserving the ambiguity error while keeping not-found friendly.
+func changeSetRefError(err error) string {
+	if errors.Is(err, sql.ErrNoRows) {
+		return "change set not found"
+	}
+	return err.Error()
 }
 
 // ---------- activity / events ----------

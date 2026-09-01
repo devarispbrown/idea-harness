@@ -105,6 +105,21 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
+	// Supersede any prior changes_requested change set for this task so a
+	// re-execute cleanly replaces it (full-platform review: changes_requested
+	// was a terminal dead end with no producer of the superseded transition).
+	prior, err := e.db.ListChangeSetsByTask(ctx, task.ID)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	for _, p := range prior {
+		if p.Status == domain.ChangeSetChangesRequested {
+			if err := e.db.TransitionChangeSet(ctx, p.ID, domain.ChangeSetChangesRequested, domain.ChangeSetSuperseded, store.ActorOrchestrator); err != nil {
+				return domain.ChangeSet{}, err
+			}
+		}
+	}
+
 	// Planner: engineering_lead produces an implementation brief the implementer
 	// follows. The brief is a durable Run (role engineering_lead).
 	brief, err := e.runPlanner(ctx, initiativeID, task)
@@ -779,15 +794,26 @@ func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
 
 	case "changes_requested":
-		return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor)
+		if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor); err != nil {
+			return err
+		}
+		// Re-open the task so a subsequent Execute re-picks it and supersedes this
+		// change set (full-platform review: changes_requested was a dead end).
+		return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
 
 	case "rejected":
 		// Rejection is accepted from either checks_running or review_required.
 		switch cs.Status {
 		case domain.ChangeSetChecksRunning:
-			return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor)
+			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor); err != nil {
+				return err
+			}
+			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
 		case domain.ChangeSetReviewRequired:
-			return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor)
+			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor); err != nil {
+				return err
+			}
+			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
 		default:
 			return fmt.Errorf("workflow: cannot reject change set in status %q", cs.Status)
 		}
