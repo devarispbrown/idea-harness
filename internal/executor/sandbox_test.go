@@ -27,7 +27,7 @@ if echo pwn > /etc/pwned 2>/dev/null; then echo ROOT_WRITE_SUCCEEDED; else echo 
 echo ok > /work/inside.txt && echo WORK_WRITE_OK
 if wget -q -T 3 -O /dev/null http://example.com 2>/dev/null; then echo NETWORK_OPEN; else echo NETWORK_BLOCKED; fi
 `
-	stdout, stderr, code, err := s.Run(t.Context(), work, []string{"sh", "-c", script})
+	stdout, stderr, code, err := s.Run(t.Context(), RunOptions{WorkRoot: work, Cmd: []string{"sh", "-c", script}})
 	if err != nil {
 		t.Fatalf("Run() error = %v (stderr=%s)", err, stderr)
 	}
