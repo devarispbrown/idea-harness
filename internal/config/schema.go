@@ -38,6 +38,8 @@ const harnessSchema = `{
     "providers": { "type": "object" },
     "default_model": { "type": "string" },
     "models": { "type": "object" },
+    "build_cmd": { "type": "string" },
+    "test_cmd": { "type": "string" },
     "executor": {
       "type": "object",
       "properties": {

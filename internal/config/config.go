@@ -95,6 +95,11 @@ type HarnessConfig struct {
 	// without an entry fall back to default_model (§40). The coding "implementer"
 	// role is a valid key here, letting OMP/Hermes run different models.
 	Models map[string]string `json:"models" yaml:"models"`
+	// BuildCmd/TestCmd are the deterministic check commands (review B5). They are
+	// config-supplied, never model/agent output; when empty the corresponding
+	// check is recorded not_applicable.
+	BuildCmd string `json:"build_cmd,omitempty" yaml:"build_cmd,omitempty"`
+	TestCmd  string `json:"test_cmd,omitempty" yaml:"test_cmd,omitempty"`
 }
 
 // Config is the fully-loaded portable configuration for one project.
