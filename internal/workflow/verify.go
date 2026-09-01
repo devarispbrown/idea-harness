@@ -110,7 +110,7 @@ func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementR
 			CriterionKey:  domain.CriterionKey(r.ID, i),
 			Kind:          domain.VerificationAcceptance,
 			Status:        domain.VerificationPass,
-			VerifiedBy:    "human:" + actor,
+			VerifiedBy:    actor,
 			Note:          note,
 		}
 		if err := e.db.CreateVerificationEvidence(ctx, ev); err != nil {

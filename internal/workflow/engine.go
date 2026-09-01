@@ -218,6 +218,16 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	}
 	e.log.Info("model response", "stage", stageKey, "role", roleName, "model", modelSpec, "actual", resp.ActualModel, "duration", time.Since(reqStart).Round(time.Millisecond), "out_tokens", resp.Usage.OutputTokens)
 
+	// Enforce the review token/cost ceilings as a hard stop (review M4).
+	if e.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > e.cfg.Review.MaxTokens {
+		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
+		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, e.cfg.Review.MaxTokens)
+	}
+	if e.cfg.Review.MaxCostUSD > 0 && resp.Usage.CostUSD > e.cfg.Review.MaxCostUSD {
+		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
+		return runID, nil, fmt.Errorf("workflow: %s exceeded max_cost_usd (%.4f > %.4f)", stageKey, resp.Usage.CostUSD, e.cfg.Review.MaxCostUSD)
+	}
+
 	if decoded == nil {
 		e.log.Error("structured output invalid", "stage", stageKey, "role", roleName, "err", lastErr)
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
