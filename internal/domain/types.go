@@ -148,6 +148,7 @@ type Finding struct {
 	Severity         Severity    `json:"severity"`
 	Confidence       Confidence  `json:"confidence"`
 	Category         string      `json:"category"`
+	Code             DenyCode    `json:"code,omitempty"`
 	Finding          string      `json:"finding"`
 	Evidence         string      `json:"evidence"`
 	Impact           string      `json:"impact"`
