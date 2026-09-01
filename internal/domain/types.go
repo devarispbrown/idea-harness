@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // AcceptanceCriterion is a structurally verifiable acceptance criterion: a
 // measurable predicate with a metric, a target, and a condition (§11, §18).
@@ -54,6 +57,7 @@ type Requirement struct {
 	Provenance         []ProvenanceRef       `json:"provenance"`
 	ProducedByRun      string                `json:"produced_by_run,omitempty"`
 	SupersededBy       string                `json:"superseded_by,omitempty"`
+	VerifiedAt         *time.Time            `json:"verified_at,omitempty"`
 	CreatedAt          time.Time             `json:"created_at"`
 }
 
@@ -312,4 +316,29 @@ type RiskProfile struct {
 	Signals      []RiskSignal `json:"signals"`
 	Reason       []string     `json:"reason,omitempty"`
 	CreatedAt    time.Time    `json:"created_at"`
+}
+
+// VerificationEvidence is one piece of evidence for an acceptance criterion
+// (§70). CriterionKey is a stable per-criterion key (see CriterionKey). A
+// requirement is verified only when every mandatory criterion has a pass
+// evidence — never merely because tests exist.
+type VerificationEvidence struct {
+	ID             string             `json:"id"`
+	InitiativeID   string             `json:"initiative_id"`
+	RequirementID  string             `json:"requirement_id"`
+	CriterionKey   string             `json:"criterion_key"`
+	Kind           VerificationKind   `json:"kind"`
+	Status         VerificationStatus `json:"status"`
+	EvidenceDigest string             `json:"evidence_digest,omitempty"`
+	RunID          string             `json:"run_id,omitempty"`
+	VerifiedBy     string             `json:"verified_by,omitempty"` // role name or "human:<actor>"
+	Note           string             `json:"note,omitempty"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
+// CriterionKey returns the stable key for the i-th acceptance criterion of a
+// requirement. The thin slice treats every criterion as mandatory and keys
+// evidence by requirement + index (§70, review B4).
+func CriterionKey(requirementID string, i int) string {
+	return requirementID + ":" + strconv.Itoa(i)
 }

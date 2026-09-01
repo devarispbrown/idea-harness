@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
 // cliChangeSet mirrors the change-set API response.
@@ -230,5 +231,49 @@ func cmdExecutors(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stdout, "    · %s\n", cap)
 		}
 	}
+	return nil
+}
+
+// cmdVerify records human pass evidence for a requirement and/or runs the
+// verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
+func cmdVerify(args []string, stdout, stderr io.Writer) error {
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	req := ""
+	pass := false
+	note := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--pass":
+			pass = true
+		case "--note":
+			if i+1 < len(args) {
+				note = args[i+1]
+				i++
+			}
+		default:
+			if req == "" && !strings.HasPrefix(args[i], "-") {
+				req = args[i]
+			}
+		}
+	}
+	iniID, err := resolveInitiative(c, projectID, nil)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{}
+	if req != "" && pass {
+		body = map[string]any{"requirement": req, "pass": true, "note": note}
+	}
+	var out map[string]any
+	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", body, &out); err != nil {
+		return err
+	}
+	if req != "" && pass {
+		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
+	}
+	fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(fmt.Sprint(out["status"])))
 	return nil
 }

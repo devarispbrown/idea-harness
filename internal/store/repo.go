@@ -247,7 +247,7 @@ func (db *DB) CreateRequirement(ctx context.Context, r *domain.Requirement) erro
 // ListRequirements returns requirements for an initiative.
 func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]domain.Requirement, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, code, statement, acceptance_criteria_json, priority, status, source_assertion_id, provenance_json, produced_by_run_id, superseded_by, created_at
+		SELECT id, initiative_id, code, statement, acceptance_criteria_json, priority, status, source_assertion_id, provenance_json, produced_by_run_id, superseded_by, verified_at, created_at
 		FROM requirements WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -257,12 +257,17 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 	for rows.Next() {
 		var r domain.Requirement
 		var ac, prov string
+		var verified sql.NullInt64
 		var created int64
 		if err := rows.Scan(&r.ID, &r.InitiativeID, &r.Code, &r.Statement, &ac, &r.Priority, &r.Status,
-			&r.SourceAssertionID, &prov, &r.ProducedByRun, &r.SupersededBy, &created); err != nil {
+			&r.SourceAssertionID, &prov, &r.ProducedByRun, &r.SupersededBy, &verified, &created); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.UnixMilli(created)
+		if verified.Valid {
+			t := time.UnixMilli(verified.Int64)
+			r.VerifiedAt = &t
+		}
 		json.Unmarshal([]byte(ac), &r.AcceptanceCriteria)
 		json.Unmarshal([]byte(prov), &r.Provenance)
 		out = append(out, r)

@@ -548,6 +548,10 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, RoleAdversarialReviewer); err != nil {
 				return domain.InitiativeFailed, err
 			}
+			// The reviewed PRD's requirements are now approved (§17, review B4).
+			if err := e.db.ApproveRequirements(ctx, initiativeID, RoleAdversarialReviewer); err != nil {
+				return domain.InitiativeFailed, err
+			}
 			return domain.InitiativeApproved, nil
 		}
 
@@ -601,7 +605,10 @@ func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.Initia
 
 // Approve records explicit human approval of the initiative (§11).
 func (e *Engine) Approve(ctx context.Context, initiativeID string) error {
-	return e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, store.HumanActor)
+	if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, store.HumanActor); err != nil {
+		return err
+	}
+	return e.db.ApproveRequirements(ctx, initiativeID, store.HumanActor)
 }
 
 // DiscussDecision runs one human→AI discussion turn on a decision (§8): the

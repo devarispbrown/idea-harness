@@ -87,12 +87,12 @@ func TestInitiativeStatusValid(t *testing.T) {
 }
 
 func TestRunKindValid(t *testing.T) {
-	for _, v := range []RunKind{RunModel, RunReview, RunCheck, RunTool} {
+	for _, v := range []RunKind{RunModel, RunReview, RunCheck, RunTool, RunAgent} {
 		if !v.Valid() {
 			t.Errorf("expected %q to be valid", v)
 		}
 	}
-	if RunKind("agent").Valid() {
+	if RunKind("bogus").Valid() {
 		t.Error("unlisted run kind must be rejected")
 	}
 }

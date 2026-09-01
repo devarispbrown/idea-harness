@@ -401,6 +401,24 @@ CREATE TABLE IF NOT EXISTS snapshots (
 ALTER TABLE apply_journal ADD COLUMN applied_at INTEGER;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_change_sets_human_id ON change_sets(initiative_id, human_id);
 `,
+	// 11: verification evidence + requirement verified_at (§70, review B4/B10).
+	`
+ALTER TABLE requirements ADD COLUMN verified_at INTEGER;
+CREATE TABLE IF NOT EXISTS verification_evidence (
+	id              TEXT PRIMARY KEY,
+	initiative_id   TEXT NOT NULL,
+	requirement_id  TEXT NOT NULL,
+	criterion_key   TEXT NOT NULL,
+	kind            TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	evidence_digest TEXT NOT NULL DEFAULT '',
+	run_id          TEXT NOT NULL DEFAULT '',
+	verified_by     TEXT NOT NULL DEFAULT '',
+	note            TEXT NOT NULL DEFAULT '',
+	created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_verification_evidence_req ON verification_evidence(requirement_id);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

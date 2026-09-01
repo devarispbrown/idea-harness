@@ -48,11 +48,12 @@ const (
 	RunReview RunKind = "review"
 	RunCheck  RunKind = "check"
 	RunTool   RunKind = "tool"
+	RunAgent  RunKind = "agent"
 )
 
 func (k RunKind) Valid() bool {
 	switch k {
-	case RunModel, RunReview, RunCheck, RunTool:
+	case RunModel, RunReview, RunCheck, RunTool, RunAgent:
 		return true
 	}
 	return false
@@ -206,11 +207,12 @@ const (
 	InitiativeApproved          InitiativeStatus = "approved"
 	InitiativePlanApproved      InitiativeStatus = "plan_approved"
 	InitiativeFailed            InitiativeStatus = "failed"
+	InitiativeComplete          InitiativeStatus = "complete"
 )
 
 func (s InitiativeStatus) Valid() bool {
 	switch s {
-	case InitiativeRunning, InitiativeNeedsHumanJudgment, InitiativeApproved, InitiativePlanApproved, InitiativeFailed:
+	case InitiativeRunning, InitiativeNeedsHumanJudgment, InitiativeApproved, InitiativePlanApproved, InitiativeFailed, InitiativeComplete:
 		return true
 	}
 	return false
@@ -234,12 +236,13 @@ type RequirementStatus string
 const (
 	RequirementDraft    RequirementStatus = "draft"
 	RequirementApproved RequirementStatus = "approved"
+	RequirementVerified RequirementStatus = "verified"
 	RequirementRemoved  RequirementStatus = "removed"
 )
 
 func (s RequirementStatus) Valid() bool {
 	switch s {
-	case RequirementDraft, RequirementApproved, RequirementRemoved:
+	case RequirementDraft, RequirementApproved, RequirementVerified, RequirementRemoved:
 		return true
 	}
 	return false
@@ -257,6 +260,41 @@ const (
 func (p RequirementPriority) Valid() bool {
 	switch p {
 	case PriorityMust, PriorityShould, PriorityCould:
+		return true
+	}
+	return false
+}
+
+// VerificationKind is the evidence category for a verification (§70).
+type VerificationKind string
+
+const (
+	VerificationAcceptance VerificationKind = "acceptance"
+	VerificationSecurity   VerificationKind = "security"
+	VerificationUX         VerificationKind = "ux"
+)
+
+func (k VerificationKind) Valid() bool {
+	switch k {
+	case VerificationAcceptance, VerificationSecurity, VerificationUX:
+		return true
+	}
+	return false
+}
+
+// VerificationStatus is the outcome of one piece of evidence (§70).
+type VerificationStatus string
+
+const (
+	VerificationPass        VerificationStatus = "pass"
+	VerificationFail        VerificationStatus = "fail"
+	VerificationBlocked     VerificationStatus = "blocked"
+	VerificationNeedsManual VerificationStatus = "needs_manual"
+)
+
+func (s VerificationStatus) Valid() bool {
+	switch s {
+	case VerificationPass, VerificationFail, VerificationBlocked, VerificationNeedsManual:
 		return true
 	}
 	return false
