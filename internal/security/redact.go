@@ -17,14 +17,24 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
 	// AWS access key id.
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
-	// GitHub personal access token.
+	// GitHub personal access token (classic + fine-grained) and OAuth tokens.
 	regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`),
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
+	regexp.MustCompile(`\bgh[ousr]_[A-Za-z0-9]{20,}\b`),
+	// GitLab personal access token.
+	regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`),
+	// Google API key.
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`),
+	// npm access token.
+	regexp.MustCompile(`\bnpm_[A-Za-z0-9]{30,}\b`),
 	// OpenAI / generic sk- keys.
 	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
 	// Stripe live secret key.
 	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
-	// Slack bot token (xoxb-).
-	regexp.MustCompile(`\bxoxb-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,}\b`),
+	// Slack tokens (bot, app, refresh, signing, user).
+	regexp.MustCompile(`\bxox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,}\b`),
+	// Generic Bearer token.
+	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/-]{20,}\b`),
 	// Generic key=value credentials in text/URLs.
 	regexp.MustCompile(`(?i)\b(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}["']?`),
 }

@@ -254,8 +254,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 
 	// Persist each produced file's content and the patch manifest to the blob
 	// store, so apply/revert can reconstruct the diff from digests alone. Skip
-	// the raw content write when a credential was detected (nothing to apply).
-	if !hasCredential {
+	// the raw content write when ANY blocking signal was detected (credential OR
+	// risk marker), so rejected content is never written to the raw store.
+	sweepBlocked := hasCredential || hasBlockingRiskSignal(signals)
+	if !sweepBlocked {
 		if err := e.persistDiff(req.WorkRoot, files); err != nil {
 			return domain.ChangeSet{}, fmt.Errorf("workflow: execute: persist diff: %w", err)
 		}
@@ -286,7 +288,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// persisted, so patch-applies would spuriously fail, and the change set is
 	// rejected on the secret sweep regardless).
 	checksBlocked := false
-	if !hasCredential {
+	if !sweepBlocked {
 		checks, blocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
 		checksBlocked = blocked
 		for _, f := range checks {
@@ -859,11 +861,13 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	}
 
 	// Record a "prepared" journal row BEFORE mutating so an interrupted apply is
-	// recoverable at startup (review H2).
+	// recoverable at startup (review H2). The digest is left EMPTY: the true
+	// workspace pre-image is only persisted on the workspace_mutated row, so a
+	// crash before Prepare completes must recover via the no-bytes-written path
+	// (applying→approved), not attempt to restore a never-persisted manifest.
 	if err := e.db.AppendJournal(ctx, &domain.ApplyJournalEntry{
-		ChangeSetID:             changeSetID,
-		State:                   domain.ApplyPrepared,
-		WorkspaceSnapshotDigest: patch.BaseSnapshotDigest,
+		ChangeSetID: changeSetID,
+		State:       domain.ApplyPrepared,
 	}); err != nil {
 		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
 		return err
