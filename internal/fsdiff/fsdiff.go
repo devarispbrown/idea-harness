@@ -38,8 +38,10 @@ type Patch struct {
 }
 
 // Snapshot walks root and returns a path-sorted manifest of its regular files
-// (content-addressed). Directories and non-regular files are ignored. A missing
-// root yields an empty manifest.
+// (content-addressed). Directories, symlinks, and non-regular files are ignored.
+// Symlinks are rejected via Lstat (not followed) so an untrusted executor cannot
+// plant a symlink to a host file and induce the daemon to read it (review:
+// v1 security boundary). A missing root yields an empty manifest.
 func Snapshot(root string) (Manifest, error) {
 	var m Manifest
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -54,11 +56,19 @@ func Snapshot(root string) (Manifest, error) {
 			return err
 		}
 		if !info.Mode().IsRegular() {
+			// A symlink reports a non-regular mode under Lstat, so it is skipped
+			// here rather than followed.
 			return nil
 		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
+		}
+		// Re-Lstat before reading: never follow a swapped-in symlink.
+		if fi, err := os.Lstat(p); err != nil {
+			return err
+		} else if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return nil
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {

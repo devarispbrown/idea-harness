@@ -103,12 +103,16 @@ func TestTokenLoadCreateAndCompare(t *testing.T) {
 }
 
 func TestContainsCredentialKnownValueAndPattern(t *testing.T) {
-	r := NewRedactor("AIzaSySuperSecretGoogleKey0123456789")
-	if !r.ContainsCredential("here is AIzaSySuperSecretGoogleKey0123456789 in text") {
+	const knownOnly = "Xq7kP3mN9vR2tW8sY5uL" // matches no pattern
+	r := NewRedactor(knownOnly)
+	if !r.ContainsCredential("here is " + knownOnly + " in text") {
 		t.Fatal("known value not detected")
 	}
 	if !r.ContainsCredential("sk_live_4eC39HqLyjWDarjtT1zdp7dc") {
 		t.Fatal("sk_live_ pattern not detected")
+	}
+	if !r.ContainsCredential("AIzaSySuperSecretGoogleKey0123456789") {
+		t.Fatal("AIza pattern not detected")
 	}
 	if r.ContainsCredential("nothing sensitive here") {
 		t.Fatal("false positive")
@@ -118,7 +122,7 @@ func TestContainsCredentialKnownValueAndPattern(t *testing.T) {
 	if !nilR.ContainsCredential("AKIA1234567890ABCDEF") {
 		t.Fatal("nil redactor should still detect patterns")
 	}
-	if nilR.ContainsCredential("AIzaSySuperSecretGoogleKey0123456789") {
-		t.Fatal("nil redactor cannot detect known values")
+	if nilR.ContainsCredential(knownOnly) {
+		t.Fatal("nil redactor cannot detect a value that only exists as a known value")
 	}
 }

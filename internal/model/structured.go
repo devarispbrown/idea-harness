@@ -43,14 +43,13 @@ func DecodeStructured(raw []byte, schema []byte) (*StructuredResult, error) {
 		return &StructuredResult{Raw: raw, Repaired: repaired, Valid: obj, WasRepaired: true}, nil
 	}
 
-	snippet := strings.TrimSpace(string(extracted))
-	if snippet == "" {
+	if strings.TrimSpace(string(extracted)) == "" {
 		return nil, fmt.Errorf("model: structured output failed: model returned empty output")
 	}
-	if len(snippet) > 300 {
-		snippet = snippet[:300] + "…"
-	}
-	return nil, fmt.Errorf("model: structured output failed schema validation after bounded repair (output: %s)", snippet)
+	// Do NOT embed the raw model output in the error: it is untrusted and may
+	// contain credentials that would then leak into logs, failure reasons, and
+	// the event stream (review: v1 security boundary).
+	return nil, fmt.Errorf("model: structured output failed schema validation after bounded repair")
 }
 
 func compileSchema(schema []byte) (*jsonschema.Schema, error) {
