@@ -334,3 +334,51 @@ func TestExecutePassesConfiguredBuild(t *testing.T) {
 		t.Fatalf("expected review_required (build passes), got %q", cs.Status)
 	}
 }
+
+func TestChangesRequestedReopensTaskAndSupersedes(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs1, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs1.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected review_required, got %q", cs1.Status)
+	}
+
+	// Human requests changes: the task must re-open so a re-execute can supersede.
+	if err := eng.ReviewChangeSet(ctx, iniID, cs1.ID, "changes_requested"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := db.ListTasks(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != domain.TaskProposed {
+		t.Fatalf("expected task re-opened to proposed, got %+v", tasks)
+	}
+
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.ID == cs1.ID {
+		t.Fatal("expected a new change set")
+	}
+	got1, err := db.GetChangeSet(ctx, cs1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got1.Status != domain.ChangeSetSuperseded {
+		t.Fatalf("expected prior change set superseded, got %q", got1.Status)
+	}
+	if cs2.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected new change set review_required, got %q", cs2.Status)
+	}
+}

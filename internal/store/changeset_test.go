@@ -69,6 +69,33 @@ func TestCreateChangeSetAssignsHumanID(t *testing.T) {
 	}
 }
 
+func TestGetChangeSetByRefAmbiguousFailsClosed(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	// Two initiatives each assign their own CHG-1.
+	_ = newTestChangeSet(t, db, "ini-1")
+	_ = newTestChangeSet(t, db, "ini-2")
+
+	// A bare CHG-1 must not silently resolve to an arbitrary initiative's set.
+	if _, err := db.GetChangeSetByRef(ctx, "CHG-1"); err == nil {
+		t.Fatal("expected an ambiguity error for cross-initiative CHG-1")
+	}
+
+	// A unique CHG-2 still resolves (and the full UUID resolves regardless).
+	cs2 := newTestChangeSet(t, db, "ini-1")
+	if cs2.HumanID != "CHG-2" {
+		t.Fatalf("expected CHG-2, got %q", cs2.HumanID)
+	}
+	got, err := db.GetChangeSetByRef(ctx, "CHG-2")
+	if err != nil {
+		t.Fatalf("CHG-2 should resolve uniquely: %v", err)
+	}
+	if got.ID != cs2.ID {
+		t.Fatalf("expected %q, got %q", cs2.ID, got.ID)
+	}
+}
+
 func TestLegalChangeSetTransitions(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

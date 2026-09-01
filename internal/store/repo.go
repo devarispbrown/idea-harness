@@ -755,6 +755,26 @@ func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
 	return out, rows.Err()
 }
 
+// DispositionOpenFindings sets the disposition of every still-open finding for
+// an initiative in one atomic step. Used when a review cycle passes so prior
+// cycles' blocking findings cannot wedge the verify gate (full-platform review).
+func (db *DB) DispositionOpenFindings(ctx context.Context, initiativeID string, disp domain.Disposition, actor string) error {
+	if !disp.Valid() {
+		return fmt.Errorf("store: invalid disposition %q", disp)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "finding",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "findings.dispositioned",
+		Operation:     string(disp),
+	}, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ? WHERE initiative_id = ? AND (disposition IS NULL OR disposition = '')`,
+			disp, actor, initiativeID)
+		return err
+	})
+}
+
 // SetFindingDisposition records a disposition from a distinct actor.
 func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp domain.Disposition, actor string) error {
 	if !disp.Valid() {
