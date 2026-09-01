@@ -190,29 +190,34 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*projectRuntime, error) {
 	r.mu.Lock()
 	pr, ok := r.projects[projectID]
-	r.mu.Unlock()
 	if !ok {
+		r.mu.Unlock()
 		return r.EnsureProject(ctx, projectID)
 	}
 
 	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
 	dotEnv := config.LoadDotEnv(pr.rootPath)
 	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
 	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
 
+	// Reassign all config-derived fields under r.mu so concurrent readers never
+	// observe a torn runtime (review: project-runtime race).
 	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
 	pr.cfg = cfg
 	pr.dotEnv = dotEnv
 	pr.registry = registry
 	pr.blobs = blobs
 	pr.redactor = redactor
+	r.mu.Unlock()
 	return pr, nil
 }
 
@@ -522,10 +527,15 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 	for _, rec := range recoveries {
 		switch rec.Status {
 		case domain.ChangeSetApplying:
-			if rec.LatestJournalState == domain.ApplyWorkspaceMutated && rec.PreImageDigest != "" {
-				// A byte may have been written: restore the pre-image, then mark
-				// conflicted (terminal, legal applying→conflicted).
-				_ = pr.engine.RestoreWorkspace(ctx, rec.PreImageDigest)
+			if rec.PreImageDigest != "" {
+				// A byte may have been written: restore the pre-image, and only
+				// then mark conflicted. If the restore fails, leave the change set
+				// in applying and log loudly so a later reconcile/operator can
+				// retry (never persist a terminal status over a mutated workspace).
+				if err := pr.engine.RestoreWorkspace(ctx, rec.PreImageDigest); err != nil {
+					r.log.Error("reconcile: restore failed, leaving change set applying", "change_set", rec.ChangeSetID, "err", err)
+					continue
+				}
 				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
 			} else {
 				// No bytes were written (prepared/absent): revert applying→approved
