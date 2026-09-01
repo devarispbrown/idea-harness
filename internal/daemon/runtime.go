@@ -192,39 +192,36 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 // re-run (reconciled flag stays set).
 func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*projectRuntime, error) {
 	r.mu.Lock()
-	old, ok := r.projects[projectID]
+	pr, ok := r.projects[projectID]
 	r.mu.Unlock()
 	if !ok {
 		return r.EnsureProject(ctx, projectID)
 	}
 
-	projDir := filepath.Join(r.stateRoot, "projects", projectID)
-	cfg, err := config.Load(filepath.Join(old.rootPath, config.Dir))
+	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
 	if err != nil {
 		return nil, err
 	}
-	dotEnv := config.LoadDotEnv(old.rootPath)
+	dotEnv := config.LoadDotEnv(pr.rootPath)
 	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
-	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
-	if err != nil {
-		return nil, err
-	}
-	rawBlobs, err := blob.New(filepath.Join(projDir, "raw-blobs"), nil)
+	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
 	if err != nil {
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
-	engine := workflow.New(old.db, blobs, registry, cfg.Harness, r.log)
-	engine.SetRawBlobs(rawBlobs)
-	engine.SetRedactor(redactor)
-	engine.SetWorkRoot(projDir)
-	engine.SetWorkspaceRoot(old.rootPath)
 
-	newPr := &projectRuntime{db: old.db, blobs: blobs, cfg: cfg, rootPath: old.rootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
+	// Rebuild config-derived components in place on the SAME engine (its mutex
+	// keeps serializing execute/apply/revert across the reload); then publish the
+	// pr fields under r.mu.
+	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
 	r.mu.Lock()
-	r.projects[projectID] = newPr
+	pr.cfg = cfg
+	pr.dotEnv = dotEnv
+	pr.registry = registry
+	pr.blobs = blobs
+	pr.redactor = redactor
 	r.mu.Unlock()
-	return newPr, nil
+	return pr, nil
 }
 
 // registerCancel records a live cancellation handle for opID.

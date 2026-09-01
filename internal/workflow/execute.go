@@ -294,19 +294,19 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		for _, f := range checks {
 			f := f
 			// The build/test command output is attacker-influenced (agent-produced
-			// code runs in the sandbox); redact it before persisting AND sweep it
-			// so a secret printed by the agent's code is not persisted/served
-			// (review: v1 security boundary — command output is an egress channel).
+			// code runs in the sandbox). Sweep the RAW output FIRST so a secret
+			// printed by the agent's code is rejected, then redact for persistence.
+			rawCred := e.detectCredential(f.Evidence)
+			rawSignals := risk.RiskSignals(ctx, "", f.Evidence)
+			if rawCred || hasBlockingRiskSignal(rawSignals) {
+				f.Code = sweepDenyCode(rawCred, rawSignals)
+				f.Severity = domain.SeverityHigh
+				checksBlocked = true
+			}
 			f.Finding = e.redact(f.Finding)
 			f.Evidence = e.redact(f.Evidence)
 			f.Impact = e.redact(f.Impact)
 			f.Recommendation = e.redact(f.Recommendation)
-			outSignals := risk.RiskSignals(ctx, "", f.Evidence)
-			if e.detectCredential(f.Evidence) || hasBlockingRiskSignal(outSignals) {
-				f.Code = sweepDenyCode(e.detectCredential(f.Evidence), outSignals)
-				f.Severity = domain.SeverityHigh
-				checksBlocked = true
-			}
 			if err := e.db.CreateFinding(ctx, &f); err != nil {
 				return domain.ChangeSet{}, err
 			}
