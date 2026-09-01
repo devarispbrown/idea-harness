@@ -149,6 +149,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	registry := buildRegistry(cfg, r.log, dotEnv)
 	engine := workflow.New(db, blobs, registry, cfg.Harness, r.log)
 	engine.SetRawBlobs(rawBlobs)
+	engine.SetRedactor(redactor)
 	// Point the execute pipeline's isolated work roots at this project's state
 	// directory so WorkRoot mirrors "<state-root>/work/<initiative>".
 	engine.SetWorkRoot(projDir)

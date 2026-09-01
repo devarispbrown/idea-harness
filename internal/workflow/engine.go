@@ -19,6 +19,7 @@ import (
 	"github.com/idea-harness/idea-harness/internal/model"
 	"github.com/idea-harness/idea-harness/internal/review"
 	"github.com/idea-harness/idea-harness/internal/roles"
+	"github.com/idea-harness/idea-harness/internal/security"
 	"github.com/idea-harness/idea-harness/internal/schema"
 	"github.com/idea-harness/idea-harness/internal/store"
 	"github.com/idea-harness/idea-harness/internal/tools"
@@ -58,8 +59,9 @@ const (
 // Engine drives the M1 workflow.
 type Engine struct {
 	db            *store.DB
-	blobs         *blob.Store // redacted store: model artifacts/context
-	rawBlobs      *blob.Store // redaction-free store: diff/apply/revert content
+	blobs         *blob.Store   // redacted store: model artifacts/context
+	rawBlobs      *blob.Store   // redaction-free store: diff/apply/revert content
+	redactor      *security.Redactor
 	registry      *model.Registry
 	cfg           config.HarnessConfig
 	log           *slog.Logger
@@ -82,6 +84,11 @@ func New(db *store.DB, blobs *blob.Store, registry *model.Registry, cfg config.H
 // path (review C1/C2). File content must round-trip byte-for-byte, so it is never
 // redacted; the redacted `blobs` store is reserved for model artifacts.
 func (e *Engine) SetRawBlobs(b *blob.Store) { e.rawBlobs = b }
+
+// SetRedactor sets the redactor applied at the DISPLAY/model surface (the
+// adversarial review context and the diff endpoint), so raw file content never
+// reaches a network-egress model unredacted (review SRE regression).
+func (e *Engine) SetRedactor(r *security.Redactor) { e.redactor = r }
 
 // contentBlobs returns the redaction-free store for file content, falling back to
 // the engine's store when no raw store is configured (tests).
@@ -218,14 +225,12 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	}
 	e.log.Info("model response", "stage", stageKey, "role", roleName, "model", modelSpec, "actual", resp.ActualModel, "duration", time.Since(reqStart).Round(time.Millisecond), "out_tokens", resp.Usage.OutputTokens)
 
-	// Enforce the review token/cost ceilings as a hard stop (review M4).
+	// Enforce the review token ceiling as a hard stop (review M4). max_cost_usd is
+	// parsed but not yet enforceable — no provider computes CostUSD — so it is
+	// documented, not enforced, until token→cost pricing lands.
 	if e.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > e.cfg.Review.MaxTokens {
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, e.cfg.Review.MaxTokens)
-	}
-	if e.cfg.Review.MaxCostUSD > 0 && resp.Usage.CostUSD > e.cfg.Review.MaxCostUSD {
-		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
-		return runID, nil, fmt.Errorf("workflow: %s exceeded max_cost_usd (%.4f > %.4f)", stageKey, resp.Usage.CostUSD, e.cfg.Review.MaxCostUSD)
 	}
 
 	if decoded == nil {
