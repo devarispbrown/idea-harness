@@ -187,7 +187,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// The capability gate is the deterministic trust-tier policy, not the
 	// executor's self-declared capability list: the engine authorizes the
 	// selected executor's engine-assigned trust tier (§49).
-	trust := exec.Capabilities(ctx).Trust
+	// The engine assigns the trust tier from the selected executor's kind, never
+	// from the executor's self-declared Capabilities().Trust (system-deny).
+	trust := executor.TrustTierFor(exec.Name())
 	if !executor.TrustAllows(trust, "write_file") {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
 	}
@@ -310,8 +312,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// never echoes the credential value (full-platform review: secret leak).
 		if hasBlockingRiskSignal(signals) || hasCredential {
 			reason := detectedRiskNames(signals)
+			code := domain.DenyCodePII
 			if hasCredential {
 				reason = "credential detected"
+				code = domain.DenyCodeSecretSweep
 			}
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:   cs.InitiativeID,
@@ -320,6 +324,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 				Severity:       domain.SeverityCritical,
 				Confidence:     domain.ConfidenceHigh,
 				Category:       "secret_sweep",
+				Code:           code,
 				Finding:        "blocking risk signal detected: " + reason,
 				Evidence:       "deterministic scan of the produced patch",
 				Impact:         "change set rejected before review",
@@ -611,10 +616,12 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 	sev := domain.SeverityObservation
 	status := "pass"
 	evidence := fmt.Sprintf("%d file(s) in patch", len(files))
+	code := domain.DenyCode("")
 	if e.contentBlobs() == nil {
 		sev = domain.SeverityHigh
 		status = "FAIL"
 		evidence = "no blob store available"
+		code = domain.DenyCodeBlobDigestMismatch
 	} else {
 		for _, fc := range files {
 			if fc.IsDelete() {
@@ -624,6 +631,7 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 				sev = domain.SeverityHigh
 				status = "FAIL"
 				evidence = fmt.Sprintf("%s: content missing or corrupt: %v", fc.Path, err)
+				code = domain.DenyCodeBlobDigestMismatch
 				break
 			}
 		}
@@ -635,6 +643,7 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 		Severity:       sev,
 		Confidence:     domain.ConfidenceHigh,
 		Category:       "patch_applies",
+		Code:           code,
 		Finding:        "patch applies cleanly to base snapshot — " + status,
 		Evidence:       evidence,
 		Impact:         "deterministic check result",
@@ -667,6 +676,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	// never run on the host. It requires a configured toolchain image (review H3).
 	if e.cfg.Check.Image == "" {
 		base.Severity = domain.SeverityHigh
+		base.Code = domain.DenyCodeHostExec
 		base.Finding = description + " — FAIL (no sandbox image)"
 		base.Disposition = domain.DispositionRejected
 		base.Evidence = "check.image is not configured; refusing to run " + category + " on the host"
@@ -693,6 +703,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	if runErr != nil {
 		// Docker unavailable or launch failed → fail closed, never host-exec.
 		base.Severity = domain.SeverityHigh
+		base.Code = domain.DenyCodeHostExec
 		base.Finding = description + " — FAIL (sandbox unavailable)"
 		base.Disposition = domain.DispositionRejected
 		base.Evidence = fmt.Sprintf("sandbox launch failed: %v\n%s", runErr, truncateOutput(stderr))
@@ -790,6 +801,29 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	patch, err := e.loadPatch(cs)
 	if err != nil {
 		return err
+	}
+
+	// Re-sweep the patch content at the apply boundary (defense-in-depth): the
+	// secret/credential catalog may have grown since Execute swept it. Never
+	// mutate the workspace if a credential is now detected (system-deny).
+	if e.detectCredential(e.renderDiffText(patch.Files)) {
+		if err := e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       changeSetID,
+			Severity:       domain.SeverityCritical,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "secret_sweep",
+			Code:           domain.DenyCodeSecretSweep,
+			Finding:        "credential detected in patch at apply time",
+			Evidence:       "deterministic re-sweep of the persisted patch",
+			Impact:         "apply denied before workspace mutation",
+			Recommendation: "reject the change set and re-execute without the sensitive content",
+			Disposition:    domain.DispositionRejected,
+		}); err != nil {
+			return err
+		}
+		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
 	}
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
@@ -922,6 +956,22 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 // ReviewChangeSet applies a human review verdict. "approved" runs the
 // adversarial reviewer and gates approval on its findings; "changes_requested"
 // and "rejected" apply the corresponding state transition.
+// denyReviewOpenBlocking returns a system-deny error if any undisposed blocking
+// finding targets the change set (review: system-deny tier — "system deny beats
+// human approve").
+func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string) error {
+	findings, err := e.db.ListFindingsByTarget(ctx, "change_set", changeSetID)
+	if err != nil {
+		return err
+	}
+	for _, f := range findings {
+		if f.Disposition == "" && f.Severity.Blocking() {
+			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding)", domain.DenyCodeReviewOpenBlocking, f.Severity)
+		}
+	}
+	return nil
+}
+
 func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string) error {
 	cs, err := e.db.GetChangeSet(ctx, changeSetID)
 	if err != nil {
@@ -936,12 +986,20 @@ func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		if cs.Status != domain.ChangeSetReviewRequired {
 			return fmt.Errorf("workflow: cannot approve change set in status %q", cs.Status)
 		}
+		// System-deny: refuse to approve while an undisposed blocking finding
+		// targets this change set (e.g. a prior adversarial review's critical/high
+		// finding). "System deny beats human approve" (review: system-deny tier).
+		if err := e.denyReviewOpenBlocking(ctx, changeSetID); err != nil {
+			return err
+		}
 		runID, findings, err := e.runChangeSetAdversarialReview(ctx, cs)
 		if err != nil {
 			return err
 		}
 		for i := range findings {
 			findings[i].InitiativeID = initiativeID
+			findings[i].TargetType = "change_set"
+			findings[i].TargetID = changeSetID
 			if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
 				return err
 			}

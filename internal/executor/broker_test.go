@@ -83,3 +83,19 @@ func TestTrustAllowsPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestTrustTierFor(t *testing.T) {
+	cases := map[string]domain.ExecutorTrust{
+		"internal":  domain.ExecutorInternal,
+		"container": domain.ExecutorLocalExternal,
+		"omp":       domain.ExecutorLocalExternal,
+		"hermes":    domain.ExecutorLocalExternal,
+		"bogus":     domain.ExecutorRemoteExternal, // fail-closed
+		"":          domain.ExecutorRemoteExternal,
+	}
+	for name, want := range cases {
+		if got := TrustTierFor(name); got != want {
+			t.Errorf("TrustTierFor(%q) = %q, want %q", name, got, want)
+		}
+	}
+}

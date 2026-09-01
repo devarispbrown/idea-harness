@@ -479,3 +479,55 @@ func TestTaskDependenciesApplied(t *testing.T) {
 		t.Fatalf("B should now be ready (A applied), got ready=%v err=%v", readyB, err)
 	}
 }
+
+func TestApproveDeniedByOpenBlockingFinding(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("expected review_required, got %q", cs.Status)
+	}
+
+	// Plant an undisposed critical finding targeting the change set (as a prior
+	// adversarial review would).
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID,
+		TargetType:   "change_set",
+		TargetID:     cs.ID,
+		Severity:     domain.SeverityCritical,
+		Confidence:   domain.ConfidenceHigh,
+		Category:     "review",
+		Finding:      "prior review flagged a blocker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The human approve must be denied (system deny beats human approve).
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err == nil {
+		t.Fatal("expected approve to be denied by an open blocking finding")
+	}
+
+	// Dispositioning the blocking finding unblocks the approve.
+	fs, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fs {
+		if f.Severity.Blocking() {
+			if err := db.SetFindingDisposition(ctx, f.ID, domain.DispositionFixed, store.HumanActor); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatalf("approve should succeed after dispositioning: %v", err)
+	}
+}
