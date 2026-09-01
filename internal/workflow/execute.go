@@ -599,6 +599,16 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return err
 	}
 
+	// Record a "prepared" journal row BEFORE mutating so an interrupted apply is
+	// recoverable at startup (review H2).
+	if err := e.db.AppendJournal(ctx, &domain.ApplyJournalEntry{
+		ChangeSetID:             changeSetID,
+		State:                   domain.ApplyPrepared,
+		WorkspaceSnapshotDigest: patch.BaseSnapshotDigest,
+	}); err != nil {
+		return err
+	}
+
 	// Write the diff, capturing (and persisting) the pre-image of every touched
 	// path so revert can restore it byte-for-byte.
 	preImage, err := fsdiff.Apply(workspaceRoot, patch.Files, e.contentBlobs().Get, e.contentBlobs().Put)
@@ -607,6 +617,16 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	}
 	preImageDigest, err := e.persistManifest(preImage)
 	if err != nil {
+		return err
+	}
+
+	// Record "workspace_mutated" with the pre-image digest, then advance to
+	// "committed" atomically with the status flip.
+	if err := e.db.AppendJournal(ctx, &domain.ApplyJournalEntry{
+		ChangeSetID:             changeSetID,
+		State:                   domain.ApplyWorkspaceMutated,
+		WorkspaceSnapshotDigest: preImageDigest,
+	}); err != nil {
 		return err
 	}
 

@@ -194,8 +194,9 @@ func TestReviewApproveThenApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(journal) != 1 || journal[0].State != domain.ApplyCommitted {
-		t.Fatalf("expected one committed journal row, got %+v", journal)
+	// H2: prepared → workspace_mutated → committed.
+	if len(journal) != 3 || journal[2].State != domain.ApplyCommitted {
+		t.Fatalf("expected prepared, workspace_mutated, committed journal rows, got %+v", journal)
 	}
 
 	// The real file must have been written into the canonical workspace.
@@ -234,8 +235,9 @@ func TestRevertAppendsRolledBackJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(journal) != 2 || journal[1].State != domain.ApplyRolledBack {
-		t.Fatalf("expected committed then rolled_back journal rows, got %+v", journal)
+	// H2: prepared → workspace_mutated → committed → rolled_back.
+	if len(journal) != 4 || journal[3].State != domain.ApplyRolledBack {
+		t.Fatalf("expected prepared, workspace_mutated, committed, rolled_back journal rows, got %+v", journal)
 	}
 
 	got, err := db.GetChangeSet(ctx, cs.ID)
