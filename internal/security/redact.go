@@ -21,6 +21,10 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`),
 	// OpenAI / generic sk- keys.
 	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+	// Stripe live secret key.
+	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
+	// Slack bot token (xoxb-).
+	regexp.MustCompile(`\bxoxb-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,}\b`),
 	// Generic key=value credentials in text/URLs.
 	regexp.MustCompile(`(?i)\b(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}["']?`),
 }

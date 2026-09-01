@@ -343,6 +343,16 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "operation not found")
 }
 
+// handleCancelOperation interrupts a running operation (M3, §16).
+func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
+	opID := r.PathValue("id")
+	if err := s.rt.CancelOperation(r.Context(), opID); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"operation_id": opID, "status": string(domain.OperationCancelled)})
+}
+
 // ---------- decisions / questions ----------
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {

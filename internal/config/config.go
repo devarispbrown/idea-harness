@@ -100,6 +100,9 @@ type HarnessConfig struct {
 	// check is recorded not_applicable.
 	BuildCmd string `json:"build_cmd,omitempty" yaml:"build_cmd,omitempty"`
 	TestCmd  string `json:"test_cmd,omitempty" yaml:"test_cmd,omitempty"`
+	// CheckTimeoutSeconds bounds each deterministic build/test check. Zero uses
+	// the default of 600s (10m) (review SRE).
+	CheckTimeoutSeconds int `json:"check_timeout_seconds,omitempty" yaml:"check_timeout_seconds,omitempty"`
 }
 
 // Config is the fully-loaded portable configuration for one project.

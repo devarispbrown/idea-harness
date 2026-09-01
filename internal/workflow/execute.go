@@ -97,6 +97,9 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 // checks → review_required/rejected. The adversarial reviewer runs at review time
 // (§50).
 func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.ChangeSet, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	task, err := e.nextReadyTask(ctx, initiativeID)
 	if err != nil {
 		return domain.ChangeSet{}, err
@@ -531,7 +534,11 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	// environment (the check executes the agent's code, so it must not inherit
 	// the daemon's secrets). Full OS sandboxing is a follow-up requiring a
 	// project-toolchain image (review H3).
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	timeout := 10 * time.Minute
+	if e.cfg.CheckTimeoutSeconds > 0 {
+		timeout = time.Duration(e.cfg.CheckTimeoutSeconds) * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	c := exec.CommandContext(checkCtx, "sh", "-c", cmd)
 	c.Dir = workRoot
@@ -542,8 +549,8 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		base.Finding = description + " — FAIL"
 		base.Disposition = domain.DispositionRejected // review M5: a rejected change set's findings are closed, not left open
 		if checkCtx.Err() == context.DeadlineExceeded {
-			base.Evidence = "timed out after 10m\n" + truncateOutput(string(out))
-			base.Recommendation = "the " + category + " command hung; fix it or raise the timeout"
+			base.Evidence = fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(string(out)))
+			base.Recommendation = "the " + category + " command hung; fix it or raise check_timeout_seconds"
 		} else {
 			base.Evidence = fmt.Sprintf("exit: %v\n%s", err, truncateOutput(string(out)))
 			base.Recommendation = "fix the failure and re-execute"
@@ -606,6 +613,9 @@ func detectedRiskNames(signals []domain.RiskSignal) string {
 // atomic per-file temp+rename, capturing the pre-image into the journal so
 // revert can restore it byte-for-byte (§39, review B1).
 func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	cs, err := e.db.GetChangeSet(ctx, changeSetID)
 	if err != nil {
 		return err
@@ -683,6 +693,9 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 // snapshot recorded at apply time (byte-for-byte), then advances
 // applied→reverted plus a rolled_back journal entry atomically (§39, review B1).
 func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	cs, err := e.db.GetChangeSet(ctx, changeSetID)
 	if err != nil {
 		return err

@@ -40,6 +40,7 @@ const harnessSchema = `{
     "models": { "type": "object" },
     "build_cmd": { "type": "string" },
     "test_cmd": { "type": "string" },
+    "check_timeout_seconds": { "type": "integer", "minimum": 0 },
     "executor": {
       "type": "object",
       "properties": {

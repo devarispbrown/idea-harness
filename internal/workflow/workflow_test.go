@@ -30,7 +30,11 @@ func newTestEngine(t *testing.T, fp *model.FakeProvider, cfg config.HarnessConfi
 	}
 	reg := model.NewRegistry("idea-harness-default")
 	reg.Add("idea-harness-default", fp)
-	return New(db, blobs, reg, cfg, nil), db
+	eng := New(db, blobs, reg, cfg, nil)
+	// Test blobs use a nil redactor, so they are already redaction-free; wire
+	// them as the raw store so contentBlobs() is non-nil (fail-closed).
+	eng.SetRawBlobs(blobs)
+	return eng, db
 }
 
 func scriptedProvider() *model.FakeProvider {

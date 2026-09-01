@@ -383,11 +383,12 @@ const (
 	OperationRunning   OperationStatus = "running"
 	OperationSucceeded OperationStatus = "succeeded"
 	OperationFailed    OperationStatus = "failed"
+	OperationCancelled OperationStatus = "cancelled"
 )
 
 func (s OperationStatus) Valid() bool {
 	switch s {
-	case OperationPending, OperationRunning, OperationSucceeded, OperationFailed:
+	case OperationPending, OperationRunning, OperationSucceeded, OperationFailed, OperationCancelled:
 		return true
 	}
 	return false

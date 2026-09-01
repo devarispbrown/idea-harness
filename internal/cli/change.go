@@ -61,7 +61,28 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
+	if opID := out["operation_id"]; opID != "" {
+		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+	return nil
+}
+
+// cmdCancel interrupts a running asynchronous operation by id (§16, M3).
+func cmdCancel(args []string, stdout, stderr io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: idea cancel <operation-id>")
+	}
+	c, _, err := connect()
+	if err != nil {
+		return err
+	}
+	opID := args[0]
+	var out map[string]string
+	if err := c.do("POST", "/api/v1/operations/"+opID+"/cancel", nil, &out); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ cancelled operation")+" "+code(opID))
 	return nil
 }
 
@@ -195,6 +216,9 @@ func runChangeSetAction(action string, args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(args[0]))
+	if opID := out["operation_id"]; opID != "" {
+		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
 	return nil
 }
 

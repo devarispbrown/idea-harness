@@ -31,6 +31,11 @@ type Runtime struct {
 
 	mu       sync.Mutex
 	projects map[string]*projectRuntime
+
+	// cancelMu guards cancels: live cancellation handles for in-flight
+	// asynchronous operations, keyed by operation id (M3 cancel, §16).
+	cancelMu sync.Mutex
+	cancels  map[string]context.CancelFunc
 }
 
 type projectRuntime struct {
@@ -66,6 +71,7 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		global:    global,
 		log:       log,
 		projects:  map[string]*projectRuntime{},
+		cancels:   map[string]context.CancelFunc{},
 	}, nil
 }
 
@@ -174,6 +180,83 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	return r.EnsureProject(ctx, projectID)
 }
 
+// registerCancel records a live cancellation handle for opID.
+func (r *Runtime) registerCancel(opID string, cancel context.CancelFunc) {
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	r.cancels[opID] = cancel
+}
+
+// unregisterCancel drops a cancellation handle once its operation settles.
+func (r *Runtime) unregisterCancel(opID string) {
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	delete(r.cancels, opID)
+}
+
+// launchOperation starts fn in a goroutine with a cancellable context that is
+// registered under opID so CancelOperation can interrupt it. fn is expected to
+// transition the operation to a terminal status; the handle is deregistered
+// and released when fn returns.
+func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r.registerCancel(opID, cancel)
+	go func() {
+		defer cancel()
+		defer r.unregisterCancel(opID)
+		fn(ctx)
+	}()
+}
+
+// failOperation transitions opID to a terminal failed (or cancelled) status and
+// optionally fails the initiative. It uses a fresh context so the durable status
+// write survives cancellation of the operation's own context.
+func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context.Context, pr *projectRuntime, runErr error, failInitiative bool) {
+	r.log.Error(logMsg, "initiative", initiativeID, "op", opID, "err", runErr)
+	sctx := context.Background()
+	status := domain.OperationFailed
+	if opCtx.Err() != nil {
+		status = domain.OperationCancelled
+	}
+	_ = pr.db.SetOperationStatus(sctx, opID, status, "")
+	if failInitiative && status == domain.OperationFailed {
+		_ = pr.db.FailInitiative(sctx, initiativeID, runErr.Error())
+	}
+}
+
+// CancelOperation interrupts a running asynchronous operation (M3, §16): it
+// cancels the operation's context so the in-flight model/command call unwinds,
+// and marks the operation cancelled so callers observe the terminal state
+// immediately. Returns an error when no live handle exists (already settled or
+// orphaned after a daemon restart).
+func (r *Runtime) CancelOperation(ctx context.Context, opID string) error {
+	r.cancelMu.Lock()
+	cancel, ok := r.cancels[opID]
+	r.cancelMu.Unlock()
+	if !ok {
+		return fmt.Errorf("operation %q is not running (no live cancellation handle)", opID)
+	}
+	cancel()
+
+	// Find the owning project DB to persist the terminal status. Search the
+	// registry (same strategy as handleGetOperation) because the cancel route
+	// is addressed by operation id alone.
+	projects, err := r.ListProjects(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range projects {
+		pr, err := r.EnsureProject(ctx, p.ProjectID)
+		if err != nil {
+			continue
+		}
+		if _, err := pr.db.GetOperation(ctx, opID); err == nil {
+			return pr.db.SetOperationStatus(ctx, opID, domain.OperationCancelled, "")
+		}
+	}
+	return fmt.Errorf("operation %q not found in any project", opID)
+}
+
 // StartInitiative creates an initiative + operation and runs the workflow
 // asynchronously (§34). Returns the initiative and operation ids.
 func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, description string) (string, string, error) {
@@ -190,18 +273,15 @@ func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, descrip
 		return "", "", err
 	}
 
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.Run(bg, ini.ID, description)
 		if runErr != nil {
-			r.log.Error("initiative run failed", "initiative", ini.ID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
-			pr.db.FailInitiative(bg, ini.ID, runErr.Error())
+			r.failOperation(opID, ini.ID, "initiative run failed", bg, pr, runErr, true)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, ini.ID)
 		r.log.Info("initiative run complete", "initiative", ini.ID, "status", status)
-	}()
+	})
 
 	return ini.ID, opID, nil
 }
@@ -230,18 +310,15 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	// Mark the initiative running so the UI reflects "designing & planning"
 	// rather than a stale "approved" during the M2 pipeline.
 	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.Advance(bg, initiativeID)
 		if runErr != nil {
-			r.log.Error("advance failed", "initiative", initiativeID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
-			pr.db.FailInitiative(bg, initiativeID, runErr.Error())
+			r.failOperation(opID, initiativeID, "advance failed", bg, pr, runErr, true)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("advance complete", "initiative", initiativeID, "status", status)
-	}()
+	})
 	return opID, nil
 }
 
@@ -259,17 +336,15 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		cs, runErr := pr.engine.Execute(bg, initiativeID)
 		if runErr != nil {
-			r.log.Error("execute failed", "initiative", initiativeID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
+			r.failOperation(opID, initiativeID, "execute failed", bg, pr, runErr, false)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, cs.ID)
 		r.log.Info("execute complete", "initiative", initiativeID, "change_set", cs.HumanID)
-	}()
+	})
 	return opID, nil
 }
 
@@ -283,16 +358,14 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		if runErr := pr.engine.ApplyChangeSet(bg, initiativeID, changeSetID); runErr != nil {
-			r.log.Error("apply failed", "change_set", changeSetID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
+			r.failOperation(opID, initiativeID, "apply failed", bg, pr, runErr, false)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("apply complete", "change_set", changeSetID)
-	}()
+	})
 	return opID, nil
 }
 
@@ -307,16 +380,14 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		if runErr := pr.engine.RevertChangeSet(bg, initiativeID, changeSetID); runErr != nil {
-			r.log.Error("revert failed", "change_set", changeSetID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
+			r.failOperation(opID, initiativeID, "revert failed", bg, pr, runErr, false)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
-	}()
+	})
 	return opID, nil
 }
 
@@ -338,18 +409,15 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.Revise(bg, initiativeID)
 		if runErr != nil {
-			r.log.Error("revise failed", "initiative", initiativeID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
-			pr.db.FailInitiative(bg, initiativeID, runErr.Error())
+			r.failOperation(opID, initiativeID, "revise failed", bg, pr, runErr, true)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("revise complete", "initiative", initiativeID, "status", status)
-	}()
+	})
 	return opID, nil
 }
 
@@ -364,8 +432,7 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		bg := context.Background()
+	r.launchOperation(opID, func(bg context.Context) {
 		// Clear prior answers, then append each chunk as it completes so the UI
 		// can observe real progress via the suggested-answers list.
 		_ = pr.db.ReplaceSuggestedAnswers(bg, initiativeID, nil)
@@ -378,13 +445,12 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 			total += len(answers)
 		})
 		if runErr != nil {
-			r.log.Error("suggest answers failed", "initiative", initiativeID, "err", runErr)
-			pr.db.SetOperationStatus(bg, opID, domain.OperationFailed, "")
+			r.failOperation(opID, initiativeID, "suggest answers failed", bg, pr, runErr, false)
 			return
 		}
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("suggest answers complete", "initiative", initiativeID, "count", total)
-	}()
+	})
 	return opID, nil
 }
 

@@ -90,6 +90,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return cmdNext(rest, stdout, stderr)
 	case "watch":
 		return cmdWatch(rest, stdout, stderr)
+	case "cancel":
+		return cmdCancel(rest, stdout, stderr)
 	case "doctor":
 		return cmdDoctor(stdout)
 	case "logs":
@@ -132,6 +134,7 @@ func usage(w io.Writer) {
 	fmt.Fprintf(w, "  %-20s %s\n", accent("risk"), "show the deterministic risk profile")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("executors"), "list executors + capabilities")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("watch"), "watch a run live")
+	fmt.Fprintf(w, "  %-20s %s\n", accent("cancel <op-id>"), "interrupt a running operation")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("config"), "show or validate .idea-harness config")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("doctor"), "check daemon/config/state health")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("logs [-f] [n]"), "show (or follow) the daemon log")
