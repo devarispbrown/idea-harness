@@ -28,7 +28,24 @@ for _ in $(seq 1 50); do
 done
 
 cd "$PROJ"
+# Make the workspace a Git repo so the opt-in git-commit-on-apply path is
+# exercised end-to-end (not just the byte-for-byte file revert).
+git init -q
+git config user.name "idea-harness-smoke"
+git config user.email "smoke@example.invalid"
 "$ROOT/bin/idea" init
+# Enable the opt-in git commit-on-apply flag, then restart the daemon so it
+# re-loads the project config (the daemon caches config on first open).
+sed -i.bak 's/git_commit: false/git_commit: true/' .idea-harness/harness.yaml
+rm -f .idea-harness/harness.yaml.bak
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+"$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
+DAEMON_PID=$!
+for _ in $(seq 1 50); do
+  if "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; then break; fi
+  sleep 0.1
+done
 echo "--- NEW ---"
 "$ROOT/bin/idea" new "Build a recipe sharing app"
 echo "--- waiting for workflow ---"
@@ -68,6 +85,16 @@ echo "--- APPLY CHG-1 ---"
 sleep 2
 echo "--- WORKSPACE FILE (after apply) ---"
 test -f "$PROJ/hello.txt" && echo "hello.txt present:" && cat "$PROJ/hello.txt"
+echo "--- GIT COMMIT (after apply) ---"
+# apply is async; wait for the opt-in commit to land, then assert it exists
+# and contains exactly the applied file (path-scoped, hooks-disabled).
+for _ in $(seq 1 25); do
+  if git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:"; then break; fi
+  sleep 0.2
+done
+git -C "$PROJ" log --oneline 2>/dev/null || true
+git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:" || { echo "ERROR: no CHG-1 git commit after apply"; exit 1; }
+git -C "$PROJ" ls-tree -r --name-only HEAD | grep -q hello.txt || { echo "ERROR: hello.txt not in the git commit"; exit 1; }
 echo "--- CHANGE CHG-1 ---"
 "$ROOT/bin/idea" change CHG-1
 echo "--- REVERT CHG-1 ---"
