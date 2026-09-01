@@ -744,6 +744,41 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 }
 
+// handleVerify runs the verification gate and, when a requirement + pass is
+// supplied, records a human pass first (§70, review B4/B10).
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	initiativeID := r.PathValue("id")
+	pr, err := s.rt.EnsureProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var body struct {
+		Requirement string `json:"requirement"`
+		Pass        bool   `json:"pass"`
+		Note        string `json:"note"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	if body.Requirement != "" && body.Pass {
+		if err := pr.engine.RecordHumanPass(r.Context(), initiativeID, body.Requirement, body.Note, ""); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if err := pr.engine.VerifyInitiative(r.Context(), initiativeID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ini, err := pr.db.GetInitiative(r.Context(), initiativeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": ini.Status})
+}
+
 // handleListChangeSets returns the change sets for an initiative.
 func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)

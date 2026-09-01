@@ -14,9 +14,13 @@ import (
 )
 
 // SandboxedAgentExecutor runs a coding-agent CLI inside an isolated container
-// (review B2). OMP and Hermes are the two agents; neither ever runs as a host
-// subprocess. The agent writes files under the mounted /work (== req.WorkRoot);
-// the engine snapshots that directory before/after and computes the diff (B3).
+// (review B2, amended). The container gives FILESYSTEM/PROCESS isolation —
+// read-only root, only the mounted /work and a /tmp tmpfs are writable — but
+// NOT network isolation: the agent needs egress to reach its model API, so the
+// provider keys are forwarded in and `--network none` is deliberately omitted.
+// OMP and Hermes are the two agents; neither runs as a host subprocess. The
+// agent writes files under /work (== req.WorkRoot); the engine snapshots that
+// directory before/after and computes the diff (B3).
 type SandboxedAgentExecutor struct {
 	mu         sync.Mutex
 	attempts   map[string]*agentAttempt
@@ -69,6 +73,29 @@ func hermesArgs(req Request, model string) []string {
 	return []string{"hermes", "--in", "/work", "--yolo", "chat", "--query", stmt, "--model", model}
 }
 
+// providerKeyEnvs are the provider API-key env vars forwarded into the agent
+// container so the agent can authenticate to its model API. Only keys that are
+// set on the host are forwarded.
+var providerKeyEnvs = []string{
+	"ANTHROPIC_API_KEY",
+	"OPENAI_API_KEY",
+	"GOOGLE_API_KEY",
+	"OPENROUTER_API_KEY",
+	"DEEPSEEK_API_KEY",
+}
+
+// forwardProviderKeys returns the `-e NAME=value` docker args for every set
+// provider key, so the agent has a credential inside the sandbox.
+func forwardProviderKeys() []string {
+	var args []string
+	for _, name := range providerKeyEnvs {
+		if v := os.Getenv(name); v != "" {
+			args = append(args, "-e", name+"="+v)
+		}
+	}
+	return args
+}
+
 // NewOMPExecutor returns a sandboxed OMP executor. image must contain the omp
 // CLI; the thin slice defaults to Alpine so tests can exercise the adapter
 // without a real agent image.
@@ -84,32 +111,36 @@ func NewHermesExecutor(store *blob.Store, model, image string) *SandboxedAgentEx
 // Name reports the executor's registered name.
 func (e *SandboxedAgentExecutor) Name() string { return e.name }
 
-// Capabilities declares the agent's capabilities. The sandbox mode is now REAL:
-// the agent runs in an isolated container, so the label matches enforcement.
+// Capabilities declares the agent's capabilities. The sandbox mode is REAL
+// filesystem/process isolation (container, read-only root); Network is true
+// because the agent needs egress to reach its model API.
 func (e *SandboxedAgentExecutor) Capabilities(ctx context.Context) Capabilities {
 	return Capabilities{
 		Trust:        domain.ExecutorLocalExternal,
 		SandboxMode:  domain.SandboxContainer,
-		Network:      false,
+		Network:      true,
 		Capabilities: []string{"fs.write"},
 	}
 }
 
 // Start launches the agent inside the isolated container (detached) and records
-// the container id.
+// the container id. The provider keys are forwarded so the agent can reach its
+// model; `--network none` is intentionally omitted (the agent must egress to the
+// model API — this is a filesystem/process sandbox, not a network sandbox).
 func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 	if err := os.MkdirAll(req.WorkRoot, 0o755); err != nil {
 		return Attempt{}, fmt.Errorf("executor: %s: mkdir work root: %w", e.name, err)
 	}
-	args := append([]string{
+	args := []string{
 		"run", "-d",
-		"--network", "none",
 		"--read-only",
 		"--tmpfs", "/tmp",
 		"-v", req.WorkRoot + ":/work",
 		"-w", "/work",
-		e.image,
-	}, e.buildArgs(req, e.model)...)
+	}
+	args = append(args, forwardProviderKeys()...)
+	args = append(args, e.image)
+	args = append(args, e.buildArgs(req, e.model)...)
 	out, err := exec.CommandContext(ctx, e.dockerPath, args...).Output()
 	if err != nil {
 		return Attempt{}, fmt.Errorf("executor: %s: docker run: %w", e.name, err)

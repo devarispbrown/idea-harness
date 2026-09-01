@@ -31,8 +31,9 @@ func TestSandboxedAgentCapabilities(t *testing.T) {
 	if caps.SandboxMode != domain.SandboxContainer {
 		t.Errorf("SandboxMode = %q, want container (real isolation)", caps.SandboxMode)
 	}
-	if caps.Network {
-		t.Error("Network = true, want false (--network none)")
+	// Network is now TRUE: the agent needs egress to reach its model API.
+	if !caps.Network {
+		t.Error("Network = false, want true (agent needs model egress)")
 	}
 
 	h := NewHermesExecutor(nil, "", "")
@@ -47,6 +48,7 @@ func TestSandboxedAgentCapabilities(t *testing.T) {
 func TestSandboxedOMPArgs(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
 	e := NewOMPExecutor(newTestBlobStore(t), "opus", "alpine:3.20")
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
@@ -62,11 +64,11 @@ func TestSandboxedOMPArgs(t *testing.T) {
 
 	args := recordedArgs(t, record)
 	for _, want := range []string{
-		"--network none",
 		"--read-only",
 		"--tmpfs /tmp",
 		"-v " + work + ":/work",
 		"-w /work",
+		"-e ANTHROPIC_API_KEY=sk-ant-test",
 		"alpine:3.20",
 		"omp --print --cwd /work --model opus --auto-approve",
 		"Add a changelog",
@@ -74,6 +76,10 @@ func TestSandboxedOMPArgs(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Errorf("docker args %q missing %q", args, want)
 		}
+	}
+	// The agent must NOT be network-isolated (it needs model egress).
+	if strings.Contains(args, "--network none") {
+		t.Errorf("docker args %q must not contain --network none", args)
 	}
 
 	st, err := e.Status(t.Context(), a.ID)
@@ -99,12 +105,14 @@ func TestSandboxedHermesArgs(t *testing.T) {
 
 	args := recordedArgs(t, record)
 	for _, want := range []string{
-		"--network none",
 		"--read-only",
 		"hermes --in /work --yolo chat --query Build the core --model opus",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("docker args %q missing %q", args, want)
 		}
+	}
+	if strings.Contains(args, "--network none") {
+		t.Errorf("docker args %q must not contain --network none", args)
 	}
 }

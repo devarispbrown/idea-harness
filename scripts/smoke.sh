@@ -77,6 +77,9 @@ echo "--- WORKSPACE FILE (after revert) ---"
 if [ -f "$PROJ/hello.txt" ]; then echo "ERROR: hello.txt still present after revert"; exit 1; else echo "hello.txt removed"; fi
 echo "--- CHANGE CHG-1 (after revert) ---"
 "$ROOT/bin/idea" change CHG-1
+echo "--- VERIFY (B4/B10) ---"
+"$ROOT/bin/idea" verify REQ-1 --pass --note "smoke"
+"$ROOT/bin/idea" verify
 echo "--- RISK ---"
 "$ROOT/bin/idea" risk
 echo "--- EXECUTORS ---"

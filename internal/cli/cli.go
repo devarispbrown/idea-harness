@@ -84,6 +84,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return cmdRisk(rest, stdout, stderr)
 	case "executors":
 		return cmdExecutors(rest, stdout, stderr)
+	case "verify":
+		return cmdVerify(rest, stdout, stderr)
 	case "watch":
 		return cmdWatch(rest, stdout, stderr)
 	case "doctor":

@@ -90,6 +90,21 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
 	}
 
+	// Record a durable run for the implementer step (review B7). The run is
+	// marked failed on any error path and succeeded once the change set is
+	// produced, so the execution is traceable end to end.
+	agentRunID, err := e.db.CreateRun(ctx, domain.RunAgent, "", "implementer")
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	agentStart := time.Now()
+	agentSucceeded := false
+	defer func() {
+		if !agentSucceeded {
+			_ = e.db.SetRunStatus(context.Background(), agentRunID, domain.RunFailed, "implementer")
+		}
+	}()
+
 	// Snapshot the isolated work root BEFORE the executor runs, so the
 	// orchestrator computes the real diff itself — never trusting the executor's
 	// self-declaration (review B3).
@@ -102,12 +117,22 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
+	// Cancel the attempt on any early-exit path so a hung agent never leaks a
+	// running container/subprocess (review B6). Collect already cleans up on the
+	// success path, so this is a harmless no-op there.
+	completed := false
+	defer func() {
+		if !completed {
+			_ = exec.Cancel(context.Background(), attempt.ID)
+		}
+	}()
 	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
 		return domain.ChangeSet{}, err
 	}
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
+	completed = true
 
 	// Snapshot AFTER and compute the orchestrator-authored diff.
 	after, err := fsdiff.Snapshot(req.WorkRoot)
@@ -186,6 +211,24 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskDone); err != nil {
 		return domain.ChangeSet{}, err
 	}
+
+	// Record the implementer run's provenance + success (review B7).
+	modelSpec := e.implementerModel()
+	if err := e.db.CreateRunManifest(ctx, &domain.RunManifest{
+		RunID:          agentRunID,
+		RequestedModel: modelSpec,
+		ActualModel:    modelSpec,
+		Usage:          domain.RunUsage{DurationMS: time.Since(agentStart).Milliseconds()},
+		ResultDigest:   patchDigest,
+		StartedAt:      agentStart,
+		FinishedAt:     time.Now().UTC(),
+	}); err != nil {
+		return domain.ChangeSet{}, err
+	}
+	if err := e.db.SetRunStatus(ctx, agentRunID, domain.RunSucceeded, "implementer"); err != nil {
+		return domain.ChangeSet{}, err
+	}
+	agentSucceeded = true
 
 	got, err := e.db.GetChangeSet(ctx, cs.ID)
 	if err != nil {
@@ -321,13 +364,16 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 	for {
 		select {
 		case <-ctx.Done():
+			_ = exec.Cancel(context.Background(), attemptID)
 			return ctx.Err()
 		case <-deadline.C:
+			_ = exec.Cancel(context.Background(), attemptID)
 			return fmt.Errorf("workflow: execute: attempt did not complete within %s", maxDuration)
 		default:
 		}
 		st, err := exec.Status(ctx, attemptID)
 		if err != nil {
+			_ = exec.Cancel(context.Background(), attemptID)
 			return fmt.Errorf("workflow: execute: %w", err)
 		}
 		switch st.Status {
