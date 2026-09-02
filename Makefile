@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check clean
+.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check clean
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -59,6 +59,17 @@ docs:
 # cannot ship undocumented (CI runs this; see .github/workflows/ci.yml).
 docs-check:
 	go run ./internal/docsgen -check
+
+# Fails when docs/openapi.yaml and the daemon's route table disagree: a route
+# with no operation in the spec, or an operation no route serves. The spec is
+# hand-written, so this is the only thing standing between it and quiet drift.
+#
+# It reads the patterns out of internal/daemon's AST rather than grepping, and
+# only compares paths under /api/ — the spec-serving endpoints (/openapi.yaml,
+# /openapi.json, /api-reference) sit outside the auth boundary and outside the
+# API surface the spec describes.
+api-check:
+	go run ./internal/docsgen -api-check
 
 test:
 	go test ./...
