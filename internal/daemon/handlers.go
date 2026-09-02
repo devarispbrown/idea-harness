@@ -265,6 +265,18 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 }
 
+// handleApprovePlan re-runs the execution-plan review (human approval gate).
+func (s *Server) handleApprovePlan(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	initiativeID := r.PathValue("id")
+	opID, err := s.rt.ApprovePlanInitiative(r.Context(), projectID, initiativeID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+}
+
 // handleRevisePlan regenerates the execution plan + review (keeps PRD/design).
 func (s *Server) handleRevisePlan(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
