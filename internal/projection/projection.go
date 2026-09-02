@@ -295,6 +295,15 @@ func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove 
 			why = reason
 		}
 		return NextMove{Action: "The workflow failed", Why: why, Affected: []string{"Workflow"}}
+	case domain.InitiativeComplete:
+		// Terminal state: the judgment-item rules below must not run. `idea
+		// status` printed "● complete" and then "→ Resolve open questions",
+		// which reads as unfinished work on an initiative that verified and
+		// ended. Items left open on a complete initiative are part of the
+		// record, not a next step, so they are described that way.
+		return NextMove{Action: "Nothing to do — this initiative is complete",
+			Why:      completeWhy(openDecisions, openQuestions),
+			Affected: []string{"Workflow"}}
 	}
 
 	if openDecisions > 0 {
@@ -304,6 +313,24 @@ func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove 
 		return NextMove{Action: "Resolve open questions", Why: fmt.Sprintf("%d open question(s) reduce uncertainty about the product.", openQuestions), Affected: []string{"Product Definition"}}
 	}
 	return NextMove{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
+}
+
+// completeWhy explains a terminal initiative. Anything still open on it is
+// informational — a record of what was not settled — never a prompt to act,
+// which is what "Resolve open questions" read as on a finished initiative.
+func completeWhy(openDecisions, openQuestions int) string {
+	var left []string
+	if openDecisions > 0 {
+		left = append(left, fmt.Sprintf("%d decision(s)", openDecisions))
+	}
+	if openQuestions > 0 {
+		left = append(left, fmt.Sprintf("%d open question(s)", openQuestions))
+	}
+	if len(left) == 0 {
+		return "Verification passed and the work is done."
+	}
+	return fmt.Sprintf("Verification passed and the work is done. %s stayed unresolved and remain on the record for reference — nothing is waiting on you.",
+		strings.Join(left, " and "))
 }
 
 // Changed is the grouped What Changed projection. Through is the highest event

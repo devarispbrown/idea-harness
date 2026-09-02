@@ -22,7 +22,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Web UI | React + TypeScript (Vite), built by `make build` and embedded into the binary |
 | Database | SQLite (pure-Go `modernc.org/sqlite`), WAL, single writer |
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
-| API | REST + SSE (OpenAPI planned) |
+| API | REST + SSE (OpenAPI planned) — see [`api.md`](api.md) |
 | Config | YAML + JSON Schema |
 | Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (OpenRouter, Ollama, custom) + fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |

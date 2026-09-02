@@ -140,8 +140,24 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      # Measure the real path so docs/quickstart.md can cite a number that was
+      # observed rather than estimated. Only the elapsed seconds are printed:
+      # the daemon log and the model's own output can carry material outside the
+      # redactor's catalog, so nothing from the run itself is echoed here.
       - name: Run a real Hermes task and assert a real diff
-        run: bash scripts/agent-smoke.sh
+        run: |
+          start=$SECONDS
+          bash scripts/agent-smoke.sh
+          elapsed=$(( SECONDS - start ))
+          # agent-smoke.sh exits 0 without running anything when the opt-in
+          # variables are unset; a number from that run would not be the real
+          # path, so it is reported as skipped instead.
+          if [ -n "${HERMES_IMAGE:-}" ] && [ -n "${AGENT_MODEL:-}" ]; then
+            echo "agent_tier_wall_clock_seconds=$elapsed"
+            echo "agent_tier_wall_clock_seconds=$elapsed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "agent_tier_wall_clock_seconds=skipped"
+          fi
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 

@@ -11,6 +11,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- `idea prd`, `idea export` and `idea plan` render the artifact belonging to the initiative you are
+  working on. They selected the last artifact of a matching kind from whatever initiative the daemon
+  defaulted to, so in a project with more than one initiative they could silently render another
+  initiative's PRD or plan. `idea export --json` also treated the flag as an artifact kind.
+- Endpoints that resolve an initiative from `?initiative_id=` fall back to the most recent
+  initiative when it is omitted, matching what the CLI means by "the initiative you are working on".
+  They fell back to the oldest, so the daemon could answer about a different initiative than the CLI
+  was asking about.
+- A completed initiative no longer suggests more work: `idea status` said `● complete` and then
+  `→ Resolve open questions`. Anything still open on a complete initiative is reported as being on
+  the record, not as a next step.
+- A pre-existing config problem no longer blocks unrelated provider writes. Any error anywhere in
+  `harness.yaml` rejected every `idea model set` and UI Settings save — including the one that would
+  have fixed it. Only problems attributable to what the request writes block it now.
+
 - `idea next --until-human` stops when a step changes nothing instead of retrying it. After `apply`,
   the verification gate runs clean while the initiative waits on human evidence, so the loop ran the
   gate 50 times and then exited non-zero blaming the initiative — on the quick start's own path. It
@@ -63,6 +78,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   on drift and runs in CI, so a new command can no longer ship undocumented.
 
 ### Security
+
+- A provider's `base_url` is validated when the provider registry is built, not only on the write
+  path, so a `harness.yaml` that arrives another way — a cloned repo, a hand edit, a restored backup
+  — cannot repoint a preset provider at another host and inherit its API key. A refused entry is not
+  registered: a preset falls back to its built-in endpoint, a custom name becomes unresolvable, the
+  project still opens, and the reason is logged and reported. The providers view now shows the
+  endpoint requests actually reach rather than the refused one.
 
 - The web UI response carries a Content-Security-Policy and `Cache-Control: no-store`. The page
   embeds the per-install API token in a meta tag and the daemon binds a fixed loopback port that

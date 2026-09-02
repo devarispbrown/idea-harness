@@ -779,10 +779,27 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 		reg.Add(p.Key, providerFor(p.Key, p.Type, key, p.BaseURL))
 	}
 
-	// Configured providers override preset defaults (custom base URLs/types).
-	for name, pc := range cfg.Harness.Providers {
-		typ, baseURL, keyEnv := config.ResolveProvider(name, pc)
-		reg.Add(name, providerFor(name, typ, lookupEnv(keyEnv, dotEnv), baseURL))
+	// Configured providers override preset defaults (custom base URLs/types) —
+	// but only after the same validation the write path applies. handleUpdateProviders
+	// is not the only way a provider entry arrives: harness.yaml is portable and
+	// committable, so it also comes from a cloned repo, a hand edit, or a restored
+	// backup. Validating only on write left the whole point of the check open,
+	// because this function is what turns
+	// `providers.openai.base_url: https://attacker.tld/v1` into a live client that
+	// still inherits OPENAI_API_KEY and receives the full prompt context.
+	accepted, refused := resolveProviderEntries(cfg.Harness.Providers)
+	for _, e := range refused {
+		// Refuse the entry, not the project. Failing the open would make one bad
+		// line in a portable file unopenable (and `idea config validate`, the
+		// command that explains it, unreachable); silently honouring the entry is
+		// the exfiltration. So the entry is dropped, loudly: a preset name falls
+		// back to its preset registration above, and a custom name resolves to
+		// "model: unknown provider" at first use rather than to the attacker.
+		log.Error("refusing to register provider from harness.yaml; run `idea config validate` for details",
+			"provider", e.Name, "reason", e.Err)
+	}
+	for _, e := range accepted {
+		reg.Add(e.Name, providerFor(e.Name, e.Type, lookupEnv(e.KeyEnv, dotEnv), e.BaseURL))
 	}
 
 	if isDemo(cfg, dotEnv) {
@@ -790,6 +807,41 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 	}
 	reg.Add("idea-harness-default", model.NewFakeProvider())
 	return reg
+}
+
+// resolvedProvider is one configured provider entry that passed validation,
+// with the type/base URL/key-env it will register under.
+type resolvedProvider struct {
+	Name    string
+	Type    config.ProviderType
+	BaseURL string
+	KeyEnv  string
+}
+
+// refusedProvider is one configured provider entry that must NOT be registered,
+// with the reason to log.
+type refusedProvider struct {
+	Name string
+	Err  error
+}
+
+// resolveProviderEntries partitions configured provider entries into the ones
+// safe to register and the ones refused, applying config.ValidateProvider —
+// the same check handleUpdateProviders applies on the write path. Sorted so the
+// accepted set and the log lines are deterministic.
+func resolveProviderEntries(providers map[string]config.ProviderConfig) ([]resolvedProvider, []refusedProvider) {
+	var accepted []resolvedProvider
+	var refused []refusedProvider
+	for _, name := range sortedProviderNames(providers) {
+		pc := providers[name]
+		if err := config.ValidateProvider(name, pc); err != nil {
+			refused = append(refused, refusedProvider{Name: name, Err: err})
+			continue
+		}
+		typ, baseURL, keyEnv := config.ResolveProvider(name, pc)
+		accepted = append(accepted, resolvedProvider{Name: name, Type: typ, BaseURL: baseURL, KeyEnv: keyEnv})
+	}
+	return accepted, refused
 }
 
 // providerFor constructs a provider from a resolved type/key/base URL.

@@ -79,19 +79,55 @@ func cmdExplain(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// cmdExport writes an artifact body as markdown to stdout (§20).
+// cmdExport writes an artifact body as markdown to stdout (§20). It used to
+// index args[0] directly for the kind, which meant `idea export --json` (or
+// any flag) was silently treated as the kind, and it picked the last artifact
+// of that kind in the *whole project* with no initiative scoping at all — in a
+// project with more than one initiative it could render an artifact that
+// belongs to a different initiative than the one the caller is working on.
+// Both are fixed here: flags go through parseArgs (any flag is now a reported
+// error, since export accepts none), and the artifact list is scoped to the
+// resolved initiative via resolveInitiative, exactly like `idea tasks` /
+// `idea changes` — `idea export [kind] [initiative]`.
 func cmdExport(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
 	kind := "prd"
-	if len(args) > 0 {
-		kind = args[0]
+	if len(positional) > 0 {
+		kind = positional[0]
+		positional = positional[1:]
 	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	var artifacts []cliArtifact
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/artifacts", nil, &artifacts); err != nil {
+	iniID, err := resolveInitiative(c, projectID, positional)
+	if err != nil {
 		return err
+	}
+	target, err := resolveArtifact(c, projectID, iniID, kind)
+	if err != nil {
+		return err
+	}
+	raw, err := c.doRaw("GET", "/api/v1/projects/"+projectID+"/artifacts/"+target.ID+"/raw")
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(stdout, raw)
+	return nil
+}
+
+// resolveArtifact returns the latest artifact of kind belonging to iniID. The
+// artifacts list endpoint scopes to a single initiative via initiative_id (the
+// same query param `idea tasks`/`idea changes` use); without it the daemon
+// defaults to an arbitrary initiative rather than "all artifacts in the
+// project", which is why every caller here must resolve iniID first.
+func resolveArtifact(c *client, projectID, iniID, kind string) (*cliArtifact, error) {
+	var artifacts []cliArtifact
+	if err := c.do("GET", "/api/v1/projects/"+projectID+"/artifacts?initiative_id="+iniID, nil, &artifacts); err != nil {
+		return nil, err
 	}
 	var target *cliArtifact
 	for i := range artifacts {
@@ -100,12 +136,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("no %q artifact yet; run `idea new` first", kind)
+		return nil, fmt.Errorf("no %q artifact yet; run `idea new` first", kind)
 	}
-	raw, err := c.doRaw("GET", "/api/v1/projects/"+projectID+"/artifacts/"+target.ID+"/raw")
-	if err != nil {
-		return err
-	}
-	fmt.Fprint(stdout, raw)
-	return nil
+	return target, nil
 }

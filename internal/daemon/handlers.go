@@ -335,6 +335,42 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildProvidersView(r.Context(), pr.cfg, pr.dotEnv, pr.registry))
 }
 
+// touchedConfigFields returns the harness.yaml field paths a provider write is
+// responsible for: the provider entries in the body, plus default_model and the
+// per-role model specs when the body sets them. It deliberately excludes
+// harness.executor.model — this endpoint cannot write it, so an error there
+// belongs to somebody else's edit and is reported rather than rejected.
+func touchedConfigFields(defaultModel string, providers map[string]config.ProviderConfig, models map[string]string) map[string]bool {
+	touched := map[string]bool{}
+	if defaultModel != "" {
+		touched["harness.default_model"] = true
+	}
+	for name := range providers {
+		touched["harness.providers."+name] = true
+	}
+	for role := range models {
+		// A cleared role (empty spec) is removed from the candidate and so has no
+		// problem to attribute; including it costs nothing and keeps the rule
+		// simple: every key in the body is this request's responsibility.
+		touched["harness.models."+role] = true
+	}
+	return touched
+}
+
+// problemIsAttributable reports whether a config problem belongs to a field this
+// request wrote. Problems carry the harness.yaml path they came from
+// ("harness.default_model", "harness.providers.groq",
+// "harness.providers.groq.base_url"), so an exact match, or a match on a path
+// boundary, attributes a sub-field problem to the entry that was written.
+func problemIsAttributable(p config.Problem, touched map[string]bool) bool {
+	for field := range touched {
+		if p.Field == field || strings.HasPrefix(p.Field, field+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // sortedProviderNames orders a providers payload so validation is deterministic.
 func sortedProviderNames(providers map[string]config.ProviderConfig) []string {
 	names := make([]string, 0, len(providers))
@@ -409,14 +445,28 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	// bogus/model` used to answer "✓ default model set to bogus/model", and
 	// executor.model is the field whose unresolvable provider used to make the
 	// engine scavenge an API key.
+	//
+	// Scoped to what THIS request writes. Rejecting on any error anywhere in the
+	// candidate config locked an operator out of the only command that could fix
+	// the config: a harness.yaml carrying an unrelated pre-existing problem (a
+	// `models.<role>` naming an unknown provider, say) made every `idea model
+	// set` and every UI Settings save fail on a message about a field the request
+	// never touched. Pre-existing problems are still reported — `idea config
+	// validate`, `idea doctor`, and the daemon log below — they just no longer
+	// block an unrelated write.
 	candidate := config.Config{Project: pr.cfg.Project, Harness: cfg}
-	if problems := candidate.ProblemsWithEnv(pr.dotEnv); config.HasErrors(problems) {
-		for _, p := range problems {
-			if p.Severity == config.SeverityError {
-				writeError(w, http.StatusBadRequest, p.Message)
-				return
-			}
+	problems := candidate.ProblemsWithEnv(pr.dotEnv)
+	touched := touchedConfigFields(body.DefaultModel, body.Providers, body.Models)
+	for _, p := range problems {
+		if p.Severity != config.SeverityError {
+			continue
 		}
+		if problemIsAttributable(p, touched) {
+			writeError(w, http.StatusBadRequest, p.Message)
+			return
+		}
+		s.rt.log.Warn("pre-existing config problem left in place by a provider write",
+			"project", pr.rootPath, "field", p.Field, "problem", p.Message)
 	}
 
 	// Reject inline secrets (§47) and write harness.yaml.
@@ -1927,5 +1977,12 @@ func (s *Server) initiativeFromQuery(r *http.Request) (*projectRuntime, domain.I
 	if err != nil || len(list) == 0 {
 		return pr, domain.Initiative{}, errors.New("no initiatives in project")
 	}
-	return pr, list[0], nil
+	// Fall back to the MOST RECENT initiative, matching what the CLI means by
+	// "the initiative you are working on" (resolveInitiative, internal/cli).
+	// ListInitiatives is ordered by creation, and this used to return list[0] --
+	// the oldest -- so in a project with more than one initiative the ten
+	// endpoints that resolve this way answered about a different initiative than
+	// the CLI was asking about, silently. Callers that mean a specific one
+	// should still send ?initiative_id=.
+	return pr, list[len(list)-1], nil
 }
