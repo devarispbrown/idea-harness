@@ -1273,6 +1273,74 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
+// handleListDocComments returns the comments on an artifact version.
+func (s *Server) handleListDocComments(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	list, err := pr.db.ListDocComments(r.Context(), av.VersionID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleCreateDocComment adds a human comment to an artifact version section.
+func (s *Server) handleCreateDocComment(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	var body struct {
+		Section string `json:"section"`
+		Text    string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	c := &domain.DocComment{
+		InitiativeID:      av.InitiativeID,
+		ArtifactVersionID: av.VersionID,
+		Section:           pr.redactor.RedactString(strings.TrimSpace(body.Section)),
+		Text:              pr.redactor.RedactString(strings.TrimSpace(body.Text)),
+	}
+	if err := pr.db.CreateDocComment(r.Context(), c); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// handlePromoteDocComment promotes a comment into an open Question.
+func (s *Server) handlePromoteDocComment(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	q, err := pr.engine.PromoteDocComment(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
+}
+
 // ---------- context docs ----------
 
 // maxDocFileBytes caps a single uploaded document's file CONTENT at 2 MiB.

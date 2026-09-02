@@ -111,6 +111,19 @@ type Question struct {
 	ResolvedAt   *time.Time     `json:"resolved_at,omitempty"`
 }
 
+// DocComment is a human comment anchored to a section of an artifact version.
+// It can be promoted into an open Question for the initiative's judgment flow.
+type DocComment struct {
+	ID                 string    `json:"id"`
+	InitiativeID       string    `json:"initiative_id"`
+	ArtifactVersionID  string    `json:"artifact_version_id"`
+	Section            string    `json:"section,omitempty"`
+	Text               string    `json:"text"`
+	Author             string    `json:"author"`
+	PromotedQuestionID string    `json:"promoted_question_id,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
 // Artifact is an immutable-versioned artifact family (§20).
 type Artifact struct {
 	ID           string       `json:"id"`
