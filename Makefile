@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web restore-embed check-embed docs docs-check clean
+.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check clean
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -19,9 +19,17 @@ build: embed-web
 	$(MAKE) restore-embed
 
 # Build the web UI and copy the dist into the Go embed directory.
+#
+# --frozen-lockfile so a build cannot silently resolve past pnpm-lock.yaml and
+# produce different bytes than the lockfile that was reviewed. Bumping a
+# dependency is `make web-deps-update`, which shows up as a lockfile diff.
 embed-web:
-	cd web && pnpm install && pnpm build
+	cd web && pnpm install --frozen-lockfile && pnpm build
 	rm -rf internal/web/dist && cp -r web/dist internal/web/dist
+
+# Resolve new dependency versions on purpose, updating pnpm-lock.yaml.
+web-deps-update:
+	cd web && pnpm install --no-frozen-lockfile
 
 # Put the committed placeholder back after a real build, so `git commit -a`
 # cannot ship an index.html that references assets nobody committed.

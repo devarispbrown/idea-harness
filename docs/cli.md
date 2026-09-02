@@ -42,7 +42,7 @@ if this file has drifted.
 | `idea revert <id>` | roll back a change set | — |
 | `idea review <id> <verdict>` | approve\|reject\|changes_requested | — |
 | `idea verify [<req>]` | run the verification gate; --pass --note <text> record human evidence | yes |
-| `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | takes no flags |
+| `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | — |
 | `idea risk` | show the deterministic risk profile | yes |
 | `idea executors` | list executors + capabilities | yes |
 | `idea executors setup` | wire a coding agent (hermes\|omp) | — |

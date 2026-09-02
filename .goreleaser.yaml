@@ -27,7 +27,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/devarispbrown/idea-harness/internal/buildinfo.version={{ .Version }}
+      - -X github.com/devarispbrown/idea-harness/internal/buildinfo.version={{ .Tag }}
       - -X github.com/devarispbrown/idea-harness/internal/buildinfo.commit={{ .FullCommit }}
 
 archives:

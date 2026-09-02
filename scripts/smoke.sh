@@ -43,8 +43,22 @@ wait_for() {
 }
 
 daemon_running() { "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; }
-initiative_left_running() { ! "$ROOT/bin/idea" status 2>/dev/null | grep -q running; }
-tasks_present() { ! "$ROOT/bin/idea" tasks 2>/dev/null | grep -q "No tasks yet"; }
+# The two predicates below are negative ("the output no longer says X"), so they
+# must first establish that there IS output: a command that errored or printed
+# nothing would otherwise satisfy them on the first 0.1s poll and let the script
+# race ahead of the daemon — something the fixed sleeps they replaced could not do.
+initiative_left_running() {
+  local out
+  out=$("$ROOT/bin/idea" status 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  ! printf '%s' "$out" | grep -q running
+}
+tasks_present() {
+  local out
+  out=$("$ROOT/bin/idea" tasks 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  ! printf '%s' "$out" | grep -q "No tasks yet"
+}
 chg1_in_changes() { "$ROOT/bin/idea" changes 2>/dev/null | grep -q "CHG-1"; }
 hello_txt_present() { test -f "$PROJ/hello.txt"; }
 chg1_committed() { git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:"; }

@@ -15,10 +15,6 @@ import (
 // config.Load keeps loading a config it disagrees with, so this reports on a
 // wrong config rather than refusing to open it (§D5).
 //
-// TODO(track-D): wire this into cmdConfig (internal/cli/cli.go:343) — replace
-// the body of the `validate` branch with:
-//
-//	return validateConfig(cwd, stdout)
 func validateConfig(root string, stdout io.Writer) error {
 	cfg, err := config.Load(filepath.Join(root, config.Dir))
 	if err != nil {

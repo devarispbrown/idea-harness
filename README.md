@@ -83,12 +83,18 @@ go install ./cmd/idea
 export PATH="$PATH:$(go env GOPATH)/bin"     # add to your shell profile to persist
 ```
 
-To rebuild the web UI from `web/` and embed it (needs Node.js + pnpm):
+That gives you the **complete CLI**. The **web UI** is built from `web/` and embedded at build
+time, and the checked-in copy is a placeholder — so a binary installed this way serves a page that
+says "web UI not built" at `http://127.0.0.1:8787/` until you build it:
 
 ```bash
-make build                                   # produces ./bin/idea with the UI built in
+make build                                   # needs Node.js + pnpm; embeds the real UI
 export PATH="$PWD/bin:$PATH"
 ```
+
+Release binaries ship with the UI already embedded, so a downloaded release needs neither Node nor
+this step. Generated bundles are deliberately not committed: the UI changes daily, and a 240 KB
+minified blob in git is a merge conflict on every change and a diff no reviewer can read.
 
 Verify:
 
@@ -97,8 +103,9 @@ idea doctor
 ```
 
 > No daemon setup is required. The CLI auto-starts a local daemon on first use; `idea dev`
-> runs it in the foreground and serves the web UI at `http://127.0.0.1:8787/`. All runtime state
-> lives under `~/.local/share/idea-harness/` — never in your source tree.
+> runs it in the foreground and serves the web UI at `http://127.0.0.1:8787/` (see the note above
+> on which builds carry the UI). All runtime state lives under `~/.local/share/idea-harness/` —
+> never in your source tree.
 
 ## Quick start
 
@@ -145,7 +152,8 @@ idea docs add prd.md        # .md / .txt / .pdf / .docx / .xlsx / .jpg / .png �
 idea docs                   # list uploaded context docs
 ```
 
-The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/`.
+The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/` — from
+`make build` or a release binary; see [Install](#install).
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
 · [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
