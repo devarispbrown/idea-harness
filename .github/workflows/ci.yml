@@ -6,6 +6,28 @@ on:
   workflow_dispatch: # manual trigger (used for the opt-in agent tier)
 
 jobs:
+  # The compile gate (DX audit, BROKEN_CANONICAL_INSTALL): a clean checkout must
+  # build, vet and test with no Node toolchain present. Runs in a Go container
+  # rather than on the hosted runner, whose image ships Node on PATH regardless
+  # of setup-node.
+  compile-no-node:
+    name: Go (no Node toolchain)
+    runs-on: ubuntu-latest
+    container: golang:1.25-bookworm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Assert no Node toolchain
+        run: |
+          ! command -v node || { echo "node is on PATH; this job must run without it"; exit 1; }
+          ! command -v pnpm || { echo "pnpm is on PATH; this job must run without it"; exit 1; }
+
+      - name: Build, vet, test from a clean checkout
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
   backend:
     name: Go (vet + test + smoke)
     runs-on: ubuntu-latest # Docker is preinstalled, so the sandbox test RUNS

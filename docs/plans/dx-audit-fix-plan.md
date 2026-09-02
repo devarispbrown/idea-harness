@@ -210,10 +210,20 @@ this tree.
    `build_cmd`/`test_cmd`, `git_commit` — carrying no credential and no path escape, tripping neither
    `secret_sweep` nor `path_escape` in `docs/security-model.md`. The compensating control is the human
    review gate, which is real, and is exactly the kind of diff a reviewer skims.
-   **This one needs a product decision, not a patch.** Either exclude the config directory from the
-   apply surface (with a test that a change set touching `harness.yaml` is rejected), or accept the
-   risk in `docs/security.md`'s threat table, dated, naming the review gate as the control. The plan
-   records the question; the call is the maintainer's.
+   **Escalation found while deciding this:** the guard is containment-only
+   (`security.ResolveWithin`, `internal/security/fsutil.go:17-42`), so the same hole covers
+   **`.git/hooks/**`**. The harness's own commits are safe — `internal/git/git.go:50-56` points
+   `core.hooksPath` at an empty temp dir — but the developer's next manual `git commit` runs whatever
+   an approved change set left there. Code execution on the developer's machine, from a diff approved
+   by skimming.
+   **Decided (option A): deny control-plane paths at snapshot time.** `fsdiff.Snapshot`
+   (`internal/fsdiff/fsdiff.go:45-78`) skips `.idea-harness/**` and `.git/**`, so an agent's writes
+   there never become a change set at all — no rejected-change-set state to handle, and revert
+   semantics are untouched. `.gitignore` stays writable: it lives outside `.git/` and is a legitimate
+   agent edit. Enforced in the walk, not at apply, so the deny is structural rather than a check a
+   later call site can forget.
+   **Test:** an agent work root containing `.idea-harness/harness.yaml` and `.git/hooks/pre-commit`
+   produces a change set naming neither.
 4. `docs/security.md`'s threat table gains rows for all three, plus the UI asset-cache/origin boundary
    from Track A2.
 
@@ -319,9 +329,13 @@ a CLI command and any relationship between that constant and the build.
    lies); `go install <module>@<version>` from the proxy (`Main.Version` only, **no** VCS data). Say
    which wins when only one is present.
 3. **The module path does not resolve.** `go.mod:1` declares `module github.com/idea-harness/idea-harness`;
-   `origin` is `devarispbrown/idea-harness`. No tag makes `go install <module>@v0.1.0` work. Decide:
-   fix `go.mod` to a reachable path, or state in README that the module-path form is unsupported and
-   the canonical route is clone + `go install ./cmd/idea`.
+   `origin` is `devarispbrown/idea-harness`. No tag makes `go install <module>@v0.1.0` work.
+   **Decided (option A): rename the module to `github.com/devarispbrown/idea-harness`** — a mechanical
+   rewrite of every import, free today because there are no tags and no consumers, and a breaking
+   change the moment either exists. So it lands before the first tag, not after. README continues to
+   name clone + `go install ./cmd/idea` as canonical: the module-path form additionally requires the
+   repository to be public (it currently 404s unauthenticated), which is a separate decision this
+   plan does not make.
 4. Release automation before the first tag — goreleaser or an equivalent workflow, binaries built in
    CI, not on a laptop. `v0.1.0` is cut **after** A2, so the first release is one where the documented
    install works.
@@ -358,12 +372,21 @@ The audit's highest-weighted area (20) and the one no other track touches. The m
 commands against a target of 8, and the out-of-box outcome is synthetic by design (demo mode plus the
 internal placeholder executor).
 
-**The design question this plan cannot settle alone:** `idea next` already knows the sequence and
-stops at each human judgment point. Should `idea new` drive straight through to the first human gate
-(collapsing `new` → `advance` → `execute` into one command), or should `idea next --until-human` be the
-explicit opt-in? The first improves the number; the second preserves the "human decides what matters"
-posture the product is built on. **Recommendation: `idea next --until-human`, and rewrite the README
-quick start around it** — the count drops without the engine deciding on its own to advance.
+**Decided (option A): `idea next --until-human`.** `cmdNext` (`internal/cli/next.go:12-40`) runs
+exactly one step and returns; `--until-human` loops — ask `/next`, run the step, wait for the
+operation, repeat — and stops at `review` / `apply` / `resolve` / done. The rejected alternative was
+`idea new` driving straight through to the first human gate: one command better, but it spends model
+budget through design and implementation before the human has read a word of the PRD, which
+contradicts the posture the product is built on ("the human decides what matters").
+
+Because `advance` and `execute` are async, the loop waits on the operation the way `idea watch` does —
+so `--until-human` also absorbs the separate `idea watch` call rather than adding to the count.
+
+**The count only moves if the docs move.** The audit measured `README.md`'s quick start, not the
+theoretical minimum, so that block is rewritten around `next --until-human` in the same commit:
+`init` → `model set` → `new` → `next --until-human` → `review` → `apply` → `verify` → `next` = 8,
+against a target of 8. The target is P2 guidance, not the point; the point is deleting the "what do I
+run now" burden.
 
 Track I's framing is corrected too: documenting and timing the real-model path in `docs/quickstart.md`,
 with the existing opt-in `agent` CI tier (`ci.yml:68-92`) recording elapsed time via `SECONDS` and

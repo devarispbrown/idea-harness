@@ -17,7 +17,6 @@ coverage.*
 web/node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
-internal/web/dist/
 .pnpm-store/
 
 # idea-harness runtime state (must not be committed)
