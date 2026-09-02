@@ -79,6 +79,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- `idea apply` on a change set that cannot be applied now fails with what to do instead — already
+  applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
+  Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.
+
 - The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
   declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
   made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
