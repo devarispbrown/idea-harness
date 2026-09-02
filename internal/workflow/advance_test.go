@@ -248,3 +248,33 @@ func TestWhyImpactSemanticDiff(t *testing.T) {
 		t.Fatalf("expected 1 added requirement, got %+v", diff.Requirements.Added)
 	}
 }
+
+func TestImpactCounts(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{
+		InitiativeID: ini.ID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := eng.ImpactCounts(ctx, ini.ID, []NodeRef{{Type: "requirement", ID: req.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["requirement:"+req.ID] != 1 {
+		t.Fatalf("expected requirement to block exactly 1 dependent, got %d", counts["requirement:"+req.ID])
+	}
+}

@@ -102,6 +102,67 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 	return out, nil
 }
 
+// NodeRef addresses a graph node by type + id.
+type NodeRef struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// ImpactCounts returns, for each node, the number of unique transitive
+// dependents (nodes that directly or indirectly depend on it). Used to render
+// "blocks N" without an Impact call per node.
+//
+// Unlike Impact — which returns one item per edge and can repeat a node that is
+// reachable via multiple paths — these counts are DEDUPED by node, so a count
+// is the number of distinct blocked nodes, not the number of edges. In a cycle
+// the queried node itself may appear among its dependents (mirroring Impact's
+// frontier semantics).
+func (e *Engine) ImpactCounts(ctx context.Context, initiativeID string, nodes []NodeRef) (map[string]int, error) {
+	out := make(map[string]int, len(nodes))
+	for _, n := range nodes {
+		count, err := e.impactNodeCount(ctx, initiativeID, n.Type, n.ID)
+		if err != nil {
+			return nil, err
+		}
+		out[n.Type+":"+n.ID] = count
+	}
+	return out, nil
+}
+
+// impactNodeCount counts unique transitive dependents of one node (the incoming
+// edge frontier), bounded by the same limits as Impact.
+func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, nodeID string) (int, error) {
+	visited := map[string]bool{}
+	dependents := map[string]bool{}
+	queue := [][2]string{{nodeType, nodeID}}
+	for depth := 0; depth < maxTraceDepth && len(queue) > 0; depth++ {
+		var next [][2]string
+		for _, n := range queue {
+			key := n[0] + ":" + n[1]
+			if visited[key] {
+				continue
+			}
+			visited[key] = true
+			edges, err := e.db.ListGraphEdgesTo(ctx, initiativeID, n[0], n[1])
+			if err != nil {
+				return 0, err
+			}
+			for _, ed := range edges {
+				dk := ed.FromType + ":" + ed.FromID
+				if !dependents[dk] {
+					dependents[dk] = true
+				}
+				next = append(next, [2]string{ed.FromType, ed.FromID})
+			}
+		}
+		queue = next
+		if len(dependents) >= maxTraceNodes {
+			break
+		}
+	}
+	return len(dependents), nil
+}
+
 // stalenessFor classifies a dependent based on the edge type (§26). Deterministic.
 func stalenessFor(edgeType domain.EdgeType) string {
 	switch edgeType {
