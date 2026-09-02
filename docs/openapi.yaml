@@ -1,0 +1,3185 @@
+# The OpenAPI description of the idea-harness daemon API.
+#
+#   * `docs/embed.go` embeds this file, so a compiled binary serves itself at
+#     /openapi.yaml and /openapi.json and is self-describing offline.
+#   * `make api-check` compares every `method + path` registered in
+#     internal/daemon/routes.go against the `paths:` below and fails on drift in
+#     either direction. It does not check schemas.
+#
+# Hand-written. Response schemas are derived from the named Go types the
+# handlers return (domain.*, projection.*, providersView, buildinfo.Info); if
+# they start drifting, generating them from those types is the upgrade path.
+
+openapi: 3.1.0
+
+info:
+  title: idea-harness daemon API
+  version: 0.1.0
+  summary: The local HTTP API of the idea-harness daemon.
+  description: |
+    The daemon's REST + SSE API is the only way into the product graph. The `idea` CLI is a thin
+    HTTP client over it and the embedded web UI calls the same routes from the browser, so every
+    command and every UI panel is one or more of the operations below.
+
+    **This is a local daemon, not a hosted service.**
+
+    - **Loopback-bound.** `Run` refuses to start on a non-loopback listener. The API token is
+      served to the web UI unauthenticated inside `index.html`, so a LAN-reachable daemon would
+      hand the token to anyone who loaded the page. The address is overridable through
+      `IDEA_HARNESS_ADDR`, still loopback-only; the default is `127.0.0.1:8787`.
+    - **Token-authenticated.** One per-install token guards everything under `/api/`. See the
+      security schemes for the header, the `Bearer` alternative, the `/api/v1/health` exemption and
+      the SSE query-parameter exception.
+    - **Host and Origin guarded.** Before authentication, a request whose `Host` is not exactly
+      `127.0.0.1`, `localhost` or `::1` is rejected `403 {"error": "invalid host"}`, and one
+      carrying an `Origin` that is not a loopback origin (or is the literal `null`) is rejected
+      `403 {"error": "invalid origin"}`. A missing `Origin` is allowed, which is how the CLI and
+      `curl` reach the API. No CORS header is ever sent, so a page on another origin could not read
+      a response even if it could make the request.
+    - **No content negotiation and no versioning beyond the `/api/v1` prefix.** Responses are JSON
+      except `GET /artifacts/{id}/raw` (`text/markdown`), `GET /docs/{docId}` (an attachment) and
+      `GET /events` (`text/event-stream`).
+    - **The documentation endpoints are not part of this surface.** `/openapi.yaml`,
+      `/openapi.json` and `/api-reference` are served outside `/api/`, so they need no token and
+      are deliberately not listed below.
+
+    ## Asynchronous work
+
+    Anything that runs the model pipeline returns `202 Accepted` with an operation id and returns
+    immediately, e.g. `{"operation_id": "op_01H..."}`. Poll `GET /api/v1/operations/{id}` until its
+    `status` leaves `pending`/`running`, or follow `GET /api/v1/projects/{projectId}/events` (SSE),
+    which is what `idea watch` and the UI do. `POST /initiatives` returns `initiative_id` alongside
+    `operation_id`; `POST /initiatives/{id}/execute` returns `executor_kind` alongside it.
+
+    ## What changed in this release
+
+    Breaking, and recorded in `CHANGELOG.md`:
+
+    - **Ten initiative-scoped reads moved from a flat project path with `?initiative_id=` to the
+      nested path** `/api/v1/projects/{projectId}/initiatives/{initiativeId}/{resource}`, for
+      `requirements`, `assertions`, `artifacts`, `decisions`, `questions`, `findings`,
+      `change-sets`, `suggested-answers`, `risk` and `doctor`. Each of those operations names the
+      path it replaces. The old form also had a silent fallback — omitting `initiative_id` answered
+      about the project's most recent initiative — which goes with it: the initiative is now always
+      explicit.
+    - **`GET /initiatives/{id}/next-move` is now `GET /initiatives/{id}/guidance`.** The wire shape
+      (`action`, `why`, `affected`) is unchanged. `GET /initiatives/{id}/next` keeps its name and
+      its meaning: it returns a machine-executable command token from a closed set and is
+      change-set aware, while `/guidance` returns display copy and never loads change sets. The two
+      can legitimately disagree; neither is a richer rendering of the other.
+
+    Everything else keeps the method and path it had. In particular the id-addressed subresources
+    stay flat under the project — `change-sets/{id}/...`, `artifacts/{id}/...`,
+    `decisions/{id}/...`, `questions/{id}/answer`, `findings/{id}/...` — as do the project-scoped
+    `providers`, `models`, `executors`, `seen`, `activity` and `events`.
+
+    ## Reading this document
+
+    - Paths carry the full `/api/v1` prefix and the server URL is the bare origin, so a path here
+      is character-for-character the pattern registered in `internal/daemon/routes.go`. That is
+      what `make api-check` compares.
+    - The path parameter for an initiative is `{id}` on the routes that were already nested and
+      `{initiativeId}` on the ten that moved in this release. That mirrors `routes.go` exactly
+      rather than tidying it, because the comparison above is textual.
+  contact:
+    name: idea-harness
+    url: https://github.com/devarispbrown/idea-harness
+
+servers:
+  - url: http://127.0.0.1:8787
+    description: The daemon's default loopback address; the port is set by IDEA_HARNESS_ADDR.
+
+security:
+  - ideaToken: []
+  - bearerToken: []
+
+tags:
+  - name: daemon
+    description: Liveness, build stamp and the daemon log.
+  - name: projects
+    description: The project registry. A project is a workspace root path.
+  - name: initiatives
+    description: Initiative lifecycle — create, approve, advance, execute, verify.
+  - name: understanding
+    description: Projections and traceability reads over one initiative.
+  - name: tasks
+    description: Execution-plan tasks and their editing window.
+  - name: docs
+    description: Context documents ingested for an initiative.
+  - name: decisions
+    description: Decisions and open questions.
+  - name: graph
+    description: Requirements, assertions, artifacts and findings.
+  - name: change-sets
+    description: Source mutations — review, apply, revert, conflict resolution.
+  - name: operations
+    description: Asynchronous operations started by the 202 endpoints.
+  - name: config
+    description: Providers, models and executors, backed by harness.yaml.
+  - name: events
+    description: The event timeline and its SSE stream.
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [daemon]
+      operationId: getHealth
+      summary: Liveness probe
+      description: |
+        The only unauthenticated route under `/api/`, so `idea doctor` and CI can probe a daemon
+        they hold no token for. Every other operation requires the token.
+      security: []
+      responses:
+        "200":
+          description: The daemon is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  version: { type: string }
+                required: [status, version]
+
+  /api/v1/version:
+    get:
+      tags: [daemon]
+      operationId: getVersion
+      summary: Build stamp
+      responses:
+        "200":
+          description: The binary's version, VCS revision and dirty-tree flag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/logs:
+    get:
+      tags: [daemon]
+      operationId: getLogs
+      summary: Tail the daemon log
+      description: |
+        Global, not project-scoped. Answers 200 with an empty `lines` array and an empty `path`
+        rather than an error when the log file does not exist yet.
+      parameters:
+        - name: n
+          in: query
+          required: false
+          description: Trailing lines to return. A value outside 1-2000 is ignored and 100 used.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2000
+            default: 100
+      responses:
+        "200":
+          description: The tail of `daemon.log`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    description: Absolute path of the log file, or empty when it does not exist.
+                  lines:
+                    type: array
+                    items: { type: string }
+                required: [path, lines]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/projects:
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: Register a project
+      description: Registers a workspace `root_path`, creating its state on first use, and returns the project id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                root_path:
+                  type: string
+                  description: Absolute path of the workspace root.
+              required: [root_path]
+      responses:
+        "200":
+          description: The project id. This is a 200, not a 201.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project_id: { type: string }
+                required: [project_id]
+        "400":
+          description: "`root_path is required` - the body was unparseable or `root_path` was empty."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: List registered projects
+      responses:
+        "200":
+          description: Every registry entry with its root path.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProjectRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [projects]
+      operationId: getProject
+      summary: One project's registry record
+      responses:
+        "200":
+          description: The registry record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectRecord" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/initiatives:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [initiatives]
+      operationId: createInitiative
+      summary: Create an initiative and start the first pipeline
+      description: |
+        Creates the initiative from `title`/`description`, optionally ingesting inline context docs
+        in the same atomic request, then starts the first pipeline run.
+
+        The body is bounded: a doc's content is capped at 2 MiB and an initiative holds at most 100
+        context docs. A doc containing a credential is rejected outright rather than redacted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Required; the one-line statement of the idea.
+                description: { type: string }
+                docs:
+                  type: array
+                  description: Inline context docs, ingested before the pipeline starts (`idea new --doc`).
+                  items:
+                    type: object
+                    properties:
+                      content: { type: string }
+                      kind:
+                        type: string
+                        description: Free-form category, truncated to 64 runes; defaults to "other".
+                      title:
+                        type: string
+                        description: Truncated to 200 runes; defaults to "untitled".
+                    required: [content]
+              required: [title]
+      responses:
+        "202":
+          description: Accepted. The initiative exists; the pipeline runs asynchronously.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  initiative_id: { type: string }
+                  operation_id: { type: string }
+                required: [initiative_id, operation_id]
+        "400":
+          description: "`title is required`, `invalid body`, `content is required`, or `document contains a credential and was rejected`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [initiatives]
+      operationId: listInitiatives
+      summary: List the project's initiatives
+      description: Ordered by creation, oldest first.
+      responses:
+        "200":
+          description: The initiatives in this project.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Initiative" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [initiatives]
+      operationId: getInitiative
+      summary: One initiative
+      responses:
+        "200":
+          description: The initiative, including its status and any failure reason.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`initiative not found`, or the project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/understanding:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getUnderstanding
+      summary: The Current Understanding projection
+      description: |
+        Assembled deterministically from relational state - never LLM narration. Requirements whose
+        status is `removed` are omitted.
+      responses:
+        "200":
+          description: The projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Understanding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/guidance:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getGuidance
+      summary: Recommended next move, as display copy
+      description: |
+        **Renamed in this release.** Was `GET /api/v1/projects/{projectId}/initiatives/{id}/next-move`;
+        the wire shape (`action`, `why`, `affected`) is unchanged.
+
+        `action` is an English sentence for a human to read. It is computed from the initiative
+        status and the Understanding projection - counts of open decisions and open questions - so
+        it never loads change sets and can never name one. Use `/next` when you want a command to
+        execute; the two legitimately disagree.
+      responses:
+        "200":
+          description: The guidance projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Guidance" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/next:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getNextAction
+      summary: The next command to run, as a token
+      description: |
+        `action` is a machine-executable token from a closed set - `advance`, `execute`,
+        `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `wait` - which `idea next`
+        dispatches as the next CLI command. It walks the initiative's change sets, so it can name
+        the specific one to act on, and it collapses `running` and `failed` to `wait`.
+      responses:
+        "200":
+          description: The next action token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  action: { type: string }
+                required: [action]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/changed:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getChanged
+      summary: What Changed since the UI read cursor
+      description: |
+        Grouped, narrated changes since the project's `ui` read cursor, capped at 200 events, with
+        machinery events (runs, operations, context bundles) hidden. Echo `through` back to
+        `POST /projects/{projectId}/seen` to clear exactly what was rendered.
+
+        The cursor is project-scoped even though this read is addressed by initiative.
+      responses:
+        "200":
+          description: The grouped changes and the sequence they run through.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Changed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/seen:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [understanding]
+      operationId: markSeen
+      summary: Advance the UI read cursor
+      description: |
+        Sets the project's `ui` read cursor to `through`, clamped to the highest event sequence, so
+        What Changed never clears events that arrived mid-read. Project-scoped despite pairing with
+        an initiative view.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                through:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  description: The sequence echoed from `/changed`.
+              required: [through]
+      responses:
+        "200":
+          description: The cursor that was stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seen_seq: { type: integer, format: int64 }
+                required: [seen_seq]
+        "400":
+          description: "`through must be a non-negative integer`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: resumeInitiative
+      summary: Resume a paused or interrupted initiative
+      description: Synchronous. Returns the status the initiative resumed into.
+      responses:
+        "200":
+          description: The new status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/InitiativeStatus" }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: approveInitiative
+      summary: Human approval of the reviewed PRD
+      description: Synchronous. On success the response always carries `approved`.
+      responses:
+        "200":
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/InitiativeStatus" }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: |
+            A domain error keeps its own message here (an initiative in a status that cannot be
+            approved); a storage failure is masked to `internal error (correlation id: ...)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/revise:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: reviseInitiative
+      summary: Apply resolved decisions and answers, then regenerate the PRD
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/advance:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: advanceInitiative
+      summary: Run the Design to Execution Plan pipeline
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/approve-plan:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: approvePlan
+      summary: Human approval gate on the execution plan
+      description: Re-runs the plan review. An initiative state that cannot take the gate answers 409 with the domain message.
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/revise-plan:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: revisePlan
+      summary: Regenerate the execution plan and its review
+      description: Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/execute:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: executeInitiative
+      summary: Run the next ready task through the executor
+      description: Produces a change set. The response names the executor the run will use.
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation_id: { type: string }
+                  executor_kind: { $ref: "#/components/schemas/ExecutorKind" }
+                required: [operation_id, executor_kind]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/verify:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: verifyInitiative
+      summary: Run the verification gate
+      description: |
+        Synchronous. When `requirement` is set and `pass` is true, human evidence is recorded first;
+        the gate then runs and the response carries the initiative status plus per-requirement
+        coverage. A JSON body is required, but every field in it is optional - `{}` just runs the
+        gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requirement:
+                  type: string
+                  description: Requirement code or id to record human evidence against.
+                pass:
+                  type: boolean
+                  description: Only `true` records evidence; `false` records nothing.
+                note: { type: string }
+      responses:
+        "200":
+          description: The status after the gate, plus coverage per requirement.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/InitiativeStatus" }
+                  coverage:
+                    type: array
+                    items: { $ref: "#/components/schemas/Coverage" }
+                required: [status, coverage]
+        "400":
+          description: "`invalid body`, or the domain error from recording evidence or running the gate."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [decisions]
+      operationId: suggestAnswers
+      summary: Ask the model to propose answers for the open questions
+      description: Read the results back from `GET /initiatives/{initiativeId}/suggested-answers`.
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/why:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/GraphNodeType"
+      - $ref: "#/components/parameters/GraphNodeId"
+    get:
+      tags: [understanding]
+      operationId: getWhy
+      summary: Provenance chain behind one graph node
+      description: |
+        Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`) from the
+        node towards its sources, bounded in depth. Both `type` and `id` are required.
+      responses:
+        "200":
+          description: The provenance edges, nearest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TraceItem" }
+        "400": { $ref: "#/components/responses/TraceParamsRequired" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/impact:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/GraphNodeType"
+      - $ref: "#/components/parameters/GraphNodeId"
+    get:
+      tags: [understanding]
+      operationId: getImpact
+      summary: Dependents and staleness for one graph node
+      responses:
+        "200":
+          description: The dependent edges, each with a staleness classification.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ImpactItem" }
+        "400": { $ref: "#/components/responses/TraceParamsRequired" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/trace:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/GraphNodeType"
+      - $ref: "#/components/parameters/GraphNodeId"
+    get:
+      tags: [understanding]
+      operationId: getTrace
+      summary: Provenance and impact in one response
+      responses:
+        "200":
+          description: Both directions at once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  why:
+                    type: array
+                    items: { $ref: "#/components/schemas/TraceItem" }
+                  impact:
+                    type: array
+                    items: { $ref: "#/components/schemas/ImpactItem" }
+                required: [why, impact]
+        "400": { $ref: "#/components/responses/TraceParamsRequired" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/diff:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getSemanticDiff
+      summary: Structured requirement and decision diff
+      description: |
+        Reports requirements as added versus removed and decisions as open, decided or superseded,
+        rather than diffing rendered markdown. Not a source diff - that is
+        `GET /change-sets/{id}/diff`.
+      responses:
+        "200":
+          description: The structured diff.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SemanticDiff" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: Execution-plan tasks, in plan order
+      description: Ordered by the stored plan position, then by creation - the order `POST /tasks/reorder` sets.
+      responses:
+        "200":
+          description: The tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [tasks]
+      operationId: addTask
+      summary: Add a task to the plan
+      description: |
+        Only while the plan is editable: the initiative must be `plan_approved` or
+        `needs_human_judgment` and have no unfinished operation. `implements` may name a
+        requirement by code or id; `depends_on` entries may name existing tasks by title, code or
+        id. Title and statement are redacted before they are stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Required, non-blank.
+                statement: { type: string }
+                priority:
+                  allOf:
+                    - $ref: "#/components/schemas/RequirementPriority"
+                  description: An unrecognised value silently becomes `should`.
+                estimate: { type: string }
+                implements:
+                  type: string
+                  description: Requirement code or id.
+                depends_on:
+                  type: array
+                  items: { type: string }
+                  description: Existing task titles, codes or ids.
+              required: [title]
+      responses:
+        "200":
+          description: The created task. This is a 200, not a 201.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`title is required`, `implements references an unknown requirement`, or `depends_on references an unknown task \"...\"`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/reorder:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [tasks]
+      operationId: reorderTasks
+      summary: Reorder the plan
+      description: The full ordered list of task ids. Returns the plan as it now stands.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_ids:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+              required: [task_ids]
+      responses:
+        "200":
+          description: The reordered tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`task_ids is required`, or the store's own ordering error."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    patch:
+      tags: [tasks]
+      operationId: updateTask
+      summary: Edit a task
+      description: |
+        Only the fields present are changed; an empty or blank string leaves the current value in
+        place. Subject to the same editable window as `POST /tasks`, plus: the task must belong to
+        this initiative, must not be `done` or `cancelled`, and must have no change sets yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                statement: { type: string }
+                priority: { $ref: "#/components/schemas/RequirementPriority" }
+                estimate:
+                  type: string
+                  description: Written through as given, so an empty string clears it.
+      responses:
+        "200":
+          description: The task after the edit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`invalid body` or `invalid priority`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [tasks]
+      operationId: deleteTask
+      summary: Delete a task
+      description: Refused while another task still declares a `depends_on` edge to this one.
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean, const: true }
+                required: [deleted]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            The editable-window message, or
+            `another task depends on this task; remove that dependency first`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: cancelTask
+      summary: Cancel a task
+      description: Sets the task to `cancelled`. Subject to the same editable window as an edit.
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/TaskStatus" }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/docs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [docs]
+      operationId: addContextDoc
+      summary: Ingest a context doc
+      description: |
+        Two request shapes:
+
+        - `application/json` with `content`/`kind`/`title` - the paste path.
+        - `multipart/form-data` with a `file` part and optional `kind`/`title` fields - the upload
+          path. The daemon sniffs the format and extracts text from md, txt, pdf, docx and xlsx, or
+          stores an image (jpg, png) byte-for-byte for the vision-describe path.
+
+        Every text doc is credential-swept (a hit is a 400, not a redaction), redacted, then stored
+        content-addressed. File content is capped at 2 MiB and an initiative holds at most 100
+        docs. Uploading an image returns immediately and the description is produced in the
+        background, so the returned doc has no description digest yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  description: Required and non-blank after trimming.
+                kind: { type: string }
+                title: { type: string }
+              required: [content]
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                kind:
+                  type: string
+                  description: Defaults to a kind inferred from the filename.
+                title:
+                  type: string
+                  description: Defaults to the file's base name.
+              required: [file]
+      responses:
+        "200":
+          description: The stored doc row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextDoc" }
+        "400":
+          description: |
+            `content is required`, `invalid body`, `invalid multipart body`, `file is required`,
+            `could not read file`, `could not parse document`, `too many context docs`, or
+            `document contains a credential and was rejected`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [docs]
+      operationId: listContextDocs
+      summary: List the initiative's context docs
+      responses:
+        "200":
+          description: The docs, with previews rather than bodies.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ContextDoc" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/docs/{docId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - name: docId
+        in: path
+        required: true
+        description: Context doc id. A doc belonging to another initiative answers `doc not found`.
+        schema: { type: string }
+    get:
+      tags: [docs]
+      operationId: downloadContextDoc
+      summary: Download one context doc
+      description: |
+        **Not JSON.** Served as an attachment named after the doc's title. An image doc returns its
+        raw stored bytes with the media type sniffed from magic bytes (falling back to
+        `application/octet-stream`); a text doc returns the redacted text.
+      responses:
+        "200":
+          description: The stored content.
+          headers:
+            Content-Disposition:
+              description: "`attachment; filename=<doc title>`"
+              schema: { type: string }
+          content:
+            text/plain:
+              schema: { type: string }
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`doc not found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`doc content missing` - the row exists but its blob does not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/requirements:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [graph]
+      operationId: listRequirements
+      summary: Requirements with acceptance criteria
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/requirements?initiative_id=`.
+      responses:
+        "200":
+          description: The requirements, including any with status `removed`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Requirement" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/assertions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [graph]
+      operationId: listAssertions
+      summary: Assertions with their evidence and trust level
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/assertions?initiative_id=`.
+      responses:
+        "200":
+          description: The assertions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Assertion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [graph]
+      operationId: listArtifacts
+      summary: Artifact versions
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/artifacts?initiative_id=`.
+
+        One row per artifact *version* - the `id` addresses the version, which is what
+        `/artifacts/{id}/body` and `/artifacts/{id}/raw` take.
+      responses:
+        "200":
+          description: The artifact versions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ArtifactVersion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/decisions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [decisions]
+      operationId: listDecisions
+      summary: Decisions with status and recommendation
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/decisions?initiative_id=`.
+        The mutations stay flat under the project, addressed by decision id.
+      responses:
+        "200":
+          description: The decisions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Decision" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/questions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [decisions]
+      operationId: listQuestions
+      summary: Open questions
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/questions?initiative_id=`.
+      responses:
+        "200":
+          description: The questions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Question" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/findings:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [graph]
+      operationId: listFindings
+      summary: Review findings for the initiative
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/findings?initiative_id=`.
+      responses:
+        "200":
+          description: The findings.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Finding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [change-sets]
+      operationId: listChangeSets
+      summary: Change sets with status
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/change-sets?initiative_id=`.
+        The single-change-set reads and every mutation stay flat under the project, addressed by
+        change-set id.
+      responses:
+        "200":
+          description: The change sets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChangeSet" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/suggested-answers:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [decisions]
+      operationId: listSuggestedAnswers
+      summary: The persisted AI-suggested answers
+      description: |
+        **Moved in this release.** Was
+        `GET /api/v1/projects/{projectId}/suggested-answers?initiative_id=`.
+
+        Produced by `POST /initiatives/{id}/suggest-answers`; empty until that operation finishes.
+      responses:
+        "200":
+          description: The suggested answers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SuggestedAnswer" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/risk:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [change-sets]
+      operationId: getRiskProfile
+      summary: Deterministic risk profile
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/risk?initiative_id=`.
+
+        Computed from the rendered patches of the initiative's change sets - no model call, no
+        numeric score, just a tier and the signals that set its floor. The profile is **persisted
+        as a side effect of this GET** so the tier floor is durable.
+      responses:
+        "200":
+          description: The risk profile that was computed and stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RiskProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{initiativeId}/doctor:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/NestedInitiativeId"
+    get:
+      tags: [graph]
+      operationId: auditGraph
+      summary: Product-graph traceability audit
+      description: |
+        **Moved in this release.** Was `GET /api/v1/projects/{projectId}/doctor?initiative_id=`.
+
+        Audits the initiative's graph edges and returns the gaps - untraced tasks and objects,
+        dependency cycles - as findings. An empty array means a clean graph. This is one of the
+        checks behind `idea doctor`, not the whole command.
+      responses:
+        "200":
+          description: The audit findings; empty when the graph is clean.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Finding" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/decisions/{id}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/DecisionId"
+    post:
+      tags: [decisions]
+      operationId: resolveDecision
+      summary: Record the human's resolution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resolution: { type: string }
+              required: [resolution]
+      responses:
+        "200":
+          description: Resolved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: decided }
+                required: [status]
+        "400":
+          description: "`resolution is required`, or the store's own rejection (already resolved, superseded)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/decisions/{id}/reopen:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/DecisionId"
+    post:
+      tags: [decisions]
+      operationId: reopenDecision
+      summary: Undo a resolution
+      description: Takes no body.
+      responses:
+        "200":
+          description: Reopened.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: open }
+                required: [status]
+        "400":
+          description: The store's rejection (the decision was not resolved).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/decisions/{id}/discussion:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/DecisionId"
+    get:
+      tags: [decisions]
+      operationId: getDecisionDiscussion
+      summary: The decision's discussion thread
+      responses:
+        "200":
+          description: The thread, oldest turn first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DecisionDiscussion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/decisions/{id}/discuss:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/DecisionId"
+    post:
+      tags: [decisions]
+      operationId: discussDecision
+      summary: One human-to-AI discussion turn
+      description: Synchronous - it calls the model inline and returns the reply, rather than an operation id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message: { type: string }
+              required: [message]
+      responses:
+        "200":
+          description: The model's reply, already appended to the thread.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response: { type: string }
+                required: [response]
+        "400":
+          description: "`message is required`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/questions/{id}/answer:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Question id.
+        schema: { type: string }
+    post:
+      tags: [decisions]
+      operationId: answerQuestion
+      summary: Record a human answer
+      description: The answer text is stored content-addressed; the row keeps only its digest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answer: { type: string }
+              required: [answer]
+      responses:
+        "200":
+          description: Answered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: resolved }
+                required: [status]
+        "400":
+          description: "`answer is required`, or the store's rejection."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/artifacts/{id}/body:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ArtifactVersionId"
+    get:
+      tags: [graph]
+      operationId: getArtifactBody
+      summary: One artifact version's body, sanitized, as JSON
+      responses:
+        "200":
+          description: The sanitized markdown body with its kind and version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { $ref: "#/components/schemas/ArtifactKind" }
+                  version: { type: integer }
+                  body:
+                    type: string
+                    description: Markdown, passed through the markdown sanitizer before serving.
+                  created_at: { type: string, format: date-time }
+                required: [kind, version, body, created_at]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`artifact not found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`artifact body missing` - the version row exists but its blob does not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/artifacts/{id}/raw:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ArtifactVersionId"
+    get:
+      tags: [graph]
+      operationId: getArtifactRaw
+      summary: One artifact version's body as a markdown download
+      description: |
+        **Not JSON.** The same body as `/body` but unsanitized and served as
+        `text/markdown` for download or export.
+      responses:
+        "200":
+          description: The raw markdown.
+          headers:
+            Content-Disposition:
+              description: "`attachment; filename=<kind>-v<version>.md`"
+              schema: { type: string }
+          content:
+            text/markdown:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`artifact not found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: "`artifact body missing`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/findings/{id}/disposition:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Finding id.
+        schema: { type: string }
+    post:
+      tags: [graph]
+      operationId: setFindingDisposition
+      summary: Set a finding's disposition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disposition: { $ref: "#/components/schemas/Disposition" }
+              required: [disposition]
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: dispositioned }
+                required: [status]
+        "400":
+          description: "`disposition is required`, or the store's rejection of an unknown disposition."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/findings/{id}/note:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Finding id.
+        schema: { type: string }
+    post:
+      tags: [graph]
+      operationId: setFindingNote
+      summary: Attach a human note to a finding
+      description: The note is redacted before it is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+              required: [note]
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: noted }
+                required: [status]
+        "400":
+          description: "`note is required` (missing, unparseable, or blank), or the store's rejection."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    get:
+      tags: [change-sets]
+      operationId: getChangeSet
+      summary: One change set
+      responses:
+        "200":
+          description: The change set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeSet" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/checks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    get:
+      tags: [change-sets]
+      operationId: listChangeSetChecks
+      summary: Deterministic checks for a change set
+      description: |
+        Projected from the change set's own findings, keeping only the `patch_applies`, `build` and
+        `tests` categories. A finding dispositioned `not_applicable` reads as `not_applicable`; a
+        `high` or `critical` severity reads as `fail`; anything else reads as `pass`.
+      responses:
+        "200":
+          description: The checks and their tallies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          enum: [patch_applies, build, tests]
+                        status:
+                          type: string
+                          enum: [pass, fail, not_applicable]
+                        summary: { type: string }
+                        evidence: { type: string }
+                        deny_code: { type: string }
+                      required: [name, status, summary]
+                  pass: { type: integer }
+                  fail: { type: integer }
+                  not_applicable: { type: integer }
+                required: [checks, pass, fail, not_applicable]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/diff:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    get:
+      tags: [change-sets]
+      operationId: getChangeSetDiff
+      summary: The change set's patch, rendered
+      description: One string containing the whole rendered patch. File contents were redacted at write time.
+      responses:
+        "200":
+          description: The rendered patch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  patch: { type: string }
+                required: [patch]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/review:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    post:
+      tags: [change-sets]
+      operationId: reviewChangeSet
+      summary: Record the human verdict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                verdict:
+                  type: string
+                  enum: [approve, reject, changes_requested]
+              required: [verdict]
+      responses:
+        "200":
+          description: Reviewed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: reviewed }
+                required: [status]
+        "400":
+          description: "`verdict is required`, or the engine's rejection of the verdict or the change set's state."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/apply:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    post:
+      tags: [change-sets]
+      operationId: applyChangeSet
+      summary: Apply an approved change set to the workspace
+      description: |
+        Asynchronous, so the status guard runs here rather than in the background: a change set that
+        is not `approved` is refused with 409 and a message that says what to do instead, rather
+        than reporting "apply started" and failing where only the log would see it.
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The change set cannot be applied from its current status, with the remedy named:
+            `change set CHG-1 is already applied; \`idea revert CHG-1\` rolls it back`,
+            `change set CHG-1 is being applied; \`idea changes\` shows when it lands`,
+            `change set CHG-1 needs approval first: \`idea review CHG-1 approve\``,
+            `change set CHG-1 was rejected; \`idea reviews\` shows why`, or
+            `change set CHG-1 cannot be applied from status <status>`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/revert:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    post:
+      tags: [change-sets]
+      operationId: revertChangeSet
+      summary: Roll an applied change set back
+      description: Byte-for-byte, from the recorded journal entry. Asynchronous.
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/resolve-conflict:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    post:
+      tags: [change-sets]
+      operationId: resolveChangeSetConflict
+      summary: Resolve a conflicted change set
+      description: |
+        `retry` resets the change set to approved and re-applies it asynchronously - **202 with an
+        operation id**. `reject` is synchronous and answers **200** with the rejected status. The
+        two resolutions therefore have different status codes and different bodies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resolution:
+                  type: string
+                  enum: [retry, reject]
+              required: [resolution]
+      responses:
+        "200":
+          description: Rejected (the `reject` resolution).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: "#/components/schemas/ChangeSetStatus" }
+                required: [status]
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400":
+          description: "`invalid body` or `resolution must be retry or reject`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The change set is not in a state the chosen resolution can act on.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/operations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Operation id, as returned by any 202 response.
+        schema: { type: string }
+    get:
+      tags: [operations]
+      operationId: getOperation
+      summary: Status of one asynchronous operation
+      description: |
+        Not project-scoped: the daemon searches every registered project for the id, so polling
+        works without knowing which project the operation belongs to.
+
+        Poll until `status` leaves `pending`/`running`. A terminal `failed` carries no reason here -
+        the initiative's `failure_reason` and `idea logs` do.
+      responses:
+        "200":
+          description: The operation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`operation not found` in any registered project."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/operations/{id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Operation id.
+        schema: { type: string }
+    post:
+      tags: [operations]
+      operationId: cancelOperation
+      summary: Interrupt a running operation
+      responses:
+        "200":
+          description: Cancellation was requested and recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation_id: { type: string }
+                  status: { $ref: "#/components/schemas/OperationStatus" }
+                required: [operation_id, status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            The operation is not cancellable - unknown, already finished, or not interruptible. This
+            is the only path where a missing operation reads as 409 rather than 404.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/providers:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: listProviders
+      summary: Configured providers plus the unconfigured presets
+      description: |
+        Each entry carries its type, base URL, the **name** of the key environment variable, and a
+        `ready` flag saying whether that key is present. Key values are never returned.
+
+        For a ready provider the model list is fetched live from the provider's API (8s timeout)
+        and falls back to the bundled catalog; configured models are always merged in. A rejected
+        provider entry reports the endpoint requests will actually reach, and says why in `problem`.
+      responses:
+        "200":
+          description: The provider view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvidersView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      operationId: updateProviders
+      summary: Merge provider settings into harness.yaml
+      description: |
+        A field-level merge, then a runtime reload. Only the fields this request writes are
+        validated against the resulting config: a pre-existing problem elsewhere in `harness.yaml`
+        is logged, not returned, so an unrelated problem cannot lock the operator out of the only
+        endpoint that could fix it. An empty model spec for a role clears that role. Inline secrets
+        are rejected at write time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                default_model:
+                  type: string
+                  description: "`provider/model`. Empty leaves the current default in place."
+                providers:
+                  type: object
+                  additionalProperties: { $ref: "#/components/schemas/ProviderConfig" }
+                  description: Provider entries by name; each is validated before it is stored.
+                models:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Per-role model specs. An empty value deletes the role override.
+                git_commit:
+                  type: boolean
+                  description: Omitted leaves the current value; null is treated as omitted.
+      responses:
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                required: [status]
+        "400":
+          description: |
+            `invalid body`, a provider entry the validator refused, a config problem attributable to
+            a field this request wrote, or a rejected inline secret.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: The config was written but the runtime reload failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/models:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: listModels
+      summary: List one provider's models
+      description: |
+        Live from the provider, falling back to the bundled catalog. With no `provider` the default
+        model's provider is used, and `openai` if there is no default. A provider that cannot be
+        reached answers 200 with an empty `models` array rather than an error.
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          description: Provider name, e.g. `openai`, `anthropic`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The provider that was consulted and its models.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider: { type: string }
+                  models:
+                    type: array
+                    items: { type: string }
+                required: [provider, models]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/executors:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: listExecutors
+      summary: Available executors and their declared capabilities
+      description: Every known executor is listed; `selected` marks the configured one.
+      responses:
+        "200":
+          description: The executors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ExecutorView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [config]
+      operationId: updateExecutors
+      summary: Merge executor settings into harness.yaml
+      description: |
+        Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
+        config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
+        and `model` are nullable pointers: omit to leave alone, send `""` to clear.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { $ref: "#/components/schemas/ExecutorKind" }
+                image:
+                  type: string
+                  description: Container image reference; must contain no whitespace. Empty clears it.
+                model:
+                  type: string
+                  description: Model spec for agent executors. Empty clears it.
+      responses:
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                required: [status]
+        "400":
+          description: "`invalid body`, `invalid executor kind \"...\"`, `invalid executor image`, or a rejected write."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/activity:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [events]
+      operationId: getActivity
+      summary: The raw event timeline
+      description: |
+        The first 200 events from sequence 0, ungrouped and unnarrated - unlike `/changed`, and
+        including the machinery events `/changed` hides.
+      responses:
+        "200":
+          description: The events.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Event" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/events:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [events]
+      operationId: streamEvents
+      summary: SSE stream of product-graph events
+      description: |
+        **Not JSON.** `text/event-stream`, one event per product-graph event, with the event
+        sequence as the SSE id. `Last-Event-ID` resumes from a sequence. The stream polls the store
+        once a second and pushes up to 200 events per tick, so it is at-least-once catch-up rather
+        than a true push.
+
+        **This is the one path that accepts the token as a query parameter** (`?token=`), because
+        `EventSource` cannot set request headers. Everywhere else the header is required, so the
+        token never reaches logs, shell history or a `Referer`.
+      security:
+        - ideaToken: []
+        - bearerToken: []
+        - sseQueryToken: []
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: The API token, for `EventSource` clients that cannot set a header.
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Resume from this event sequence. Unparseable values are treated as 0.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "`id: <seq>` and `data: <Event as JSON>` per event."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: "`streaming unsupported` - the response writer cannot flush."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    ideaToken:
+      type: apiKey
+      in: header
+      name: X-Idea-Token
+      description: |
+        The per-install API token, the daemon's sole credential (`auth`, `internal/daemon/server.go`).
+
+        - **Source**: `~/.local/share/idea-harness/token`, mode 0600, generated per install.
+          `IDEA_HARNESS_STATE` relocates the state root. The daemon also substitutes the token into
+          the UI's `index.html` at serve time, so the same-origin UI can authenticate its own
+          `fetch` calls.
+        - **Comparison** is constant-time (`security.TokenEqual`).
+        - **Scope**: every path under `/api/`. Paths outside `/api/` are the embedded UI's own
+          assets and carry no token check at all.
+        - **Exemption**: `GET /api/v1/health` is served without a token, so `idea doctor` and CI can
+          probe a daemon they have no token for.
+        - A missing or wrong token is `401 {"error": "unauthorized"}`.
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        The same token, accepted as `Authorization: Bearer <token>` for convenience. It is only
+        consulted when `X-Idea-Token` is absent.
+    sseQueryToken:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        The same token as a query parameter, accepted **only** on
+        `GET /api/v1/projects/{projectId}/events` - the SSE stream - because the browser's
+        `EventSource` API cannot set request headers. It is consulted only when neither header is
+        present. Every other endpoint requires a header, so the token never appears in a URL and so
+        never reaches server logs, shell history or a `Referer`.
+
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      description: Project id from `POST /api/v1/projects` or `GET /api/v1/projects`.
+      schema: { type: string }
+    InitiativeId:
+      name: id
+      in: path
+      required: true
+      description: |
+        Initiative id. Named `id` on the routes that were already nested before this release; the
+        ten that moved in this release use `initiativeId`, matching `routes.go`.
+      schema: { type: string }
+    NestedInitiativeId:
+      name: initiativeId
+      in: path
+      required: true
+      description: Initiative id, on one of the ten reads that moved to the nested path in this release.
+      schema: { type: string }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Task id. A task belonging to another initiative is refused by the editable guard.
+      schema: { type: string }
+    DecisionId:
+      name: id
+      in: path
+      required: true
+      description: Decision id.
+      schema: { type: string }
+    ChangeSetId:
+      name: id
+      in: path
+      required: true
+      description: Change set human id (`CHG-1`) or internal id - both resolve.
+      schema: { type: string }
+    ArtifactVersionId:
+      name: id
+      in: path
+      required: true
+      description: Artifact **version** id, as returned in the `id` field of the artifacts list.
+      schema: { type: string }
+    GraphNodeType:
+      name: type
+      in: query
+      required: true
+      description: Graph node type, e.g. `requirement`, `task`, `decision`, `assertion`, `change_set`.
+      schema: { type: string }
+    GraphNodeId:
+      name: id
+      in: query
+      required: true
+      description: Graph node id.
+      schema: { type: string }
+
+  responses:
+    Unauthorized:
+      description: "`401 {\"error\": \"unauthorized\"}` - the token was missing or wrong."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: |
+        A store miss. The message names the kind and the reference that was asked for -
+        `no change set matching "CHG-99"` - because `writeErr` classifies the error rather than
+        trusting the handler's status. A lookup that reached the daemon unwrapped degrades to
+        `not found`. An unknown `projectId` lands here too.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: The requested transition is not legal from the current state; the message says why.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: |
+        `document too large` or `body too large`. A single document's content is capped at 2 MiB and
+        the request body at that plus 64 KiB of framing.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: |
+        A storage or filesystem failure: `internal error (correlation id: a1b2c3d4e5f6)`. The full
+        error is logged server-side under that id (`idea logs`), so driver text, constraint names
+        and absolute state paths never reach the client. A **domain** error that a handler passed
+        with status 500 keeps its own message instead - `writeErr` masks only storage failures.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TraceParamsRequired:
+      description: "`type and id query params are required`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TaskNotEditable:
+      description: |
+        The plan is not editable, or this task is not:
+        `tasks are editable only after the plan is drafted and before it is executed`,
+        `the initiative has work in progress; wait for it to finish`,
+        `task does not belong to this initiative`,
+        `task is done and cannot be edited`, or
+        `task already has change sets and cannot be edited`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    OperationAccepted:
+      description: |
+        Accepted. The work runs asynchronously; poll `GET /api/v1/operations/{operation_id}` or
+        follow the project's SSE stream.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OperationAccepted" }
+
+  schemas:
+    Error:
+      type: object
+      title: Error
+      description: |
+        Every error response in this API has this shape and nothing else - no code, no details
+        object. Status selection is centralized: a store miss is 404 naming the reference, a storage
+        failure is 500 with a correlation id and a generic message, and every other (domain) error
+        keeps its own message and the status its handler chose. Handlers that validate their own
+        request bodies write 400 directly.
+      properties:
+        error:
+          type: string
+          description: A message written to be read by a human.
+      required: [error]
+      examples:
+        - { error: 'no change set matching "CHG-99"' }
+        - { error: "internal error (correlation id: a1b2c3d4e5f6)" }
+        - { error: "unauthorized" }
+
+    OperationAccepted:
+      type: object
+      title: OperationAccepted
+      properties:
+        operation_id: { type: string }
+      required: [operation_id]
+
+    BuildInfo:
+      type: object
+      title: BuildInfo
+      description: The binary's build stamp (`buildinfo.Info`).
+      properties:
+        version:
+          type: string
+          description: A release version, a module version from the proxy, or `dev`.
+        commit:
+          type: string
+          description: VCS revision, omitted when unknown.
+        modified:
+          type: boolean
+          description: True when built from a dirty working tree; omitted when false.
+      required: [version]
+
+    ProjectRecord:
+      type: object
+      title: ProjectRecord
+      description: One entry in the global project registry (`store.ProjectRecord`).
+      properties:
+        id: { type: string }
+        name: { type: string }
+        root_path: { type: string }
+        project_id:
+          type: string
+          description: The id used in every `/projects/{projectId}` path.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, root_path, project_id, created_at, updated_at]
+
+    InitiativeStatus:
+      type: string
+      title: InitiativeStatus
+      enum: [running, needs_human_judgment, approved, plan_approved, failed, complete]
+
+    Initiative:
+      type: object
+      title: Initiative
+      description: One initiative - the unit of work the whole API is scoped to (`domain.Initiative`).
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/InitiativeStatus" }
+        failure_reason:
+          type: string
+          description: Present only on a failed initiative.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, title, description, status, created_at, updated_at]
+
+    TrustLevel:
+      type: string
+      title: TrustLevel
+      enum:
+        - system
+        - policy
+        - human_approved
+        - reviewed_agent_output
+        - unreviewed_agent_output
+        - external_untrusted
+
+    Confidence:
+      type: string
+      title: Confidence
+      enum: [high, medium, low]
+
+    ProvenanceRef:
+      type: object
+      title: ProvenanceRef
+      description: One source behind a statement.
+      properties:
+        kind: { type: string }
+        id: { type: string }
+        digest: { type: string }
+        trust: { $ref: "#/components/schemas/TrustLevel" }
+      required: [kind, id, trust]
+
+    AcceptanceCriterion:
+      type: object
+      title: AcceptanceCriterion
+      properties:
+        metric: { type: string }
+        target: { type: string }
+        condition: { type: string }
+      required: [metric, target, condition]
+
+    RequirementPriority:
+      type: string
+      title: RequirementPriority
+      enum: [must, should, could]
+
+    RequirementStatus:
+      type: string
+      title: RequirementStatus
+      enum: [draft, approved, verified, removed]
+
+    Requirement:
+      type: object
+      title: Requirement
+      description: One requirement with its acceptance criteria and provenance (`domain.Requirement`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        code:
+          type: string
+          description: The human-facing code, e.g. `REQ-3`.
+        statement: { type: string }
+        acceptance_criteria:
+          type: array
+          items: { $ref: "#/components/schemas/AcceptanceCriterion" }
+        priority: { $ref: "#/components/schemas/RequirementPriority" }
+        status: { $ref: "#/components/schemas/RequirementStatus" }
+        source_assertion_id: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        produced_by_run: { type: string }
+        superseded_by: { type: string }
+        verified_at:
+          type: [string, "null"]
+          format: date-time
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]
+
+    Assertion:
+      type: object
+      title: Assertion
+      description: One provenance-backed statement about the problem (`domain.Assertion`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        type:
+          type: string
+          enum: [fact, assumption, hypothesis]
+        status:
+          type: string
+          enum: [candidate, accepted, disputed, retracted, superseded]
+        statement: { type: string }
+        evidence_digest: { type: string }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        source: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        produced_by_run: { type: string }
+        superseded_by: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, type, status, statement, confidence, source, provenance, created_at]
+
+    Decision:
+      type: object
+      title: Decision
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        code: { type: string }
+        type:
+          type: string
+          enum: [product, architecture, design, security, operations]
+        question: { type: string }
+        options:
+          type: array
+          items: { type: string }
+        recommendation: { type: string }
+        status:
+          type: string
+          enum: [open, decided, superseded]
+        resolution: { type: string }
+        resolved_by: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        superseded_by: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, code, type, question, options, recommendation, status, provenance, created_at]
+
+    DecisionDiscussion:
+      type: object
+      title: DecisionDiscussion
+      description: One turn in a decision's discussion thread.
+      properties:
+        id: { type: string }
+        decision_id: { type: string }
+        author: { type: string }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, decision_id, author, message, created_at]
+
+    Question:
+      type: object
+      title: Question
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        question: { type: string }
+        status:
+          type: string
+          enum: [open, resolved]
+        answer_digest:
+          type: string
+          description: The answer is stored content-addressed; only its digest is on the row.
+        answered_by: { type: string }
+        created_at: { type: string, format: date-time }
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+      required: [id, initiative_id, question, status, created_at]
+
+    SuggestedAnswer:
+      type: object
+      title: SuggestedAnswer
+      properties:
+        question_id: { type: string }
+        question: { type: string }
+        answer: { type: string }
+      required: [question_id, question, answer]
+
+    ArtifactKind:
+      type: string
+      title: ArtifactKind
+      enum:
+        - idea_brief
+        - research_brief
+        - prd
+        - technical_design
+        - design_spec
+        - verification_plan
+        - threat_model
+        - execution_plan
+        - operational_readiness
+        - verification_report
+
+    ArtifactVersion:
+      type: object
+      title: ArtifactVersion
+      description: |
+        One artifact version (`store.ArtifactView`). `id` is the **version** id - the value
+        `/artifacts/{id}/body` and `/artifacts/{id}/raw` take.
+      properties:
+        id: { type: string }
+        artifact_id: { type: string }
+        kind: { $ref: "#/components/schemas/ArtifactKind" }
+        version: { type: integer }
+        status: { type: string }
+        body_digest: { type: string }
+        produced_by_run: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, artifact_id, kind, version, status, body_digest, produced_by_run, created_at]
+
+    ContextDoc:
+      type: object
+      title: ContextDoc
+      description: One ingested context document. Bodies live in the blob store; only a preview is on the row.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        kind:
+          type: string
+          description: Free-form category, redacted and truncated to 64 runes; `other` by default.
+        title:
+          type: string
+          description: Redacted and truncated to 200 runes; `untitled` by default.
+        digest: { type: string }
+        preview:
+          type: string
+          description: First 200 runes of the redacted text; empty for an image doc.
+        format:
+          type: string
+          description: "`image` for an image upload; empty for a text doc."
+        description_digest:
+          type: string
+          description: Digest of the vision-generated description, once it has been produced.
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, kind, title, digest, preview, format, created_at]
+
+    Severity:
+      type: string
+      title: Severity
+      enum: [critical, high, medium, low, observation]
+
+    Disposition:
+      type: string
+      title: Disposition
+      enum: [fixed, accepted_risk, not_applicable, duplicate, deferred, rejected, mitigate]
+
+    Finding:
+      type: object
+      title: Finding
+      description: |
+        One review or audit finding (`domain.Finding`). The same shape carries change-set review
+        findings and the traceability gaps returned by `/doctor`.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        review_run_id: { type: string }
+        target_type:
+          type: string
+          description: What the finding is about, e.g. `change_set`, `task`, `requirement`.
+        target_id: { type: string }
+        severity: { $ref: "#/components/schemas/Severity" }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        category:
+          type: string
+          description: "`patch_applies`, `build` and `tests` are the categories `/checks` projects."
+        code:
+          type: string
+          description: Deny code, when the finding came from a policy gate.
+        finding: { type: string }
+        evidence: { type: string }
+        impact: { type: string }
+        recommendation: { type: string }
+        disposition: { $ref: "#/components/schemas/Disposition" }
+        disposition_actor: { type: string }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, review_run_id, target_type, target_id, severity, confidence, category, finding, evidence, impact, recommendation, created_at]
+
+    TaskStatus:
+      type: string
+      title: TaskStatus
+      enum: [proposed, ready, blocked, done, cancelled]
+
+    Task:
+      type: object
+      title: Task
+      description: One unit of the execution plan (`domain.Task`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        code:
+          type: string
+          description: The human-facing code, e.g. `TASK-2`.
+        title: { type: string }
+        statement: { type: string }
+        status: { $ref: "#/components/schemas/TaskStatus" }
+        priority: { $ref: "#/components/schemas/RequirementPriority" }
+        estimate: { type: string }
+        produced_by_run: { type: string }
+        superseded_by: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, code, title, statement, status, priority, created_at]
+
+    ChangeSetStatus:
+      type: string
+      title: ChangeSetStatus
+      enum:
+        - draft
+        - checks_running
+        - review_required
+        - rejected
+        - changes_requested
+        - superseded
+        - approved
+        - applying
+        - applied
+        - reverted
+        - conflicted
+
+    ChangeSet:
+      type: object
+      title: ChangeSet
+      description: |
+        The source-mutation primitive (`domain.ChangeSet`). Only an `approved` change set can be
+        applied; the patch itself is fetched from `/change-sets/{id}/diff`.
+      properties:
+        id: { type: string }
+        human_id:
+          type: string
+          description: The id humans use, e.g. `CHG-1`. Either id addresses the change set in a path.
+        initiative_id: { type: string }
+        task_id: { type: string }
+        base_snapshot_id: { type: string }
+        status: { $ref: "#/components/schemas/ChangeSetStatus" }
+        patch_digest: { type: string }
+        review_id: { type: string }
+        git_commit_sha:
+          type: string
+          description: Set when the harness is configured to commit applied change sets.
+        created_by_run_id: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
+
+    OperationStatus:
+      type: string
+      title: OperationStatus
+      enum: [pending, running, succeeded, failed, cancelled]
+
+    Operation:
+      type: object
+      title: Operation
+      description: |
+        One asynchronous unit of work (`domain.Operation`), created by every 202 endpoint. Poll it
+        until `status` is `succeeded`, `failed` or `cancelled`.
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        initiative_id: { type: string }
+        type:
+          type: string
+          description: Which pipeline this operation runs, e.g. `advance`, `execute`, `apply`.
+        status: { $ref: "#/components/schemas/OperationStatus" }
+        result_ref: { type: string }
+        created_at: { type: string, format: date-time }
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+      required: [id, project_id, type, status, created_at]
+
+    Event:
+      type: object
+      title: Event
+      description: One row of the append-only event log (`store.EventRow`), also the SSE payload.
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: Monotonic sequence; also the SSE event id and the `Last-Event-ID` value.
+        id: { type: string }
+        aggregate_type: { type: string }
+        aggregate_id: { type: string }
+        actor: { type: string }
+        correlation_id: { type: string }
+        causation_id: { type: string }
+        operation: { type: string }
+        event_type: { type: string }
+        payload_digest:
+          type: string
+          description: The payload is content-addressed; the event carries only its digest.
+        created_at_ms:
+          type: integer
+          format: int64
+          description: Unix milliseconds - not an RFC 3339 timestamp, unlike every other created_at.
+      required: [seq, id, aggregate_type, aggregate_id, actor, event_type, payload_digest, created_at_ms]
+
+    Understanding:
+      type: object
+      title: Understanding
+      description: |
+        The Current Understanding projection (`projection.Understanding`) - what the system believes,
+        assembled from relational state with provenance retained. `summary` and `needs_judgment` are
+        rendered deterministically from the entities below them, never narrated by a model.
+      properties:
+        title: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/InitiativeStatus" }
+        failure_reason: { type: string }
+        summary: { type: string }
+        needs_judgment:
+          type: array
+          items: { type: string }
+          description: The items waiting on a human, phrased for display.
+        assertions:
+          type: array
+          items: { $ref: "#/components/schemas/UnderstandingItem" }
+        requirements:
+          type: array
+          items: { $ref: "#/components/schemas/RequirementView" }
+          description: Requirements with status `removed` are omitted.
+        decisions:
+          type: array
+          items: { $ref: "#/components/schemas/DecisionView" }
+        questions:
+          type: array
+          items: { $ref: "#/components/schemas/QuestionView" }
+      required: [title, description, status, summary, needs_judgment, assertions, requirements, decisions, questions]
+
+    UnderstandingItem:
+      type: object
+      title: UnderstandingItem
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [fact, assumption, hypothesis]
+        status:
+          type: string
+          enum: [candidate, accepted, disputed, retracted, superseded]
+        statement: { type: string }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        source: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        produced_by_run: { type: string }
+      required: [id, type, status, statement, confidence, source, provenance, produced_by_run]
+
+    RequirementView:
+      type: object
+      title: RequirementView
+      properties:
+        id: { type: string }
+        code: { type: string }
+        statement: { type: string }
+        priority: { $ref: "#/components/schemas/RequirementPriority" }
+        status: { $ref: "#/components/schemas/RequirementStatus" }
+        acceptance_criteria:
+          type: array
+          items: { $ref: "#/components/schemas/AcceptanceCriterion" }
+      required: [id, code, statement, priority, status, acceptance_criteria]
+
+    DecisionView:
+      type: object
+      title: DecisionView
+      properties:
+        id: { type: string }
+        code: { type: string }
+        question: { type: string }
+        recommendation: { type: string }
+        options:
+          type: array
+          items: { type: string }
+        resolution: { type: string }
+        status:
+          type: string
+          enum: [open, decided, superseded]
+        has_dissent: { type: boolean }
+        dissents:
+          type: array
+          items: { $ref: "#/components/schemas/DissentView" }
+        synthesis:
+          type: string
+          description: Present only when there was dissent; the convergence that reconciled it.
+      required: [id, code, question, recommendation, options, status, has_dissent, dissents]
+
+    DissentView:
+      type: object
+      title: DissentView
+      properties:
+        proponent_role: { type: string }
+        position: { type: string }
+      required: [proponent_role, position]
+
+    QuestionView:
+      type: object
+      title: QuestionView
+      properties:
+        id: { type: string }
+        question: { type: string }
+        status:
+          type: string
+          enum: [open, resolved]
+      required: [id, question, status]
+
+    Guidance:
+      type: object
+      title: Guidance
+      description: |
+        The Recommended Next Move projection (`projection.Guidance`, formerly `NextMove`), served by
+        `/guidance` - display copy, not a command. `/next` is the machine-executable counterpart.
+      properties:
+        action:
+          type: string
+          description: An English sentence, e.g. "Resolve open decisions".
+        why:
+          type: string
+          description: The rationale, e.g. "2 decision(s) need your judgment before proceeding."
+        affected:
+          type: array
+          items: { type: string }
+          description: The areas the move touches, e.g. ["Product Definition"].
+      required: [action, why, affected]
+
+    Changed:
+      type: object
+      title: Changed
+      properties:
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/ChangeGroup" }
+        through:
+          type: integer
+          format: int64
+          description: The highest event sequence covered. Echo this to `/seen`.
+      required: [groups, through]
+
+    ChangeGroup:
+      type: object
+      title: ChangeGroup
+      properties:
+        category: { type: string }
+        items:
+          type: array
+          items: { type: string }
+      required: [category, items]
+
+    TraceItem:
+      type: object
+      title: TraceItem
+      description: One product-graph edge, with labels resolved for display.
+      properties:
+        edge_type: { type: string }
+        from_type: { type: string }
+        from_id: { type: string }
+        from_label: { type: string }
+        to_type: { type: string }
+        to_id: { type: string }
+        to_label: { type: string }
+      required: [edge_type, from_type, from_id, to_type, to_id]
+
+    ImpactItem:
+      title: ImpactItem
+      description: A `TraceItem` plus a staleness classification for the dependent node.
+      allOf:
+        - $ref: "#/components/schemas/TraceItem"
+        - type: object
+          properties:
+            staleness: { type: string }
+          required: [staleness]
+
+    SemanticDiff:
+      type: object
+      title: SemanticDiff
+      properties:
+        requirements:
+          type: object
+          properties:
+            added:
+              type: array
+              items: { $ref: "#/components/schemas/DiffRequirement" }
+            removed:
+              type: array
+              items: { $ref: "#/components/schemas/DiffRequirement" }
+          required: [added, removed]
+        decisions:
+          type: object
+          properties:
+            open:
+              type: array
+              items: { $ref: "#/components/schemas/DiffDecision" }
+            decided:
+              type: array
+              items: { $ref: "#/components/schemas/DiffDecision" }
+            superseded:
+              type: array
+              items: { $ref: "#/components/schemas/DiffDecision" }
+          required: [open, decided, superseded]
+      required: [requirements, decisions]
+
+    DiffRequirement:
+      type: object
+      title: DiffRequirement
+      properties:
+        code: { type: string }
+        statement: { type: string }
+        priority: { $ref: "#/components/schemas/RequirementPriority" }
+      required: [code, statement, priority]
+
+    DiffDecision:
+      type: object
+      title: DiffDecision
+      properties:
+        code: { type: string }
+        question: { type: string }
+        resolution: { type: string }
+      required: [code, question]
+
+    Coverage:
+      type: object
+      title: Coverage
+      description: Verification coverage for one requirement.
+      properties:
+        code: { type: string }
+        pass:
+          type: integer
+          description: Acceptance criteria with passing evidence.
+        total:
+          type: integer
+          description: Acceptance criteria in total.
+        needs_manual:
+          type: integer
+          description: Criteria still waiting on a human.
+      required: [code, pass, total, needs_manual]
+
+    RiskTier:
+      type: string
+      title: RiskTier
+      enum: [low, medium, high, critical]
+
+    RiskSignal:
+      type: object
+      title: RiskSignal
+      properties:
+        name: { type: string }
+        detected: { type: boolean }
+        detail: { type: string }
+      required: [name, detected]
+
+    RiskProfile:
+      type: object
+      title: RiskProfile
+      description: |
+        A coarse risk tier and the signals behind it (`domain.RiskProfile`). Deterministic, with no
+        numeric score - the tier is the floor implied by the detected signals.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        tier: { $ref: "#/components/schemas/RiskTier" }
+        signals:
+          type: array
+          items: { $ref: "#/components/schemas/RiskSignal" }
+        reason:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, tier, signals, created_at]
+
+    ProviderConfig:
+      type: object
+      title: ProviderConfig
+      description: One provider entry as written to `harness.yaml`. Inline key values are rejected.
+      properties:
+        type:
+          type: string
+          description: Provider type, e.g. `openai`, `anthropic`, `openai_compatible`.
+        api_key_env:
+          type: string
+          description: The **name** of the environment variable holding the key - never the key.
+        base_url: { type: string }
+        models:
+          type: array
+          items: { type: string }
+
+    ProviderSummary:
+      type: object
+      title: ProviderSummary
+      description: The API and UI view of one provider (`providerSummary`).
+      properties:
+        name: { type: string }
+        label: { type: string }
+        type: { type: string }
+        base_url:
+          type: string
+          description: |
+            The endpoint requests will actually reach. When `problem` is set, a preset falls back to
+            its built-in endpoint and a custom name resolves nowhere, so this is empty rather than
+            the refused value.
+        key_env:
+          type: string
+          description: The environment variable name the key is read from.
+        ready:
+          type: boolean
+          description: The key is present (or none is needed) and the entry has no problem.
+        configured:
+          type: boolean
+          description: False for an unconfigured preset that is offered so the UI can add it.
+        is_default: { type: boolean }
+        models:
+          type: array
+          items: { type: string }
+          description: Live from the provider when ready, else the bundled catalog; configured models are merged in.
+        problem:
+          type: string
+          description: Why a configured entry is not being used. Empty for a healthy one.
+      required: [name, label, type, base_url, key_env, ready, configured, is_default, models]
+
+    ProvidersView:
+      type: object
+      title: ProvidersView
+      description: The `GET /providers` response (`providersView`).
+      properties:
+        default_model:
+          type: string
+          description: "`provider/model`."
+        models:
+          type: object
+          additionalProperties: { type: string }
+          description: Per-role model overrides; omitted when empty.
+        git_commit:
+          type: boolean
+          description: Whether applied change sets are committed to git.
+        demo:
+          type: boolean
+          description: True when no real provider is configured or reachable, so output will be synthetic.
+        providers:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderSummary" }
+      required: [default_model, git_commit, demo, providers]
+
+    ExecutorKind:
+      type: string
+      title: ExecutorKind
+      enum: [internal, container, omp, hermes]
+
+    ExecutorView:
+      type: object
+      title: ExecutorView
+      description: One available executor with its declared capabilities and the current configuration.
+      properties:
+        name: { $ref: "#/components/schemas/ExecutorKind" }
+        trust:
+          type: string
+          enum: [internal, local_external, remote_external]
+        sandbox_mode:
+          type: string
+          enum: [container, local_restricted, host_approved]
+        network: { type: boolean }
+        capabilities:
+          type: array
+          items: { type: string }
+        selected:
+          type: boolean
+          description: True for the executor the harness is configured to use.
+        image:
+          type: string
+          description: The configured image - the same value on every entry, not per executor.
+        model:
+          type: string
+          description: The configured executor model - likewise shared across entries.
+        default_image:
+          type: string
+          description: The image this executor would use if none were configured.
+      required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image]
