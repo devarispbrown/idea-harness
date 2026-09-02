@@ -29,6 +29,18 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   in a fresh clone with `pattern dist: no matching files found`. A placeholder `dist/index.html` is
   committed; `make build` overwrites it with the real UI.
 
+### Security
+
+- A change set can no longer modify the harness control plane. `.idea-harness/**` (providers and
+  their `base_url`, network policy, executor kind, `build_cmd`/`test_cmd`, `git_commit`) and
+  `.git/**` (hooks, which run on your next manual commit) are excluded from the snapshot that
+  becomes a change set, and a patch naming one is rejected before anything is written. Containment
+  allowed both, and neither tripped the secret sweep or the path guard. `.gitignore` is unaffected.
+- A coding agent is no longer launched with a provider key nobody chose. An unknown provider in
+  `harness.executor.model` used to fall back to the first preset API key present in the environment,
+  and the agent runs in a container with network egress. An unresolvable provider now fails the run
+  with a message naming the model.
+
 ### Changed
 
 - Unknown flags are now an error naming the command's accepted flags, instead of being silently

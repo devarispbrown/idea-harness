@@ -8,11 +8,14 @@ package fsdiff
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/idea-harness/idea-harness/internal/blob"
 	"github.com/idea-harness/idea-harness/internal/domain"
@@ -37,6 +40,43 @@ type Patch struct {
 	Files              []domain.FileChange `json:"files"`
 }
 
+// controlPlaneDirs are the directories a change set may never read or write.
+//
+// Containment (security.ResolveWithin) keeps a change set inside the workspace,
+// but the workspace contains the machinery that governs the change set itself:
+//
+//   - .idea-harness/ holds harness.yaml — providers and their base_url, network
+//     policy, executor kind, build_cmd/test_cmd, git_commit. A model-authored
+//     diff editing it carries no credential and no path escape, so it trips
+//     neither the secret sweep nor the path guard, yet it rewrites the governor.
+//   - .git/ holds hooks. The harness runs its own commits with hooks disabled
+//     (internal/git), but a pre-commit hook left in the workspace executes on
+//     the developer's next manual commit.
+//
+// The deny is enforced in the walk, so an agent's writes there never enter a
+// manifest, never become a change set, and never reach review — rather than
+// relying on a reviewer to notice them in a diff. Apply and Prepare re-check,
+// so a patch that names one of these paths is rejected even if it was built
+// some other way. .gitignore is deliberately NOT covered: it sits outside .git/
+// and is a legitimate thing for an agent to edit.
+var controlPlaneDirs = []string{".idea-harness", ".git"}
+
+// isControlPlane reports whether a slash-separated relative path lies inside a
+// control-plane directory.
+func isControlPlane(rel string) bool {
+	rel = path.Clean(filepath.ToSlash(rel))
+	for _, dir := range controlPlaneDirs {
+		if rel == dir || strings.HasPrefix(rel, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrControlPlanePath is returned when a change set names a path that governs
+// the harness itself.
+var ErrControlPlanePath = errors.New("fsdiff: path is part of the harness control plane and cannot be changed by a change set")
+
 // Snapshot walks root and returns a path-sorted manifest of its regular files
 // (content-addressed). Directories, symlinks, and non-regular files are ignored.
 // Symlinks are rejected via Lstat (not followed) so an untrusted executor cannot
@@ -49,6 +89,9 @@ func Snapshot(root string) (Manifest, error) {
 			return err
 		}
 		if d.IsDir() {
+			if rel, relErr := filepath.Rel(root, p); relErr == nil && rel != "." && isControlPlane(rel) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		info, err := d.Info()
@@ -143,6 +186,9 @@ func Diff(before, after Manifest) []domain.FileChange {
 func Prepare(root string, changes []domain.FileChange, put func(content []byte) (string, error)) (Manifest, error) {
 	var pre Manifest
 	for _, c := range changes {
+		if isControlPlane(c.Path) {
+			return nil, fmt.Errorf("%w: %q", ErrControlPlanePath, c.Path)
+		}
 		dest, err := security.ResolveWithin(root, c.Path)
 		if err != nil {
 			return nil, fmt.Errorf("fsdiff: prepare %q: %w", c.Path, err)
@@ -170,6 +216,9 @@ func Prepare(root string, changes []domain.FileChange, put func(content []byte) 
 // before any write, and writes are atomic (temp file + rename).
 func Commit(root string, changes []domain.FileChange, get func(digest string) ([]byte, error)) error {
 	for _, c := range changes {
+		if isControlPlane(c.Path) {
+			return fmt.Errorf("%w: %q", ErrControlPlanePath, c.Path)
+		}
 		dest, err := security.ResolveWithin(root, c.Path)
 		if err != nil {
 			return fmt.Errorf("fsdiff: commit %q: %w", c.Path, err)

@@ -263,20 +263,57 @@ func TestSelectExecutor(t *testing.T) {
 	}{
 		{config.ExecutorInternal, "internal"},
 		{config.ExecutorContainer, "container"},
-		{config.ExecutorOMP, "omp"},
-		{config.ExecutorHermes, "hermes"},
 		{config.ExecutorKind(""), "internal"},  // empty/unknown fails closed to internal
 		{config.ExecutorKind("bogus"), "internal"},
 	}
 	for _, tc := range cases {
 		e := &Engine{cfg: config.HarnessConfig{Executor: config.ExecutorConfig{Kind: tc.kind}}}
-		exec := e.selectExecutor()
+		exec, err := e.selectExecutor()
+		if err != nil {
+			t.Fatalf("selectExecutor(%q): %v", tc.kind, err)
+		}
 		if exec == nil {
 			t.Fatalf("selectExecutor(%q) returned nil", tc.kind)
 		}
 		if got := exec.Name(); got != tc.want {
 			t.Errorf("selectExecutor(%q).Name() = %q, want %q", tc.kind, got, tc.want)
 		}
+	}
+}
+
+// A coding agent runs in a container with deliberate network egress and is
+// handed a provider API key. That key used to be chosen by scanning the presets
+// for whichever one happened to be set in the environment, so a typo in
+// executor.model sent an unrelated provider's real key out of the machine.
+func TestSelectExecutorFailsClosedWithoutAResolvableProvider(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-should-never-be-scavenged")
+
+	for _, kind := range []config.ExecutorKind{config.ExecutorOMP, config.ExecutorHermes} {
+		e := &Engine{cfg: config.HarnessConfig{Executor: config.ExecutorConfig{
+			Kind:  kind,
+			Model: "typo-provider/some-model",
+		}}}
+		exec, err := e.selectExecutor()
+		if err == nil {
+			t.Fatalf("selectExecutor(%q) with an unresolvable provider returned %v, want an error", kind, exec)
+		}
+		if !strings.Contains(err.Error(), "typo-provider/some-model") {
+			t.Errorf("error should name the model that could not be resolved, got: %v", err)
+		}
+	}
+}
+
+// A provider the operator actually configured still resolves.
+func TestSelectExecutorAcceptsAConfiguredProvider(t *testing.T) {
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "anthropic/claude-sonnet-4-5-20250929"},
+	}}
+	exec, err := e.selectExecutor()
+	if err != nil {
+		t.Fatalf("selectExecutor with a preset provider: %v", err)
+	}
+	if got := exec.Name(); got != "hermes" {
+		t.Errorf("Name() = %q, want hermes", got)
 	}
 }
 
