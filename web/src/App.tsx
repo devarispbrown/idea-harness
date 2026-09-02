@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { get, post, apiRaw, token } from "./api";
+import { get, post, apiRaw, uploadDoc, token } from "./api";
 import Settings from "./Settings";
 import { changeStatusClass, dispositionClass, dispositionLabel } from "./statusChips";
 
@@ -148,6 +148,16 @@ interface VerifyResponse {
   coverage: VerifyCoverage[];
 }
 
+interface ContextDoc {
+  id: string;
+  initiative_id: string;
+  kind: string;
+  title: string;
+  digest: string;
+  preview: string;
+  created_at: string;
+}
+
 interface Command {
   label: string;
   hint: string;
@@ -271,6 +281,11 @@ export default function App() {
   const [traceModal, setTraceModal] = useState<{ type: string; id: string; label: string } | null>(null);
   const [traceWhy, setTraceWhy] = useState<TraceItem[]>([]);
   const [traceImpact, setTraceImpact] = useState<ImpactItem[]>([]);
+  const [docs, setDocs] = useState<ContextDoc[]>([]);
+  const [docsKind, setDocsKind] = useState("other");
+  const [docsTitle, setDocsTitle] = useState("");
+  const [docsPaste, setDocsPaste] = useState("");
+  const [docsBusy, setDocsBusy] = useState(false);
   const [suggestingAnswers, setSuggestingAnswers] = useState(false);
   const [notice, setNotice] = useState<{ kind: "success" | "info" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -283,7 +298,7 @@ export default function App() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
   }, []);
   const [tab, setTab] = useState<
-    "overview" | "requirements" | "decisions" | "findings" | "questions" | "artifacts" | "tasks" | "changes" | "activity" | "logs"
+    "overview" | "requirements" | "decisions" | "findings" | "questions" | "artifacts" | "tasks" | "changes" | "context" | "activity" | "logs"
   >("overview");
 
   const loadProjects = useCallback(async () => {
@@ -387,6 +402,20 @@ export default function App() {
   useEffect(() => {
     if (projectId && tab === "changes") loadChangeSets();
   }, [projectId, tab, loadChangeSets]);
+
+  const loadDocs = useCallback(async () => {
+    if (!projectId || !initiative?.id) return;
+    try {
+      const list = (await get<ContextDoc[]>(`/projects/${projectId}/initiatives/${initiative.id}/docs`)) ?? [];
+      setDocs(list);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [projectId, initiative?.id]);
+
+  useEffect(() => {
+    if (projectId && initiative?.id) loadDocs();
+  }, [projectId, initiative?.id, loadDocs]);
 
   // Demo banner.
   useEffect(() => {
@@ -884,6 +913,50 @@ export default function App() {
     }
   };
 
+  // addPasteDoc ingests pasted text as a context doc.
+  const addPasteDoc = async () => {
+    if (!initiative || !docsPaste.trim()) return;
+    setDocsBusy(true);
+    setError("");
+    try {
+      await post<ContextDoc>(`/projects/${projectId}/initiatives/${initiative.id}/docs`, {
+        content: docsPaste,
+        kind: docsKind,
+        title: docsTitle.trim() || undefined,
+      });
+      setDocsPaste("");
+      setDocsTitle("");
+      await loadDocs();
+      flash("success", "Context doc added.");
+    } catch (e) {
+      setError(String(e));
+      flash("error", `Failed to add doc: ${e}`);
+    } finally {
+      setDocsBusy(false);
+    }
+  };
+
+  // addFileDoc uploads a file (md/txt/pdf/docx); the daemon extracts text.
+  const addFileDoc = async (file: File) => {
+    if (!initiative) return;
+    setDocsBusy(true);
+    setError("");
+    try {
+      await uploadDoc<ContextDoc>(`/projects/${projectId}/initiatives/${initiative.id}/docs`, file, {
+        kind: docsKind,
+        title: docsTitle.trim(),
+      });
+      setDocsTitle("");
+      await loadDocs();
+      flash("success", `Uploaded ${file.name}.`);
+    } catch (e) {
+      setError(String(e));
+      flash("error", `Upload failed: ${e}`);
+    } finally {
+      setDocsBusy(false);
+    }
+  };
+
   const commands: Command[] = [
     {
       label: "New idea",
@@ -1137,6 +1210,10 @@ export default function App() {
             <button className={tab === "changes" ? "tab active" : "tab"} onClick={() => setTab("changes")}>
               Changes
               <span className="tab-count">{(changeSets ?? []).length}</span>
+            </button>
+            <button className={tab === "context" ? "tab active" : "tab"} onClick={() => setTab("context")}>
+              Context
+              <span className="tab-count">{docs.length}</span>
             </button>
             <button className={tab === "activity" ? "tab active" : "tab"} onClick={() => setTab("activity")}>
               Activity
@@ -1661,6 +1738,71 @@ export default function App() {
                   ))}
                 </ul>
               )}
+            </section>
+          )}
+
+          {tab === "context" && (
+            <section className="card">
+              <div className="card-head">
+                <h2>Context Docs</h2>
+                <span className="muted small-note">Upload a PRD, design, tech spec, or market analysis to ground the agents.</span>
+              </div>
+              {docs.length === 0 ? (
+                <p className="muted">No docs yet — add one below.</p>
+              ) : (
+                <ul className="list">
+                  {docs.map((d) => (
+                    <li key={d.id}>
+                      <span className="code">{d.kind}</span> <strong>{d.title}</strong>
+                      {d.preview && <p className="muted">{d.preview}</p>}
+                      <button className="ghost small" onClick={() => openTrace("context_doc", d.id, d.title)}>
+                        Trace
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="row" style={{ marginTop: 12, gap: 8 }}>
+                <select className="text-input" value={docsKind} onChange={(e) => setDocsKind(e.target.value)}>
+                  {["prd", "design", "tech", "market", "other"].map((k) => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+                <input
+                  className="text-input"
+                  placeholder="Title (optional)"
+                  value={docsTitle}
+                  onChange={(e) => setDocsTitle(e.target.value)}
+                />
+              </div>
+
+              <textarea
+                className="text-input"
+                style={{ marginTop: 8, width: "100%", minHeight: 120 }}
+                placeholder="…or paste text (Markdown / plain text) here."
+                value={docsPaste}
+                onChange={(e) => setDocsPaste(e.target.value)}
+              />
+              <div className="row" style={{ marginTop: 8, gap: 8 }}>
+                <button onClick={addPasteDoc} disabled={docsBusy || !docsPaste.trim()}>
+                  {docsBusy ? "Adding…" : "Add pasted text"}
+                </button>
+                <label className="ghost small" style={{ cursor: "pointer" }}>
+                  Upload file (.md · .txt · .pdf · .docx)
+                  <input
+                    type="file"
+                    accept=".md,.txt,.markdown,.pdf,.docx"
+                    style={{ display: "none" }}
+                    disabled={docsBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) addFileDoc(f);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
             </section>
           )}
 

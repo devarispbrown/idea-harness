@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/idea-harness/idea-harness/internal/config"
+	"github.com/idea-harness/idea-harness/internal/docparse"
 	"github.com/idea-harness/idea-harness/internal/domain"
 	"github.com/idea-harness/idea-harness/internal/executor"
 	"github.com/idea-harness/idea-harness/internal/projection"
@@ -672,54 +674,151 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 
 // ---------- context docs ----------
 
-// maxDocBytes caps a single uploaded context-doc body at 2 MiB.
-const maxDocBytes = 2 << 20
+// maxDocFileBytes caps a single uploaded document's file CONTENT at 2 MiB.
+// maxDocBodyBytes is the total request-body budget — slightly larger so
+// multipart framing (boundary, part headers, kind/title fields) and JSON
+// syntax overhead do not reject a boundary-sized file with a spurious 413.
+const (
+	maxDocFileBytes = 2 << 20
+	maxDocBodyBytes = maxDocFileBytes + 64<<10
+)
 
-// handleAddDoc ingests a context doc (JSON body, not multipart) for an
-// initiative: credential-sweep → redact → content-addressed blob → row.
+// ingestError is a user-facing (4xx) ingest rejection with an explicit status,
+// distinguished from internal errors so the handler can pick the right code.
+type ingestError struct {
+	status int
+	msg    string
+}
+
+func (e ingestError) Error() string { return e.msg }
+
+// handleAddDoc ingests a context doc for an initiative: credential-sweep →
+// redact → content-addressed blob → row. Two request shapes are accepted:
+//   - JSON (`content`/`kind`/`title`) — the paste-text path.
+//   - multipart/form-data (`file` + optional `kind`/`title`) — the upload path;
+//     the daemon sniffs the format and extracts text from .md/.txt/.pdf/.docx.
 func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxDocBytes)
-	var body struct {
-		Content string `json:"content"`
-		Kind    string `json:"kind"`
-		Title   string `json:"title"`
+	if r.ContentLength > maxDocBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "document too large")
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes)
+
+	var content, kind, title string
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		content, kind, title, err = s.readMultipartDoc(w, r)
+		if err != nil {
+			return // readMultipartDoc already wrote the error
+		}
+	} else {
+		var body struct {
+			Content string `json:"content"`
+			Kind    string `json:"kind"`
+			Title   string `json:"title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeError(w, http.StatusRequestEntityTooLarge, "document too large")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		content, kind, title = body.Content, body.Kind, body.Title
+	}
+
+	doc, err := s.ingestDoc(r, pr, ini, content, kind, title)
+	if err != nil {
+		var ie ingestError
+		if errors.As(err, &ie) {
+			writeError(w, ie.status, ie.msg)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// readMultipartDoc parses a multipart upload, extracts text from the uploaded
+// file, and returns content/kind/title. On failure it writes the error response
+// and returns a non-nil err.
+func (s *Server) readMultipartDoc(w http.ResponseWriter, r *http.Request) (string, string, string, error) {
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			writeError(w, http.StatusRequestEntityTooLarge, "document too large")
-			return
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid multipart body")
 		}
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
+		return "", "", "", err
 	}
-	content := strings.TrimSpace(body.Content)
+	defer r.MultipartForm.RemoveAll()
+
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	title := strings.TrimSpace(r.FormValue("title"))
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return "", "", "", err
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxDocFileBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read file")
+		return "", "", "", err
+	}
+	if len(data) > maxDocFileBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "document too large")
+		return "", "", "", err
+	}
+	extracted, err := docparse.ExtractText(hdr.Filename, data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not parse document")
+		return "", "", "", err
+	}
+	if kind == "" {
+		kind = docparse.InferKind(hdr.Filename)
+	}
+	if title == "" {
+		title = filepath.Base(hdr.Filename)
+	}
+	return extracted, kind, title, nil
+}
+
+// ingestDoc applies the shared ingest pipeline: trim → credential sweep →
+// redact (kind/title/body) → content-addressed blob → row. It returns an
+// ingestError for user rejections and a plain error for internal failures.
+func (s *Server) ingestDoc(r *http.Request, pr *projectRuntime, ini domain.Initiative, content, kind, title string) (*domain.ContextDoc, error) {
+	content = strings.TrimSpace(content)
 	if content == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
-		return
+		return nil, ingestError{http.StatusBadRequest, "content is required"}
 	}
 	// Hard-reject on credentials with a non-echoing message (§45).
 	if pr.redactor.ContainsCredential(content) {
-		writeError(w, http.StatusBadRequest, "document contains a credential and was rejected")
-		return
+		return nil, ingestError{http.StatusBadRequest, "document contains a credential and was rejected"}
 	}
 	// Title and kind are egress (returned by list + embedded in the prompt
 	// header), so they must be redacted and bounded like the body.
-	kind := truncateRunes(pr.redactor.RedactString(strings.TrimSpace(body.Kind)), 64)
+	kind = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(kind)), 64)
 	if kind == "" {
 		kind = "other"
 	}
-	title := truncateRunes(pr.redactor.RedactString(strings.TrimSpace(body.Title)), 200)
+	title = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(title)), 200)
+	if title == "" {
+		title = "untitled"
+	}
 	redacted := pr.redactor.RedactString(content)
 	digest, err := pr.blobs.Put([]byte(redacted))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	doc := &domain.ContextDoc{
 		InitiativeID: ini.ID,
@@ -729,10 +828,9 @@ func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 		Preview:      truncateRunes(redacted, 200),
 	}
 	if err := pr.db.CreateContextDoc(r.Context(), doc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
-	writeJSON(w, http.StatusOK, doc)
+	return doc, nil
 }
 
 // handleListDocs lists an initiative's ingested context docs.

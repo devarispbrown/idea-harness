@@ -82,9 +82,10 @@ func cmdTasks(args []string, stdout, stderr io.Writer) error {
 }
 
 type idCode struct {
-	ID   string `json:"id"`
-	Code string `json:"code"`
-	Kind string `json:"kind"`
+	ID    string `json:"id"`
+	Code  string `json:"code"`
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
 }
 
 // resolveObjectID resolves an object reference (code or id) to its id.
@@ -99,6 +100,8 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks"
 	case "artifact":
 		endpoint = "/api/v1/projects/" + projectID + "/artifacts?initiative_id=" + iniID
+	case "context_doc":
+		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/docs"
 	default:
 		return ref, nil // run/assertion/etc: treat ref as the id
 	}
@@ -107,7 +110,7 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		return "", err
 	}
 	for _, o := range list {
-		if o.ID == ref || o.Code == ref || o.Kind == ref {
+		if o.ID == ref || o.Code == ref || o.Kind == ref || o.Title == ref {
 			return o.ID, nil
 		}
 	}
@@ -137,7 +140,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) error {
 // cmdTrace renders both provenance (why) and dependents (impact) for a node.
 func cmdTrace(args []string, stdout, stderr io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: idea trace <requirement|task|decision|artifact|assertion> <code-or-id>")
+		return fmt.Errorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>")
 	}
 	if err := runTraceCmd("why", args, stdout); err != nil {
 		return err
@@ -188,7 +191,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 
 func runTraceCmd(mode string, args []string, stdout io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: idea %s <requirement|task|decision|artifact|assertion> <code-or-id>", mode)
+		return fmt.Errorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>", mode)
 	}
 	typ, ref := args[0], args[1]
 	c, projectID, err := connect()

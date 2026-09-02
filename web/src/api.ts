@@ -40,3 +40,27 @@ export const post = <T>(path: string, body: unknown) =>
   api<T>("POST", path, body);
 export const put = <T>(path: string, body: unknown) =>
   api<T>("PUT", path, body);
+
+// uploadDoc posts a multipart file upload (context-doc ingest). The daemon
+// sniffs the format and extracts text from .md/.txt/.pdf/.docx.
+export async function uploadDoc<T>(
+  path: string,
+  file: File,
+  fields: Record<string, string>,
+): Promise<T> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  for (const [k, v] of Object.entries(fields)) {
+    if (v) form.append(k, v);
+  }
+  const res = await fetch("/api/v1" + path, {
+    method: "POST",
+    headers: { "X-Idea-Token": token },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
