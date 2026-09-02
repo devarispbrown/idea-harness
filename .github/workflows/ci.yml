@@ -84,3 +84,9 @@ jobs:
         run: bash scripts/agent-smoke.sh
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Run executors setup --smoke against the pinned image
+        run: bash scripts/executor-setup-smoke.sh
+        env:
+          AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
