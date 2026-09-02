@@ -14,7 +14,7 @@ import (
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	flusher, ok := w.(http.Flusher)

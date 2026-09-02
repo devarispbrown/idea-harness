@@ -62,7 +62,7 @@ func (db *DB) GetProject(ctx context.Context, projectID string) (ProjectRecord, 
 	err := db.SQL().QueryRowContext(ctx, `SELECT id, name, root_path, project_id, created_at, updated_at FROM projects WHERE project_id = ?`, projectID).
 		Scan(&p.ID, &p.Name, &p.RootPath, &p.ProjectID, &created, &updated)
 	if err != nil {
-		return p, err
+		return p, notFoundIfNoRows(err, "project", projectID)
 	}
 	p.CreatedAt = time.UnixMilli(created)
 	p.UpdatedAt = time.UnixMilli(updated)

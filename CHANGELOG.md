@@ -18,11 +18,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - Server-side failures no longer expose internal detail. A 5xx now carries a generic message and a
   correlation id, with the full error logged under that id.
 
-- `--json` works on every state-returning command. `tasks`, `changes`, `risk`, `explain`, `why`,
-  `impact`, `trace`, `diff`, `advance`, `execute` and `watch` treated the flag itself as a positional
+- `--json` works on the state-returning commands: `tasks`, `changes`, `risk`, `explain`, `why`,
+  `impact`, `trace`, `diff` and `verify`. Each of them treated the flag itself as a positional
   initiative reference, so the daemon looked up an initiative named `--json`, missed, and the CLI
-  printed `sql: no rows in result set` and exited 1. Two of those commands change state, so a
-  mistyped flag aimed a workflow transition at an initiative that does not exist.
+  printed `sql: no rows in result set` and exited 1. `idea trace --json` returns one
+  `{"why": …, "impact": …}` document rather than two concatenated arrays.
+- `advance`, `execute`, `watch` and `next` had the same mis-parse and now reject unknown flags
+  outright; they take no flags and produce no JSON.
 
 - A clean checkout now compiles with no Node toolchain. `internal/web/dist/` was ignored by git while
   `internal/web/web.go` embeds it, so `go install ./cmd/idea`, `make test`, and `make vet` all failed
