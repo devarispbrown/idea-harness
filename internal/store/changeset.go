@@ -262,7 +262,7 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 	}
 	switch count {
 	case 0:
-		return nil, sql.ErrNoRows
+		return nil, notFound("change set", ref)
 	case 1:
 		return found, nil
 	default:

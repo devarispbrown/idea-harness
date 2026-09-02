@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +45,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID, err := s.rt.CreateProject(r.Context(), body.RootPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"project_id": projectID})
@@ -55,7 +54,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	projects, err := s.rt.ListProjects(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projects)
@@ -63,12 +62,12 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.rt.EnsureProject(r.Context(), r.PathValue("projectId")); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	rec, err := s.rt.global.GetProject(r.Context(), r.PathValue("projectId"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
@@ -114,7 +113,7 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 			writeError(w, ie.status, ie.msg)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"initiative_id": iniID, "operation_id": opID})
@@ -123,12 +122,12 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListInitiatives(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.rt.EnsureProject(r.Context(), r.PathValue("projectId"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListInitiatives(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -137,7 +136,7 @@ func (s *Server) handleListInitiatives(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetInitiative(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.rt.EnsureProject(r.Context(), r.PathValue("projectId"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), r.PathValue("id"))
@@ -151,12 +150,12 @@ func (s *Server) handleGetInitiative(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUnderstanding(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	u, err := projection.BuildUnderstanding(r.Context(), pr.db, ini)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -165,12 +164,12 @@ func (s *Server) handleUnderstanding(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNextMove(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	u, err := projection.BuildUnderstanding(r.Context(), pr.db, ini)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projection.BuildNextMove(ini, u))
@@ -179,7 +178,7 @@ func (s *Server) handleNextMove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 	pr, _, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	since := int64(0)
@@ -189,7 +188,7 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 	}
 	changed, err := projection.BuildChanged(r.Context(), pr.db, since, 200)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, changed)
@@ -198,12 +197,12 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	status, err := pr.engine.Resume(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
@@ -212,11 +211,11 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if err := pr.engine.Approve(r.Context(), ini.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.InitiativeApproved)})
@@ -228,7 +227,7 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	opID, err := s.rt.ReviseInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -240,7 +239,7 @@ func (s *Server) handleAdvance(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	opID, err := s.rt.AdvanceInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -274,7 +273,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, buildProvidersView(r.Context(), pr.cfg, pr.dotEnv, pr.registry))
@@ -283,7 +282,7 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -328,7 +327,7 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reload so the new registry/default model takes effect.
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -339,7 +338,7 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	provider := r.URL.Query().Get("provider")
@@ -362,7 +361,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 	// path, so search the registry (M1: single project common case).
 	projects, err := s.rt.ListProjects(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	for _, p := range projects {
@@ -394,12 +393,12 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListDecisions(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -408,7 +407,7 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -429,7 +428,7 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDecisionDiscuss(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -441,7 +440,7 @@ func (s *Server) handleDecisionDiscuss(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := pr.engine.DiscussDecision(r.Context(), r.PathValue("id"), strings.TrimSpace(body.Message))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"response": response})
@@ -451,12 +450,12 @@ func (s *Server) handleDecisionDiscuss(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	thread, err := pr.db.ListDecisionDiscussions(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
@@ -465,12 +464,12 @@ func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request
 func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListQuestions(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -479,7 +478,7 @@ func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -491,7 +490,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	digest, err := pr.blobs.Put([]byte(body.Answer))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := pr.db.AnswerQuestion(r.Context(), r.PathValue("id"), digest, store.HumanActor); err != nil {
@@ -506,12 +505,12 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListRequirements(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -520,12 +519,12 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListAssertions(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -537,12 +536,12 @@ func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListTasks(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -552,7 +551,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode string) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	objType := r.URL.Query().Get("type")
@@ -565,26 +564,26 @@ func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode 
 	case "why":
 		items, err := pr.engine.Why(r.Context(), ini.ID, objType, objID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
 	case "impact":
 		items, err := pr.engine.Impact(r.Context(), ini.ID, objType, objID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
 	case "trace":
 		why, err := pr.engine.Why(r.Context(), ini.ID, objType, objID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 		impact, err := pr.engine.Impact(r.Context(), ini.ID, objType, objID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"why": why, "impact": impact})
@@ -599,12 +598,12 @@ func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request)   { s.handl
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	d, err := pr.engine.SemanticDiff(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
@@ -616,7 +615,7 @@ func (s *Server) handleSuggestAnswers(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	opID, err := s.rt.SuggestAnswersInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -626,12 +625,12 @@ func (s *Server) handleSuggestAnswers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	answers, err := pr.db.ListSuggestedAnswers(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, answers)
@@ -640,12 +639,12 @@ func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListArtifacts(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -654,7 +653,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleArtifactBody(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
@@ -681,7 +680,7 @@ func (s *Server) handleArtifactBody(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
@@ -732,7 +731,7 @@ func (e ingestError) Error() string { return e.msg }
 func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if r.ContentLength > maxDocBodyBytes {
@@ -790,7 +789,7 @@ func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 			writeError(w, ie.status, ie.msg)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if doc.Format == "image" {
@@ -951,12 +950,12 @@ func (s *Server) checkDocCap(r *http.Request, pr *projectRuntime, ini domain.Ini
 func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	docs, err := pr.db.ListContextDocs(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, docs)
@@ -967,7 +966,7 @@ func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetDoc(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	doc, err := pr.db.GetContextDoc(r.Context(), r.PathValue("docId"))
@@ -1016,12 +1015,12 @@ func truncateRunes(s string, n int) string {
 func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	findings, err := pr.db.ListFindingsByInitiative(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, findings)
@@ -1030,7 +1029,7 @@ func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFindingDisposition(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -1052,7 +1051,7 @@ func (s *Server) handleFindingDisposition(w http.ResponseWriter, r *http.Request
 func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -1078,12 +1077,12 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	findings, err := pr.db.AuditGraphEdges(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, findings)
@@ -1097,12 +1096,12 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	opID, err := s.rt.ExecuteInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{
@@ -1118,7 +1117,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	pr, err := s.rt.EnsureProject(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -1142,12 +1141,12 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	coverage, err := pr.engine.Coverage(r.Context(), initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": ini.Status, "coverage": coverage})
@@ -1159,12 +1158,12 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	pr, err := s.rt.EnsureProject(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	action, err := pr.engine.NextAction(r.Context(), initiativeID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"action": action})
@@ -1174,12 +1173,12 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListChangeSets(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -1189,12 +1188,12 @@ func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetChangeSet(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	cs, err := pr.db.GetChangeSetByRef(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cs)
@@ -1205,12 +1204,12 @@ func (s *Server) handleGetChangeSet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	cs, err := pr.db.GetChangeSetByRef(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"patch": pr.engine.RenderPatch(cs)})
@@ -1218,7 +1217,7 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	pr, cs, err := s.changeSet(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -1240,12 +1239,12 @@ func (s *Server) handleApplyChangeSet(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	_, cs, err := s.changeSet(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	opID, err := s.rt.ApplyChangeSetInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -1256,12 +1255,12 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	_, cs, err := s.changeSet(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	opID, err := s.rt.RevertChangeSetInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -1272,12 +1271,12 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiativeFromQuery(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	list, err := pr.db.ListChangeSets(r.Context(), ini.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	var diff strings.Builder
@@ -1293,7 +1292,7 @@ func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 	// Persist the profile so the deterministic tier floor is durable and can be
 	// re-derived from past scans, not just computed on demand and lost.
 	if err := pr.db.SaveRiskProfile(r.Context(), &profile); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, profile)
@@ -1304,7 +1303,7 @@ func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	execs := []executor.Executor{
@@ -1337,7 +1336,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -1362,7 +1361,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	// harness.yaml is not clobbered, then merge only the supplied fields.
 	cfg, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if body.Kind != "" {
@@ -1395,26 +1394,17 @@ func (s *Server) changeSet(r *http.Request) (*projectRuntime, *domain.ChangeSet,
 	return pr, cs, err
 }
 
-// changeSetRefError maps a change-set resolution error to a user-facing message,
-// preserving the ambiguity error while keeping not-found friendly.
-func changeSetRefError(err error) string {
-	if errors.Is(err, sql.ErrNoRows) {
-		return "change set not found"
-	}
-	return err.Error()
-}
-
 // ---------- activity / events ----------
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	events, err := pr.db.ListEvents(r.Context(), 0, 200)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, events)

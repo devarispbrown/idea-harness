@@ -135,8 +135,14 @@ func (c *client) doRaw(method, path string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		// Decode the daemon's {"error": …} shape, the same way send() does, so
+		// the user sees one error format regardless of which client path ran.
 		data, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("daemon: %s", strings.TrimSpace(string(data)))
+		var e map[string]string
+		if json.Unmarshal(data, &e) == nil && e["error"] != "" {
+			return "", fmt.Errorf("%s", e["error"])
+		}
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(data)))
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -11,6 +11,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- Unknown ids get an error that names them. `idea apply CHG-99` answered `sql: no rows in result
+  set` — the database driver's own string, with no indication of what was wrong or how to fix it.
+  It now answers `no change set matching "CHG-99"`. The mapping lives at the store boundary, so
+  every command and endpoint that looks something up inherits it.
+- Server-side failures no longer expose internal detail. A 5xx now carries a generic message and a
+  correlation id, with the full error logged under that id.
+
 - `--json` works on every state-returning command. `tasks`, `changes`, `risk`, `explain`, `why`,
   `impact`, `trace`, `diff`, `advance`, `execute` and `watch` treated the flag itself as a positional
   initiative reference, so the daemon looked up an initiative named `--json`, missed, and the CLI
@@ -28,6 +35,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   treated as a positional argument (or, for `idea next`, discarded).
 - `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
   the flag and printed markdown. The execution plan is a markdown artifact and has no JSON form.
+- `idea prd` and `idea export` render daemon errors in the same shape as every other command; they
+  previously printed the raw response body behind a `daemon: ` prefix.
 - `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
   the flag and printed human-formatted output.
 
