@@ -814,6 +814,152 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/artifacts/{id}/comments:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ArtifactVersionId"
+    get:
+      tags: [artifacts]
+      operationId: listDocComments
+      summary: Comments on one artifact version
+      description: Comments are attached to a specific immutable version, not to the artifact family.
+      responses:
+        "200":
+          description: The comments.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DocComment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [artifacts]
+      operationId: createDocComment
+      summary: Comment on an artifact version
+      description: |
+        `section` is optional and names the part of the document being commented on. Both fields are
+        passed through the project's redactor before they are stored, like every other text the
+        daemon persists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                section: { type: string }
+                text: { type: string }
+      responses:
+        "201":
+          description: The stored comment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocComment" }
+        "400":
+          description: text was empty.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/comments/{id}/promote:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Comment id.
+    post:
+      tags: [artifacts]
+      operationId: promoteDocComment
+      summary: Promote a comment into an open question
+      description: |
+        Turns a comment on a document into a tracked open Question, so a remark made while reading
+        becomes something the workflow will surface rather than something buried in a margin. The
+        comment records the question it produced in `promoted_question_id`.
+      responses:
+        "200":
+          description: The question the comment became.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "400":
+          description: The comment cannot be promoted (already promoted, or its initiative is not accepting questions).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/impact-counts:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [graph]
+      operationId: impactCounts
+      summary: Dependent counts for several graph nodes at once
+      description: |
+        The blast radius of many nodes in one request, for a UI that would otherwise call
+        `/impact` per node. Batched rather than repeated, and bounded: too many nodes is a 400, not
+        a slow query.
+      parameters:
+        - name: nodes
+          in: query
+          required: true
+          schema: { type: string }
+          description: |
+            Comma-separated `type:id` pairs, e.g. `requirement:req-1,task:task-2`. An entry that is
+            not `type:id` is a 400.
+      responses:
+        "200":
+          description: Dependent count per node.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+        "400":
+          description: nodes was missing, malformed, or listed too many entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - name: reqId
+        in: path
+        required: true
+        schema: { type: string }
+        description: Requirement id or code (`REQ-1`).
+    post:
+      tags: [tasks]
+      operationId: generateVerificationTask
+      summary: Add a plan task that verifies this requirement
+      description: |
+        Creates a task whose job is to verify the named requirement, so the plan carries the work of
+        proving a requirement rather than leaving verification to be remembered.
+      responses:
+        "200":
+          description: The created task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/attention:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -2443,6 +2589,20 @@ components:
           schema: { $ref: "#/components/schemas/OperationAccepted" }
 
   schemas:
+    DocComment:
+      type: object
+      description: |
+        A comment on one immutable artifact version (`domain.DocComment`). Section and text are
+        redacted on the way in. Once promoted, `promoted_question_id` names the question it became.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        artifact_version_id: { type: string }
+        section: { type: string }
+        text: { type: string }
+        author: { type: string }
+        promoted_question_id: { type: string }
+        created_at: { type: string, format: date-time }
     InitiativeRollup:
       type: object
       description: |
