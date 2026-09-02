@@ -10,6 +10,11 @@ import (
 // the next automatable step (advance / execute / verify) and stops at a human
 // judgment point (review / apply / resolve / done).
 func cmdNext(args []string, stdout, stderr io.Writer) error {
+	// next takes no flags today; parsing rejects anything typed after it
+	// instead of silently discarding it.
+	if _, _, err := parseArgs(flagSpec{}, args); err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/idea-harness/idea-harness/internal/executor"
 )
@@ -51,11 +50,15 @@ type cliExecutor struct {
 
 // cmdExecute launches the execute pipeline for the next ready task.
 func cmdExecute(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
@@ -110,11 +113,15 @@ var humanStatus = map[string]string{
 }
 
 func cmdChanges(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
@@ -122,7 +129,7 @@ func cmdChanges(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/change-sets?initiative_id="+iniID, nil, &changes); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if flags.has("--json") {
 		return dumpJSON(stdout, changes)
 	}
 	if len(changes) == 0 {
@@ -230,11 +237,15 @@ func runChangeSetAction(action string, args []string, stdout io.Writer) error {
 
 // cmdRisk prints the deterministic risk profile for an initiative.
 func cmdRisk(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
@@ -242,7 +253,7 @@ func cmdRisk(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/risk?initiative_id="+iniID, nil, &profile); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if flags.has("--json") {
 		return dumpJSON(stdout, profile)
 	}
 	fmt.Fprintln(stdout, heading("Risk Profile")+" "+muted("("+profile.Tier+")"))
@@ -392,28 +403,24 @@ type cliCoverage struct {
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(flagSpec{
+		"--pass": flagBool,
+		"--note": flagValue,
+		"--json": flagBool,
+	}, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
 	req := ""
-	pass := false
-	note := ""
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--pass":
-			pass = true
-		case "--note":
-			if i+1 < len(args) {
-				note = args[i+1]
-				i++
-			}
-		default:
-			if req == "" && !strings.HasPrefix(args[i], "-") {
-				req = args[i]
-			}
-		}
+	if len(positional) > 0 {
+		req = positional[0]
 	}
+	pass := flags.has("--pass")
+	note := flags.value("--note")
 	iniID, err := resolveInitiative(c, projectID, nil)
 	if err != nil {
 		return err
@@ -428,6 +435,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", body, &out); err != nil {
 		return err
+	}
+	if flags.has("--json") {
+		return dumpJSON(stdout, out)
 	}
 	if req != "" && pass {
 		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))

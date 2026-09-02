@@ -1,0 +1,140 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// A CLI command reaches the daemon through connect() -> ensureDaemon(), which
+// starts os.Executable() with the "daemon" argument when no daemon answers.
+// Under `go test` os.Executable() is the test binary, so a command run without
+// this harness forks a copy of the test binary and then polls it for five
+// seconds. The two pre-existing tests in this package avoid that only by never
+// calling connect().
+//
+// fakeDaemon serves the endpoints connect() needs from an httptest server and
+// points the CLI at it with IDEA_HARNESS_ADDR + IDEA_HARNESS_STATE, so
+// ensureDaemon() finds a healthy daemon and returns without forking anything.
+type fakeDaemon struct {
+	t         *testing.T
+	mux       *http.ServeMux
+	server    *httptest.Server
+	projectID string
+
+	// requests records every path the CLI asked for, so a test can assert what
+	// a command sent (or did not send) to the daemon.
+	requests []string
+}
+
+// newFakeDaemon wires a fake daemon and a cwd that resolves to projectID.
+// Every command run through run() afterwards talks to it.
+func newFakeDaemon(t *testing.T) *fakeDaemon {
+	t.Helper()
+
+	f := &fakeDaemon{t: t, mux: http.NewServeMux(), projectID: "p1"}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests = append(f.requests, r.Method+" "+r.URL.RequestURI())
+		f.mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(f.server.Close)
+
+	// The CLI builds "http://" + IDEA_HARNESS_ADDR.
+	t.Setenv("IDEA_HARNESS_ADDR", strings.TrimPrefix(f.server.URL, "http://"))
+
+	// newClient() reads the token from the state root; without it every command
+	// fails before reaching the server.
+	state := t.TempDir()
+	t.Setenv("IDEA_HARNESS_STATE", state)
+	if err := os.WriteFile(filepath.Join(state, "token"), []byte("test-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	// projectIDForCwd() matches the registered root_path against the working
+	// directory, so the test's cwd has to be a registered project.
+	root := t.TempDir()
+	t.Chdir(root)
+
+	f.json("GET /api/v1/health", map[string]string{"status": "ok"})
+	f.json("GET /api/v1/projects", []map[string]string{
+		{"project_id": f.projectID, "root_path": root},
+	})
+
+	return f
+}
+
+// json registers a canned JSON response for a method+pattern
+// (net/http.ServeMux patterns, so "GET /api/v1/projects/{id}/tasks" works).
+func (f *fakeDaemon) json(pattern string, payload any) {
+	f.t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		f.t.Fatalf("marshal %s: %v", pattern, err)
+	}
+	f.mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+}
+
+// fail registers an error response, matching the daemon's {"error": …} shape.
+func (f *fakeDaemon) fail(pattern string, status int, msg string) {
+	f.t.Helper()
+	f.mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	})
+}
+
+// asked reports whether any request path contains substr.
+func (f *fakeDaemon) asked(substr string) bool {
+	for _, r := range f.requests {
+		if strings.Contains(r, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// run executes a CLI command against the fake daemon and returns its stdout,
+// stderr and error. Commands return error; the process exit code is applied by
+// cmd/idea/main.go, so "exits non-zero" is asserted here as a non-nil error.
+func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	// initColor() keys off stdout being a terminal; bytes.Buffer is not an
+	// *os.File, so styling is off. Set it explicitly anyway: colorEnabled is a
+	// package global, and a test that ever passes a real file would otherwise
+	// leak color into every later test's golden output.
+	colorEnabled = false
+	var out, errBuf bytes.Buffer
+	err = Run(args, &out, &errBuf)
+	return out.String(), errBuf.String(), err
+}
+
+// seedInitiative registers the endpoints a command needs to resolve "the
+// current initiative" and render a populated project.
+func (f *fakeDaemon) seedInitiative() {
+	f.json("GET /api/v1/projects/{projectId}/initiatives", []map[string]any{
+		{"id": "ini-1", "title": "Build usage-based billing", "status": "plan_approved"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/tasks", []map[string]any{
+		{"id": "task-1", "code": "TASK-1", "title": "Implement billing", "priority": "must"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/change-sets", []map[string]any{
+		{"id": "cs-1", "human_id": "CHG-1", "status": "review_required"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/understanding", map[string]any{
+		"requirements": []map[string]any{{"id": "req-1", "code": "REQ-1", "title": "Bill by usage"}},
+		"decisions":    []map[string]any{},
+		"questions":    []map[string]any{},
+	})
+	f.json("GET /api/v1/projects/{projectId}/risk", map[string]any{
+		"level": "low", "signals": []string{},
+	})
+}
