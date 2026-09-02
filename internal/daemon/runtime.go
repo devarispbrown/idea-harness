@@ -547,6 +547,37 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	return opID, nil
 }
 
+// ReopenPhaseInitiative re-runs a design phase and everything downstream
+// (cascade) asynchronously. Returns the operation id.
+func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiativeID, phase string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "", fmt.Errorf("initiative is already running")
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
+	if err != nil {
+		return "", err
+	}
+	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
+	r.launchOperation(opID, func(bg context.Context) {
+		status, runErr := pr.engine.ReopenPhase(bg, initiativeID, phase)
+		if runErr != nil {
+			r.failOperation(opID, initiativeID, "reopen phase failed", bg, pr, runErr, true)
+			return
+		}
+		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		r.log.Info("reopen phase complete", "initiative", initiativeID, "phase", phase, "status", status)
+	})
+	return opID, nil
+}
+
 // RevisePlanInitiative regenerates the execution plan (and its review)
 // asynchronously, keeping the PRD/design artifacts. Returns the operation id.
 func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {

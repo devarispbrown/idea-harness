@@ -279,6 +279,41 @@ func TestImpactCounts(t *testing.T) {
 	}
 }
 
+func TestReopenPhaseGuard(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unknown phase is rejected.
+	if _, err := eng.ReopenPhase(ctx, ini.ID, "nope"); err == nil {
+		t.Fatal("expected unknown phase to be rejected")
+	}
+
+	// Once a change set exists, reopen is refused (pre-execution only).
+	req := &domain.Requirement{
+		InitiativeID: ini.ID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChangeSet(ctx, &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.ReopenPhase(ctx, ini.ID, "architecture"); err == nil {
+		t.Fatal("expected reopen to be refused once a change set exists")
+	}
+}
+
 func TestCreateVerificationTaskWiresVerifiesEdge(t *testing.T) {
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
