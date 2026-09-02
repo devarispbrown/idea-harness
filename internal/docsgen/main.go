@@ -6,11 +6,13 @@
 // result between the generated-block markers in docs/cli.md. Prose outside the
 // markers is never touched.
 //
-//	go run ./internal/docsgen           # rewrite docs/cli.md
-//	go run ./internal/docsgen -check    # fail if it is out of date
+//	go run ./internal/docsgen              # rewrite docs/cli.md
+//	go run ./internal/docsgen -check       # fail if it is out of date
+//	go run ./internal/docsgen -api-check   # fail if docs/openapi.yaml has drifted
 //
-// `make docs` and `make docs-check` are the intended entry points; CI runs the
-// latter so a new command cannot ship undocumented.
+// `make docs`, `make docs-check` and `make api-check` are the intended entry
+// points; CI runs the latter two so neither a new command nor a new HTTP route
+// can ship undocumented. The API half lives in apicheck.go.
 package main
 
 import (
@@ -35,7 +37,17 @@ const (
 
 func main() {
 	check := flag.Bool("check", false, "report drift and exit non-zero instead of rewriting the file")
+	apiCheck := flag.Bool("api-check", false, "compare docs/openapi.yaml against the routes registered in internal/daemon and exit non-zero on drift")
 	flag.Parse()
+
+	if *apiCheck {
+		if err := runAPICheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go")
+		return
+	}
 
 	if err := run(*check); err != nil {
 		fmt.Fprintln(os.Stderr, "docsgen:", err)

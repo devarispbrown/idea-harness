@@ -98,4 +98,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/risk", s.handleRisk)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/doctor", s.handleDoctor)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
+
+	// The API reference and the spec it renders. Deliberately outside /api/:
+	// the auth middleware guards that prefix, and a token-gated spec would make
+	// the docs page fetch a 401 into a blank screen.
+	registerAPIDocs(m)
 }
