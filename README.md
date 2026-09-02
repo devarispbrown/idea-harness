@@ -223,6 +223,7 @@ path to be publicly fetchable.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
+- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, every endpoint.
 - [`docs/security.md`](docs/security.md) — security model and invariants.
 - [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
 

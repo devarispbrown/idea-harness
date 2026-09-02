@@ -20,6 +20,12 @@ type providerSummary struct {
 	Configured bool     `json:"configured"`
 	IsDefault  bool     `json:"is_default"`
 	Models     []string `json:"models"`
+	// Problem explains why a configured entry is not being used, and is empty
+	// for a healthy one. An entry the registry refused (see
+	// resolveProviderEntries) must not be shown as the live endpoint: BaseURL
+	// below reports what requests will ACTUALLY reach, so the view cannot tell
+	// the operator their key is going somewhere it is not.
+	Problem string `json:"problem,omitempty"`
 }
 
 // providersView is the GET /providers response.
@@ -45,11 +51,25 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 	for name, pc := range cfg.Harness.Providers {
 		typ, baseURL, keyEnv := config.ResolveProvider(name, pc)
 		label := name
-		if p := config.PresetFor(name); p != nil {
-			label = p.Label
+		preset := config.PresetFor(name)
+		if preset != nil {
+			label = preset.Label
 		}
-		ready := keyEnv == "" || lookupEnv(keyEnv, dotEnv) != ""
+		// A refused entry is not what the registry uses, so report the endpoint
+		// that requests actually reach: a preset falls back to its built-in
+		// endpoint, a custom name resolves nowhere at all.
+		problem := ""
+		if err := config.ValidateProvider(name, pc); err != nil {
+			problem = err.Error()
+			if preset != nil {
+				_, baseURL, keyEnv = config.ResolveProvider(name, config.ProviderConfig{})
+			} else {
+				baseURL = ""
+			}
+		}
+		ready := problem == "" && (keyEnv == "" || lookupEnv(keyEnv, dotEnv) != "")
 		out = append(out, providerSummary{
+			Problem:    problem,
 			Name:       name,
 			Label:      label,
 			Type:       string(typ),
