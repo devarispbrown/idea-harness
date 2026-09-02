@@ -44,6 +44,38 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
+// RevisePlan regenerates the execution plan (and its review) in place after the
+// human edited or rejected the prior plan. It deletes the prior tasks and their
+// edges and disposes prior plan-review findings first, so no duplicate tasks or
+// stale blocking findings survive the regeneration (full-platform review: plan
+// revision must not leave orphans or wedge the verify gate).
+func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	// Defensive: plan revision is a pre-execution action — refuse once any task
+	// has produced work.
+	cses, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return domain.InitiativeFailed, err
+	}
+	if len(cses) > 0 {
+		return domain.InitiativeFailed, fmt.Errorf("cannot revise a plan that already has change sets")
+	}
+	if err := e.db.DeleteTasksForInitiative(ctx, initiativeID); err != nil {
+		return domain.InitiativeFailed, err
+	}
+	// Clear prior plan-review findings (they target the now-deleted tasks or the
+	// superseded execution plan). NotApplicable preserves the record as dissent.
+	_ = e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator)
+
+	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
+		if errors.Is(err, errUnresolvedDependencies) {
+			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			return domain.InitiativeNeedsHumanJudgment, nil
+		}
+		return domain.InitiativeFailed, err
+	}
+	return e.runExecutionPlanReview(ctx, initiativeID)
+}
+
 // storeArtifact renders a body into the BlobStore and records an artifact family
 // + first version (immutable, produced by run).
 func (e *Engine) storeArtifact(ctx context.Context, initiativeID string, kind domain.ArtifactKind, runID, body string) error {

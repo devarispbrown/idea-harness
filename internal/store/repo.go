@@ -218,7 +218,7 @@ func (db *DB) CreateRequirement(ctx context.Context, r *domain.Requirement) erro
 		EventType:     "requirement.created",
 	}, func(tx *sql.Tx) error {
 		if r.Code == "" {
-			code, err := nextCode(tx, "requirements", "REQ", r.InitiativeID)
+			code, err := nextCode(tx, "requirements", "code", "REQ", r.InitiativeID)
 			if err != nil {
 				return err
 			}
@@ -291,9 +291,13 @@ func (db *DB) SupersedeRequirements(ctx context.Context, initiativeID, supersede
 }
 
 // nextCode computes the next monotonic code (e.g. REQ-17) within a transaction.
-func nextCode(tx *sql.Tx, table, prefix, initiativeID string) (string, error) {
+// It derives from MAX(numeric suffix) so codes are never reused after a row is
+// deleted (a COUNT(*)-based scheme would regress, e.g. TASK-5 → TASK-5 again).
+// column is the code column name ("code" or, for change sets, "human_id").
+func nextCode(tx *sql.Tx, table, column, prefix, initiativeID string) (string, error) {
+	offset := len(prefix) + 2 // "PREFIX-N" → numeric part starts at len(prefix)+2
 	var n int
-	err := tx.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE initiative_id = ?`, initiativeID).Scan(&n)
+	err := tx.QueryRow(`SELECT COALESCE(MAX(CAST(SUBSTR(`+column+`, ?) AS INTEGER)), 0) FROM `+table+` WHERE initiative_id = ?`, offset, initiativeID).Scan(&n)
 	if err != nil {
 		return "", err
 	}
@@ -323,7 +327,7 @@ func (db *DB) CreateDecision(ctx context.Context, d *domain.Decision) error {
 		EventType:     "decision.created",
 	}, func(tx *sql.Tx) error {
 		if d.Code == "" {
-			code, err := nextCode(tx, "decisions", "DEC", d.InitiativeID)
+			code, err := nextCode(tx, "decisions", "code", "DEC", d.InitiativeID)
 			if err != nil {
 				return err
 			}
@@ -444,6 +448,27 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return fmt.Errorf("store: decision %s is not open", decisionID)
+		}
+		return nil
+	})
+}
+
+// ReopenDecision returns a decided decision to open and clears its resolution,
+// so the human can choose again. Dissent is preserved (never erased, §8).
+func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "decision",
+		AggregateID:   decisionID,
+		Actor:         actor,
+		EventType:     "decision.reopened",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE decisions SET status = ?, resolution = '', resolved_by = '' WHERE id = ? AND status = ?`,
+			domain.DecisionOpen, decisionID, domain.DecisionDecided)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("store: decision %s is not decided", decisionID)
 		}
 		return nil
 	})

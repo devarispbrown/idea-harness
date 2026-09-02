@@ -115,16 +115,20 @@ func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirem
 		EventType:     "task.created",
 	}, func(tx *sql.Tx) error {
 		if t.Code == "" {
-			code, err := nextCode(tx, "tasks", "TASK", t.InitiativeID)
+			code, err := nextTaskCode(tx, t.InitiativeID)
 			if err != nil {
 				return err
 			}
 			t.Code = code
 		}
+		pos, err := nextTaskPosition(tx, t.InitiativeID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`
-			INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, t.CreatedAt.UnixMilli()); err != nil {
+			INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
 			return err
 		}
 		var edges []EdgeToWrite
@@ -183,7 +187,7 @@ func (db *DB) SetTaskStatus(ctx context.Context, taskID string, status domain.Ta
 func (db *DB) ListTasks(ctx context.Context, initiativeID string) ([]domain.Task, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
 		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at
-		FROM tasks WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
+		FROM tasks WHERE initiative_id = ? ORDER BY position ASC, created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +203,156 @@ func (db *DB) ListTasks(ctx context.Context, initiativeID string) ([]domain.Task
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetTask returns a single task by id.
+func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) {
+	row := db.SQL().QueryRowContext(ctx, `
+		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at
+		FROM tasks WHERE id = ?`, taskID)
+	var t domain.Task
+	var created int64
+	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &created); err != nil {
+		return nil, err
+	}
+	t.CreatedAt = time.UnixMilli(created)
+	return &t, nil
+}
+
+// nextTaskPosition returns the ordinal for a new task within an initiative
+// (one past the current maximum, 0 for the first).
+func nextTaskPosition(tx *sql.Tx, initiativeID string) (int, error) {
+	var n int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE initiative_id = ?`, initiativeID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// nextTaskCode returns the next monotonic TASK code from a per-initiative
+// counter. Tasks are the one deletable code-bearing entity, so a MAX(code)+1
+// scheme would reuse a deleted code; the counter never decreases.
+func nextTaskCode(tx *sql.Tx, initiativeID string) (string, error) {
+	if _, err := tx.Exec(`INSERT INTO task_counters (initiative_id, next_seq) VALUES (?, 1)
+		ON CONFLICT(initiative_id) DO UPDATE SET next_seq = next_seq + 1`, initiativeID); err != nil {
+		return "", err
+	}
+	var n int
+	if err := tx.QueryRow(`SELECT next_seq FROM task_counters WHERE initiative_id = ?`, initiativeID).Scan(&n); err != nil {
+		return "", err
+	}
+	return id.Code("TASK", n), nil
+}
+
+// UpdateTask edits a task's human-editable fields. Guarded at the handler layer
+// (only while the plan is editable and the task is not done/cancelled).
+func (db *DB) UpdateTask(ctx context.Context, initiativeID, taskID, title, statement string, priority domain.RequirementPriority, estimate string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.updated",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			UPDATE tasks SET title = ?, statement = ?, priority = ?, estimate = ?
+			WHERE id = ? AND initiative_id = ?`,
+			title, statement, priority, estimate, taskID, initiativeID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "task %q not found", taskID)
+	})
+}
+
+// DeleteTask removes a task and all of its graph edges in one transaction.
+// Callers must first reject deletion when the task has change sets or other
+// tasks depend on it (checked at the handler layer).
+func (db *DB) DeleteTask(ctx context.Context, initiativeID, taskID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.deleted",
+	}, func(tx *sql.Tx) error {
+		// Cascade edges in both directions so no dangling depends_on/implements
+		// reference remains (graph_edges has no FK).
+		if _, err := tx.Exec(`DELETE FROM graph_edges WHERE initiative_id = ? AND (from_id = ? OR to_id = ?)`, initiativeID, taskID, taskID); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`DELETE FROM tasks WHERE id = ? AND initiative_id = ?`, taskID, initiativeID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "task %q not found", taskID)
+	})
+}
+
+// ReorderTasks assigns 0..n-1 positions to the given task ids, which must be
+// exactly a permutation of the initiative's current tasks. Idempotent and
+// transactional.
+func (db *DB) ReorderTasks(ctx context.Context, initiativeID string, orderedIDs []string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "tasks.reordered",
+	}, func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT id FROM tasks WHERE initiative_id = ?`, initiativeID)
+		if err != nil {
+			return err
+		}
+		existing := map[string]bool{}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			existing[id] = true
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(orderedIDs) != len(ids) {
+			return fmt.Errorf("store: reorder needs exactly %d task ids, got %d", len(ids), len(orderedIDs))
+		}
+		seen := map[string]bool{}
+		for _, id := range orderedIDs {
+			if !existing[id] || seen[id] {
+				return fmt.Errorf("store: reorder task id list is not a permutation of the initiative's tasks")
+			}
+			seen[id] = true
+		}
+		for i, id := range orderedIDs {
+			if _, err := tx.Exec(`UPDATE tasks SET position = ? WHERE id = ? AND initiative_id = ?`, i, id, initiativeID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteTasksForInitiative removes every task (and its edges) for an initiative.
+// Used by plan revision, which regenerates the task list fresh. Callers must
+// reject when any task has a change set.
+func (db *DB) DeleteTasksForInitiative(ctx context.Context, initiativeID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "tasks.deleted",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM graph_edges WHERE initiative_id = ? AND (from_type = 'task' OR to_type = 'task')`, initiativeID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM tasks WHERE initiative_id = ?`, initiativeID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // ReplaceSuggestedAnswers replaces the stored AI-suggested answers for an
