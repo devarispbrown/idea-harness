@@ -814,6 +814,31 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/attention:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [projects]
+      operationId: listAttention
+      summary: Cross-initiative rollup for the attention inbox
+      description: |
+        One request covering every initiative in the project: the inputs a client needs to derive
+        each initiative's phase, plus counts of what is waiting on a human. It exists so a home
+        screen does not issue one request per initiative per entity.
+      responses:
+        "200":
+          description: The rollups.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/InitiativeRollup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/artifacts/diff:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -2418,6 +2443,34 @@ components:
           schema: { $ref: "#/components/schemas/OperationAccepted" }
 
   schemas:
+    InitiativeRollup:
+      type: object
+      description: |
+        A cross-initiative summary (`store.InitiativeRollup`). It carries the phase-derivation
+        inputs as flat lists rather than whole objects, because the caller only counts and
+        classifies them.
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { $ref: "#/components/schemas/InitiativeStatus" }
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string }
+              version: { type: integer }
+        task_statuses:
+          type: array
+          items: { type: string }
+          description: One entry per task - the status values, not the tasks.
+        change_set_statuses:
+          type: array
+          items: { type: string }
+        open_decisions: { type: integer }
+        open_questions: { type: integer }
+        open_findings: { type: integer }
+        verified_requirements: { type: integer }
     Error:
       type: object
       title: Error

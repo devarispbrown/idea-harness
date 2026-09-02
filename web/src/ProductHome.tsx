@@ -1,22 +1,12 @@
-import { useEffect, useState } from "react";
-import { get, resource } from "./api";
-import { derivePhases, PHASE_LABELS } from "./phases";
+import { useState } from "react";
+import { derivePhases, PHASE_LABELS, rollupPhaseSource } from "./phases";
+import type { InitiativeRollup } from "./phases";
 import type { PhaseName } from "./router";
 
 interface Initiative {
   id: string;
   title: string;
   description: string;
-  status: string;
-}
-interface Artifact {
-  kind: string;
-  version: number;
-}
-interface Task {
-  status: string;
-}
-interface ChangeSet {
   status: string;
 }
 
@@ -30,46 +20,18 @@ const STATUS_PILL: Record<string, { label: string; state: string }> = {
 };
 
 export default function ProductHome({
-  projectId,
   initiatives,
+  attention,
   onOpen,
   onCreate,
 }: {
-  projectId: string;
   initiatives: Initiative[];
+  attention: InitiativeRollup[];
   onOpen: (id: string) => void;
   onCreate: (idea: string) => void;
 }) {
-  const [rows, setRows] = useState<Record<string, { phases: { phase: PhaseName; state: string }[] }>>({});
   const [idea, setIdea] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const out: Record<string, { phases: { phase: PhaseName; state: string }[] }> = {};
-      await Promise.all(
-        initiatives.map(async (ini) => {
-          const [a, t, c] = await Promise.all([
-            get<Artifact[]>(resource(projectId, ini.id, "artifacts")).catch(() => []),
-            get<Task[]>(`/projects/${projectId}/initiatives/${ini.id}/tasks`).catch(() => []),
-            get<ChangeSet[]>(resource(projectId, ini.id, "change-sets")).catch(() => []),
-          ]);
-          const states = derivePhases({
-            status: ini.status,
-            artifacts: a ?? [],
-            tasks: t ?? [],
-            changeSets: c ?? [],
-            verifiedRequirements: 0,
-          });
-          out[ini.id] = { phases: states.map((s) => ({ phase: s.phase, state: s.state })) };
-        }),
-      );
-      if (alive) setRows(out);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [projectId, initiatives]);
+  const rollupById = new Map(attention.map((r) => [r.id, r]));
 
   const needYou = initiatives.filter((i) => i.status === "needs_human_judgment").length;
 
@@ -99,7 +61,10 @@ export default function ProductHome({
         <div className="ph-list">
           {initiatives.map((i, idx) => {
             const pill = STATUS_PILL[i.status];
-            const phases = rows[i.id]?.phases ?? [];
+            const rollup = rollupById.get(i.id);
+            const phases: { phase: PhaseName; state: string }[] = rollup
+              ? derivePhases(rollupPhaseSource(rollup)).map((s) => ({ phase: s.phase, state: s.state }))
+              : [];
             return (
               <section key={i.id} className="ph-card" onClick={() => onOpen(i.id)}>
                 <div className="ph-card-head">
