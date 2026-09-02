@@ -137,6 +137,17 @@ interface ChangeSet {
   created_at?: string;
 }
 
+interface VerifyCoverage {
+  code: string;
+  pass: number;
+  total: number;
+  needs_manual: number;
+}
+interface VerifyResponse {
+  status: string;
+  coverage: VerifyCoverage[];
+}
+
 interface Command {
   label: string;
   hint: string;
@@ -252,6 +263,10 @@ export default function App() {
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [advancing, setAdvancing] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState("");
+  const [coverage, setCoverage] = useState<VerifyCoverage[]>([]);
+  const [verifyNotes, setVerifyNotes] = useState<Record<string, string>>({});
   const [diffView, setDiffView] = useState<{ humanId: string; body: string } | null>(null);
   const [traceModal, setTraceModal] = useState<{ type: string; id: string; label: string } | null>(null);
   const [traceWhy, setTraceWhy] = useState<TraceItem[]>([]);
@@ -307,6 +322,14 @@ export default function App() {
   useEffect(() => {
     if (projectId) loadInitiatives(projectId).catch((e) => setError(String(e)));
   }, [projectId, loadInitiatives]);
+
+  // Reset verification UI state when switching initiatives so coverage/badges
+  // never leak from a previous initiative (requirement codes collide).
+  useEffect(() => {
+    setVerifyStatus("");
+    setCoverage([]);
+    setVerifyNotes({});
+  }, [initiative?.id]);
 
   const loadInitiativeData = useCallback(async (pid: string, ini: Initiative) => {
     const [u, n, c, f, a, t] = await Promise.all([
@@ -829,6 +852,38 @@ export default function App() {
     }
   };
 
+  // verifyRequirement records a passing verification for one requirement code,
+  // then refetches the initiative so the stepper can advance to "complete".
+  const verifyRequirement = async (code: string) => {
+    if (!initiative || verifying) return;
+    setVerifying(true);
+    setError("");
+    try {
+      const note = (verifyNotes[code] ?? "").trim();
+      const res = await post<VerifyResponse>(
+        `/projects/${projectId}/initiatives/${initiative.id}/verify`,
+        {
+          requirement: code,
+          pass: true,
+          note: note || undefined,
+        },
+      );
+      setCoverage(res.coverage ?? []);
+      setVerifyStatus(res.status ?? "");
+      setVerifyNotes((prev) => ({ ...prev, [code]: "" }));
+      await loadInitiativeData(projectId, initiative);
+      flash(
+        "success",
+        res.status === "complete" ? `Verified ${code} — initiative complete.` : `Verified ${code}.`,
+      );
+    } catch (e) {
+      setError(String(e));
+      flash("error", `Verification failed: ${e}`);
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   const commands: Command[] = [
     {
       label: "New idea",
@@ -1117,9 +1172,15 @@ export default function App() {
                 </p>
               )}
               {!verifyDone && buildDone && (
-                <p className="muted small-note">
-                  verify: run <code>idea verify REQ-1 --pass</code> to record acceptance and complete the initiative.
-                </p>
+                <div className="row">
+                  <button className="ghost small" onClick={() => setTab("requirements")}>
+                    Verify requirements
+                  </button>
+                  <span className="muted small-note">
+                    record a pass per requirement to complete the initiative (or run{" "}
+                    <code>idea verify REQ-1 --pass</code>).
+                  </span>
+                </div>
               )}
 
               <section className="card">
@@ -1231,23 +1292,58 @@ export default function App() {
 
           {tab === "requirements" && (
             <section className="card">
-              <h2>Requirements</h2>
+              <div className="card-head">
+                <h2>Requirements</h2>
+                {verifyStatus === "complete" && <span className="badge ok">✓ complete</span>}
+              </div>
+              {coverage.length > 0 && (
+                <p className="muted small-note">
+                  verification coverage:{" "}
+                  {coverage.map((c) => `${c.code} ${c.pass}/${c.total}`).join(" · ")}
+                </p>
+              )}
               {(understanding?.requirements ?? []).length === 0 ? (
                 <p className="muted">None yet.</p>
               ) : (
                 <ul className="list">
-                  {(understanding?.requirements ?? []).map((r) => (
-                    <li key={r.id}>
-                      <span className="code">{r.code}</span> {r.statement}
-                      <ul className="sub">
-                        {(r.acceptance_criteria ?? []).map((ac, i) => (
-                          <li key={i} className="muted">
-                            {ac.metric} {ac.target} ({ac.condition})
-                          </li>
-                        ))}
-                      </ul>
-                    </li>
-                  ))}
+                  {(understanding?.requirements ?? []).map((r) => {
+                    const cov = coverage.find((c) => c.code === r.code);
+                    return (
+                      <li key={r.id}>
+                        <span className="code">{r.code}</span> {r.statement}
+                        <ul className="sub">
+                          {(r.acceptance_criteria ?? []).map((ac, i) => (
+                            <li key={i} className="muted">
+                              {ac.metric} {ac.target} ({ac.condition})
+                            </li>
+                          ))}
+                        </ul>
+                        {cov && (
+                          <p className="muted small-note">
+                            coverage: {cov.pass}/{cov.total}
+                            {cov.needs_manual > 0 && <span className="badge warn">needs manual</span>}
+                          </p>
+                        )}
+                        <div className="row inline-note">
+                          <input
+                            className="text-input"
+                            placeholder="Note (optional)…"
+                            value={verifyNotes[r.code] ?? ""}
+                            onChange={(e) =>
+                              setVerifyNotes((prev) => ({ ...prev, [r.code]: e.target.value }))
+                            }
+                          />
+                          <button
+                            className="ghost small"
+                            onClick={() => verifyRequirement(r.code)}
+                            disabled={verifying}
+                          >
+                            {verifying ? "Verifying…" : "Pass"}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>

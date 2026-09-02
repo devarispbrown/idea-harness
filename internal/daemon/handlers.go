@@ -260,6 +260,7 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		DefaultModel string                           `json:"default_model"`
 		Providers    map[string]config.ProviderConfig `json:"providers"`
 		Models       map[string]string                `json:"models"`
+		GitCommit    *bool                            `json:"git_commit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -284,6 +285,10 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 				cfg.Models[role] = spec
 			}
 		}
+	}
+
+	if body.GitCommit != nil {
+		cfg.GitCommit = *body.GitCommit
 	}
 
 	// Reject inline secrets (§47) and write harness.yaml.
@@ -780,8 +785,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		Pass        bool   `json:"pass"`
 		Note        string `json:"note"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
 	if body.Requirement != "" && body.Pass {
 		if err := pr.engine.RecordHumanPass(r.Context(), initiativeID, body.Requirement, body.Note, ""); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -969,12 +976,15 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	for _, exec := range execs {
 		caps := exec.Capabilities(r.Context())
 		list = append(list, map[string]any{
-			"name":         exec.Name(),
-			"trust":        caps.Trust,
-			"sandbox_mode": caps.SandboxMode,
-			"network":      caps.Network,
-			"capabilities": caps.Capabilities,
-			"selected":     string(pr.cfg.Harness.Executor.Kind) == exec.Name(),
+			"name":          exec.Name(),
+			"trust":         caps.Trust,
+			"sandbox_mode":  caps.SandboxMode,
+			"network":       caps.Network,
+			"capabilities":  caps.Capabilities,
+			"selected":      string(pr.cfg.Harness.Executor.Kind) == exec.Name(),
+			"image":         pr.cfg.Harness.Executor.Image,
+			"model":         pr.cfg.Harness.Executor.Model,
+			"default_image": executor.DefaultAgentImage(exec.Name()),
 		})
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -990,9 +1000,9 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Kind  string `json:"kind"`
-		Image string `json:"image"`
-		Model string `json:"model"`
+		Kind  string  `json:"kind"`
+		Image *string `json:"image"`
+		Model *string `json:"model"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1002,7 +1012,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid executor kind %q", body.Kind))
 		return
 	}
-	if body.Image != "" && strings.ContainsAny(body.Image, " \t\n\r") {
+	if body.Image != nil && strings.ContainsAny(*body.Image, " \t\n\r") {
 		writeError(w, http.StatusBadRequest, "invalid executor image")
 		return
 	}
@@ -1017,11 +1027,11 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	if body.Kind != "" {
 		cfg.Harness.Executor.Kind = config.ExecutorKind(body.Kind)
 	}
-	if body.Image != "" {
-		cfg.Harness.Executor.Image = body.Image
+	if body.Image != nil {
+		cfg.Harness.Executor.Image = *body.Image // empty clears
 	}
-	if body.Model != "" {
-		cfg.Harness.Executor.Model = body.Model
+	if body.Model != nil {
+		cfg.Harness.Executor.Model = *body.Model // empty clears
 	}
 	if err := config.WriteHarness(filepath.Join(pr.rootPath, config.Dir), cfg.Harness); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
