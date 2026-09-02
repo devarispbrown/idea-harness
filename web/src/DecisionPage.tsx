@@ -82,7 +82,9 @@ export default function DecisionPage({
             <section className="discussion-card">
               <div className="jc-title">{decision.question}</div>
               <div className="muted" style={{ marginTop: 4 }}>
-                Still open. Discussing does not decide it — you resolve it when you're ready.
+                {decision.status === "open"
+                  ? "Still open. Discussing does not decide it — you resolve it when you're ready."
+                  : "Resolved."}
               </div>
             </section>
           )}
@@ -90,7 +92,7 @@ export default function DecisionPage({
             {thread.map((m) => (
               <div key={m.id} className={`thread-row ${m.author === "human" ? "human" : "ai"}`}>
                 <div className="thread-bubble">
-                  <div className="thread-who">{m.author}</div>
+                  <div className="thread-who">{m.author === "human" ? "You" : m.author.replace(/_/g, " ")}</div>
                   <div className="thread-text">{m.message}</div>
                 </div>
               </div>
