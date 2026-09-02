@@ -195,6 +195,37 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, changed)
 }
 
+// handleMarkSeen writes the project's "ui" read cursor to the sequence the
+// client actually rendered (echoed from /changed's `through`), so What Changed
+// clears exactly what was shown and never events that arrived mid-read.
+func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var body struct {
+		Through int64 `json:"through"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Through < 0 {
+		writeError(w, http.StatusBadRequest, "through must be a non-negative integer")
+		return
+	}
+	maxSeq, err := pr.db.MaxEventSeq(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if body.Through > maxSeq {
+		body.Through = maxSeq
+	}
+	if err := pr.db.SetReadCursor(r.Context(), "ui", body.Through); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"seen_seq": body.Through})
+}
+
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
@@ -229,6 +260,18 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 	opID, err := s.rt.ReviseInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+}
+
+// handleRevisePlan regenerates the execution plan + review (keeps PRD/design).
+func (s *Server) handleRevisePlan(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	initiativeID := r.PathValue("id")
+	opID, err := s.rt.RevisePlanInitiative(r.Context(), projectID, initiativeID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -425,6 +468,20 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "decided"})
 }
 
+// handleReopenDecision undoes a resolved decision, returning it to open.
+func (s *Server) handleReopenDecision(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := pr.db.ReopenDecision(r.Context(), r.PathValue("id"), store.HumanActor); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "open"})
+}
+
 // handleDecisionDiscuss runs one human→AI discussion turn on a decision.
 func (s *Server) handleDecisionDiscuss(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
@@ -546,6 +603,268 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// ---------- task mutations (Plan editing) ----------
+
+// taskEditableGuard validates that an initiative's tasks are editable and (when
+// task is non-nil) that the specific task is mutable. It returns a user-facing
+// error otherwise.
+func (s *Server) taskEditableGuard(ctx context.Context, pr *projectRuntime, ini domain.Initiative, task *domain.Task) error {
+	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+		return fmt.Errorf("tasks are editable only after the plan is drafted and before it is executed")
+	}
+	ops, err := pr.db.ListUnfinishedOperations(ctx)
+	if err != nil {
+		return err
+	}
+	for _, op := range ops {
+		if op.InitiativeID == ini.ID {
+			return fmt.Errorf("the initiative has work in progress; wait for it to finish")
+		}
+	}
+	if task == nil {
+		return nil
+	}
+	if task.InitiativeID != ini.ID {
+		return fmt.Errorf("task does not belong to this initiative")
+	}
+	if task.Status == domain.TaskDone || task.Status == domain.TaskCancelled {
+		return fmt.Errorf("task is %s and cannot be edited", task.Status)
+	}
+	cses, err := pr.db.ListChangeSetsByTask(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if len(cses) > 0 {
+		return fmt.Errorf("task already has change sets and cannot be edited")
+	}
+	return nil
+}
+
+func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	var body struct {
+		Title      string   `json:"title"`
+		Statement  string   `json:"statement"`
+		Priority   string   `json:"priority"`
+		Estimate   string   `json:"estimate"`
+		Implements string   `json:"implements"`
+		DependsOn  []string `json:"depends_on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	// Resolve the implements requirement (by code or id) if given.
+	implementsID := ""
+	if body.Implements != "" {
+		reqs, err := pr.db.ListRequirements(r.Context(), ini.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, req := range reqs {
+			if req.Code == body.Implements || req.ID == body.Implements {
+				implementsID = req.ID
+				break
+			}
+		}
+		if implementsID == "" {
+			writeError(w, http.StatusBadRequest, "implements references an unknown requirement")
+			return
+		}
+	}
+
+	// Resolve depends_on titles to existing task ids.
+	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, body.DependsOn)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	priority := domain.RequirementPriority(body.Priority)
+	if !priority.Valid() {
+		priority = domain.PriorityShould
+	}
+	task := &domain.Task{
+		InitiativeID: ini.ID,
+		Title:        pr.redactor.RedactString(strings.TrimSpace(body.Title)),
+		Statement:    pr.redactor.RedactString(body.Statement),
+		Priority:     priority,
+		Estimate:     body.Estimate,
+	}
+	if err := pr.db.CreateTask(r.Context(), task, implementsID, depIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	var body struct {
+		Title     string `json:"title"`
+		Statement string `json:"statement"`
+		Priority  string `json:"priority"`
+		Estimate  string `json:"estimate"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	priority := task.Priority
+	if body.Priority != "" {
+		p := domain.RequirementPriority(body.Priority)
+		if !p.Valid() {
+			writeError(w, http.StatusBadRequest, "invalid priority")
+			return
+		}
+		priority = p
+	}
+	title := task.Title
+	if strings.TrimSpace(body.Title) != "" {
+		title = pr.redactor.RedactString(strings.TrimSpace(body.Title))
+	}
+	statement := task.Statement
+	if body.Statement != "" {
+		statement = pr.redactor.RedactString(body.Statement)
+	}
+	if err := pr.db.UpdateTask(r.Context(), ini.ID, task.ID, title, statement, priority, body.Estimate); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	// Refuse if any other task depends on this one.
+	edges, err := pr.db.ListGraphEdgesTo(r.Context(), ini.ID, "task", task.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDependsOn {
+			writeError(w, http.StatusConflict, "another task depends on this task; remove that dependency first")
+			return
+		}
+	}
+	if err := pr.db.DeleteTask(r.Context(), ini.ID, task.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := pr.db.SetTaskStatus(r.Context(), task.ID, domain.TaskCancelled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.TaskCancelled)})
+}
+
+func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	var body struct {
+		TaskIDs []string `json:"task_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.TaskIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "task_ids is required")
+		return
+	}
+	if err := pr.db.ReorderTasks(r.Context(), ini.ID, body.TaskIDs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	list, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	writeJSON(w, http.StatusOK, list)
+}
+
+// resolveTaskRefs resolves task references (title, code, or id) to task ids.
+func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	tasks, err := pr.db.ListTasks(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	byNorm := map[string]string{}
+	for _, t := range tasks {
+		byNorm[norm(t.Title)] = t.ID
+		byNorm[norm(t.Code)] = t.ID
+	}
+	var out []string
+	for _, ref := range refs {
+		id, ok := byNorm[norm(ref)]
+		if !ok {
+			return nil, fmt.Errorf("depends_on references an unknown task %q", ref)
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // handleTraceObject dispatches why / impact / trace for a graph node.
@@ -1198,6 +1517,89 @@ func (s *Server) handleGetChangeSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cs)
+}
+
+// handleListChecks returns the deterministic check results for a change set,
+// projected from its change_set-targeted findings (patch_applies/build/tests).
+func (s *Server) handleListChecks(w http.ResponseWriter, r *http.Request) {
+	pr, cs, err := s.changeSet(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		return
+	}
+	findings, err := pr.db.ListFindingsByTarget(r.Context(), "change_set", cs.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type check struct {
+		Name     string `json:"name"`
+		Status   string `json:"status"`
+		Summary  string `json:"summary"`
+		Evidence string `json:"evidence,omitempty"`
+		DenyCode string `json:"deny_code,omitempty"`
+	}
+	checks := make([]check, 0, 3)
+	pass, fail, na := 0, 0, 0
+	for _, f := range findings {
+		if f.Category != "patch_applies" && f.Category != "build" && f.Category != "tests" {
+			continue
+		}
+		status := "pass"
+		switch {
+		case f.Disposition == domain.DispositionNotApplicable:
+			status = "not_applicable"
+		case f.Severity == domain.SeverityHigh || f.Severity == domain.SeverityCritical:
+			status = "fail"
+		}
+		switch status {
+		case "pass":
+			pass++
+		case "fail":
+			fail++
+		default:
+			na++
+		}
+		checks = append(checks, check{Name: f.Category, Status: status, Summary: f.Finding, Evidence: f.Evidence, DenyCode: string(f.Code)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"checks": checks, "pass": pass, "fail": fail, "not_applicable": na,
+	})
+}
+
+// handleResolveConflict resolves a conflicted change set: retry (reset to
+// approved and re-apply async) or reject (sync).
+func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	pr, cs, err := s.changeSet(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		return
+	}
+	var body struct {
+		Resolution string `json:"resolution"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	switch body.Resolution {
+	case "reject":
+		if err := pr.engine.RejectConflicted(r.Context(), cs.InitiativeID, cs.ID); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.ChangeSetRejected)})
+	case "retry":
+		opID, err := s.rt.RetryConflictedApply(r.Context(), projectID, cs.InitiativeID, cs.ID)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+	default:
+		writeError(w, http.StatusBadRequest, "resolution must be retry or reject")
+	}
 }
 
 // handleChangeSetDiff serves the change set's patch as a readable diff (path +

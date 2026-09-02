@@ -512,6 +512,52 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	return opID, nil
 }
 
+// RevisePlanInitiative regenerates the execution plan (and its review)
+// asynchronously, keeping the PRD/design artifacts. Returns the operation id.
+func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "", fmt.Errorf("initiative is running; wait for it to finish")
+	}
+	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+		return "", fmt.Errorf("no plan to revise (status=%s)", ini.Status)
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
+	if err != nil {
+		return "", err
+	}
+	r.launchOperation(opID, func(bg context.Context) {
+		status, runErr := pr.engine.RevisePlan(bg, initiativeID)
+		if runErr != nil {
+			r.failOperation(opID, initiativeID, "plan revision failed", bg, pr, runErr, true)
+			return
+		}
+		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		r.log.Info("plan revision complete", "initiative", initiativeID, "status", status)
+	})
+	return opID, nil
+}
+
+// RetryConflictedApply resets a conflicted change set to approved and re-runs the
+// existing async apply path. Returns the operation id.
+func (r *Runtime) RetryConflictedApply(ctx context.Context, projectID, initiativeID, changeSetID string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	if err := pr.engine.ResetConflictedForRetry(ctx, initiativeID, changeSetID); err != nil {
+		return "", err
+	}
+	return r.ApplyChangeSetInitiative(ctx, projectID, initiativeID, changeSetID)
+}
+
 // SuggestAnswersInitiative generates AI answers for open questions
 // asynchronously and persists them. Returns the operation id.
 func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {

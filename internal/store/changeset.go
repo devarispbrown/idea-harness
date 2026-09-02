@@ -40,7 +40,7 @@ func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
 		EventType:     "change_set.created",
 	}, func(tx *sql.Tx) error {
 		if cs.HumanID == "" {
-			code, err := nextCode(tx, "change_sets", "CHG", cs.InitiativeID)
+			code, err := nextCode(tx, "change_sets", "human_id", "CHG", cs.InitiativeID)
 			if err != nil {
 				return err
 			}
@@ -83,6 +83,11 @@ func legalChangeSetTransition(from, to domain.ChangeSetStatus) bool {
 		// A change set that has been applied may be rolled back; this is the
 		// only way an applied change set leaves the applied state.
 		return to == domain.ChangeSetReverted
+	case domain.ChangeSetConflicted:
+		// A conflicted change set (apply/commit failed and the pre-image was
+		// restored) resolves either by resetting to approved so a retry re-runs
+		// the existing apply path, or by rejecting it outright.
+		return to == domain.ChangeSetApproved || to == domain.ChangeSetRejected
 	default:
 		return false
 	}

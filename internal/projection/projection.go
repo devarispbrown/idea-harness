@@ -306,9 +306,13 @@ func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove 
 	return NextMove{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
 }
 
-// Changed is the grouped What Changed projection.
+// Changed is the grouped What Changed projection. Through is the highest event
+// sequence actually consumed by this projection (or the caller's cursor when no
+// events matched) — the client echoes it back to the read-cursor write so that
+// exactly what was shown is marked seen, never events that arrived mid-read.
 type Changed struct {
-	Groups []ChangeGroup `json:"groups"`
+	Groups  []ChangeGroup `json:"groups"`
+	Through int64         `json:"through"`
 }
 
 // ChangeGroup is one grouped category of changes.
@@ -327,7 +331,11 @@ func BuildChanged(ctx context.Context, db *store.DB, sinceSeq int64, limit int) 
 	// Aggregate per category + event type into counts.
 	type key struct{ category, eventType string }
 	counts := map[key]int{}
+	through := sinceSeq
 	for _, e := range events {
+		if e.Seq > through {
+			through = e.Seq
+		}
 		if isMachinery(e.AggregateType) {
 			continue // hide runs/operations/context-bundles (§79)
 		}
@@ -341,7 +349,7 @@ func BuildChanged(ctx context.Context, db *store.DB, sinceSeq int64, limit int) 
 		byCategory[k.category] = append(byCategory[k.category], narrate(k.eventType, n))
 	}
 
-	var out Changed
+	out := Changed{Through: through}
 	keys := make([]string, 0, len(byCategory))
 	for k := range byCategory {
 		keys = append(keys, k)
