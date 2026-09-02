@@ -57,6 +57,9 @@ func InferKind(filename string) string {
 // Sniff returns the concrete file format: "pdf", "docx", "xlsx", "image",
 // "text", or "unsupported". Magic bytes win over the extension; unknown binary
 // input is classified "unsupported" so it is never ingested as garbage text.
+// Images are classified by MAGIC BYTES ONLY — an extension-only match is NOT
+// treated as an image, so a text file renamed to .png/.jpg still flows through
+// the text path (credential-swept + redacted) instead of bypassing it.
 func Sniff(filename string, data []byte) string {
 	if len(data) >= 5 && string(data[:5]) == "%PDF-" {
 		return "pdf"
@@ -75,10 +78,6 @@ func Sniff(filename string, data []byte) string {
 		return "docx"
 	case strings.HasSuffix(lower, ".xlsx"):
 		return "xlsx"
-	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"),
-		strings.HasSuffix(lower, ".png"), strings.HasSuffix(lower, ".gif"),
-		strings.HasSuffix(lower, ".webp"):
-		return "image"
 	case isTextExtension(lower):
 		return "text"
 	}
@@ -86,6 +85,24 @@ func Sniff(filename string, data []byte) string {
 		return "text"
 	}
 	return "unsupported"
+}
+
+// ImageMediaType returns the MIME type for a recognized image (by magic bytes)
+// or "" when data is not a JPEG/PNG/GIF/WebP. Used as the media-type allowlist
+// for vision requests instead of content-sniffing.
+func ImageMediaType(data []byte) string {
+	switch {
+	case isJPEG(data):
+		return "image/jpeg"
+	case isPNG(data):
+		return "image/png"
+	case isGIF(data):
+		return "image/gif"
+	case isWebP(data):
+		return "image/webp"
+	default:
+		return ""
+	}
 }
 
 // ExtractText returns the plain-text body of a document. Unsupported formats

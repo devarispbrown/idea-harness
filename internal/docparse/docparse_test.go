@@ -21,7 +21,7 @@ func TestSniff(t *testing.T) {
 		{"docx ext", "spec.docx", []byte("garbage"), "docx"},
 		{"xlsx ext", "data.xlsx", buildXlsx(), "xlsx"},
 		{"png magic", "x.bin", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0}, "image"},
-		{"jpg ext", "mock.jpg", []byte("garbage"), "image"},
+		{"jpg ext text masquerade", "mock.jpg", []byte("garbage"), "text"},
 		{"txt ext", "prd.md", nil, "text"},
 		{"text passthrough", "prd", []byte("plain text"), "text"},
 		{"binary rejected", "blob", []byte{0x00, 0x01, 0x02}, "unsupported"},
@@ -49,6 +49,20 @@ func TestInferKind(t *testing.T) {
 		if got := InferKind(in); got != want {
 			t.Errorf("InferKind(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestImageMediaType(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0}
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0}
+	if got := ImageMediaType(png); got != "image/png" {
+		t.Errorf("ImageMediaType(png) = %q", got)
+	}
+	if got := ImageMediaType(jpeg); got != "image/jpeg" {
+		t.Errorf("ImageMediaType(jpeg) = %q", got)
+	}
+	if got := ImageMediaType([]byte("not an image")); got != "" {
+		t.Errorf("ImageMediaType(text) = %q, want empty", got)
 	}
 }
 
