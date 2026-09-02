@@ -67,6 +67,13 @@ func (i Info) String() string {
 func Get() Info {
 	info := Info{Version: version, Commit: commit}
 
+	// An explicitly stamped build knows what it is. Release builds embed the web
+	// UI over the committed placeholder before compiling, which flips the
+	// toolchain's vcs.modified — so trusting it would make every release binary
+	// report "dirty" from a clean CI checkout. The flag is only meaningful when
+	// nothing was stamped, i.e. someone built from their own working tree.
+	stamped := info.Version != ""
+
 	bi, ok := debug.ReadBuildInfo()
 	if ok {
 		for _, s := range bi.Settings {
@@ -76,7 +83,7 @@ func Get() Info {
 					info.Commit = s.Value
 				}
 			case "vcs.modified":
-				info.Modified = s.Value == "true"
+				info.Modified = !stamped && s.Value == "true"
 			}
 		}
 		// The proxy path stamps a module version and nothing else. "(devel)" is
