@@ -51,6 +51,60 @@ func (e *Engine) ApprovePlan(ctx context.Context, initiativeID string) (domain.I
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
+// ReopenPhase re-runs the design pipeline from the given design stage through
+// plan review (downstream cascade), regenerating artifacts as new versions and
+// the plan from scratch. It is a pre-execution action: once any change set
+// exists the reopen is refused, since re-planning would orphan applied work.
+// phase must be one of architecture, product_design, verification_design.
+func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (domain.InitiativeStatus, error) {
+	cses, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return domain.InitiativeFailed, err
+	}
+	if len(cses) > 0 {
+		return domain.InitiativeFailed, fmt.Errorf("cannot reopen a design phase after execution has begun")
+	}
+
+	stages := []struct {
+		name string
+		run  func(context.Context, string) error
+	}{
+		{"architecture", e.runArchitecture},
+		{"product_design", e.runProductDesign},
+		{"verification_design", e.runVerificationDesign},
+	}
+	start := -1
+	for i, s := range stages {
+		if s.name == phase {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return domain.InitiativeFailed, fmt.Errorf("unknown design phase %q", phase)
+	}
+	for _, s := range stages[start:] {
+		if err := s.run(ctx, initiativeID); err != nil {
+			return domain.InitiativeFailed, err
+		}
+	}
+	if err := e.ConvergeDecisions(ctx, initiativeID); err != nil {
+		return domain.InitiativeFailed, err
+	}
+	if err := e.db.DeleteTasksForInitiative(ctx, initiativeID); err != nil {
+		return domain.InitiativeFailed, err
+	}
+	_ = e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator)
+	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
+		if errors.Is(err, errUnresolvedDependencies) {
+			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			return domain.InitiativeNeedsHumanJudgment, nil
+		}
+		return domain.InitiativeFailed, err
+	}
+	return e.runExecutionPlanReview(ctx, initiativeID)
+}
+
 // RevisePlan regenerates the execution plan (and its review) in place after the
 // human edited or rejected the prior plan. It deletes the prior tasks and their
 // edges and disposes prior plan-review findings first, so no duplicate tasks or
