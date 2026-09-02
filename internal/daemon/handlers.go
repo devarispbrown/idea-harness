@@ -25,6 +25,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
 	"github.com/devarispbrown/idea-harness/internal/textdiff"
+	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -1047,6 +1048,53 @@ func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"why": why, "impact": impact})
 	}
+}
+
+// maxImpactBatchNodes caps the number of nodes a single impact-counts request
+// may ask about, bounding worst-case load (each node is an independent BFS).
+const maxImpactBatchNodes = 200
+
+// handleImpactCounts returns "blocks N" counts for a batch of graph nodes,
+// addressed as comma-separated `type:id` (e.g. decision:D-004,finding:F-012), so
+// the UI can render impact counts without one Impact call per node.
+func (s *Server) handleImpactCounts(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	raw := r.URL.Query().Get("nodes")
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "nodes query param is required (comma-separated type:id)")
+		return
+	}
+	var nodes []workflow.NodeRef
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		typ, id, ok := strings.Cut(part, ":")
+		if !ok || typ == "" || id == "" {
+			writeError(w, http.StatusBadRequest, "each node must be type:id")
+			return
+		}
+		nodes = append(nodes, workflow.NodeRef{Type: typ, ID: id})
+	}
+	if len(nodes) == 0 {
+		writeError(w, http.StatusBadRequest, "nodes query param is required")
+		return
+	}
+	if len(nodes) > maxImpactBatchNodes {
+		writeError(w, http.StatusBadRequest, "too many nodes in one impact-counts request")
+		return
+	}
+	counts, err := pr.engine.ImpactCounts(r.Context(), ini.ID, nodes)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counts": counts})
 }
 
 func (s *Server) handleWhy(w http.ResponseWriter, r *http.Request) { s.handleTraceObject(w, r, "why") }
