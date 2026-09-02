@@ -28,6 +28,9 @@ jobs:
           go vet ./...
           go test ./...
 
+      - name: Committed embed placeholder is intact
+        run: make check-embed
+
   backend:
     name: Go (vet + test + smoke)
     runs-on: ubuntu-latest # Docker is preinstalled, so the sandbox test RUNS

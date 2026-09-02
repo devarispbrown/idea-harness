@@ -225,7 +225,7 @@ func (db *DB) GetChangeSet(ctx context.Context, changeSetID string) (*domain.Cha
 	var cs domain.ChangeSet
 	var created int64
 	if err := scanChangeSet(db.SQL().QueryRowContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE id = ?`, changeSetID), &cs, &created); err != nil {
-		return nil, err
+		return nil, notFoundIfNoRows(err, "change set", changeSetID)
 	}
 	cs.CreatedAt = time.UnixMilli(created)
 	return &cs, nil

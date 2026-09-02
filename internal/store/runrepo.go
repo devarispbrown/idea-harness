@@ -171,7 +171,7 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 		FROM operations WHERE id = ?`, opID).
 		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &created, &finished)
 	if err != nil {
-		return op, err
+		return op, notFoundIfNoRows(err, "operation", opID)
 	}
 	op.InitiativeID = iniID.String
 	op.ResultRef = resultRef.String

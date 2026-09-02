@@ -17,6 +17,14 @@ coverage.*
 web/node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
+
+# The embedded UI build output. Ignored, except index.html: //go:embed needs the
+# directory to exist at compile time, so a placeholder copy of
+# internal/web/placeholder.html is committed there (see internal/web/web.go).
+# `make embed-web` overwrites it with the real build; `make restore-embed` puts
+# the placeholder back so a real build is never committed by accident.
+internal/web/dist/*
+!internal/web/dist/index.html
 .pnpm-store/
 
 # idea-harness runtime state (must not be committed)

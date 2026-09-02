@@ -137,4 +137,28 @@ func (f *fakeDaemon) seedInitiative() {
 	f.json("GET /api/v1/projects/{projectId}/risk", map[string]any{
 		"level": "low", "signals": []string{},
 	})
+	f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", map[string]any{
+		"status": "complete",
+		"coverage": []map[string]any{
+			{"code": "REQ-1", "pass": 1, "total": 1, "needs_manual": 0},
+		},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/diff", map[string]any{
+		"requirements": map[string]any{"added": []any{}, "removed": []any{}},
+		"decisions":    map[string]any{"open": []any{}, "decided": []any{}, "superseded": []any{}},
+	})
+}
+
+// seedTrace registers what why/impact/trace need: the object lookup that
+// resolves REQ-1, and the two edge queries.
+func (f *fakeDaemon) seedTrace() {
+	f.json("GET /api/v1/projects/{projectId}/requirements", []map[string]any{
+		{"id": "req-1", "code": "REQ-1", "kind": "requirement", "title": "Bill by usage"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/why", []map[string]any{
+		{"edge_type": "derives_from", "from_label": "EV-1", "to_label": "REQ-1"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/impact", []map[string]any{
+		{"edge_type": "depends_on", "from_label": "REQ-1", "to_label": "TASK-1", "staleness": "fresh"},
+	})
 }

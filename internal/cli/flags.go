@@ -56,6 +56,13 @@ func parseArgs(spec flagSpec, args []string) ([]string, parsedFlags, error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 
+		// "--" ends flag parsing: everything after it is a positional, which is
+		// the only way to pass a value that begins with a dash.
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+
 		// "-" alone is a positional: `idea docs add -` reads from stdin.
 		if !strings.HasPrefix(a, "-") || a == "-" {
 			positional = append(positional, a)

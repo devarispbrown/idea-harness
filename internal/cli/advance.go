@@ -157,8 +157,26 @@ func cmdImpact(args []string, stdout, stderr io.Writer) error {
 
 // cmdTrace renders both provenance (why) and dependents (impact) for a node.
 func cmdTrace(args []string, stdout, stderr io.Writer) error {
-	if len(args) < 2 {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>")
+	}
+	// trace is two queries. Rendered for a human they are two sections; as JSON
+	// they have to be one document — printing why's array and then impact's
+	// would emit two concatenated values that no parser accepts.
+	if flags.has("--json") {
+		why, err := fetchTrace("why", positional)
+		if err != nil {
+			return err
+		}
+		impact, err := fetchTrace("impact", positional)
+		if err != nil {
+			return err
+		}
+		return dumpJSON(stdout, map[string]any{"why": why, "impact": impact})
 	}
 	if err := runTraceCmd("why", args, stdout); err != nil {
 		return err
@@ -212,6 +230,38 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "  ~ %s %s\n", code(x.Code), x.Question)
 	}
 	return nil
+}
+
+// fetchTrace resolves the target and returns the raw why/impact edges for it,
+// so cmdTrace can combine both into one JSON document. positional is the
+// already-parsed argument list: type, reference, and an optional initiative.
+func fetchTrace(mode string, positional []string) (any, error) {
+	typ, ref := positional[0], positional[1]
+	c, projectID, err := connect()
+	if err != nil {
+		return nil, err
+	}
+	iniID, err := resolveInitiative(c, projectID, positional[2:])
+	if err != nil {
+		return nil, err
+	}
+	objID, err := resolveObjectID(c, projectID, iniID, typ, ref)
+	if err != nil {
+		return nil, err
+	}
+	u := "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/" + mode + "?type=" + typ + "&id=" + objID
+	if mode == "why" {
+		var items []cliWhyItem
+		if err := c.do("GET", u, nil, &items); err != nil {
+			return nil, err
+		}
+		return items, nil
+	}
+	var items []cliImpactItem
+	if err := c.do("GET", u, nil, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func runTraceCmd(mode string, args []string, stdout io.Writer) error {

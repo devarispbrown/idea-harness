@@ -2,9 +2,13 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"unicode"
+
+	"modernc.org/sqlite"
 )
 
 // maxRefLen bounds a reference echoed back in an error. A reference reaches the
@@ -40,10 +44,33 @@ func notFound(kind, ref string) error { return &NotFoundError{Kind: kind, Ref: r
 // else through unchanged, so a real database failure is never disguised as a
 // missing row.
 func notFoundIfNoRows(err error, kind, ref string) error {
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return notFound(kind, ref)
 	}
 	return err
+}
+
+// IsStorageFailure reports whether err came from the database driver or the
+// filesystem, rather than from a domain rule. Those errors carry schema names,
+// constraint text and absolute state paths, so callers must not show them to a
+// client verbatim.
+//
+// This is a type check, not a search for substrings: "UNIQUE constraint failed:
+// change_sets.id", "attempt to write a readonly database" and "open
+// /Users/<name>/.local/share/…: permission denied" share no vocabulary, and a
+// list of markers will always be one driver message behind.
+func IsStorageFailure(err error) bool {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		return true
+	}
+	// A lookup that was never wrapped by notFoundIfNoRows: not a failure, but
+	// not something to render verbatim either. Callers treat it as not-found.
+	return errors.Is(err, sql.ErrNoRows)
 }
 
 // sanitizeRef makes a user-supplied reference safe to quote back into a

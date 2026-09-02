@@ -139,10 +139,19 @@ func (c *client) doRaw(method, path string) (string, error) {
 		// the user sees one error format regardless of which client path ran.
 		data, _ := io.ReadAll(resp.Body)
 		var e map[string]string
-		if json.Unmarshal(data, &e) == nil && e["error"] != "" {
-			return "", fmt.Errorf("%s", e["error"])
+		msg := ""
+		if json.Unmarshal(data, &e) == nil {
+			msg = e["error"]
 		}
-		return "", fmt.Errorf("%s", strings.TrimSpace(string(data)))
+		if msg == "" {
+			msg = strings.TrimSpace(string(data))
+		}
+		if msg == "" {
+			// Same last resort as send(): never return a blank error, which the
+			// CLI would print as a bare "idea: ".
+			msg = resp.Status
+		}
+		return "", fmt.Errorf("%s", msg)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

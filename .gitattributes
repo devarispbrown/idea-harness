@@ -1,12 +1,4 @@
-# Generated Vite output, committed so //go:embed resolves on a clean checkout
-# (see internal/web/web.go).
-#
-# The bundles under assets/ are minified onto one line: not reviewable as a
-# diff, and a conflict in them is unresolvable by hand. On a conflict here, take
-# either side and re-run `make embed-web`.
-internal/web/dist/assets/** -diff -merge linguist-generated=true
-
-# index.html stays diffable: it is small, it carries the __IDEA_TOKEN__
-# substitution point that internal/web/web.go depends on, and a change to it is
-# worth reading.
+# internal/web/dist/ is generated. Only index.html is committed (a placeholder
+# copy of internal/web/placeholder.html) because //go:embed needs the directory
+# to exist at compile time; everything else there is ignored.
 internal/web/dist/index.html linguist-generated=true
