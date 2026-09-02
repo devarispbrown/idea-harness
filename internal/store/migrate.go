@@ -468,6 +468,21 @@ INSERT INTO task_counters (initiative_id, next_seq)
 SELECT initiative_id, COALESCE(MAX(CAST(SUBSTR(code, 6) AS INTEGER)), 0) + 1
 FROM tasks GROUP BY initiative_id;
 `,
+	// 17: doc_comments — human comments anchored to an artifact-version section,
+	// promotable into an open Question.
+	`
+CREATE TABLE IF NOT EXISTS doc_comments (
+  id                   TEXT PRIMARY KEY,
+  initiative_id        TEXT NOT NULL,
+  artifact_version_id  TEXT NOT NULL,
+  section              TEXT NOT NULL DEFAULT '',
+  text                 TEXT NOT NULL,
+  author               TEXT NOT NULL,
+  promoted_question_id TEXT NOT NULL DEFAULT '',
+  created_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_doc_comments_artifact ON doc_comments(artifact_version_id);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

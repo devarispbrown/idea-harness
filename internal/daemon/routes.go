@@ -63,6 +63,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/diff", s.handleArtifactDiff)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/body", s.handleArtifactBody)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/raw", s.handleArtifactRaw)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/comments", s.handleListDocComments)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/artifacts/{id}/comments", s.handleCreateDocComment)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/comments/{id}/promote", s.handlePromoteDocComment)
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/findings", s.handleListFindings)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/findings/{id}/disposition", s.handleFindingDisposition)
