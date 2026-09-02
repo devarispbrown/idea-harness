@@ -5,6 +5,7 @@ import PhaseNav from "./PhaseNav";
 import PhasePage from "./PhasePage";
 import DefinePage from "./DefinePage";
 import ExplorePage from "./ExplorePage";
+import BuildPage from "./BuildPage";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -220,7 +221,10 @@ export default function App() {
             status={currentInitiative.status}
           />
         )}
-        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && (
+        {route.name === "phase" && currentInitiative && route.phase === "build" && (
+          <BuildPage projectId={projectId} initiativeId={currentInitiative.id} />
+        )}
+        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && (
           <PhasePage
             title={PHASE_LABELS[route.phase]}
             purpose={PHASE_PURPOSE[route.phase]}
