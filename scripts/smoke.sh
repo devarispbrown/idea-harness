@@ -2,7 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export GOPATH="$ROOT/.gopath" GOCACHE="$ROOT/.buildcache" GOMODCACHE="$ROOT/.gopath/pkg/mod"
+# Workspace-local Go caches by default, so a sandboxed environment never writes
+# to a home directory it may not own. Values already in the environment win: CI
+# points these at the runner's cache, and forcing them back into the repo would
+# re-download the whole module graph on every run.
+export GOPATH="${GOPATH:-$ROOT/.gopath}"
+export GOCACHE="${GOCACHE:-$ROOT/.buildcache}"
+export GOMODCACHE="${GOMODCACHE:-$GOPATH/pkg/mod}"
 
 go build -o "$ROOT/bin/idea" "$ROOT/cmd/idea"
 

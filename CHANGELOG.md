@@ -7,6 +7,18 @@ Versioning is pre-1.0: the CLI surface, the HTTP API, and the on-disk config sch
 any release. Breaking changes are listed under **Changed** or **Removed** with the migration in the
 entry itself. Once 1.0 ships, this project follows semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- CI builds, vets, tests and smoke-tests on macOS as well as Linux. Nothing in the codebase branches
+  on the operating system, so the differences that matter are filesystem semantics — case
+  sensitivity, symlink resolution — which is exactly where the path guard and the change-set deny
+  live. A case-sensitivity bypass in that deny reached a release before this job existed.
+- `README.md` states the supported platforms: macOS and Linux are tested in CI; Windows is not
+  supported, because the CLI starts its daemon in a new session and there is no Windows equivalent
+  in the tree yet.
+
 ## [0.1.0] - 2026-09-02
 
 First tagged release. The entries below are the whole history to date: everything
