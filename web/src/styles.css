@@ -2115,6 +2115,39 @@ button.ghost.small {
 .settings-page { max-width: 760px; display: flex; flex-direction: column; gap: 16px; }
 .settings-page .banner { border-radius: 8px; border: 1px solid var(--needs-you-line); margin: 0; }
 
+/* ---------- accessibility ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Accessible, color-coded diff lines (artifact version diff). */
+.diff-lines {
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow: auto;
+}
+.diff-line { white-space: pre-wrap; word-break: break-word; padding: 0 4px; border-radius: 3px; }
+.diff-added { color: var(--verified-fg); background: var(--verified-pill); }
+.diff-removed { color: var(--failing-fg); background: var(--failing-pill); }
+.diff-context { color: var(--text-body); }
+
 /* ---------- responsive: phase rail never collapses away ---------- */
 @media (max-width: 1179px) {
   .phase-nav { width: 168px; padding: 14px 10px; }
