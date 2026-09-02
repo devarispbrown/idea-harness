@@ -2,7 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { get, post } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
-import { currentPhase, derivePhases, type PhaseSource } from "./phases";
+import PhasePage from "./PhasePage";
+import type { StatusPill } from "./PhaseHeader";
+import type { DocumentRowProps } from "./DocumentRow";
+import {
+  ARTIFACT_PHASE,
+  ARTIFACT_TITLES,
+  PHASE_LABELS,
+  PHASE_PURPOSE,
+  currentPhase,
+  derivePhases,
+  type PhaseSource,
+  type PhaseState,
+} from "./phases";
 import { currentRoute, navigate, type Route, type PhaseName } from "./router";
 
 interface Project {
@@ -192,8 +204,15 @@ export default function App() {
 
         {route.name === "settings" && <Settings projectId={projectId} />}
 
-        {route.name === "phase" && (
-          <PhaseStub phase={route.phase} initiative={currentInitiative} />
+        {route.name === "phase" && currentInitiative && (
+          <PhasePage
+            title={PHASE_LABELS[route.phase]}
+            purpose={PHASE_PURPOSE[route.phase]}
+            pill={phasePill(phases.find((p) => p.phase === route.phase), currentInitiative.status, route.phase)}
+            docs={artifactRows(artifacts, currentInitiative.id, route.phase)}
+          >
+            <div className="phase-stub muted">Phase content lands in a later step.</div>
+          </PhasePage>
         )}
 
         {route.name === "decision" && (
@@ -210,22 +229,32 @@ export default function App() {
   );
 }
 
-function PhaseStub({ phase, initiative }: { phase: PhaseName; initiative: Initiative | null }) {
-  const labels: Record<PhaseName, string> = {
-    explore: "Explore",
-    define: "Define",
-    design: "Design",
-    plan: "Plan",
-    build: "Build",
-    verify: "Verify",
-  };
-  return (
-    <div className="phase-stub">
-      <h1 style={{ margin: 0 }}>{labels[phase]}</h1>
-      <p className="muted">{initiative?.title ?? "No initiative"}</p>
-      <p className="muted">Phase content lands in a later step.</p>
-    </div>
-  );
+function phasePill(state: PhaseState | undefined, status: string, phase: PhaseName): StatusPill | undefined {
+  if (!state) return undefined;
+  if (state.state === "done") return { label: "approved", state: "verified" };
+  if (state.state === "future") return { label: "not started", state: "inactive" };
+  switch (status) {
+    case "running":
+      return { label: "running", state: "running" };
+    case "needs_human_judgment":
+      return { label: phase === "plan" ? "needs approval" : "waiting on you", state: "needs-you" };
+    case "complete":
+      return { label: "verified", state: "verified" };
+    case "failed":
+      return { label: "failing", state: "failing" };
+    default:
+      return undefined;
+  }
+}
+
+function artifactRows(artifacts: Artifact[], initiativeId: string, phase: PhaseName): DocumentRowProps[] {
+  return artifacts
+    .filter((a) => ARTIFACT_PHASE[a.kind] === phase)
+    .map((a) => ({
+      title: `${ARTIFACT_TITLES[a.kind] ?? a.kind} · v${a.version}`,
+      meta: "",
+      onRead: () => navigate(`#/i/${initiativeId}/doc/${a.id}/${a.version}`),
+    }));
 }
 
 function ProductHome({
