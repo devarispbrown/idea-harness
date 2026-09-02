@@ -65,13 +65,16 @@ export default function App() {
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
 
+  const [daemonDown, setDaemonDown] = useState(false);
+
   const loadProjects = useCallback(async () => {
     try {
       const ps = (await get<Project[]>("/projects")) ?? [];
       setProjects(ps);
       if (ps.length > 0) setProjectId((prev) => prev || ps[0].project_id);
+      setDaemonDown(false);
     } catch {
-      /* daemon down — empty state handles it */
+      setDaemonDown(true);
     }
   }, []);
 
@@ -167,6 +170,18 @@ export default function App() {
   };
 
   // ---------- render ----------
+
+  if (daemonDown) {
+    return (
+      <div className="empty">
+        <h1>idea-harness</h1>
+        <p className="error">
+          Lost connection to the daemon at 127.0.0.1:8787.
+        </p>
+        <p className="muted">Nothing will update until it's back. Run <code>idea daemon</code> to restart it.</p>
+      </div>
+    );
+  }
 
   if (projects.length === 0) {
     return (

@@ -16,6 +16,7 @@ interface Provider {
 interface ProvidersView {
   default_model: string;
   git_commit?: boolean;
+  demo?: boolean;
   providers: Provider[];
 }
 
@@ -44,6 +45,7 @@ const PRESETS = [
 
 export default function Settings({ projectId }: { projectId: string }) {
   const [view, setView] = useState<ProvidersView | null>(null);
+  const [demo, setDemo] = useState(false);
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("openai");
   const [liveModels, setLiveModels] = useState<string[]>([]);
@@ -72,6 +74,7 @@ export default function Settings({ projectId }: { projectId: string }) {
     try {
       const v = await get<ProvidersView>(`/projects/${projectId}/providers`);
       setView(v);
+      setDemo(v.demo ?? false);
       setDefaultModel(v.default_model || "");
       setGitCommit(v.git_commit ?? false);
       const p = v.default_model?.includes("/")
@@ -239,7 +242,12 @@ export default function Settings({ projectId }: { projectId: string }) {
   );
 
   return (
-    <main className="home">
+    <div className="settings-page">
+      {demo && (
+        <div className="banner">
+          Demo mode — synthetic output. Configure a model provider to run real agents.
+        </div>
+      )}
       <section className="card">
         <h2>Model</h2>
 
@@ -468,6 +476,6 @@ export default function Settings({ projectId }: { projectId: string }) {
 
       {saved && <p className="ok-text">{saved}</p>}
       {error && <p className="error">{error}</p>}
-    </main>
+    </div>
   );
 }
