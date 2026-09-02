@@ -7,10 +7,12 @@ export default function PhaseHeader({
   title,
   purpose,
   pill,
+  meta,
 }: {
   title: string;
   purpose: string;
   pill?: StatusPill;
+  meta?: string;
 }) {
   return (
     <div className="phase-header">
@@ -22,6 +24,7 @@ export default function PhaseHeader({
           {pill.label}
         </span>
       )}
+      {meta && <span className="phase-meta">{meta}</span>}
     </div>
   );
 }
