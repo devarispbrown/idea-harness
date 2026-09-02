@@ -1926,3 +1926,58 @@ button.ghost.small {
 .verify-criterion-text { flex: 1; }
 .verify-pass { display: flex; gap: 8px; margin: 11px 0 0 23px; align-items: center; }
 .verify-pass .text-input { flex: 1; }
+
+/* ---------- doc reader / discussion / health ---------- */
+.doc-reader-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.doc-reader-body {
+  margin: 0;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-body);
+}
+.discussion-main { display: flex; gap: 0; margin-top: 14px; }
+.discussion-col { flex: 1; min-width: 0; }
+.discussion-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.discussion-thread { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.thread-row { display: flex; }
+.thread-row.human { justify-content: flex-end; }
+.thread-bubble { max-width: 78%; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
+.thread-row.human .thread-bubble { background: var(--accent-bg); border-color: var(--accent-line); }
+.thread-who { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; color: var(--text-faint); margin-bottom: 5px; }
+.thread-text { font-size: 12.5px; line-height: 1.6; color: var(--text-body); }
+.discussion-input { display: flex; gap: 8px; margin-top: 16px; }
+.discussion-input .text-input { flex: 1; }
+.discussion-resolve { display: flex; gap: 7px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.changed-panel { width: 330px; flex: none; border-left: 1px solid var(--line); background: var(--surface); padding: 22px 20px; }
+.changed-head { display: flex; align-items: baseline; gap: 8px; }
+.changed-seen { margin-left: auto; font-size: 11px; color: var(--accent); font-weight: 600; cursor: pointer; background: none; border: none; }
+.changed-groups { display: flex; flex-direction: column; gap: 13px; margin-top: 14px; }
+.changed-group { font-size: 11.5px; font-weight: 700; color: #57534e; }
+.changed-items { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
+.changed-item { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+.risk-card { background: var(--surface); border: 1px solid var(--needs-you-line); border-radius: 12px; padding: 16px 18px; margin-top: 18px; }
+.risk-head { display: flex; align-items: center; gap: 11px; }
+.risk-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: var(--needs-you-pill); color: var(--needs-you-fg); border: 1px solid var(--needs-you-line); border-radius: 999px; padding: 3px 10px; flex: none; }
+.risk-body { flex: 1; }
+.risk-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.risk-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.risk-signals { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.risk-signal { font: 11px ui-monospace, Menlo, monospace; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; color: #57534e; }
+.health-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.health-row { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); display: flex; gap: 11px; align-items: baseline; }
+.health-sev { font: 600 9.5px ui-monospace, Menlo, monospace; border-radius: 4px; padding: 2px 6px; flex: none; text-transform: uppercase; }
+.sev-critical, .sev-high { background: var(--failing-pill); color: var(--failing-fg); }
+.sev-medium { background: var(--needs-you-pill); color: var(--needs-you-fg); }
+.sev-low, .sev-observation { background: var(--inactive-pill); color: var(--inactive-fg); }
+.health-body { flex: 1; min-width: 0; }
+.health-title { font-size: 13px; font-weight: 550; color: var(--text); }
+.health-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.55; }
+.health-daemon { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px; display: flex; align-items: center; gap: 11px; }
+.health-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; flex: none; }
+.health-addr { font-size: 12.5px; color: #57534e; font-family: ui-monospace, Menlo, monospace; flex: 1; }

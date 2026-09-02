@@ -8,6 +8,9 @@ import ExplorePage from "./ExplorePage";
 import BuildPage from "./BuildPage";
 import PlanPage from "./PlanPage";
 import VerifyPage from "./VerifyPage";
+import DocReader from "./DocReader";
+import DecisionPage from "./DecisionPage";
+import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
@@ -246,13 +249,13 @@ export default function App() {
         )}
 
         {route.name === "decision" && (
-          <div className="phase-stub">Decision discussion — step 10</div>
+          <DecisionPage projectId={projectId} initiativeId={route.id} decisionId={route.decisionId} />
         )}
         {route.name === "health" && (
-          <div className="phase-stub">Graph health — step 10</div>
+          <HealthPage projectId={projectId} initiativeId={route.id} />
         )}
         {route.name === "doc" && (
-          <div className="phase-stub">Document reader — step 10</div>
+          <DocReader projectId={projectId} initiativeId={route.id} artifactId={route.artifact} />
         )}
       </main>
     </div>
