@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idea-harness/idea-harness/internal/domain"
 )
@@ -139,6 +140,24 @@ func TestAddDocImage(t *testing.T) {
 	}
 	if doc.Digest == "" {
 		t.Fatal("expected an image blob digest")
+	}
+
+	// Wait for the async describe goroutine to record the description, so the
+	// temp-dir cleanup does not race its (post-description) blob write.
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got, err := pr.db.GetContextDoc(t.Context(), doc.ID)
+		if err == nil && got.DescriptionDigest != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

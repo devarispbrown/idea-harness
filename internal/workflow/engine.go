@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/idea-harness/idea-harness/internal/blob"
 	"github.com/idea-harness/idea-harness/internal/config"
 	ccontext "github.com/idea-harness/idea-harness/internal/context"
+	"github.com/idea-harness/idea-harness/internal/docparse"
 	"github.com/idea-harness/idea-harness/internal/domain"
 	"github.com/idea-harness/idea-harness/internal/model"
 	"github.com/idea-harness/idea-harness/internal/review"
@@ -78,6 +78,10 @@ type Engine struct {
 	costMu    sync.Mutex
 	budgetUSD float64 // 0 = no budget
 	spentUSD  float64
+
+	// describeMu single-flights image description so concurrent uploads cannot
+	// re-describe the same image or amplify model calls (vision review).
+	describeMu sync.Mutex
 }
 
 // redact applies the engine's known-values redactor to a free-text string at the
@@ -911,6 +915,12 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 // digest recorded so contextDocs can inject it. Failures are logged per-doc and
 // do not block the remaining docs.
 func (e *Engine) DescribeImages(ctx context.Context, initiativeID string) error {
+	// Single-flight: concurrent uploads each spawn a describe goroutine, but only
+	// one full scan runs at a time; the second re-scan sees description_digest
+	// already set and is a no-op (no duplicate/amplified model calls).
+	e.describeMu.Lock()
+	defer e.describeMu.Unlock()
+
 	docs, err := e.db.ListContextDocs(ctx, initiativeID)
 	if err != nil {
 		return err
@@ -928,17 +938,27 @@ func (e *Engine) DescribeImages(ctx context.Context, initiativeID string) error 
 }
 
 // describeImage runs one vision-model call over an image doc's bytes and stores
-// the returned description.
+// the returned description. It snapshots the reloadable engine components under
+// e.mu (Reload swaps them under the same lock), so the read path cannot race a
+// config reload.
 func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error {
-	if e.rawBlobs == nil {
+	e.mu.Lock()
+	spec := e.resolveModelSpec("vision")
+	registry, redactor, blobs, rawBlobs := e.registry, e.redactor, e.blobs, e.rawBlobs
+	e.mu.Unlock()
+
+	if rawBlobs == nil {
 		return fmt.Errorf("image store not configured")
 	}
-	image, err := e.rawBlobs.Get(doc.Digest)
+	image, err := rawBlobs.Get(doc.Digest)
 	if err != nil {
 		return fmt.Errorf("image blob: %w", err)
 	}
-	spec := e.visionModelSpec()
-	prov, modelName, err := e.registry.Resolve(spec)
+	mediaType := docparse.ImageMediaType(image)
+	if mediaType == "" {
+		return fmt.Errorf("image doc %s is not a recognized image", doc.ID)
+	}
+	prov, modelName, err := registry.Resolve(spec)
 	if err != nil {
 		return err
 	}
@@ -946,7 +966,7 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		Model:  modelName,
 		System: "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
 		Messages: []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
-		Images:   []model.Image{{Data: image, MediaType: http.DetectContentType(image)}},
+		Images:   []model.Image{{Data: image, MediaType: mediaType}},
 		MaxOutput: 2048,
 	}
 	resp, err := prov.Complete(ctx, req)
@@ -960,18 +980,14 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 	if text == "" {
 		return fmt.Errorf("empty image description")
 	}
-	digest := e.storeBlob(e.redact(text))
-	if digest == "" {
-		return fmt.Errorf("could not store image description")
+	if redactor != nil {
+		text = redactor.RedactString(text)
+	}
+	digest, err := blobs.Put([]byte(text))
+	if err != nil {
+		return fmt.Errorf("store image description: %w", err)
 	}
 	return e.db.SetContextDocDescription(ctx, doc.ID, digest)
-}
-
-// visionModelSpec resolves the model for image description: the default-model
-// chain (the built-in presets are vision-capable), overridable via a per-role
-// "vision" entry.
-func (e *Engine) visionModelSpec() string {
-	return e.resolveModelSpec("vision")
 }
 
 // wireDocConsumesIfAny records run --consumes--> context_doc edges for any run

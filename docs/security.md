@@ -36,11 +36,13 @@ untrusted input:
 - **Text formats** (`.md/.txt/.csv/.pdf/.docx/.xlsx`) are credential-swept (hard-reject on match)
   and redacted at ingest; the redacted text is stored content-addressed and later injected under
   the `context_docs` selector at `external_untrusted` trust (data-only framed, never instructions).
-- **Image formats** (`.jpg/.png/.gif/.webp`) are binary and cannot be text-swept: they are stored
-  redaction-free and egressed to a vision-capable model for a one-time description. The vision
-  *description* (text) is redacted before storage, and only that description — never the raw image —
-  enters the agents' context. Uploading an image that itself contains a credential (e.g. a
-  screenshot of an API key) egresses that content to the vision provider unredacted; this is the
+- **Image formats** (`.jpg/.png/.gif/.webp`) are classified by magic bytes only and stored
+  redaction-free, then egressed to a vision-capable model for a one-time description. The vision
+  *description* (text) is best-effort pattern/known-value redacted before storage, and only that
+  description — never the raw image — enters the agents' context. Two residual, accepted risks:
+  (1) uploading an image that itself contains a credential (e.g. a screenshot of an API key)
+  egresses that content to the vision provider unredacted; (2) the model may OCR such a credential
+  into the description, and a secret outside the redactor catalog would persist there. Both are the
   same accepted network-egress tradeoff as the coding-agent executor (see `docs/agents.md`).
 
 ## Trust levels (§38)

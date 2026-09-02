@@ -682,6 +682,9 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 const (
 	maxDocFileBytes = 2 << 20
 	maxDocBodyBytes = maxDocFileBytes + 64<<10
+	// maxContextDocsPerInitiative bounds the number of docs (and thus image
+	// description calls) a single initiative can accumulate.
+	maxContextDocsPerInitiative = 100
 )
 
 // ingestError is a user-facing (4xx) ingest rejection with an explicit status,
@@ -821,6 +824,9 @@ func (s *Server) readMultipartFile(w http.ResponseWriter, r *http.Request) ([]by
 // store and records a context_docs row with Format="image". The vision
 // description is produced asynchronously and stored separately.
 func (s *Server) ingestImageDoc(r *http.Request, pr *projectRuntime, ini domain.Initiative, data []byte, kind, title string) (*domain.ContextDoc, error) {
+	if err := s.checkDocCap(r, pr, ini); err != nil {
+		return nil, err
+	}
 	kind = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(kind)), 64)
 	if kind == "" {
 		kind = "other"
@@ -850,6 +856,9 @@ func (s *Server) ingestImageDoc(r *http.Request, pr *projectRuntime, ini domain.
 // redact (kind/title/body) → content-addressed blob → row. It returns an
 // ingestError for user rejections and a plain error for internal failures.
 func (s *Server) ingestDoc(r *http.Request, pr *projectRuntime, ini domain.Initiative, content, kind, title string) (*domain.ContextDoc, error) {
+	if err := s.checkDocCap(r, pr, ini); err != nil {
+		return nil, err
+	}
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil, ingestError{http.StatusBadRequest, "content is required"}
@@ -884,6 +893,19 @@ func (s *Server) ingestDoc(r *http.Request, pr *projectRuntime, ini domain.Initi
 		return nil, err
 	}
 	return doc, nil
+}
+
+// checkDocCap rejects an ingest when the initiative already holds the maximum
+// number of context docs (bounds image-description work too).
+func (s *Server) checkDocCap(r *http.Request, pr *projectRuntime, ini domain.Initiative) error {
+	docs, err := pr.db.ListContextDocs(r.Context(), ini.ID)
+	if err != nil {
+		return err
+	}
+	if len(docs) >= maxContextDocsPerInitiative {
+		return ingestError{http.StatusBadRequest, "too many context docs"}
+	}
+	return nil
 }
 
 // handleListDocs lists an initiative's ingested context docs.
