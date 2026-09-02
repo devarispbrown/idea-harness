@@ -12,6 +12,32 @@ export interface PhaseSource {
   verifiedRequirements: number;
 }
 
+// InitiativeRollup is the cross-initiative summary served by GET /attention:
+// phase-derivation inputs plus open decision/question/finding counts.
+export interface InitiativeRollup {
+  id: string;
+  title: string;
+  status: string;
+  artifacts: { kind: string; version: number }[];
+  task_statuses: string[];
+  change_set_statuses: string[];
+  open_decisions: number;
+  open_questions: number;
+  open_findings: number;
+  verified_requirements: number;
+}
+
+// rollupPhaseSource maps an InitiativeRollup to the shape derivePhases expects.
+export function rollupPhaseSource(r: InitiativeRollup): PhaseSource {
+  return {
+    status: r.status,
+    artifacts: r.artifacts,
+    tasks: r.task_statuses.map((status) => ({ status })),
+    changeSets: r.change_set_statuses.map((status) => ({ status })),
+    verifiedRequirements: r.verified_requirements,
+  };
+}
+
 export interface PhaseState {
   phase: PhaseName;
   label: string;

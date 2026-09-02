@@ -196,6 +196,23 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, changed)
 }
 
+// handleAttention returns a cross-initiative rollup (phase-derivation inputs
+// plus open decision/question/finding counts) for the product home and the
+// sidebar inbox in one call, instead of one round trip per initiative per entity.
+func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	rollups, err := pr.db.ListInitiativeRollups(r.Context())
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rollups})
+}
+
 // handleMarkSeen writes the project's "ui" read cursor to the sequence the
 // client actually rendered (echoed from /changed's `through`), so What Changed
 // clears exactly what was shown and never events that arrived mid-read.
