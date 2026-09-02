@@ -52,7 +52,11 @@ export default function PlanPage({
     return () => clearInterval(id);
   }, [load]);
 
-  const plan = artifacts.find((a) => a.kind === "execution_plan");
+  const planVersions = artifacts.filter((a) => a.kind === "execution_plan");
+  const planVersion = planVersions.length ? Math.max(...planVersions.map((a) => a.version)) : 0;
+  const plan = planVersions.find((a) => a.version === planVersion);
+  const sortedPlan = [...planVersions].sort((a, b) => a.version - b.version);
+  const prevPlan = sortedPlan.length >= 2 ? sortedPlan[sortedPlan.length - 2] : undefined;
 
   const update = async (id: string, body: Record<string, string>) => {
     setError("");
@@ -122,6 +126,12 @@ export default function PlanPage({
           title: `${ARTIFACT_TITLES.execution_plan} · v${plan.version}`,
           meta: "",
           onRead: () => navigate(`#/i/${initiativeId}/doc/${plan.id}/${plan.version}`),
+          ...(prevPlan
+            ? {
+                onDiff: () => navigate(`#/i/${initiativeId}/diff/${prevPlan.id}/${plan.id}`),
+                diffLabel: `Diff v${prevPlan.version} → v${plan.version}`,
+              }
+            : {}),
         },
       ]
     : [];
