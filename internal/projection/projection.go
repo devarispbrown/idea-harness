@@ -77,8 +77,8 @@ type QuestionView struct {
 	Status   domain.QuestionStatus `json:"status"`
 }
 
-// NextMove is the Recommended Next Move projection.
-type NextMove struct {
+// Guidance is the Recommended Next Move projection.
+type Guidance struct {
 	Action   string   `json:"action"`
 	Why      string   `json:"why"`
 	Affected []string `json:"affected"`
@@ -263,9 +263,9 @@ func judgmentItems(u *Understanding) []string {
 	return out
 }
 
-// BuildNextMove computes the Recommended Next Move with deterministic
+// BuildGuidance computes the Recommended Next Move with deterministic
 // precedence: judgment items outrank stage advancement (§6, §9).
-func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove {
+func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance {
 	openQuestions := 0
 	for _, q := range understanding.Questions {
 		if q.Status == domain.QuestionOpen {
@@ -281,11 +281,11 @@ func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove 
 
 	switch ini.Status {
 	case domain.InitiativeNeedsHumanJudgment:
-		return NextMove{Action: "Resolve blocking review findings", Why: "Adversarial review did not converge; the PRD is paused for your judgment.", Affected: []string{"Product Definition", "Review"}}
+		return Guidance{Action: "Resolve blocking review findings", Why: "Adversarial review did not converge; the PRD is paused for your judgment.", Affected: []string{"Product Definition", "Review"}}
 	case domain.InitiativeApproved:
-		return NextMove{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
+		return Guidance{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
 	case domain.InitiativePlanApproved:
-		return NextMove{Action: "Execution plan approved", Why: "The reviewed plan is ready to build. Implementation and ChangeSets arrive in Milestone 3.", Affected: []string{"Execution Plan"}}
+		return Guidance{Action: "Execution plan approved", Why: "The reviewed plan is ready to build. Implementation and ChangeSets arrive in Milestone 3.", Affected: []string{"Execution Plan"}}
 	case domain.InitiativeFailed:
 		why := "Check the logs, fix the cause, then retry with `idea new`."
 		if reason := strings.TrimSpace(ini.FailureReason); reason != "" {
@@ -294,25 +294,25 @@ func BuildNextMove(ini domain.Initiative, understanding Understanding) NextMove 
 			}
 			why = reason
 		}
-		return NextMove{Action: "The workflow failed", Why: why, Affected: []string{"Workflow"}}
+		return Guidance{Action: "The workflow failed", Why: why, Affected: []string{"Workflow"}}
 	case domain.InitiativeComplete:
 		// Terminal state: the judgment-item rules below must not run. `idea
 		// status` printed "● complete" and then "→ Resolve open questions",
 		// which reads as unfinished work on an initiative that verified and
 		// ended. Items left open on a complete initiative are part of the
 		// record, not a next step, so they are described that way.
-		return NextMove{Action: "Nothing to do — this initiative is complete",
+		return Guidance{Action: "Nothing to do — this initiative is complete",
 			Why:      completeWhy(openDecisions, openQuestions),
 			Affected: []string{"Workflow"}}
 	}
 
 	if openDecisions > 0 {
-		return NextMove{Action: "Resolve open decisions", Why: fmt.Sprintf("%d decision(s) need your judgment before proceeding.", openDecisions), Affected: []string{"Product Definition"}}
+		return Guidance{Action: "Resolve open decisions", Why: fmt.Sprintf("%d decision(s) need your judgment before proceeding.", openDecisions), Affected: []string{"Product Definition"}}
 	}
 	if openQuestions > 0 {
-		return NextMove{Action: "Resolve open questions", Why: fmt.Sprintf("%d open question(s) reduce uncertainty about the product.", openQuestions), Affected: []string{"Product Definition"}}
+		return Guidance{Action: "Resolve open questions", Why: fmt.Sprintf("%d open question(s) reduce uncertainty about the product.", openQuestions), Affected: []string{"Product Definition"}}
 	}
-	return NextMove{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
+	return Guidance{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
 }
 
 // completeWhy explains a terminal initiative. Anything still open on it is

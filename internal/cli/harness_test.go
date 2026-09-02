@@ -132,7 +132,7 @@ func (f *fakeDaemon) seedInitiative() {
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/tasks", []map[string]any{
 		{"id": "task-1", "code": "TASK-1", "title": "Implement billing", "priority": "must"},
 	})
-	f.json("GET /api/v1/projects/{projectId}/change-sets", []map[string]any{
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets", []map[string]any{
 		{"id": "cs-1", "human_id": "CHG-1", "status": "review_required"},
 	})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/understanding", map[string]any{
@@ -140,7 +140,7 @@ func (f *fakeDaemon) seedInitiative() {
 		"decisions":    []map[string]any{},
 		"questions":    []map[string]any{},
 	})
-	f.json("GET /api/v1/projects/{projectId}/risk", map[string]any{
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/risk", map[string]any{
 		"level": "low", "signals": []string{},
 	})
 	f.verifyCoverage = map[string]any{
@@ -163,7 +163,7 @@ func (f *fakeDaemon) seedInitiative() {
 // seedTrace registers what why/impact/trace need: the object lookup that
 // resolves REQ-1, and the two edge queries.
 func (f *fakeDaemon) seedTrace() {
-	f.json("GET /api/v1/projects/{projectId}/requirements", []map[string]any{
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/requirements", []map[string]any{
 		{"id": "req-1", "code": "REQ-1", "kind": "requirement", "title": "Bill by usage"},
 	})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/why", []map[string]any{

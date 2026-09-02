@@ -42,8 +42,8 @@ func TestStateCommandsEmitJSON(t *testing.T) {
 			f := newFakeDaemon(t)
 			f.seedInitiative()
 			f.seedTrace()
-			f.json("GET /api/v1/projects/{projectId}/decisions", []map[string]any{})
-			f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/next-move", map[string]any{})
+			f.json("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/decisions", []map[string]any{})
+			f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/guidance", map[string]any{})
 
 			stdout, _, err := run(t, tc.args...)
 			if err != nil {
@@ -99,7 +99,7 @@ func TestFlagsAreNotTreatedAsInitiativeReferences(t *testing.T) {
 func TestTraceCommandsKeepTheirPositionals(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.seedInitiative()
-	f.json("GET /api/v1/projects/{projectId}/requirements", []map[string]any{
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/requirements", []map[string]any{
 		{"id": "req-1", "code": "REQ-1", "kind": "requirement", "title": "Bill by usage"},
 	})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/why", []map[string]any{

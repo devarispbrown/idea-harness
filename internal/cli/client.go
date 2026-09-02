@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,19 @@ func daemonAddr() string {
 		return v
 	}
 	return defaultAddr
+}
+
+// initiativeResource builds the URL of an initiative-scoped resource:
+//
+//	/api/v1/projects/{projectID}/initiatives/{initiativeID}/{resource}
+//
+// One builder rather than a template literal per call site, because the flat
+// `?initiative_id=` form this replaces was hand-rolled at every site and drifted
+// resource by resource. Both ids are path-escaped: in query position a stray
+// slash or `..` was inert, and in path position it is not.
+func initiativeResource(projectID, initiativeID, resource string) string {
+	return "/api/v1/projects/" + url.PathEscape(projectID) +
+		"/initiatives/" + url.PathEscape(initiativeID) + "/" + resource
 }
 
 // client talks to the daemon API.
