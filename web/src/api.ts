@@ -41,6 +41,18 @@ export const post = <T>(path: string, body: unknown) =>
 export const put = <T>(path: string, body: unknown) =>
   api<T>("PUT", path, body);
 
+// apiBlob fetches a binary/text response as a Blob (context-doc download).
+export async function apiBlob(path: string): Promise<Blob> {
+  const res = await fetch("/api/v1" + path, {
+    headers: { "X-Idea-Token": token },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `${res.status} ${res.statusText}`);
+  }
+  return res.blob();
+}
+
 // uploadDoc posts a multipart file upload (context-doc ingest). The daemon
 // sniffs the format and extracts text from .md/.txt/.pdf/.docx.
 export async function uploadDoc<T>(
