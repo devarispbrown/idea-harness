@@ -54,6 +54,12 @@ func TestApplyRejectsControlPlanePaths(t *testing.T) {
 		".idea-harness/harness.yaml",
 		".git/hooks/pre-commit",
 		"./.git/hooks/pre-commit",
+		// macOS and Windows filesystems are case-insensitive, so these name the
+		// same files as the entries above. An exact-match deny let them through
+		// and wrote into the protected directory anyway.
+		".IDEA-HARNESS/harness.yaml",
+		".Git/hooks/pre-commit",
+		".idea-harness/../.idea-harness/harness.yaml",
 	} {
 		root := t.TempDir()
 		content := []byte("owned")

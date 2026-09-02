@@ -63,8 +63,15 @@ var controlPlaneDirs = []string{".idea-harness", ".git"}
 
 // isControlPlane reports whether a slash-separated relative path lies inside a
 // control-plane directory.
+// The comparison is case-insensitive, and deliberately so on every platform.
+// macOS and Windows filesystems are case-insensitive by default, so
+// ".IDEA-HARNESS/harness.yaml" and ".idea-harness/harness.yaml" are the same
+// file there — an exact-match deny rejected the second and happily wrote the
+// first into the very directory it exists to protect. Denying both shapes
+// everywhere keeps the rule identical across platforms; nothing legitimate
+// needs a differently-cased ".git".
 func isControlPlane(rel string) bool {
-	rel = path.Clean(filepath.ToSlash(rel))
+	rel = strings.ToLower(path.Clean(filepath.ToSlash(rel)))
 	for _, dir := range controlPlaneDirs {
 		if rel == dir || strings.HasPrefix(rel, dir+"/") {
 			return true
