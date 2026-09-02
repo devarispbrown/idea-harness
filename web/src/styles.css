@@ -2046,8 +2046,18 @@ button.ghost.small {
 .verify-card.current .verify-criterion-mark { color: var(--text-faint); }
 .verify-card:not(.current) .verify-criterion-mark { color: #16a34a; }
 .verify-criterion-text { flex: 1; }
-.verify-pass { display: flex; gap: 8px; margin: 11px 0 0 23px; align-items: center; }
-.verify-pass .text-input { flex: 1; }
+.verify-pass { display: flex; gap: 8px; margin: 11px 0 0 23px; align-items: center; flex-wrap: wrap; }
+.verify-pass .text-input { flex: 1; min-width: 180px; }
+.verify-task {
+  background: none;
+  border: none;
+  padding: 5px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.verify-task:hover { color: var(--accent); }
 
 /* ---------- doc reader / discussion / health ---------- */
 .doc-reader-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
