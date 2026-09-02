@@ -183,6 +183,37 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 	return op, nil
 }
 
+// ListOperationsByInitiative returns an initiative's operations, most recent
+// first, so the UI can find the running one and show elapsed time.
+func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID string) ([]domain.Operation, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT id, project_id, initiative_id, type, status, result_ref, created_at, finished_at
+		FROM operations WHERE initiative_id = ? ORDER BY created_at DESC`, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Operation, 0)
+	for rows.Next() {
+		var op domain.Operation
+		var iniID, resultRef sql.NullString
+		var finished sql.NullInt64
+		var created int64
+		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &created, &finished); err != nil {
+			return nil, err
+		}
+		op.InitiativeID = iniID.String
+		op.ResultRef = resultRef.String
+		op.CreatedAt = time.UnixMilli(created)
+		if finished.Valid {
+			t := time.UnixMilli(finished.Int64)
+			op.FinishedAt = &t
+		}
+		out = append(out, op)
+	}
+	return out, rows.Err()
+}
+
 // ListUnfinishedOperations returns operations not in a terminal state (for
 // daemon restart reconciliation, §16).
 func (db *DB) ListUnfinishedOperations(ctx context.Context) ([]domain.Operation, error) {

@@ -537,6 +537,22 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"operation_id": opID, "status": string(domain.OperationCancelled)})
 }
 
+// handleListOperations returns an initiative's operations (most recent first)
+// so the UI can surface the running one with elapsed time and a Stop action.
+func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	list, err := pr.db.ListOperationsByInitiative(r.Context(), ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 // ---------- decisions / questions ----------
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
