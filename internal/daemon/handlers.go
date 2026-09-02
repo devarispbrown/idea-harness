@@ -162,7 +162,7 @@ func (s *Server) handleUnderstanding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-func (s *Server) handleNextMove(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
@@ -173,7 +173,7 @@ func (s *Server) handleNextMove(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projection.BuildNextMove(ini, u))
+	writeJSON(w, http.StatusOK, projection.BuildGuidance(ini, u))
 }
 
 func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {

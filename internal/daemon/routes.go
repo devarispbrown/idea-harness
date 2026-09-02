@@ -13,7 +13,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives", s.handleListInitiatives)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}", s.handleGetInitiative)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/understanding", s.handleUnderstanding)
-	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/next-move", s.handleNextMove)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/guidance", s.handleGuidance)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/changed", s.handleChanged)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/resume", s.handleResume)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/approve", s.handleApprove)

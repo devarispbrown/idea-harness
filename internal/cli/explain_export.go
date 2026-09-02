@@ -126,7 +126,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) error {
 // project", which is why every caller here must resolve iniID first.
 func resolveArtifact(c *client, projectID, iniID, kind string) (*cliArtifact, error) {
 	var artifacts []cliArtifact
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/artifacts?initiative_id="+iniID, nil, &artifacts); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "artifacts"), nil, &artifacts); err != nil {
 		return nil, err
 	}
 	var target *cliArtifact

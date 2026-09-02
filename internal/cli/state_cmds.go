@@ -52,7 +52,7 @@ type cliQuestion struct {
 	Status   string `json:"status"`
 }
 
-type cliNextMove struct {
+type cliGuidance struct {
 	Action   string   `json:"action"`
 	Why      string   `json:"why"`
 	Affected []string `json:"affected"`
@@ -130,8 +130,8 @@ func cmdStatus(args []string, stdout, stderr io.Writer) error {
 				muted("decisions:"), len(u.Decisions),
 				muted("questions:"), len(u.Questions))
 		}
-		var nm cliNextMove
-		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/next-move", nil, &nm); err == nil && nm.Action != "" {
+		var nm cliGuidance
+		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/guidance", nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
 			if nm.Why != "" {
 				fmt.Fprintln(stdout, "    "+muted(nm.Why))
@@ -179,12 +179,23 @@ func cmdChanged(args []string, stdout, stderr io.Writer) error {
 
 // cmdDecisions lists decisions.
 func cmdDecisions(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
+	// Resolved here rather than left to the daemon: the flat route's
+	// server-side fallback is going away, and "the initiative you are working
+	// on" is a CLI notion, not something the API should guess at.
+	iniID, err := resolveInitiative(c, projectID, positional)
+	if err != nil {
+		return err
+	}
 	var decisions []cliDecision
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/decisions", nil, &decisions); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "decisions"), nil, &decisions); err != nil {
 		return err
 	}
 	if wantJSON(args) {
@@ -218,12 +229,20 @@ func cmdDecisions(args []string, stdout, stderr io.Writer) error {
 
 // cmdReviews lists review findings.
 func cmdReviews(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
+	iniID, err := resolveInitiative(c, projectID, positional)
+	if err != nil {
+		return err
+	}
 	var findings []cliFinding
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/findings", nil, &findings); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "findings"), nil, &findings); err != nil {
 		return err
 	}
 	if wantJSON(args) {

@@ -23,8 +23,8 @@ func seedTwoInitiativesWithArtifacts(f *fakeDaemon) {
 		"ini-1": {{ID: "art-old-prd", Kind: "prd", Version: 1}, {ID: "art-old-plan", Kind: "execution_plan", Version: 1}},
 		"ini-2": {{ID: "art-new-prd", Kind: "prd", Version: 1}, {ID: "art-new-plan", Kind: "execution_plan", Version: 1}},
 	}
-	f.mux.HandleFunc("GET /api/v1/projects/{projectId}/artifacts", func(w http.ResponseWriter, r *http.Request) {
-		iniID := r.URL.Query().Get("initiative_id")
+	f.mux.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		iniID := r.PathValue("initiativeId")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(artifactsByIni[iniID])
 	})
@@ -65,7 +65,7 @@ func TestExportScopesArtifactToResolvedInitiative(t *testing.T) {
 		if strings.TrimSpace(stdout) != "NEW PRD content" {
 			t.Fatalf("idea export prd = %q, want the ini-2 (newest) artifact", stdout)
 		}
-		if !f.asked("initiative_id=ini-2") {
+		if !f.asked("/initiatives/ini-2/artifacts") {
 			t.Fatalf("idea export prd did not scope the artifacts request to ini-2: %v", f.requests)
 		}
 	})
@@ -81,10 +81,10 @@ func TestExportScopesArtifactToResolvedInitiative(t *testing.T) {
 		if strings.TrimSpace(stdout) != "OLD PRD content" {
 			t.Fatalf("idea export prd ini-1 = %q, want the ini-1 artifact", stdout)
 		}
-		if !f.asked("initiative_id=ini-1") {
+		if !f.asked("/initiatives/ini-1/artifacts") {
 			t.Fatalf("idea export prd ini-1 did not scope the artifacts request to ini-1: %v", f.requests)
 		}
-		if f.asked("initiative_id=ini-2") {
+		if f.asked("/initiatives/ini-2/artifacts") {
 			t.Fatalf("idea export prd ini-1 also asked about ini-2: %v", f.requests)
 		}
 	})
@@ -105,7 +105,7 @@ func TestPlanScopesArtifactToResolvedInitiative(t *testing.T) {
 	if strings.TrimSpace(stdout) != "OLD PLAN content" {
 		t.Fatalf("idea plan ini-1 = %q, want the ini-1 artifact", stdout)
 	}
-	if !f.asked("initiative_id=ini-1") {
+	if !f.asked("/initiatives/ini-1/artifacts") {
 		t.Fatalf("idea plan ini-1 did not scope the artifacts request to ini-1: %v", f.requests)
 	}
 }
@@ -123,7 +123,7 @@ func TestPRDScopesArtifactToResolvedInitiative(t *testing.T) {
 	if !strings.Contains(stdout, "OLD PRD content") {
 		t.Fatalf("idea prd prd ini-1 = %q, want the ini-1 artifact", stdout)
 	}
-	if !f.asked("initiative_id=ini-1") {
+	if !f.asked("/initiatives/ini-1/artifacts") {
 		t.Fatalf("idea prd prd ini-1 did not scope the artifacts request to ini-1: %v", f.requests)
 	}
 }

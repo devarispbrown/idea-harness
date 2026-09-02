@@ -130,7 +130,7 @@ func cmdChanges(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var changes []cliChangeSet
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/change-sets?initiative_id="+iniID, nil, &changes); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "change-sets"), nil, &changes); err != nil {
 		return err
 	}
 	if flags.has("--json") {
@@ -267,7 +267,7 @@ func cmdRisk(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var profile cliRiskProfile
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/risk?initiative_id="+iniID, nil, &profile); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "risk"), nil, &profile); err != nil {
 		return err
 	}
 	if flags.has("--json") {

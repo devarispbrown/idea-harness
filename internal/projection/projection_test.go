@@ -51,22 +51,22 @@ func TestBuildUnderstandingSummaryAndJudgment(t *testing.T) {
 	}
 }
 
-func TestBuildNextMovePrecedence(t *testing.T) {
+func TestBuildGuidancePrecedence(t *testing.T) {
 	// Judgment outranks stage advancement.
 	ini := domain.Initiative{Status: domain.InitiativeApproved}
 	u := Understanding{}
-	if nm := BuildNextMove(ini, u); !strings.Contains(nm.Action, "design & execution plan") {
+	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "design & execution plan") {
 		t.Fatalf("approved should guide toward M2, got %q", nm.Action)
 	}
 
 	ini = domain.Initiative{Status: domain.InitiativePlanApproved}
-	if nm := BuildNextMove(ini, u); !strings.Contains(nm.Action, "Execution plan approved") {
+	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "Execution plan approved") {
 		t.Fatalf("plan_approved should report a done plan, got %q", nm.Action)
 	}
 
 	ini = domain.Initiative{Status: domain.InitiativeRunning}
 	u = Understanding{Decisions: []DecisionView{{Status: domain.DecisionOpen}}}
-	if nm := BuildNextMove(ini, u); !strings.Contains(nm.Action, "decision") {
+	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "decision") {
 		t.Fatalf("open decision should outrank, got %q", nm.Action)
 	}
 }

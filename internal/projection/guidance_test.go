@@ -7,12 +7,12 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
-// TestBuildNextMoveTerminalState covers the nudge on a finished initiative:
+// TestBuildGuidanceTerminalState covers the nudge on a finished initiative:
 // `idea status` printed "● complete" and then "→ Resolve open questions", which
 // reads as work still owed on an initiative that verified and ended. A terminal
 // state never suggests a next step; anything left open on it is described as
 // part of the record instead.
-func TestBuildNextMoveTerminalState(t *testing.T) {
+func TestBuildGuidanceTerminalState(t *testing.T) {
 	open := func(decisions, questions int) Understanding {
 		var u Understanding
 		for i := 0; i < decisions; i++ {
@@ -69,7 +69,7 @@ func TestBuildNextMoveTerminalState(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			nm := BuildNextMove(domain.Initiative{Status: c.status}, c.understanding)
+			nm := BuildGuidance(domain.Initiative{Status: c.status}, c.understanding)
 			if nm.Action != c.wantAction {
 				t.Fatalf("action: got %q, want %q", nm.Action, c.wantAction)
 			}

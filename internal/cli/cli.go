@@ -513,13 +513,23 @@ func cmdDoctor(stdout io.Writer) error {
 	if daemonUp {
 		if c, err := newClient(); err == nil {
 			if projectID, perr := c.projectIDForCwd(); perr == nil {
-				var findings []cliFinding
-				if derr := c.do("GET", "/api/v1/projects/"+projectID+"/doctor", nil, &findings); derr != nil {
-					graphOK = false
-					fmt.Fprintf(stdout, "%s %v\n", errText("✗ graph audit:"), derr)
-				} else if len(findings) > 0 {
-					graphOK = false
-					printDoctorFindings(stdout, findings)
+				// The graph audit is one of doctor's checks, not its purpose:
+				// in a project with no initiative there is no graph to audit,
+				// and doctor still has to report daemon and config health. So a
+				// missing initiative skips the check rather than failing the
+				// command -- this is the health command someone runs when
+				// things are already wrong.
+				if iniID, ierr := resolveInitiative(c, projectID, nil); ierr != nil {
+					fmt.Fprintln(stdout, muted("• graph audit: no initiative yet — nothing to audit"))
+				} else {
+					var findings []cliFinding
+					if derr := c.do("GET", initiativeResource(projectID, iniID, "doctor"), nil, &findings); derr != nil {
+						graphOK = false
+						fmt.Fprintf(stdout, "%s %v\n", errText("✗ graph audit:"), derr)
+					} else if len(findings) > 0 {
+						graphOK = false
+						printDoctorFindings(stdout, findings)
+					}
 				}
 			}
 		}

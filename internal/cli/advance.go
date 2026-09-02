@@ -111,13 +111,13 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 	endpoint := ""
 	switch typ {
 	case "requirement":
-		endpoint = "/api/v1/projects/" + projectID + "/requirements?initiative_id=" + iniID
+		endpoint = initiativeResource(projectID, iniID, "requirements")
 	case "decision":
-		endpoint = "/api/v1/projects/" + projectID + "/decisions?initiative_id=" + iniID
+		endpoint = initiativeResource(projectID, iniID, "decisions")
 	case "task":
 		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks"
 	case "artifact":
-		endpoint = "/api/v1/projects/" + projectID + "/artifacts?initiative_id=" + iniID
+		endpoint = initiativeResource(projectID, iniID, "artifacts")
 	case "context_doc":
 		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/docs"
 	default:
