@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,13 +81,39 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
+		Docs        []struct {
+			Content string `json:"content"`
+			Kind    string `json:"kind"`
+			Title   string `json:"title"`
+		} `json:"docs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Title == "" {
+	// Bound the create-with-docs body (title + description + up to N docs, each
+	// ≤ maxDocFileBytes) so a non-CLI client cannot force unbounded decode.
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes*maxContextDocsPerInitiative)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	iniID, opID, err := s.rt.StartInitiative(r.Context(), projectID, body.Title, body.Description)
+	var docs []InitiativeDocInput
+	for _, d := range body.Docs {
+		docs = append(docs, InitiativeDocInput{Content: d.Content, Kind: d.Kind, Title: d.Title})
+	}
+	iniID, opID, err := s.rt.StartInitiativeWithDocs(r.Context(), projectID, body.Title, body.Description, docs)
 	if err != nil {
+		var ie ingestError
+		if errors.As(err, &ie) {
+			writeError(w, ie.status, ie.msg)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -852,16 +879,28 @@ func (s *Server) ingestImageDoc(r *http.Request, pr *projectRuntime, ini domain.
 	return doc, nil
 }
 
-// ingestDoc applies the shared ingest pipeline: trim → credential sweep →
-// redact (kind/title/body) → content-addressed blob → row. It returns an
-// ingestError for user rejections and a plain error for internal failures.
+// ingestDoc applies the shared ingest pipeline (cap check + ingestTextDoc) for
+// the /docs handler. It returns an ingestError for user rejections and a plain
+// error for internal failures.
 func (s *Server) ingestDoc(r *http.Request, pr *projectRuntime, ini domain.Initiative, content, kind, title string) (*domain.ContextDoc, error) {
 	if err := s.checkDocCap(r, pr, ini); err != nil {
 		return nil, err
 	}
+	return pr.ingestTextDoc(r.Context(), ini.ID, content, kind, title)
+}
+
+// ingestTextDoc runs the shared text-doc pipeline: trim → credential sweep →
+// redact (kind/title/body) → content-addressed blob → row. It is shared by the
+// /docs handler and the create-with-docs (idea new --doc) path.
+func (pr *projectRuntime) ingestTextDoc(ctx context.Context, iniID, content, kind, title string) (*domain.ContextDoc, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil, ingestError{http.StatusBadRequest, "content is required"}
+	}
+	// Enforce the per-doc size cap server-side so no caller (CLI or otherwise)
+	// can persist an oversized doc regardless of transport framing.
+	if len(content) > maxDocFileBytes {
+		return nil, ingestError{http.StatusRequestEntityTooLarge, "document too large"}
 	}
 	// Hard-reject on credentials with a non-echoing message (§45).
 	if pr.redactor.ContainsCredential(content) {
@@ -883,13 +922,13 @@ func (s *Server) ingestDoc(r *http.Request, pr *projectRuntime, ini domain.Initi
 		return nil, err
 	}
 	doc := &domain.ContextDoc{
-		InitiativeID: ini.ID,
+		InitiativeID: iniID,
 		Kind:         kind,
 		Title:        title,
 		Digest:       digest,
 		Preview:      truncateRunes(redacted, 200),
 	}
-	if err := pr.db.CreateContextDoc(r.Context(), doc); err != nil {
+	if err := pr.db.CreateContextDoc(ctx, doc); err != nil {
 		return nil, err
 	}
 	return doc, nil
@@ -921,6 +960,46 @@ func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, docs)
+}
+
+// handleGetDoc downloads one context doc's stored content: image docs serve the
+// raw bytes from the redaction-free store; text docs serve the redacted text.
+func (s *Server) handleGetDoc(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	doc, err := pr.db.GetContextDoc(r.Context(), r.PathValue("docId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "doc not found")
+		return
+	}
+	if doc.InitiativeID != ini.ID {
+		writeError(w, http.StatusNotFound, "doc not found")
+		return
+	}
+
+	var content []byte
+	contentType := "text/plain; charset=utf-8"
+	if doc.Format == "image" {
+		content, err = pr.rawBlobs.Get(doc.Digest)
+		contentType = docparse.ImageMediaType(content)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+	} else {
+		content, err = pr.blobs.Get(doc.Digest)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "doc content missing")
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": doc.Title}))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 // truncateRunes truncates s to at most n runes.

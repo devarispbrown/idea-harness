@@ -14,6 +14,7 @@ import (
 
 	"github.com/idea-harness/idea-harness/internal/config"
 	"github.com/idea-harness/idea-harness/internal/daemon"
+	"github.com/idea-harness/idea-harness/internal/docparse"
 )
 
 // Run dispatches the idea CLI.
@@ -235,22 +236,82 @@ func cmdInit(stdout io.Writer) error {
 	return nil
 }
 
+// newDocInput is one context doc read from a --doc flag.
+type newDocInput struct {
+	Content string `json:"content"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title"`
+}
+
 func cmdNew(args []string, stdout, stderr io.Writer) error {
-	idea := strings.Join(args, " ")
+	// Parse --doc flags (before or after the idea); remaining args are the idea.
+	var ideaParts []string
+	var docPaths []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--doc":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--doc requires a path")
+			}
+			i++
+			docPaths = append(docPaths, args[i])
+		case strings.HasPrefix(a, "--doc="):
+			docPaths = append(docPaths, strings.TrimPrefix(a, "--doc="))
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown flag %q", a)
+		default:
+			ideaParts = append(ideaParts, a)
+		}
+	}
+	idea := strings.Join(ideaParts, " ")
 	if strings.TrimSpace(idea) == "" {
+		if len(docPaths) > 0 {
+			return fmt.Errorf("an idea is required with --doc (e.g. idea new \"<idea>\" --doc <path>)")
+		}
 		if !colorEnabled {
-			return fmt.Errorf("usage: idea new \"<idea>\"")
+			return fmt.Errorf("usage: idea new \"<idea>\" [--doc <path> …]")
 		}
 		return interactiveNew(stdout, stderr)
+	}
+
+	// Read each --doc file as text, bound and swept atomically BEFORE the M1 run.
+	docs := make([]newDocInput, 0, len(docPaths))
+	for _, path := range docPaths {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxDocUploadBytes+1))
+		f.Close()
+		if err != nil {
+			return err
+		}
+		if len(data) > maxDocUploadBytes {
+			return fmt.Errorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("document %q is empty", path)
+		}
+		if docparse.Sniff(path, data) != "text" {
+			return fmt.Errorf("--doc supports text files only (%s); use `idea docs add` for PDF/DOCX/images", path)
+		}
+		kind := docparse.InferKind(path)
+		title := filepath.Base(path)
+		docs = append(docs, newDocInput{Content: string(data), Kind: kind, Title: title})
 	}
 
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
+	body := struct {
+		Title       string        `json:"title"`
+		Description string        `json:"description"`
+		Docs        []newDocInput `json:"docs,omitempty"`
+	}{Title: idea, Description: idea, Docs: docs}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives",
-		map[string]string{"title": idea, "description": idea}, &out); err != nil {
+	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives", body, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ initiative started")+" "+code(out["initiative_id"]))
