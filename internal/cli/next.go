@@ -167,6 +167,9 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 	}
 	var pending []string
 	for _, cov := range out.Coverage {
+		if cov.Status == "waived" {
+			continue // waived is out of scope, not awaiting evidence
+		}
 		if cov.Pass < cov.Total || cov.NeedsManual > 0 {
 			pending = append(pending, cov.Code)
 		}

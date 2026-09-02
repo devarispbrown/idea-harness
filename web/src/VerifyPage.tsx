@@ -37,12 +37,14 @@ export default function VerifyPage({
     return () => clearInterval(id);
   }, [load]);
 
-  const pass = async (code: string) => {
+  const record = async (code: string, disposition: "pass" | "fail" | "waived") => {
     setError("");
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/verify`, {
         requirement: code,
-        pass: true,
+        pass: disposition === "pass",
+        fail: disposition === "fail",
+        waived: disposition === "waived",
         note: note[code]?.trim() || undefined,
       });
       setNote((p) => ({ ...p, [code]: "" }));
@@ -53,7 +55,11 @@ export default function VerifyPage({
   };
 
   const activeReqs = reqs.filter((r) => r.status !== "removed");
-  const totalCriteria = activeReqs.reduce((n, r) => n + r.acceptance_criteria.length, 0);
+  // Waived requirements are out of scope: they do not count toward the
+  // verifiable criteria or the "requirements verified" denominator.
+  const verifiableReqs = activeReqs.filter((r) => r.status !== "waived");
+  const waivedReqs = activeReqs.filter((r) => r.status === "waived").length;
+  const totalCriteria = verifiableReqs.reduce((n, r) => n + r.acceptance_criteria.length, 0);
   const verifiedReqs = activeReqs.filter((r) => r.status === "verified").length;
   const passedCriteria = activeReqs
     .filter((r) => r.status === "verified")
@@ -69,20 +75,25 @@ export default function VerifyPage({
           <span className="verify-fill" style={{ width: `${pct}%` }} />
         </div>
         <span className="verify-meta">
-          {passedCriteria} of {totalCriteria} criteria · {verifiedReqs} of {activeReqs.length} requirements verified
+          {passedCriteria} of {totalCriteria} criteria · {verifiedReqs} of {verifiableReqs.length} requirements verified
+          {waivedReqs > 0 ? ` · ${waivedReqs} waived` : ""}
         </span>
       </div>
 
       <div className="verify-list">
         {activeReqs.map((r) => {
           const verified = r.status === "verified";
+          const failed = r.status === "failed";
+          const waived = r.status === "waived";
           return (
-            <section key={r.id} className={`verify-card ${verified ? "" : "current"}`}>
+            <section key={r.id} className={`verify-card ${verified || waived ? "" : "current"}`}>
               <div className="verify-head">
-                <span className="verify-mark">{verified ? "✓" : "▶"}</span>
+                <span className="verify-mark">{verified ? "✓" : waived ? "—" : "▶"}</span>
                 <span className="verify-code">{r.code}</span>
                 <span className="verify-statement">{r.statement}</span>
                 {verified && <span className="phase-pill pill-verified">verified</span>}
+                {failed && <span className="phase-pill pill-failing">failed</span>}
+                {waived && <span className="phase-pill pill-inactive">waived</span>}
                 <span className="verify-count">
                   {verified ? r.acceptance_criteria.length : 0}/{r.acceptance_criteria.length}
                 </span>
@@ -97,7 +108,7 @@ export default function VerifyPage({
                   </div>
                 ))}
               </div>
-              {!verified && r.acceptance_criteria.length > 0 && (
+              {!verified && !waived && r.acceptance_criteria.length > 0 && (
                 <div className="verify-pass">
                   <input
                     className="text-input"
@@ -105,7 +116,16 @@ export default function VerifyPage({
                     value={note[r.code] ?? ""}
                     onChange={(e) => setNote((p) => ({ ...p, [r.code]: e.target.value }))}
                   />
-                  <button className="cs-green" onClick={() => pass(r.code)}>Pass</button>
+                  <button className="cs-green" onClick={() => record(r.code, "pass")}>Pass</button>
+                  {!failed && (
+                    <button className="cs-danger" onClick={() => record(r.code, "fail")}>Fail</button>
+                  )}
+                  <button className="cs-secondary" onClick={() => record(r.code, "waived")}>Waive</button>
+                </div>
+              )}
+              {waived && (
+                <div className="verify-pass">
+                  <button className="cs-secondary" onClick={() => record(r.code, "pass")}>Un-waive (pass)</button>
                 </div>
               )}
             </section>

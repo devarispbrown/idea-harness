@@ -1539,8 +1539,10 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleVerify runs the verification gate and, when a requirement + pass is
-// supplied, records a human pass first (§70, review B4/B10).
+// handleVerify runs the verification gate and, when a requirement + disposition
+// is supplied, records a human judgment (pass/fail/waived) first (§70, review
+// B4/B10). `pass` is retained for backward compatibility; `fail` and `waived`
+// are the new dispositions.
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
@@ -1552,14 +1554,25 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Requirement string `json:"requirement"`
 		Pass        bool   `json:"pass"`
+		Fail        bool   `json:"fail"`
+		Waived      bool   `json:"waived"`
 		Note        string `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if body.Requirement != "" && body.Pass {
-		if err := pr.engine.RecordHumanPass(r.Context(), initiativeID, body.Requirement, body.Note, ""); err != nil {
+	var disposition domain.VerificationStatus
+	switch {
+	case body.Fail:
+		disposition = domain.VerificationFail
+	case body.Waived:
+		disposition = domain.VerificationWaived
+	case body.Pass:
+		disposition = domain.VerificationPass
+	}
+	if body.Requirement != "" && disposition != "" {
+		if err := pr.engine.RecordHumanEvidence(r.Context(), initiativeID, body.Requirement, disposition, body.Note, ""); err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
