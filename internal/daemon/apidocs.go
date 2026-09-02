@@ -3,7 +3,9 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 
@@ -105,16 +107,15 @@ func handleOpenAPIJSON(w http.ResponseWriter, _ *http.Request) {
 func handleAPIReference(w http.ResponseWriter, _ *http.Request) {
 	page, ok := web.APIReferencePage()
 	if !ok {
-		// A checkout that has never run `make build` has only the committed
-		// index.html placeholder in internal/web/dist, so there is no Scalar
-		// bundle to serve. Say so and point at the spec, which is embedded and
-		// therefore always available, rather than returning a bare 404 that
-		// looks like a missing route.
+		// 404, deliberately: this document is genuinely not in this binary, and
+		// answering 200 for a page that does not exist is the worse lie. The
+		// body explains which of the two ways that happened and points at the
+		// spec, which is embedded and therefore always available.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Security-Policy", apiReferenceCSP)
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(apiReferenceUnbuiltPage))
+		_, _ = w.Write(apiReferenceUnbuiltPage(web.State(), os.Getenv(apiReferenceURLEnv)))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -127,19 +128,57 @@ func handleAPIReference(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(page)
 }
 
-const apiReferenceUnbuiltPage = `<!doctype html>
+// apiReferenceURLEnv names a reference hosted somewhere else — set it on a
+// binary built without the bundled renderer, and the fallback page links there.
+// An environment variable rather than project config, like IDEA_HARNESS_STATE
+// and IDEA_HARNESS_ADDR: which documentation this daemon points at is a property
+// of the install, not of the product being built.
+const apiReferenceURLEnv = "IDEA_HARNESS_API_REFERENCE_URL"
+
+// apiReferenceUnbuiltPage explains an absent reference in terms of how this
+// binary was actually built.
+//
+// The distinction is the point. A checkout that never ran `make build` should
+// run it; a binary built with APIDOCS=0 already did, and telling its operator
+// to "run make build" would be false — which is exactly what this page used to
+// say, because it had only a boolean to go on.
+func apiReferenceUnbuiltPage(state web.BuildState, hostedURL string) []byte {
+	var explanation, remedy string
+	switch state {
+	case web.BuildWithoutReference:
+		explanation = "This binary was built without the bundled API reference " +
+			"(<code>APIDOCS=0</code>), which keeps about 3.7 MiB out of it."
+		remedy = "Build with <code>make build</code> to embed the reference, or host it " +
+			"separately — see <code>make api-docs-dist</code>."
+	default:
+		explanation = "The web UI has not been built in this checkout, so neither the UI " +
+			"nor the API reference is embedded."
+		remedy = "Run <code>make build</code> to build and embed them."
+	}
+
+	var hosted string
+	if hostedURL != "" {
+		// Escaped, not interpolated: this is an environment value landing in
+		// an HTML attribute.
+		hosted = "<p>This install points at a hosted reference: <a href=\"" +
+			html.EscapeString(hostedURL) + "\">" + html.EscapeString(hostedURL) + "</a></p>"
+	}
+
+	return []byte(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>API reference not built</title></head>
 <body>
 <h1>API reference not built</h1>
-<p>This binary was built without the web UI, so the bundled API reference page is
-not embedded in it. The API description itself is always embedded:</p>
+<p>` + explanation + `</p>
+` + hosted + `
+<p>The API description itself is always embedded:</p>
 <ul>
   <li><a href="/openapi.yaml">/openapi.yaml</a></li>
   <li><a href="/openapi.json">/openapi.json</a></li>
 </ul>
-<p>Run <code>make build</code> to produce a binary that also serves this page.</p>
+<p>` + remedy + `</p>
 </body></html>
-`
+`)
+}
 
 // openAPIJSON converts the embedded YAML spec to JSON once and caches the
 // result. OpenAPI is defined over the JSON data model, so this is a
