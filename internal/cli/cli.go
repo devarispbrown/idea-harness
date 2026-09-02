@@ -94,6 +94,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return cmdCancel(rest, stdout, stderr)
 	case "doctor":
 		return cmdDoctor(stdout)
+	case "docs":
+		return cmdDocs(rest, stdout, stderr)
 	case "logs":
 		return cmdLogs(rest, stdout)
 	case "help", "--help", "-h":
@@ -138,6 +140,8 @@ func usage(w io.Writer) {
 	fmt.Fprintf(w, "  %-20s %s\n", accent("cancel <op-id>"), "interrupt a running operation")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("config"), "show or validate .idea-harness config")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("doctor"), "check daemon/config/state health")
+	fmt.Fprintf(w, "  %-20s %s\n", accent("docs"), "list uploaded context docs")
+	fmt.Fprintf(w, "  %-20s %s\n", accent("docs add <path>"), "upload a context doc (--kind, --title)")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("logs [-f] [n]"), "show (or follow) the daemon log")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("daemon"), "run the daemon in the foreground")
 	fmt.Fprintf(w, "  %-20s %s\n", accent("daemon status|stop"), "manage the managed daemon")

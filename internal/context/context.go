@@ -15,18 +15,19 @@ import (
 // priorityFor maps a context selector to its priority (§12). Lower = higher
 // authority. Unknown selectors default to the lowest priority.
 var priorityFor = map[string]int{
-	"immutable_policy":  1,
-	"project_policy":    2,
-	"role_contract":     3,
+	"immutable_policy":   1,
+	"project_policy":     2,
+	"role_contract":      3,
 	"stage_instructions": 4,
-	"task":              5,
-	"requirements":      6,
-	"decisions":         7,
-	"artifact":          8,
-	"source_files":      9,
-	"standards":         10,
-	"history":           11,
-	"untrusted":         12,
+	"task":               5,
+	"requirements":       6,
+	"decisions":          7,
+	"artifact":           8,
+	"source_files":       9,
+	"standards":          10,
+	"history":            11,
+	"untrusted":          12,
+	"context_docs":       12,
 }
 
 // Input is one context source supplied to the compiler.

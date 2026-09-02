@@ -91,6 +91,9 @@ func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
 	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
+	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageArchitecture, RoleArchitect, "architecture", schema.Architecture, inputs, "Produce the architecture.")
 	if err != nil {
 		return err
@@ -116,6 +119,9 @@ func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) erro
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
 	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
+	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageProductDesign, RoleProductDesigner, "product_design", schema.ProductDesign, inputs, "Produce the product design.")
 	if err != nil {
 		return err
@@ -136,6 +142,9 @@ func (e *Engine) runVerificationDesign(ctx context.Context, initiativeID string)
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Produce a verification plan: for every requirement, name a concrete verification hook (test type, deterministic check, or manual gate) and the evidence it will produce. Prefer deterministic evidence over LLM judgment."},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
+	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageVerificationDesign, RoleVerificationEngineer, "verification_plan", schema.VerificationPlan, inputs, "Produce the verification plan.")
 	if err != nil {
@@ -159,6 +168,9 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
+	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlan, RoleEngineeringLead, "execution_plan", schema.ExecutionPlan, inputs, "Produce the execution plan.")
 	if err != nil {
