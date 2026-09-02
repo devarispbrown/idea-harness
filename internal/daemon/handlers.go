@@ -271,7 +271,7 @@ func (s *Server) handleApprovePlan(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	opID, err := s.rt.ApprovePlanInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -283,7 +283,7 @@ func (s *Server) handleRevisePlan(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	opID, err := s.rt.RevisePlanInitiative(r.Context(), projectID, initiativeID)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -382,7 +382,7 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	for _, name := range sortedProviderNames(body.Providers) {
 		pc := body.Providers[name]
 		if err := config.ValidateProvider(name, pc); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 		cfg.Providers[name] = pc
@@ -421,7 +421,7 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 
 	// Reject inline secrets (§47) and write harness.yaml.
 	if err := config.WriteHarness(filepath.Join(pr.rootPath, config.Dir), cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// Reload so the new registry/default model takes effect.
@@ -481,7 +481,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	opID := r.PathValue("id")
 	if err := s.rt.CancelOperation(r.Context(), opID); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"operation_id": opID, "status": string(domain.OperationCancelled)})
@@ -517,7 +517,7 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.ResolveDecision(r.Context(), r.PathValue("id"), body.Resolution, store.HumanActor); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "decided"})
@@ -531,7 +531,7 @@ func (s *Server) handleReopenDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.ReopenDecision(r.Context(), r.PathValue("id"), store.HumanActor); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "open"})
@@ -607,7 +607,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.AnswerQuestion(r.Context(), r.PathValue("id"), digest, store.HumanActor); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
@@ -704,7 +704,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	var body struct {
@@ -743,7 +743,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 	// Resolve depends_on titles to existing task ids.
 	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, body.DependsOn)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -777,7 +777,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	var body struct {
@@ -827,7 +827,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	// Refuse if any other task depends on this one.
@@ -861,7 +861,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	if err := pr.db.SetTaskStatus(r.Context(), task.ID, domain.TaskCancelled); err != nil {
@@ -878,7 +878,7 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	var body struct {
@@ -889,7 +889,7 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.ReorderTasks(r.Context(), ini.ID, body.TaskIDs); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	list, _ := pr.db.ListTasks(r.Context(), ini.ID)
@@ -1416,7 +1416,7 @@ func (s *Server) handleFindingDisposition(w http.ResponseWriter, r *http.Request
 	}
 	disp := domain.Disposition(body.Disposition)
 	if err := pr.db.SetFindingDisposition(r.Context(), r.PathValue("id"), disp, store.HumanActor); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "dispositioned"})
@@ -1441,7 +1441,7 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.SetFindingNote(r.Context(), r.PathValue("id"), pr.redactor.RedactString(strings.TrimSpace(body.Note)), store.HumanActor); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "noted"})
@@ -1506,12 +1506,12 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Requirement != "" && body.Pass {
 		if err := pr.engine.RecordHumanPass(r.Context(), initiativeID, body.Requirement, body.Note, ""); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 	}
 	if err := pr.engine.VerifyInitiative(r.Context(), initiativeID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), initiativeID)
@@ -1641,14 +1641,14 @@ func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
 	switch body.Resolution {
 	case "reject":
 		if err := pr.engine.RejectConflicted(r.Context(), cs.InitiativeID, cs.ID); err != nil {
-			writeError(w, http.StatusConflict, err.Error())
+			s.writeErr(w, http.StatusConflict, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.ChangeSetRejected)})
 	case "retry":
 		opID, err := s.rt.RetryConflictedApply(r.Context(), projectID, cs.InitiativeID, cs.ID)
 		if err != nil {
-			writeError(w, http.StatusConflict, err.Error())
+			s.writeErr(w, http.StatusConflict, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
@@ -1686,7 +1686,7 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.engine.ReviewChangeSet(r.Context(), cs.InitiativeID, cs.ID, body.Verdict); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
@@ -1857,7 +1857,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		cfg.Harness.Executor.Model = *body.Model // empty clears
 	}
 	if err := config.WriteHarness(filepath.Join(pr.rootPath, config.Dir), cfg.Harness); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
