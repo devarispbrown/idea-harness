@@ -981,6 +981,43 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleGenerateVerificationTask creates a plan task whose purpose is verifying
+// a requirement (wired with a `verifies` edge), for a requirement that has no
+// human or automated evidence yet.
+func (s *Server) handleGenerateVerificationTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	req, err := pr.db.GetRequirementByRef(r.Context(), ini.ID, r.PathValue("reqId"))
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	task := &domain.Task{
+		InitiativeID: ini.ID,
+		Title:        "Verify " + req.Code,
+		Statement:    verificationStatement(req),
+		Priority:     req.Priority,
+	}
+	if err := pr.db.CreateVerificationTask(r.Context(), task, req.ID); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+// verificationStatement renders a requirement's acceptance criteria as a short
+// task statement for a generated verification task.
+func verificationStatement(r *domain.Requirement) string {
+	var b strings.Builder
+	for _, ac := range r.AcceptanceCriteria {
+		fmt.Fprintf(&b, "- %s %s (%s)\n", ac.Metric, ac.Target, ac.Condition)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // resolveTaskRefs resolves task references (title, code, or id) to task ids.
 func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
 	if len(refs) == 0 {

@@ -96,6 +96,19 @@ func scanGraphEdges(rows *sql.Rows) ([]domain.GraphEdge, error) {
 // (task → requirement) and `depends_on` (task → task) edges in the same
 // transaction.
 func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirementID string, dependsOn []string) error {
+	return db.createTask(ctx, t, domain.EdgeImplements, implementsRequirementID, dependsOn)
+}
+
+// CreateVerificationTask creates a plan task whose purpose is verifying a
+// requirement, wired with a `verifies` edge (task → requirement).
+func (db *DB) CreateVerificationTask(ctx context.Context, t *domain.Task, requirementID string) error {
+	return db.createTask(ctx, t, domain.EdgeVerifies, requirementID, nil)
+}
+
+// createTask inserts a task (assigning code + position) and, when edgeType is
+// non-empty and targetID is set, wires that edge from the task to the target
+// requirement.
+func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetID string, dependsOn []string) error {
 	if t.ID == "" {
 		t.ID = id.New()
 	}
@@ -132,8 +145,8 @@ func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirem
 			return err
 		}
 		var edges []EdgeToWrite
-		if implementsRequirementID != "" {
-			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeImplements, ToType: "requirement", ToID: implementsRequirementID})
+		if edgeType != "" && targetID != "" {
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
 		}
 		for _, dep := range dependsOn {
 			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
