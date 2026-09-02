@@ -3,8 +3,36 @@ package daemon
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+// waitForOperation blocks until an asynchronous operation reaches a terminal
+// state, so a test does not return while the workflow is still writing into the
+// state root that t.TempDir is about to remove.
+func waitForOperation(t *testing.T, ts *httptest.Server, token, opID string) {
+	t.Helper()
+	if opID == "" {
+		return
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		resp := doReq(t, http.MethodGet, ts.URL+"/api/v1/operations/"+opID, token, "", "")
+		var op struct {
+			Status string `json:"status"`
+		}
+		decode(t, resp, &op)
+		switch op.Status {
+		case "succeeded", "failed", "cancelled":
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation %s did not finish (last status %q)", opID, op.Status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // Ten endpoints resolve their initiative from ?initiative_id=, falling back to
 // one of the project's initiatives when it is omitted. That fallback used to be
@@ -31,12 +59,18 @@ func TestOmittedInitiativeIDResolvesToTheMostRecent(t *testing.T) {
 		resp := doReq(t, http.MethodPost, base+"/initiatives", token, "",
 			`{"title":"`+title+`","description":"x"}`)
 		var created struct {
-			ID string `json:"initiative_id"`
+			ID          string `json:"initiative_id"`
+			OperationID string `json:"operation_id"`
 		}
 		decode(t, resp, &created)
 		if created.ID == "" {
 			t.Fatalf("could not create %q", title)
 		}
+		// Creating an initiative starts the framing workflow, which keeps
+		// writing blobs under the state root. Without waiting, t.TempDir's
+		// cleanup races those writes and fails with "directory not empty" —
+		// which is how this surfaced, in the release build on Linux.
+		waitForOperation(t, ts, token, created.OperationID)
 		newest = created.ID
 	}
 
