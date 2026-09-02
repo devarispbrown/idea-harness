@@ -24,6 +24,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/risk"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/textdiff"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -1120,6 +1121,69 @@ func (s *Server) handleArtifactBody(w http.ResponseWriter, r *http.Request) {
 		"created_at": av.CreatedAt,
 	})
 }
+
+// handleArtifactDiff returns a line diff between two artifact versions of the
+// same artifact family, addressed by version id (from → to).
+func (s *Server) handleArtifactDiff(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	fromID := r.URL.Query().Get("from")
+	toID := r.URL.Query().Get("to")
+	if fromID == "" || toID == "" {
+		writeError(w, http.StatusBadRequest, "from and to version ids are required")
+		return
+	}
+	from, err := pr.db.GetArtifactVersion(r.Context(), fromID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "from version not found")
+		return
+	}
+	to, err := pr.db.GetArtifactVersion(r.Context(), toID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "to version not found")
+		return
+	}
+	if from.ArtifactID != to.ArtifactID {
+		writeError(w, http.StatusBadRequest, "versions belong to different artifacts")
+		return
+	}
+	old, err := pr.blobs.Get(from.BodyDigest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "from body missing")
+		return
+	}
+	newBody, err := pr.blobs.Get(to.BodyDigest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "to body missing")
+		return
+	}
+	// Guard the O(lines²) diff table against pathological inputs. Artifact bodies
+	// are model-output-bounded, but the endpoint still refuses absurd sizes.
+	if len(old) > maxArtifactDiffBytes || len(newBody) > maxArtifactDiffBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "artifact too large to diff")
+		return
+	}
+	if strings.Count(string(old), "\n") > maxArtifactDiffLines || strings.Count(string(newBody), "\n") > maxArtifactDiffLines {
+		writeError(w, http.StatusRequestEntityTooLarge, "artifact has too many lines to diff")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":         to.Kind,
+		"from_version": from.Version,
+		"to_version":   to.Version,
+		"diff":         textdiff.Unified(string(old), string(newBody)),
+	})
+}
+
+const (
+	// maxArtifactDiffBytes caps a single artifact body considered for diffing.
+	maxArtifactDiffBytes = 1 << 20 // 1 MiB
+	// maxArtifactDiffLines caps the line count fed to the O(lines²) LCS diff.
+	maxArtifactDiffLines = 20000
+)
 
 // handleArtifactRaw returns the raw markdown body for download/export (§20).
 func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {

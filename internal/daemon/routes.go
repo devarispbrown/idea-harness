@@ -58,6 +58,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/requirements", s.handleListRequirements)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/assertions", s.handleListAssertions)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts", s.handleListArtifacts)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/diff", s.handleArtifactDiff)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/body", s.handleArtifactBody)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/raw", s.handleArtifactRaw)
 

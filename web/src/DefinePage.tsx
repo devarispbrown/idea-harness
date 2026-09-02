@@ -75,6 +75,8 @@ export default function DefinePage({
   const prdVersion = prdVersions.length ? Math.max(...prdVersions.map((a) => a.version)) : 0;
   const prd = prdVersions.find((a) => a.version === prdVersion);
   const nextVersion = prdVersion + 1;
+  const sortedPrd = [...prdVersions].sort((a, b) => a.version - b.version);
+  const prevPrd = sortedPrd.length >= 2 ? sortedPrd[sortedPrd.length - 2] : undefined;
 
   const resolveDecision = async (id: string, resolution: string) => {
     await post(`/projects/${projectId}/decisions/${id}/resolve`, { resolution });
@@ -112,6 +114,12 @@ export default function DefinePage({
           title: `${ARTIFACT_TITLES.prd} · v${prd.version}`,
           meta: "",
           onRead: () => navigate(`#/i/${initiativeId}/doc/${prd.id}/${prd.version}`),
+          ...(prevPrd
+            ? {
+                onDiff: () => navigate(`#/i/${initiativeId}/diff/${prevPrd.id}/${prd.id}`),
+                diffLabel: `Diff v${prevPrd.version} → v${prd.version}`,
+              }
+            : {}),
         },
       ]
     : [];
