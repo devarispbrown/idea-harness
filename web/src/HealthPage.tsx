@@ -54,7 +54,9 @@ export default function HealthPage({
           <div className="risk-head">
             <span className="risk-pill">risk · {risk.tier}</span>
             <div className="risk-body">
-              <div className="risk-title">This initiative's applied patches touch billing and auth paths</div>
+              <div className="risk-title">
+                {risk.reason?.[0] ?? (risk.signals?.some((s) => s.detected) ? "Risk signals detected in the applied patches" : "No risk signals detected")}
+              </div>
               <div className="risk-sub">Derived deterministically from the patch contents — no model, no score.</div>
             </div>
           </div>
@@ -84,7 +86,7 @@ export default function HealthPage({
 
       <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>Daemon</div>
       <section className="health-daemon">
-        <span className="health-dot" />
+        <span className={`health-dot ${health?.status === "ok" ? "" : "down"}`} />
         <span className="health-addr">
           127.0.0.1:8787 · {health?.version ?? "v0.1.0"} · state in ~/.local/share/idea-harness
         </span>

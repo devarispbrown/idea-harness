@@ -1981,3 +1981,11 @@ button.ghost.small {
 .health-daemon { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px; display: flex; align-items: center; gap: 11px; }
 .health-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; flex: none; }
 .health-addr { font-size: 12.5px; color: #57534e; font-family: ui-monospace, Menlo, monospace; flex: 1; }
+
+.doc-reader-body h1 { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 10px; }
+.doc-reader-body h2 { font-size: 14px; font-weight: 650; margin: 16px 0 6px; }
+.doc-reader-body h3 { font-size: 12.5px; font-weight: 650; margin: 12px 0 4px; }
+.doc-reader-body p { margin: 0 0 8px; }
+.doc-reader-body ul { margin: 0 0 8px; padding-left: 18px; }
+.doc-reader-body strong { color: var(--text); }
+.health-dot.down { background: var(--failing-fg); }
