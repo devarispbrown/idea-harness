@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.34.3",
+  "pnpm": {
+    "//": "pnpm 10 blocks dependency install scripts by default (the 'Ignored build scripts' warning). Declaring the empty allowlist makes that explicit, so re-enabling install-time code execution is a reviewable diff rather than a local `pnpm approve-builds`.",
+    "onlyBuiltDependencies": []
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

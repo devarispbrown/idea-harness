@@ -39,9 +39,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
+      # Deliberately NOT `make embed-web` here: it overwrites the tracked
+      # internal/web/dist/index.html placeholder, and goreleaser refuses to run
+      # on a dirty tree, so a real tag push would abort at the release step.
+      # The UI is built by .goreleaser.yaml's before-hook, which runs after
+      # goreleaser's own git validation.
       - name: Verify the tag builds and passes its tests
         run: |
-          make embed-web
           go vet ./...
           go test ./...
 

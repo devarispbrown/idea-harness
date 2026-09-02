@@ -105,6 +105,37 @@ func TestNextUntilHumanStopsOnAFailedStep(t *testing.T) {
 	}
 }
 
+// The ordinary post-apply state: the verification gate runs clean but the
+// initiative stays unverified until a human records evidence, so /next keeps
+// answering "verify". Without no-progress detection the loop ran the gate 50
+// times and then exited non-zero blaming the initiative -- on the README quick
+// start's own path.
+func TestNextUntilHumanStopsWhenAStepChangesNothing(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	script := &scriptedNext{actions: []string{"verify"}} // repeats forever
+	f.seedNextSequence(script, "succeeded")
+	// The gate runs clean but REQ-1 has no evidence yet, so the initiative does
+	// not move -- the state a human is expected to resolve.
+	f.verifyCoverage = map[string]any{
+		"status": "plan_approved",
+		"coverage": []map[string]any{
+			{"code": "REQ-1", "pass": 0, "total": 1, "needs_manual": 1},
+		},
+	}
+
+	stdout, _, err := run(t, "next", "--until-human")
+	if err != nil {
+		t.Fatalf("waiting on human evidence is not a failure: %v", err)
+	}
+	if script.served > 3 {
+		t.Fatalf("loop ran %d rounds on an action that changes nothing", script.served)
+	}
+	if !strings.Contains(stdout, "REQ-1") || !strings.Contains(stdout, "--pass") {
+		t.Fatalf("should name the requirement and the command that unblocks it, got: %s", stdout)
+	}
+}
+
 // An unknown flag on next is rejected, not silently discarded.
 func TestNextRejectsUnknownFlags(t *testing.T) {
 	f := newFakeDaemon(t)

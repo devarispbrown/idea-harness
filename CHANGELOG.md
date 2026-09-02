@@ -11,6 +11,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- `idea next --until-human` stops when a step changes nothing instead of retrying it. After `apply`,
+  the verification gate runs clean while the initiative waits on human evidence, so the loop ran the
+  gate 50 times and then exited non-zero blaming the initiative — on the quick start's own path. It
+  now names the requirements still missing evidence and the command that records it.
+
 - Unknown ids get an error that names them. `idea apply CHG-99` answered `sql: no rows in result
   set` — the database driver's own string, with no indication of what was wrong or how to fix it.
   It now answers `no change set matching "CHG-99"`. The mapping lives at the store boundary, so
@@ -58,6 +63,14 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   on drift and runs in CI, so a new command can no longer ship undocumented.
 
 ### Security
+
+- The web UI response carries a Content-Security-Policy and `Cache-Control: no-store`. The page
+  embeds the per-install API token in a meta tag and the daemon binds a fixed loopback port that
+  other local dev servers also use — an origin, and a browser cache, idea-harness does not own.
+  Hashed assets keep a long TTL; their URL changes when their bytes do.
+- `make embed-web` installs with `--frozen-lockfile`, `web/package.json` pins the package manager,
+  and pnpm's install-script allowlist is declared empty, so re-enabling install-time code execution
+  is a reviewable diff rather than a local `pnpm approve-builds`.
 
 - A change set can no longer modify the harness control plane. `.idea-harness/**` (providers and
   their `base_url`, network policy, executor kind, `build_cmd`/`test_cmd`, `git_commit`) and

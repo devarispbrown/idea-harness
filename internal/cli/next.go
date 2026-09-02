@@ -46,6 +46,7 @@ func cmdNext(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	previous := ""
 	for step := 0; ; step++ {
 		action, err := nextAction(c, projectID, iniID)
 		if err != nil {
@@ -56,6 +57,18 @@ func cmdNext(args []string, stdout, stderr io.Writer) error {
 		if !flags.has("--until-human") || !automatable {
 			return reportNextAction(c, projectID, iniID, action, stdout, stderr)
 		}
+
+		// The same action twice in a row means the step ran and changed
+		// nothing, which is not a failure -- it is the loop reaching something
+		// only a human can supply. The ordinary case is `verify`: the gate runs
+		// clean but the initiative stays unverified until someone records
+		// evidence, so without this the loop would run the gate until its step
+		// budget ran out and then blame the initiative.
+		if action == previous {
+			return reportStalledAction(c, projectID, iniID, action, stdout)
+		}
+		previous = action
+
 		if step >= maxAutomaticSteps {
 			return fmt.Errorf("stopped after %d automatic steps; the initiative is still asking to %q — run `idea status` to see why", maxAutomaticSteps, action)
 		}
@@ -133,6 +146,38 @@ func waitForOperation(c *client, opID string, stdout io.Writer) error {
 		}
 		time.Sleep(operationPollInterval)
 	}
+}
+
+// reportStalledAction explains an automatable step that ran without moving the
+// initiative, in terms of what the human owes it. Exits 0: waiting on a person
+// is the loop working, not failing.
+func reportStalledAction(c *client, projectID, iniID, action string, stdout io.Writer) error {
+	if action != "verify" {
+		fmt.Fprintln(stdout, bold("Next:")+" "+action+" "+muted("ran without changing anything — `idea status` shows where it is"))
+		return nil
+	}
+
+	// Name the requirements still missing evidence, so the reader does not have
+	// to go find them.
+	var out struct {
+		Coverage []cliCoverage `json:"coverage"`
+	}
+	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", map[string]any{}, &out); err != nil {
+		return err
+	}
+	var pending []string
+	for _, cov := range out.Coverage {
+		if cov.Pass < cov.Total || cov.NeedsManual > 0 {
+			pending = append(pending, cov.Code)
+		}
+	}
+	if len(pending) == 0 {
+		fmt.Fprintln(stdout, bold("Next:")+" verify — "+muted("`idea verify` shows what the gate is waiting on"))
+		return nil
+	}
+	fmt.Fprintln(stdout, bold("Next:")+" record verification evidence for "+code(strings.Join(pending, ", ")))
+	fmt.Fprintln(stdout, muted("  idea verify "+pending[0]+" --pass --note \"<how you checked>\""))
+	return nil
 }
 
 // reportNextAction prints the human-facing guidance for an action the loop will

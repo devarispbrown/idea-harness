@@ -37,6 +37,24 @@ jobs:
       - name: Committed embed placeholder is intact
         run: make check-embed
 
+      # The gate this job exists for (BROKEN_CANONICAL_INSTALL): the binary a
+      # clean checkout produces must actually run and serve the UI route, not
+      # merely compile.
+      - name: Installed binary serves the UI
+        run: |
+          go install ./cmd/idea
+          export IDEA_HARNESS_STATE="$(mktemp -d)"
+          export IDEA_HARNESS_ADDR=127.0.0.1:18787
+          "$(go env GOPATH)/bin/idea" daemon >"$IDEA_HARNESS_STATE/daemon.log" 2>&1 &
+          for _ in $(seq 1 50); do
+            curl -fsS -o /dev/null "http://$IDEA_HARNESS_ADDR/" && break
+            sleep 0.2
+          done
+          code=$(curl -s -o /tmp/index.html -w '%{http_code}' "http://$IDEA_HARNESS_ADDR/")
+          test "$code" = "200" || { echo "GET / returned $code"; cat "$IDEA_HARNESS_STATE/daemon.log"; exit 1; }
+          grep -q 'id="root"' /tmp/index.html || { echo "served page has no app root"; exit 1; }
+          grep -q 'name="idea-token"' /tmp/index.html || { echo "token was not injected"; exit 1; }
+
       # Cheap: the generator is a `go run` against packages this job has already
       # compiled, and it needs no daemon, no network and no Node.
       - name: docs/cli.md matches the CLI command table

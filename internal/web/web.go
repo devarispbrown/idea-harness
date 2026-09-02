@@ -17,6 +17,20 @@ import (
 //go:embed all:dist
 var distFS embed.FS
 
+// contentSecurityPolicy locks the UI origin down to its own assets. The UI
+// talks only to the daemon that served it, loads no third-party script or font,
+// and must never be framed -- so everything is 'self' or 'none'.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " + // React style attributes; the placeholder's <style>
+	"img-src 'self' data:; " +
+	"font-src 'self'; " +
+	"connect-src 'self'; " +
+	"object-src 'none'; " +
+	"frame-ancestors 'none'; " +
+	"base-uri 'none'; " +
+	"form-action 'none'"
+
 // Handler returns an http.Handler that serves the embedded UI. The token is
 // injected into index.html so the same-origin UI can authenticate API calls.
 func Handler(token string) http.Handler {
@@ -43,9 +57,29 @@ func Handler(token string) http.Handler {
 			}
 			html := strings.ReplaceAll(string(data), "__IDEA_TOKEN__", token)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			// This document carries the per-install API token in a meta tag, and
+			// the daemon binds a fixed loopback port that other local dev servers
+			// have also used -- an origin, and therefore a browser cache, that
+			// idea-harness does not own. no-store keeps the token out of the
+			// on-disk cache, where it would outlive both the daemon and a token
+			// rotation.
+			w.Header().Set("Cache-Control", "no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			// With a bearer credential in the DOM and no CSP, any script that
+			// reached this origin could read the token and post it anywhere.
+			// The built UI loads one same-origin module script and one
+			// same-origin stylesheet, so 'self' is sufficient; inline styles are
+			// allowed because React sets style attributes (and the placeholder
+			// page has a <style> block).
+			w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(html))
 			return
+		}
+		// Asset filenames are content-hashed by Vite, so a long TTL is safe: a
+		// new build changes the URL rather than the bytes behind it.
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

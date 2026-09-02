@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"maps"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -965,9 +965,13 @@ func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode 
 	}
 }
 
-func (s *Server) handleWhy(w http.ResponseWriter, r *http.Request)    { s.handleTraceObject(w, r, "why") }
-func (s *Server) handleImpact(w http.ResponseWriter, r *http.Request)  { s.handleTraceObject(w, r, "impact") }
-func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request)   { s.handleTraceObject(w, r, "trace") }
+func (s *Server) handleWhy(w http.ResponseWriter, r *http.Request) { s.handleTraceObject(w, r, "why") }
+func (s *Server) handleImpact(w http.ResponseWriter, r *http.Request) {
+	s.handleTraceObject(w, r, "impact")
+}
+func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
+	s.handleTraceObject(w, r, "trace")
+}
 
 // handleDiff returns the structured requirement/decision diff for an initiative.
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {

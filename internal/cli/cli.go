@@ -98,7 +98,7 @@ func commands() []command {
 		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", run: cmdRevert, inHelp: true},
 		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", run: cmdReview, inHelp: true},
 		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass --note <text> record human evidence", json: jsonYes, run: cmdVerify, inHelp: true},
-		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", json: jsonNoFlags, run: cmdNext, inHelp: true},
+		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", json: jsonNone, run: cmdNext, inHelp: true},
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", json: jsonYes, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", json: jsonYes, run: cmdExecutors, inHelp: true},
 		{usage: "executors setup", summary: "wire a coding agent (hermes|omp)", inHelp: true},
@@ -278,7 +278,7 @@ func cmdInit(stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ initialized project")+" "+code(out["project_id"])+" in "+cwd)
-	fmt.Fprintln(stdout, muted("next: ") + bold("idea new") + muted(" \"<describe your idea>\""))
+	fmt.Fprintln(stdout, muted("next: ")+bold("idea new")+muted(" \"<describe your idea>\""))
 	return nil
 }
 
@@ -364,7 +364,7 @@ func cmdNew(args []string, stdout, stderr io.Writer) error {
 	if isDemoMode(c, projectID) {
 		fmt.Fprintln(stdout, warn("demo mode — synthetic output. Configure a model with:")+" "+bold("idea model set <provider/model>"))
 	}
-	fmt.Fprintln(stdout, muted("watch progress: ") + bold("idea watch"))
+	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil
 }
 
@@ -492,7 +492,6 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, errText("✗ config:"))
 		renderConfigProblems(problems, stdout)
 	} else if len(problems) > 0 {
-		fmt.Fprintln(stdout, ok("✓ config")+" "+muted("valid (with warnings)"))
 		renderConfigProblems(problems, stdout)
 	} else {
 		fmt.Fprintln(stdout, ok("✓ config")+" "+muted("valid"))

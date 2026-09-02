@@ -30,6 +30,12 @@ type fakeDaemon struct {
 	// requests records every path the CLI asked for, so a test can assert what
 	// a command sent (or did not send) to the daemon.
 	requests []string
+
+	// verifyCoverage is what POST /verify reports. Tests that need the
+	// "gate ran, nothing changed" state set it before running a command;
+	// net/http.ServeMux panics on a duplicate pattern, so it is a field rather
+	// than a second registration.
+	verifyCoverage map[string]any
 }
 
 // newFakeDaemon wires a fake daemon and a cwd that resolves to projectID.
@@ -137,12 +143,17 @@ func (f *fakeDaemon) seedInitiative() {
 	f.json("GET /api/v1/projects/{projectId}/risk", map[string]any{
 		"level": "low", "signals": []string{},
 	})
-	f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", map[string]any{
+	f.verifyCoverage = map[string]any{
 		"status": "complete",
 		"coverage": []map[string]any{
 			{"code": "REQ-1", "pass": 1, "total": 1, "needs_manual": 0},
 		},
-	})
+	}
+	f.mux.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(f.verifyCoverage)
+		})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/diff", map[string]any{
 		"requirements": map[string]any{"added": []any{}, "removed": []any{}},
 		"decisions":    map[string]any{"open": []any{}, "decided": []any{}, "superseded": []any{}},
