@@ -31,6 +31,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/revise-plan", s.handleRevisePlan)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/approve-plan", s.handleApprovePlan)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/seen", s.handleMarkSeen)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/attention", s.handleAttention)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/why", s.handleWhy)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/impact", s.handleImpact)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/trace", s.handleTrace)

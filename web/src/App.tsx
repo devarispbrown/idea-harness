@@ -23,6 +23,7 @@ import {
   PHASE_PURPOSE,
   currentPhase,
   derivePhases,
+  type InitiativeRollup,
   type PhaseSource,
   type PhaseState,
 } from "./phases";
@@ -66,6 +67,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const [attention, setAttention] = useState<InitiativeRollup[]>([]);
 
   const [daemonDown, setDaemonDown] = useState(false);
 
@@ -89,6 +91,15 @@ export default function App() {
     }
   }, []);
 
+  const loadAttention = useCallback(async (pid: string) => {
+    try {
+      const res = await get<{ items: InitiativeRollup[] }>(`/projects/${pid}/attention`);
+      setAttention(res.items ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const loadInitiativeData = useCallback(async (pid: string, iniId: string) => {
     const [a, t, c] = await Promise.all([
       get<Artifact[]>(resource(pid, iniId, "artifacts")).catch(() => []),
@@ -107,10 +118,11 @@ export default function App() {
   useEffect(() => {
     if (!projectId) return;
     loadInitiatives(projectId);
+    loadAttention(projectId);
     get<{ default_model: string }>(`/projects/${projectId}/providers`)
       .then((v) => setDefaultModel(v.default_model || ""))
       .catch(() => {});
-  }, [projectId, loadInitiatives]);
+  }, [projectId, loadInitiatives, loadAttention]);
 
   // Hash routing.
   useEffect(() => {
@@ -137,10 +149,11 @@ export default function App() {
     if (!projectId) return;
     const id = setInterval(() => {
       loadInitiatives(projectId);
+      loadAttention(projectId);
       if (currentInitiativeId) loadInitiativeData(projectId, currentInitiativeId);
     }, 2500);
     return () => clearInterval(id);
-  }, [projectId, currentInitiativeId, loadInitiatives, loadInitiativeData]);
+  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData]);
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",
@@ -201,6 +214,19 @@ export default function App() {
     ? initiatives.findIndex((i) => i.id === currentInitiative.id) + 1
     : 1;
 
+  // Sidebar inbox: open items in initiatives OTHER than the one being viewed.
+  // Only shown when a specific initiative is focused ("elsewhere" is meaningless
+  // on the home/settings screens).
+  const inbox = currentInitiativeId
+    ? attention
+        .filter((r) => r.id !== currentInitiativeId)
+        .map((r) => ({
+          initiativeId: r.id,
+          count: r.open_decisions + r.open_questions + r.open_findings,
+        }))
+        .filter((i) => i.count > 0)
+    : [];
+
   return (
     <div className="app-shell">
       <PhaseNav
@@ -210,7 +236,7 @@ export default function App() {
         initiativeCount={initiatives.length}
         phases={phases}
         active={activePhase}
-        inbox={[]}
+        inbox={inbox}
         modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
         onNavigate={navigate}
       />
@@ -222,8 +248,8 @@ export default function App() {
 
         {route.name === "home" && (
           <ProductHome
-            projectId={projectId}
             initiatives={initiatives}
+            attention={attention}
             onOpen={(id) => navigate(`#/i/${id}/explore`)}
             onCreate={createIdea}
           />
