@@ -19,6 +19,10 @@ type cliExplainUnderstanding struct {
 
 // cmdExplain renders the Current Understanding (§5, §60 "Explain").
 func cmdExplain(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -31,13 +35,16 @@ func cmdExplain(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("no initiatives yet; run `idea new` first")
 	}
 	iniID := inis[len(inis)-1].ID
-	if len(args) > 0 {
-		iniID = args[0]
+	if len(positional) > 0 {
+		iniID = positional[0]
 	}
 
 	var u cliExplainUnderstanding
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/understanding", nil, &u); err != nil {
 		return err
+	}
+	if flags.has("--json") {
+		return dumpJSON(stdout, u)
 	}
 
 	fmt.Fprintln(stdout, heading("Current Understanding")+"  "+statusBadge(u.Status))

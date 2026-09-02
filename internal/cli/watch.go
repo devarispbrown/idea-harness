@@ -11,13 +11,17 @@ import (
 
 // cmdWatch follows an initiative to completion with a live spinner (§64).
 func cmdWatch(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
 	initiativeID := ""
-	if len(args) > 0 {
-		initiativeID = args[0]
+	if len(positional) > 0 {
+		initiativeID = positional[0]
 	} else {
 		var inis []cliInitiative
 		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives", nil, &inis); err != nil {

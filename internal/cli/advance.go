@@ -31,11 +31,15 @@ func resolveInitiative(c *client, projectID string, args []string) (string, erro
 
 // cmdAdvance launches the M2 Design → Execution Plan pipeline.
 func cmdAdvance(args []string, stdout, stderr io.Writer) error {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
@@ -51,24 +55,38 @@ func cmdAdvance(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// cmdPlan renders the execution plan artifact.
+// cmdPlan renders the execution plan artifact. The plan is a markdown
+// artifact, so there is no JSON rendering of it: --json is rejected rather than
+// silently ignored, and the error names the command that does answer in JSON.
 func cmdPlan(args []string, stdout, stderr io.Writer) error {
+	for _, a := range args {
+		if a == "--json" {
+			return fmt.Errorf("--json is not supported for plan (the execution plan is a markdown artifact); use `idea tasks --json`")
+		}
+	}
 	return cmdExport(append([]string{"execution_plan"}, args...), stdout, stderr)
 }
 
 // cmdTasks lists the ordered execution-plan tasks.
 func cmdTasks(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
 	var tasks []cliTask
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/tasks", nil, &tasks); err != nil {
 		return err
+	}
+	if flags.has("--json") {
+		return dumpJSON(stdout, tasks)
 	}
 	if len(tasks) == 0 {
 		fmt.Fprintln(stdout, muted("No tasks yet — run `idea advance`."))
@@ -151,11 +169,15 @@ func cmdTrace(args []string, stdout, stderr io.Writer) error {
 
 // cmdDiff renders the structured requirement/decision diff.
 func cmdDiff(args []string, stdout, stderr io.Writer) error {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args)
+	iniID, err := resolveInitiative(c, projectID, positional)
 	if err != nil {
 		return err
 	}
@@ -172,6 +194,9 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/diff", nil, &d); err != nil {
 		return err
+	}
+	if flags.has("--json") {
+		return dumpJSON(stdout, d)
 	}
 	fmt.Fprintln(stdout, heading("Semantic Diff"))
 	fmt.Fprintln(stdout, bold("Requirements added")+": "+fmt.Sprint(len(d.Requirements.Added)))
@@ -190,15 +215,22 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 }
 
 func runTraceCmd(mode string, args []string, stdout io.Writer) error {
-	if len(args) < 2 {
+	// why/impact/trace take two positionals of their own before the optional
+	// initiative reference, so the flags come off first and the remainder is
+	// sliced by position.
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>", mode)
 	}
-	typ, ref := args[0], args[1]
+	typ, ref := positional[0], positional[1]
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	iniID, err := resolveInitiative(c, projectID, args[2:])
+	iniID, err := resolveInitiative(c, projectID, positional[2:])
 	if err != nil {
 		return err
 	}
@@ -211,6 +243,9 @@ func runTraceCmd(mode string, args []string, stdout io.Writer) error {
 		var items []cliWhyItem
 		if err := c.do("GET", u, nil, &items); err != nil {
 			return err
+		}
+		if flags.has("--json") {
+			return dumpJSON(stdout, items)
 		}
 		if len(items) == 0 {
 			fmt.Fprintln(stdout, muted("No provenance edges found."))
@@ -225,6 +260,9 @@ func runTraceCmd(mode string, args []string, stdout io.Writer) error {
 	var items []cliImpactItem
 	if err := c.do("GET", u, nil, &items); err != nil {
 		return err
+	}
+	if flags.has("--json") {
+		return dumpJSON(stdout, items)
 	}
 	if len(items) == 0 {
 		fmt.Fprintln(stdout, muted("No dependents found."))
