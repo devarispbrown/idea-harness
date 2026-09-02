@@ -296,6 +296,7 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 	image := ""
 	model := ""
 	yes := false
+	smoke := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--kind":
@@ -318,12 +319,17 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 			i++
 		case "--yes":
 			yes = true
+		case "--smoke":
+			smoke = true
 		default:
 			return fmt.Errorf("unknown flag %q", args[i])
 		}
 	}
 	if kind != "hermes" && kind != "omp" {
 		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
+	}
+	if smoke && model == "" {
+		return fmt.Errorf("--smoke requires --model (to resolve the provider API key)")
 	}
 	// Resolve the image: Hermes has a pinned default (auto-downloaded); OMP has
 	// no canonical image so --image is required.
@@ -363,6 +369,13 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code(kind)+" ("+code(image)+")")
 	if digest != "" {
 		fmt.Fprintln(stdout, muted("image digest: ")+code(digest))
+	}
+	if smoke {
+		fmt.Fprintln(stdout, muted("smoke: running a trivial "+kind+" task to verify the CLI contract…"))
+		if err := executor.SmokeAgent(context.Background(), kind, image, model); err != nil {
+			return fmt.Errorf("smoke failed: %w", err)
+		}
+		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
 	}
 	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil

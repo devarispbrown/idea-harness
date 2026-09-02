@@ -41,6 +41,10 @@ For **Hermes** `--image` is optional: when omitted it downloads the pinned offic
 required. `--model` is optional if a default model is already configured. There is **no silent
 fallback** — pass `--kind omp` explicitly to choose OMP.
 
+Add `--smoke` (with `--model`) to also run a trivial coding task through the agent and assert it
+produces a real file change — this verifies the agent CLI contract end-to-end, not just that the
+binary exists:
+
 ### Manual (equivalent)
 
 Edit `.idea-harness/harness.yaml`:
