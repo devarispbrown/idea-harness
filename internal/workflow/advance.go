@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	ccontext "github.com/idea-harness/idea-harness/internal/context"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/review"
-	"github.com/idea-harness/idea-harness/internal/schema"
-	"github.com/idea-harness/idea-harness/internal/store"
+	ccontext "github.com/devarispbrown/idea-harness/internal/context"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/review"
+	"github.com/devarispbrown/idea-harness/internal/schema"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // Advance runs the M2 slice: Design (Architecture → Product Design →

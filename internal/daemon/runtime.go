@@ -13,14 +13,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/model"
-	"github.com/idea-harness/idea-harness/internal/project"
-	"github.com/idea-harness/idea-harness/internal/security"
-	"github.com/idea-harness/idea-harness/internal/store"
-	"github.com/idea-harness/idea-harness/internal/workflow"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/project"
+	"github.com/devarispbrown/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
 // Runtime owns the global registry, the per-install token, and lazily-opened

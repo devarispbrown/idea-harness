@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // Event is an append-only event record (§32). PayloadDigest references a blob

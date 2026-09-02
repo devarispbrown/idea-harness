@@ -6,7 +6,7 @@ package executor
 import (
 	"context"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // Executor runs a Task in an isolated worker and returns a patch.

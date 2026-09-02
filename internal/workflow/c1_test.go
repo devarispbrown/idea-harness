@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/model"
-	"github.com/idea-harness/idea-harness/internal/security"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // TestExecuteRejectsCredentialContent guards C1/C2 + M1 together: a secret-like

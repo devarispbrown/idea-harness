@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/idea-harness/idea-harness/internal/cli"
+	"github.com/devarispbrown/idea-harness/internal/cli"
 )
 
 func main() {

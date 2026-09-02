@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // TestContextDocsWireConsumesEdges verifies deterministic provenance: when an

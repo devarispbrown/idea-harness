@@ -328,8 +328,9 @@ a CLI command and any relationship between that constant and the build.
    from a checkout (`vcs.revision` + `vcs.modified` → a dirty tree must render `-dirty` or the command
    lies); `go install <module>@<version>` from the proxy (`Main.Version` only, **no** VCS data). Say
    which wins when only one is present.
-3. **The module path does not resolve.** `go.mod:1` declares `module github.com/idea-harness/idea-harness`;
-   `origin` is `devarispbrown/idea-harness`. No tag makes `go install <module>@v0.1.0` work.
+3. **The module path did not resolve.** `go.mod:1` declared `module github.com/idea-harness/idea-harness`
+   while `origin` is `devarispbrown/idea-harness`, so no tag could make
+   `go install <module>@v0.1.0` work.
    **Decided (option A): rename the module to `github.com/devarispbrown/idea-harness`** — a mechanical
    rewrite of every import, free today because there are no tags and no consumers, and a breaking
    change the moment either exists. So it lands before the first tag, not after. README continues to

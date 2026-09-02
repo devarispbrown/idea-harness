@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
 // priorityFor maps a context selector to its priority (§12). Lower = higher

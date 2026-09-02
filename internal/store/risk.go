@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // SaveRiskProfile persists a deterministic risk profile for an initiative. A

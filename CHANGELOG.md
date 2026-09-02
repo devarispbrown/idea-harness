@@ -42,6 +42,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- `idea version` (and `--version`) prints the version, commit and whether the build came from a dirty
+  tree; `idea doctor` prints the same stamp. The daemon's `/api/v1/version` reports it too, replacing
+  a hardcoded `0.1.0` that every install returned regardless of what it was built from.
+- Tagged releases build prebuilt macOS and Linux binaries in CI (goreleaser), with the web UI
+  embedded and `-trimpath` so no maintainer's local paths ship inside them.
+
 - `idea next --until-human` runs the automatable steps (`advance` → `execute` → `verify`) back to
   back, waiting for each to finish, and stops at the first human judgment point. The documented
   quick start drops from 13 commands to 8. A failed step stops the loop rather than continuing.
@@ -72,6 +78,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   hand-edited `harness.yaml`.
 
 ### Changed
+
+- The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
+  declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
+  made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
+  change the moment either exists, which is why it lands before the first tag.
 
 - `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
   answered `✓ default model set to bogus/model` and failed at the first run.

@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // DiffRequirement is one requirement in the semantic diff.

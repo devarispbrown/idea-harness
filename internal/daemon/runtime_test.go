@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/project"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/project"
 )
 
 func TestLaunchOperationCancellation(t *testing.T) {

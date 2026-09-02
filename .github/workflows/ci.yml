@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch: # manual trigger (used for the opt-in agent tier)
 
+# Least privilege: no job here writes to the repository. The agent tier below
+# runs a real coding agent with network egress, so it must not inherit a
+# writable token.
+permissions:
+  contents: read
+
 jobs:
   # The compile gate (DX audit, BROKEN_CANONICAL_INSTALL): a clean checkout must
   # build, vet and test with no Node toolchain present. Runs in a Go container
@@ -99,11 +105,17 @@ jobs:
     name: Agent integration (opt-in — real Hermes + model)
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       HERMES_IMAGE: ${{ vars.HERMES_IMAGE }}
       AGENT_MODEL: ${{ vars.AGENT_MODEL }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # This job applies a coding agent's output into the workspace; it must
+          # not carry a credential that could push it anywhere.
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:

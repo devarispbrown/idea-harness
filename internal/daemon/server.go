@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/security"
-	"github.com/idea-harness/idea-harness/internal/web"
+	"github.com/devarispbrown/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/web"
 )
 
 // DefaultStateRoot returns the global state directory (§30), overridable via

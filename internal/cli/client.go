@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/daemon"
+	"github.com/devarispbrown/idea-harness/internal/daemon"
 )
 
 const defaultAddr = "127.0.0.1:8787"

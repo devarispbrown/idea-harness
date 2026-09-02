@@ -3,7 +3,7 @@ package executor
 import (
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func TestBrokerAuthorizeAllowed(t *testing.T) {

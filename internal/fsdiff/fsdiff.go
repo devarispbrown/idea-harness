@@ -17,9 +17,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
 // Entry is one file in a snapshot manifest: a workspace-relative path and the

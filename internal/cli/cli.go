@@ -12,9 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/daemon"
-	"github.com/idea-harness/idea-harness/internal/docparse"
+	"github.com/devarispbrown/idea-harness/internal/buildinfo"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/daemon"
+	"github.com/devarispbrown/idea-harness/internal/docparse"
 )
 
 // jsonSupport records how a command answers `--json`. It is documentation, not
@@ -112,6 +113,7 @@ func commands() []command {
 		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", run: func(args []string, _, stderr io.Writer) error { return runDaemon(args, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", run: cmdDev, inHelp: true},
+		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", run: cmdHelp, inHelp: true},
 	}
 }
@@ -459,7 +461,18 @@ func followLogs(stdout io.Writer) error {
 	}
 }
 
+// cmdVersion prints what build this is. A bug report that cannot name a build
+// is most of a bug report missing, and every install used to answer "0.1.0".
+func cmdVersion(args []string, stdout, _ io.Writer) error {
+	if _, _, err := parseArgs(flagSpec{}, args); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, buildinfo.Get())
+	return nil
+}
+
 func cmdDoctor(stdout io.Writer) error {
+	fmt.Fprintln(stdout, muted("idea ")+buildinfo.Get().String())
 	daemonUp := healthy()
 	configValid := true
 	if daemonUp {

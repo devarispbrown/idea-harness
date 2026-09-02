@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func TestInternalExecutorNameAndCapabilities(t *testing.T) {

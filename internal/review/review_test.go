@@ -3,7 +3,7 @@ package review
 import (
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func TestVagueTarget(t *testing.T) {

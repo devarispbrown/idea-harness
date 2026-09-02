@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // CreateContextDoc inserts a context document and appends its creation event.

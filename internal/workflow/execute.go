@@ -9,17 +9,17 @@ import (
 	"strings"
 	"time"
 
-	ccontext "github.com/idea-harness/idea-harness/internal/context"
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/executor"
-	"github.com/idea-harness/idea-harness/internal/fsdiff"
-	"github.com/idea-harness/idea-harness/internal/git"
-	"github.com/idea-harness/idea-harness/internal/review"
-	"github.com/idea-harness/idea-harness/internal/risk"
-	"github.com/idea-harness/idea-harness/internal/schema"
-	"github.com/idea-harness/idea-harness/internal/security"
-	"github.com/idea-harness/idea-harness/internal/store"
+	ccontext "github.com/devarispbrown/idea-harness/internal/context"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/fsdiff"
+	"github.com/devarispbrown/idea-harness/internal/git"
+	"github.com/devarispbrown/idea-harness/internal/review"
+	"github.com/devarispbrown/idea-harness/internal/risk"
+	"github.com/devarispbrown/idea-harness/internal/schema"
+	"github.com/devarispbrown/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // SetWorkRoot sets the directory that Execute derives per-initiative isolated

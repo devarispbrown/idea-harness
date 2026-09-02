@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func TestContextDocRoundTrip(t *testing.T) {

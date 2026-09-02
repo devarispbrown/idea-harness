@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.

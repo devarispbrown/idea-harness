@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // Signal names produced by the deterministic marker scan. These names are the
