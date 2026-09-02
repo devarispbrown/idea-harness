@@ -424,6 +424,20 @@ CREATE INDEX IF NOT EXISTS idx_verification_evidence_req ON verification_evidenc
 	`
 ALTER TABLE findings ADD COLUMN code TEXT NOT NULL DEFAULT '';
 `,
+	// 13: context documents — initiative-attached source material (PRD, design,
+	// tech, market, etc.) referenced by content-addressed digest.
+	`
+CREATE TABLE IF NOT EXISTS context_docs (
+	id            TEXT PRIMARY KEY,
+	initiative_id TEXT NOT NULL,
+	kind          TEXT NOT NULL,
+	title         TEXT NOT NULL,
+	digest        TEXT NOT NULL,
+	preview       TEXT NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_docs_initiative ON context_docs(initiative_id);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -20,8 +20,8 @@ import (
 	"github.com/idea-harness/idea-harness/internal/model"
 	"github.com/idea-harness/idea-harness/internal/review"
 	"github.com/idea-harness/idea-harness/internal/roles"
-	"github.com/idea-harness/idea-harness/internal/security"
 	"github.com/idea-harness/idea-harness/internal/schema"
+	"github.com/idea-harness/idea-harness/internal/security"
 	"github.com/idea-harness/idea-harness/internal/store"
 	"github.com/idea-harness/idea-harness/internal/tools"
 )
@@ -47,21 +47,21 @@ const (
 
 // Role names (must match contracts/*.yaml).
 const (
-	RoleOrchestrator          = "product_orchestrator"
-	RoleResearchAnalyst       = "research_analyst"
-	RoleProductManager        = "product_manager"
-	RoleAdversarialReviewer   = "adversarial_reviewer"
-	RoleArchitect             = "architect"
-	RoleProductDesigner       = "product_designer"
-	RoleVerificationEngineer  = "verification_engineer"
-	RoleEngineeringLead       = "engineering_lead"
+	RoleOrchestrator         = "product_orchestrator"
+	RoleResearchAnalyst      = "research_analyst"
+	RoleProductManager       = "product_manager"
+	RoleAdversarialReviewer  = "adversarial_reviewer"
+	RoleArchitect            = "architect"
+	RoleProductDesigner      = "product_designer"
+	RoleVerificationEngineer = "verification_engineer"
+	RoleEngineeringLead      = "engineering_lead"
 )
 
 // Engine drives the M1 workflow.
 type Engine struct {
 	db            *store.DB
-	blobs         *blob.Store   // redacted store: model artifacts/context
-	rawBlobs      *blob.Store   // redaction-free store: diff/apply/revert content
+	blobs         *blob.Store // redacted store: model artifacts/context
+	rawBlobs      *blob.Store // redaction-free store: diff/apply/revert content
 	redactor      *security.Redactor
 	registry      *model.Registry
 	cfg           config.HarnessConfig
@@ -379,11 +379,15 @@ func (e *Engine) implementerModel() string {
 // ---------- Stages ----------
 
 func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) error {
+	inputs := []ccontext.Input{
+		{Selector: "immutable_policy", Content: "Produce a concise IdeaBrief."},
+		{Selector: "task", Content: idea},
+	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
+	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageFraming, RoleOrchestrator, "idea_brief", schema.IdeaBrief,
-		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Produce a concise IdeaBrief."},
-			{Selector: "task", Content: idea},
-		},
+		inputs,
 		"Framing task:\n"+idea,
 	)
 	if err != nil {
@@ -496,12 +500,16 @@ func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d
 }
 
 func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) error {
+	inputs := []ccontext.Input{
+		{Selector: "immutable_policy", Content: "Produce an evidence-backed ResearchBrief. Mark facts vs assumptions vs hypotheses. No unattributed facts. Cite the provided sources."},
+		{Selector: "task", Content: idea},
+		{Selector: "untrusted", Content: e.researchEvidence(ctx)},
+	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
+	}
 	runID, obj, err := e.runModel(ctx, initiativeID, StageResearch, RoleResearchAnalyst, "research_brief", schema.ResearchBrief,
-		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Produce an evidence-backed ResearchBrief. Mark facts vs assumptions vs hypotheses. No unattributed facts. Cite the provided sources."},
-			{Selector: "task", Content: idea},
-			{Selector: "untrusted", Content: e.researchEvidence(ctx)},
-		},
+		inputs,
 		"Research task:\n"+idea,
 	)
 	if err != nil {
@@ -560,6 +568,9 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		{Selector: "decisions", Content: renderDecisions(decisions)},
 		{Selector: "questions", Content: renderQuestions(questions)},
 		{Selector: "findings", Content: renderFindings(findings)},
+	}
+	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
 
 	runID, obj, err := e.runModel(ctx, initiativeID, StageProductDefinition, RoleProductManager, "prd", schema.PRD, inputs, "Author the PRD.")
@@ -831,6 +842,56 @@ func objSlice(v any) []map[string]any {
 		}
 	}
 	return out
+}
+
+// contextDocsMaxPerDoc caps a single context document's contribution so one
+// oversized upload cannot crowd out the rest of the prompt (§48 input budget).
+const contextDocsMaxPerDoc = 32000
+
+// contextDocsMaxTotal caps the combined context-doc block.
+const contextDocsMaxTotal = 100000
+
+// truncateRunesForContext truncates s to at most n runes, appending an ellipsis
+// when it was cut. Unlike truncateOutput it is rune-safe, so multibyte content
+// is never split mid-rune.
+func truncateRunesForContext(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "\n…[truncated]"
+}
+
+// contextDocs assembles the initiative's uploaded context documents as a single
+// context block. Each document's content is stored in the redacting blob store,
+// so it is already redacted at the write boundary; no further redaction is
+// applied here. Per-doc and total caps bound the prompt contribution, and
+// failures are logged rather than silently dropping a document. Returns "" when
+// there are no documents.
+func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
+	docs, err := e.db.ListContextDocs(ctx, initiativeID)
+	if err != nil {
+		e.log.Warn("context docs unavailable", "initiative", initiativeID, "err", err)
+		return ""
+	}
+	var b strings.Builder
+	for _, doc := range docs {
+		content, err := e.blobs.Get(doc.Digest)
+		if err != nil {
+			e.log.Warn("context doc blob missing", "initiative", initiativeID, "doc", doc.ID, "digest", doc.Digest, "err", err)
+			continue
+		}
+		body := string(content)
+		if len([]rune(body)) > contextDocsMaxPerDoc {
+			body = truncateRunesForContext(body, contextDocsMaxPerDoc)
+		}
+		fmt.Fprintf(&b, "## Context document: %s (kind: %s)\n\n%s\n", doc.Title, doc.Kind, body)
+		if b.Len() >= contextDocsMaxTotal {
+			break
+		}
+	}
+	out := b.String()
+	return truncateRunesForContext(out, contextDocsMaxTotal)
 }
 
 // researchEvidence fetches the configured research seed URLs (public addresses

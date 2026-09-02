@@ -670,6 +670,95 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
+// ---------- context docs ----------
+
+// maxDocBytes caps a single uploaded context-doc body at 2 MiB.
+const maxDocBytes = 2 << 20
+
+// handleAddDoc ingests a context doc (JSON body, not multipart) for an
+// initiative: credential-sweep → redact → content-addressed blob → row.
+func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocBytes)
+	var body struct {
+		Content string `json:"content"`
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, "document too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	content := strings.TrimSpace(body.Content)
+	if content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	// Hard-reject on credentials with a non-echoing message (§45).
+	if pr.redactor.ContainsCredential(content) {
+		writeError(w, http.StatusBadRequest, "document contains a credential and was rejected")
+		return
+	}
+	// Title and kind are egress (returned by list + embedded in the prompt
+	// header), so they must be redacted and bounded like the body.
+	kind := truncateRunes(pr.redactor.RedactString(strings.TrimSpace(body.Kind)), 64)
+	if kind == "" {
+		kind = "other"
+	}
+	title := truncateRunes(pr.redactor.RedactString(strings.TrimSpace(body.Title)), 200)
+	redacted := pr.redactor.RedactString(content)
+	digest, err := pr.blobs.Put([]byte(redacted))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	doc := &domain.ContextDoc{
+		InitiativeID: ini.ID,
+		Kind:         kind,
+		Title:        title,
+		Digest:       digest,
+		Preview:      truncateRunes(redacted, 200),
+	}
+	if err := pr.db.CreateContextDoc(r.Context(), doc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// handleListDocs lists an initiative's ingested context docs.
+func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	docs, err := pr.db.ListContextDocs(r.Context(), ini.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, docs)
+}
+
+// truncateRunes truncates s to at most n runes.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
 // ---------- findings ----------
 
 func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {

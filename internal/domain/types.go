@@ -119,6 +119,20 @@ type Artifact struct {
 	CreatedAt    time.Time    `json:"created_at"`
 }
 
+// ContextDoc is one source document attached to an initiative: a PRD, design
+// note, technical spec, market research, or other free-form labeled context.
+// The body is stored as a content-addressed blob; this row records its digest
+// plus a short redacted text preview.
+type ContextDoc struct {
+	ID           string    `json:"id"`
+	InitiativeID string    `json:"initiative_id"`
+	Kind         string    `json:"kind"`
+	Title        string    `json:"title"`
+	Digest       string    `json:"digest"`
+	Preview      string    `json:"preview"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // SuggestedAnswer is one AI-proposed answer to an open question.
 type SuggestedAnswer struct {
 	QuestionID string `json:"question_id"`
