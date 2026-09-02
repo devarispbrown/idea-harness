@@ -7,6 +7,7 @@ import DefinePage from "./DefinePage";
 import ExplorePage from "./ExplorePage";
 import BuildPage from "./BuildPage";
 import PlanPage from "./PlanPage";
+import VerifyPage from "./VerifyPage";
 import ProductHome from "./ProductHome";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
@@ -230,7 +231,10 @@ export default function App() {
             status={currentInitiative.status}
           />
         )}
-        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && route.phase !== "plan" && (
+        {route.name === "phase" && currentInitiative && route.phase === "verify" && (
+          <VerifyPage projectId={projectId} initiativeId={currentInitiative.id} />
+        )}
+        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && route.phase !== "plan" && route.phase !== "verify" && (
           <PhasePage
             title={PHASE_LABELS[route.phase]}
             purpose={PHASE_PURPOSE[route.phase]}
