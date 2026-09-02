@@ -1711,8 +1711,10 @@ func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleChangeSetDiff serves the change set's patch as a readable diff (path +
-// content per file). Content blobs are already redacted at write time (§43).
+// handleChangeSetDiff serves the change set's patch as a readable diff: the
+// flat `patch` string plus a per-file `files` list. Content is redacted at this
+// display surface (RenderPatch/StructuredDiff), never at blob-write time — the
+// raw store stays redaction-free for byte-for-byte apply/revert.
 func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -1724,7 +1726,10 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"patch": pr.engine.RenderPatch(cs)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"patch": pr.engine.RenderPatch(cs),
+		"files": pr.engine.StructuredDiff(cs),
+	})
 }
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	pr, cs, err := s.changeSet(r)
