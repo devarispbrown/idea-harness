@@ -66,3 +66,31 @@ func (db *DB) GetContextDoc(ctx context.Context, id string) (*domain.ContextDoc,
 	d.CreatedAt = time.UnixMilli(created)
 	return &d, nil
 }
+
+// WireDocConsumes records that a run consumed a set of context documents
+// (run --consumes--> context_doc). This is deterministic provenance: the engine
+// knows exactly which docs it injected into a run's inputs, so no model
+// attribution is required. It wires the edges atomically with a run event.
+func (db *DB) WireDocConsumes(ctx context.Context, initiativeID, runID string, docIDs []string) error {
+	if len(docIDs) == 0 {
+		return nil
+	}
+	edges := make([]EdgeToWrite, 0, len(docIDs))
+	for _, docID := range docIDs {
+		if docID == "" {
+			continue
+		}
+		edges = append(edges, EdgeToWrite{FromType: "run", FromID: runID, EdgeType: domain.EdgeConsumes, ToType: "context_doc", ToID: docID})
+	}
+	if len(edges) == 0 {
+		return nil
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "run",
+		AggregateID:   runID,
+		Actor:         ActorOrchestrator,
+		EventType:     "run.consumed_docs",
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}

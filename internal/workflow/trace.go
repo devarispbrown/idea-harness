@@ -118,6 +118,7 @@ type labelCache struct {
 	requirement map[string]string
 	decision    map[string]string
 	artifact    map[string]string
+	contextDoc  map[string]string
 }
 
 func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) labelCache {
@@ -126,6 +127,7 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 		requirement: map[string]string{},
 		decision:    map[string]string{},
 		artifact:    map[string]string{},
+		contextDoc:  map[string]string{},
 	}
 	if tasks, err := e.db.ListTasks(ctx, initiativeID); err == nil {
 		for _, t := range tasks {
@@ -147,6 +149,15 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 			c.artifact[a.ArtifactID] = string(a.Kind)
 		}
 	}
+	if docs, err := e.db.ListContextDocs(ctx, initiativeID); err == nil {
+		for _, d := range docs {
+			if d.Title != "" {
+				c.contextDoc[d.ID] = d.Title
+			} else {
+				c.contextDoc[d.ID] = d.Kind
+			}
+		}
+	}
 	return c
 }
 
@@ -166,6 +177,10 @@ func (c labelCache) label(typ, id string) string {
 		}
 	case "artifact":
 		if s, ok := c.artifact[id]; ok {
+			return s
+		}
+	case "context_doc":
+		if s, ok := c.contextDoc[id]; ok {
 			return s
 		}
 	case "run":

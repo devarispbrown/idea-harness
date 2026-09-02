@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -46,7 +47,31 @@ func newClient() (*client, error) {
 	}, nil
 }
 
-// do performs a request and decodes the JSON response into out (if non-nil).
+// send executes a prepared request and decodes a JSON response into out (if
+// non-nil). Shared by do and doMultipart so error handling stays in one place.
+func (c *client) send(req *http.Request, out any) error {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		var e map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		msg := e["error"]
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// do performs a JSON request and decodes the response into out (if non-nil).
 func (c *client) do(method, path string, body any, out any) error {
 	var buf io.Reader
 	if body != nil {
@@ -62,22 +87,39 @@ func (c *client) do(method, path string, body any, out any) error {
 	}
 	req.Header.Set("X-Idea-Token", c.token)
 	req.Header.Set("Content-Type", "application/json")
+	return c.send(req, out)
+}
 
-	resp, err := c.http.Do(req)
+// doMultipart performs a multipart/form-data request with one file part plus
+// optional form fields, decoding the JSON response into out (if non-nil). Used
+// for context-doc file uploads (the daemon extracts text from the raw bytes).
+func (c *client) doMultipart(method, path string, fields map[string]string, fileField, filename string, fileData []byte, out any) error {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		if v != "" {
+			if err := mw.WriteField(k, v); err != nil {
+				return err
+			}
+		}
+	}
+	fw, err := mw.CreateFormFile(fileField, filename)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		var e map[string]string
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		return fmt.Errorf("%s", e["error"])
+	if _, err := fw.Write(fileData); err != nil {
+		return err
 	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+	if err := mw.Close(); err != nil {
+		return err
 	}
-	return nil
+	req, err := http.NewRequest(method, c.baseURL+path, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Idea-Token", c.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return c.send(req, out)
 }
 
 // doRaw performs a request and returns the raw response body as a string.

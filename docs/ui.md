@@ -40,7 +40,7 @@ waiting on you.
 
 ## Tabs
 
-Ten tabs organize the initiative's detail:
+Eleven tabs organize the initiative's detail:
 
 - **overview** — current understanding, recommended next move, the stepper, the execution plan, and
   anything awaiting your judgment.
@@ -56,8 +56,17 @@ Ten tabs organize the initiative's detail:
 - **tasks** — the dependency-ordered execution plan tasks, each with priority, estimate, and a
   "Why?" provenance link.
 - **changes** — change sets (see below).
+- **context** — upload context docs (see below).
 - **activity** — "What Changed" grouped by category, plus a live event feed.
 - **logs** — recent daemon log lines.
+
+## Context tab
+
+The **context** tab grounds the agents in your own material. Upload a PRD, design system, tech
+spec, or market analysis (`.md` / `.txt` / `.pdf` / `.docx` / `.xlsx`), or paste text directly. Each doc is
+credential-swept and redacted on ingest, then content-addressed and injected into design & planning
+(and PRD revisions) — never served or fed to a model unredacted. Uploaded docs are listed with a
+**Trace** link to `idea trace context_doc <id>`.
 
 ## Verify action (Requirements tab)
 

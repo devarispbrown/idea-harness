@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/idea-harness/idea-harness/internal/docparse"
 )
 
 // cliContextDoc mirrors the daemon's context-doc response.
@@ -64,45 +66,44 @@ func cmdDocs(args []string, stdout, stderr io.Writer) error {
 // oversized files before reading them into memory.
 const maxDocUploadBytes = 2 << 20
 
-// cmdDocsAdd uploads a file as a context doc.
+// cmdDocsAdd uploads a file (or stdin via `-`) as a context doc. Files are sent
+// as multipart so the daemon can extract text from .md/.txt/.pdf/.docx/.xlsx;
+// stdin is sent as JSON paste-text. Flags may precede the path and accept both
+// `--kind v` and `--kind=v`.
 func cmdDocsAdd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: idea docs add <path> [--kind <k>] [--title <t>]")
+		return fmt.Errorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
 	}
-	path := args[0]
-	kind := ""
-	title := ""
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--kind":
-			if i+1 < len(args) {
-				kind = args[i+1]
-				i++
+	var path, kind, title string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--kind" || a == "--title":
+			name := a
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("%s requires a value", name)
 			}
-		case "--title":
-			if i+1 < len(args) {
-				title = args[i+1]
-				i++
+			if name == "--kind" {
+				kind = args[i]
+			} else {
+				title = args[i]
 			}
+		case strings.HasPrefix(a, "--kind="):
+			kind = strings.TrimPrefix(a, "--kind=")
+		case strings.HasPrefix(a, "--title="):
+			title = strings.TrimPrefix(a, "--title=")
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown flag %q", a)
+		default:
+			if path != "" {
+				return fmt.Errorf("unexpected argument %q", a)
+			}
+			path = a
 		}
 	}
-
-	if fi, err := os.Stat(path); err == nil && fi.Size() > maxDocUploadBytes {
-		return fmt.Errorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	content := string(data)
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("document %q is empty", path)
-	}
-	if kind == "" {
-		kind = inferDocKind(path)
-	}
-	if title == "" {
-		title = filepath.Base(path)
+	if path == "" {
+		return fmt.Errorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
 	}
 
 	c, projectID, err := connect()
@@ -113,28 +114,57 @@ func cmdDocsAdd(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	endpoint := "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/docs"
 	var doc cliContextDoc
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/docs",
-		map[string]string{"content": content, "kind": kind, "title": title}, &doc); err != nil {
-		return err
+
+	if path == "-" {
+		// Paste-text fallback: read stdin, bounded, and send as JSON.
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, maxDocUploadBytes+1))
+		if err != nil {
+			return err
+		}
+		if len(data) > maxDocUploadBytes {
+			return fmt.Errorf("stdin exceeds the %d MiB limit", maxDocUploadBytes>>20)
+		}
+		content := string(data)
+		if strings.TrimSpace(content) == "" {
+			return fmt.Errorf("stdin is empty")
+		}
+		if kind == "" {
+			kind = "other"
+		}
+		if title == "" {
+			title = "stdin"
+		}
+		if err := c.do("POST", endpoint, map[string]string{"content": content, "kind": kind, "title": title}, &doc); err != nil {
+			return err
+		}
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxDocUploadBytes+1))
+		f.Close()
+		if err != nil {
+			return err
+		}
+		if len(data) > maxDocUploadBytes {
+			return fmt.Errorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("document %q is empty", path)
+		}
+		if kind == "" {
+			kind = docparse.InferKind(path)
+		}
+		if title == "" {
+			title = filepath.Base(path)
+		}
+		if err := c.doMultipart("POST", endpoint, map[string]string{"kind": kind, "title": title}, "file", filepath.Base(path), data, &doc); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(stdout, ok("✓ doc added")+" "+code(doc.Kind)+" "+bold(doc.Title))
 	return nil
-}
-
-// inferDocKind guesses a context-doc kind from the file's base name.
-func inferDocKind(path string) string {
-	base := strings.ToLower(filepath.Base(path))
-	switch {
-	case strings.Contains(base, "prd"):
-		return "prd"
-	case strings.Contains(base, "design"):
-		return "design"
-	case strings.Contains(base, "tech"):
-		return "tech"
-	case strings.Contains(base, "market"):
-		return "market"
-	default:
-		return "other"
-	}
 }

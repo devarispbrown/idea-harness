@@ -223,6 +223,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	if err != nil {
 		return "", nil, err
 	}
+	e.wireDocConsumesIfAny(ctx, initiativeID, runID, inputs)
 
 	bundle := ccontext.Compile(inputs)
 	modelSpec := e.resolveModelSpec(roleName)
@@ -892,6 +893,42 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 	}
 	out := b.String()
 	return truncateRunesForContext(out, contextDocsMaxTotal)
+}
+
+// wireDocConsumesIfAny records run --consumes--> context_doc edges for any run
+// whose inputs include the context_docs selector with non-empty content. It is
+// called from runModel after the run row exists, so provenance is recorded even
+// if the model call later fails. Failures are logged, not fatal: provenance
+// edges must never sink a workflow run.
+//
+// Attribution is coarse by design: a run is wired to every initiative doc that
+// was injected, even if the per-doc/total truncation caps (contextDocs) later
+// dropped some of a doc's tail from the assembled prompt. This is intentional —
+// the doc still informed the run, and precise sentence-level attribution is a
+// stretch goal, not v1.
+func (e *Engine) wireDocConsumesIfAny(ctx context.Context, initiativeID, runID string, inputs []ccontext.Input) {
+	has := false
+	for _, in := range inputs {
+		if in.Selector == "context_docs" && strings.TrimSpace(in.Content) != "" {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return
+	}
+	docs, err := e.db.ListContextDocs(ctx, initiativeID)
+	if err != nil {
+		e.log.Warn("context-doc consumes wiring: list failed", "initiative", initiativeID, "run", runID, "err", err)
+		return
+	}
+	ids := make([]string, 0, len(docs))
+	for _, d := range docs {
+		ids = append(ids, d.ID)
+	}
+	if err := e.db.WireDocConsumes(ctx, initiativeID, runID, ids); err != nil {
+		e.log.Warn("context-doc consumes wiring: write failed", "initiative", initiativeID, "run", runID, "err", err)
+	}
 }
 
 // researchEvidence fetches the configured research seed URLs (public addresses

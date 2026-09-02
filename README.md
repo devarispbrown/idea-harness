@@ -127,6 +127,15 @@ idea next                              # → "✓ initiative complete"
 what to run next. After you wire a real executor (see [`docs/agents.md`](docs/agents.md)),
 `execute` produces real file changes instead of a placeholder.
 
+**Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc, or
+market analysis and it's redacted, content-addressed, and injected into design & planning (and PRD
+revisions) so the team works from your context:
+
+```bash
+idea docs add prd.md        # .md / .txt / .pdf / .docx / .xlsx — or `-` to paste from stdin
+idea docs                   # list uploaded context docs
+```
+
 The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/`.
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
