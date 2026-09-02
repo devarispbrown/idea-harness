@@ -8,6 +8,37 @@ import (
 	"strings"
 )
 
+// defaultHermesImage is the pinned, known-good Hermes Agent image. It is a
+// versioned tag (never `latest`) so the auto-downloaded artifact is reproducible
+// and auditable; override with `idea executors setup --image …` for a custom or
+// self-built image.
+const defaultHermesImage = "nousresearch/hermes-agent:v2026.5.16"
+
+// DefaultAgentImage returns the pinned default container image for a coding
+// agent, or "" when no canonical image exists (the caller should then require an
+// explicit --image). Hermes has an official image; OMP does not.
+func DefaultAgentImage(kind string) string {
+	if kind == "hermes" {
+		return defaultHermesImage
+	}
+	return ""
+}
+
+// PullImage ensures image is present locally (docker pull only if absent) and
+// returns its image ID so the caller can surface exactly what was downloaded.
+func PullImage(ctx context.Context, image string) (string, error) {
+	if out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "pull", image).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("executor: docker pull %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	return "", nil
+}
+
 // VerifyAgentCLI checks that an agent CLI is present in a container image,
 // WITHOUT pulling and with the same hardened flags the sandbox uses at runtime
 // (no network, read-only root, dropped capabilities, non-root, bounded memory/

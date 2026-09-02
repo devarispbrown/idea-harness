@@ -57,8 +57,9 @@ requirement verification.
   Multiple initiatives are supported; each advances independently, one task at a time.
 - **Placeholder executor by default.** The default `internal` executor is deterministic and hermetic
   (no model, no network) — it writes a placeholder file, not real code. To generate real code, wire
-  a coding agent with one command: `idea executors setup --image <img> --model <provider/model>`
-  (Hermes default, OMP alternative) — see [`docs/agents.md`](docs/agents.md).
+  a coding agent with one command: `idea executors setup --model <provider/model> --yes`
+  (auto-downloads the pinned Hermes image; OMP needs `--kind omp --image <img>`) — see
+  [`docs/agents.md`](docs/agents.md).
 - **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
   and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
   git history. To also get a git commit per applied change set, set `git_commit: true` in
