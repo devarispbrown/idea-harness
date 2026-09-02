@@ -282,14 +282,27 @@ type Task struct {
 	CreatedAt      time.Time           `json:"created_at"`
 }
 
+// FileChangeKind classifies a single FileChange for display (add/modify/delete).
+type FileChangeKind string
+
+const (
+	FileAdded    FileChangeKind = "add"
+	FileModified FileChangeKind = "modify"
+	FileDeleted  FileChangeKind = "delete"
+)
+
 // FileChange is one file-level change in a source diff (§36). Path is relative
 // to the workspace root. A non-empty Digest is the SHA-256 of the file's
 // post-image content; an empty Digest denotes deletion. Mode is "file" for the
 // M4 thin slice (the internal implementer produces only regular files).
+// ChangeType records whether the file was added, modified, or deleted (computed
+// by the orchestrator's Diff); it is empty for patches persisted before the
+// field existed, in which case callers fall back to IsDelete.
 type FileChange struct {
-	Path   string `json:"path"`
-	Digest string `json:"digest"`
-	Mode   string `json:"mode,omitempty"`
+	Path       string         `json:"path"`
+	Digest     string         `json:"digest"`
+	Mode       string         `json:"mode,omitempty"`
+	ChangeType FileChangeKind `json:"change_type,omitempty"`
 }
 
 // IsDelete reports whether this change removes the file at Path.

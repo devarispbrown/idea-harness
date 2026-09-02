@@ -566,6 +566,62 @@ func (e *Engine) RenderPatch(cs *domain.ChangeSet) string {
 	return security.Redact(raw)
 }
 
+// StructuredFile is one file of a change set for per-file display: its path,
+// add/modify/delete kind, byte size, and REDACTED content. Content is redacted
+// at this display surface exactly like RenderPatch, so raw bytes never reach a
+// network-egress model (review SRE regression); the raw store stays
+// redaction-free for byte-for-byte apply/revert. The post-image digest is
+// deliberately NOT exposed here — a digest is not needed for display and would
+// be pure hash-confirmation surface.
+type StructuredFile struct {
+	Path       string `json:"path"`
+	ChangeType string `json:"change_type"`
+	Size       int    `json:"size"`
+	Content    string `json:"content"`
+}
+
+// StructuredDiff renders a change set as a per-file list (path + kind + redacted
+// content). Deleted files carry no content. Content is omitted (Size 0) when a
+// file's bytes were never persisted — e.g. a change set rejected by the secret
+// sweep skips persistDiff, so its produced bytes are intentionally absent. A
+// patch-manifest read/decode failure yields an empty (non-nil) list so the
+// `files` wire field is always a JSON array; the read error is surfaced via
+// RenderPatch's "(patch unreadable: …)" in the sibling `patch` field.
+func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return []StructuredFile{}
+	}
+	out := make([]StructuredFile, 0, len(patch.Files))
+	for _, fc := range patch.Files {
+		ct := string(fc.ChangeType)
+		if ct == "" {
+			// Patches persisted before ChangeType existed only carried a digest;
+			// an empty digest is the only distinction they encoded (delete).
+			if fc.IsDelete() {
+				ct = string(domain.FileDeleted)
+			} else {
+				ct = string(domain.FileModified)
+			}
+		}
+		sf := StructuredFile{Path: fc.Path, ChangeType: ct}
+		if !fc.IsDelete() && e.contentBlobs() != nil {
+			if content, err := e.contentBlobs().Get(fc.Digest); err == nil {
+				sf.Size = len(content)
+				raw := string(content)
+				if e.redactor != nil {
+					raw = e.redactor.RedactString(raw)
+				} else {
+					raw = security.Redact(raw)
+				}
+				sf.Content = raw
+			}
+		}
+		out = append(out, sf)
+	}
+	return out
+}
+
 // persistManifest stores a snapshot manifest as JSON and returns its digest.
 func (e *Engine) persistManifest(m fsdiff.Manifest) (string, error) {
 	data, err := json.Marshal(m)

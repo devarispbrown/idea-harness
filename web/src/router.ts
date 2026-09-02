@@ -9,6 +9,7 @@ export type Route =
   | { name: "decision"; id: string; decisionId: string }
   | { name: "health"; id: string }
   | { name: "doc"; id: string; artifact: string; version: string }
+  | { name: "diff"; id: string; from: string; to: string }
   | { name: "settings" };
 
 export const PHASES: PhaseName[] = ["explore", "define", "design", "plan", "build", "verify"];
@@ -29,6 +30,9 @@ export function parseRoute(hash: string): Route {
     if (rest === "health" && segs.length === 3) return { name: "health", id };
     if (rest === "doc" && (segs.length === 4 || segs.length === 5)) {
       return { name: "doc", id, artifact: segs[3], version: segs[4] ?? "latest" };
+    }
+    if (rest === "diff" && segs.length === 5) {
+      return { name: "diff", id, from: segs[3], to: segs[4] };
     }
     if (segs.length === 3 && (PHASES as string[]).includes(rest)) {
       return { name: "phase", id, phase: rest as PhaseName };
