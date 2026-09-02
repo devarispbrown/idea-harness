@@ -82,6 +82,11 @@ before this tag shipped as "whatever main was that day".
 
 ### Security
 
+- The control-plane deny is case-insensitive. `.idea-harness/**` and `.git/**` were matched exactly,
+  so on a case-insensitive filesystem (macOS and Windows by default) a change set naming
+  `.IDEA-HARNESS/harness.yaml` or `.Git/hooks/pre-commit` was accepted and written — into the very
+  directories the deny exists to protect.
+
 - A provider's `base_url` is validated when the provider registry is built, not only on the write
   path, so a `harness.yaml` that arrives another way — a cloned repo, a hand edit, a restored backup
   — cannot repoint a preset provider at another host and inherit its API key. A refused entry is not
