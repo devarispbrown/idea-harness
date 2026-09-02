@@ -185,6 +185,11 @@ docs/            architecture, configuration, cli, security, agents, plans
 scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 ```
 
+## Versioning
+
+Pre-1.0: the CLI surface, HTTP API, and config schema may change in any release. Breaking changes
+and their migrations are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Documentation
 
 - [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
