@@ -178,9 +178,11 @@ func Diff(before, after Manifest) []domain.FileChange {
 		a, aok := afterBy[p]
 		switch {
 		case bok && !aok:
-			out = append(out, domain.FileChange{Path: p, Mode: "file"}) // delete
-		case aok && (!bok || a != b):
-			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file"})
+			out = append(out, domain.FileChange{Path: p, Mode: "file", ChangeType: domain.FileDeleted})
+		case aok && !bok:
+			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file", ChangeType: domain.FileAdded})
+		case aok && bok && a != b:
+			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file", ChangeType: domain.FileModified})
 		}
 	}
 	return out

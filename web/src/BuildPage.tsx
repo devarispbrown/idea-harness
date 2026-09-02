@@ -27,6 +27,19 @@ interface Finding {
   target_type: string;
   target_id: string;
 }
+interface DiffFile {
+  path: string;
+  change_type: string;
+  digest?: string;
+  size?: number;
+  content?: string;
+}
+
+const DIFF_BADGE: Record<string, string> = {
+  add: "added",
+  modify: "modified",
+  delete: "deleted",
+};
 
 const STATUS_PILL: Record<string, { label: string; state: string }> = {
   draft: { label: "draft", state: "inactive" },
@@ -54,6 +67,7 @@ export default function BuildPage({
   const [findings, setFindings] = useState<Finding[]>([]);
   const [openDiff, setOpenDiff] = useState<string | null>(null);
   const [diffText, setDiffText] = useState("");
+  const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
   const [revertTarget, setRevertTarget] = useState<ChangeSet | null>(null);
   const [executorName, setExecutorName] = useState("internal");
 
@@ -98,20 +112,27 @@ export default function BuildPage({
     if (openDiff === cs.id) {
       setOpenDiff(null);
       setDiffText("");
+      setDiffFiles([]);
       return;
     }
     setOpenDiff(cs.id);
     try {
       const raw = await apiRaw("GET", `/projects/${projectId}/change-sets/${cs.id}/diff`);
-      let body = raw;
       try {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") body = parsed.patch ?? raw;
+        if (parsed && typeof parsed === "object") {
+          if (Array.isArray(parsed.files)) setDiffFiles(parsed.files);
+          else setDiffFiles([]);
+          setDiffText(typeof parsed.patch === "string" ? parsed.patch : "");
+          return;
+        }
       } catch {
         /* plain text */
       }
-      setDiffText(body);
+      setDiffFiles([]);
+      setDiffText(raw);
     } catch {
+      setDiffFiles([]);
       setDiffText("");
     }
   };
@@ -165,7 +186,32 @@ export default function BuildPage({
                 {openDiff === cs.id ? "Hide diff" : "View diff"}
               </button>
             </div>
-            {openDiff === cs.id && <pre className="cs-diff">{diffText || "(no diff)"}</pre>}
+            {openDiff === cs.id && (
+              <div className="cs-files">
+                {diffFiles.length === 0 ? (
+                  <pre className="cs-diff">{diffText || "(no diff)"}</pre>
+                ) : (
+                  diffFiles.map((f) => (
+                    <div key={f.path} className="cs-file">
+                      <div className="cs-file-head">
+                        <span className={`cs-file-badge cs-file-${f.change_type}`}>
+                          {DIFF_BADGE[f.change_type] ?? f.change_type}
+                        </span>
+                        <span className="cs-file-path">{f.path}</span>
+                        {f.change_type !== "delete" && (
+                          <span className="cs-file-size">{f.size ?? 0} B</span>
+                        )}
+                      </div>
+                      {f.change_type === "delete" ? (
+                        <div className="cs-file-deleted">file deleted</div>
+                      ) : (
+                        <pre className="cs-file-content">{f.content || "(no content)"}</pre>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
             <div className="cs-actions">
               {cs.status === "review_required" && (
                 <>
