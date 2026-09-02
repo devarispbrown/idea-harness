@@ -34,3 +34,9 @@ internal/web/dist/
 
 # go install output (local)
 /.gobin/
+
+# Design handoff (reference prototypes, not product code)
+/design_handoff_idea_harness_ui/
+
+# Claude worktrees
+/.claude/
