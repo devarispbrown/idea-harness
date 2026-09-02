@@ -5,8 +5,19 @@ over it (`internal/cli/client.go`, Decision D1) and the embedded web UI calls th
 the browser — every `idea` command and every UI panel is one or more of the requests below.
 
 The route table lives in [`internal/daemon/routes.go`](../internal/daemon/routes.go); this document
-is written from it and from the handlers it names. It is **not** generated, so it can drift — check
-`routes.go` when something here does not match.
+is written from it and from the handlers it names. It explains the API; the machine-readable
+description is [`openapi.yaml`](openapi.yaml), and `make api-check` fails the build if a route
+exists that the spec does not document, or the reverse.
+
+A running daemon serves both, without a token, outside `/api/`:
+
+```text
+http://127.0.0.1:8787/api-reference    # the reference, rendered
+http://127.0.0.1:8787/openapi.yaml     # the spec itself (also .json)
+```
+
+There is no SDK, and none is planned: the supported integration surfaces are this API and
+`idea <command> --json`. If a client library is ever wanted, the spec above is what generates it.
 
 Pre-1.0 the API may change in any release; breaking changes are recorded in
 [`CHANGELOG.md`](../CHANGELOG.md).
@@ -112,43 +123,35 @@ second, so it is at-least-once catch-up rather than a push.
 
 ## Two things to know before you build on this
 
-### Addressing is inconsistent
+### One addressing convention
 
-Some initiative-scoped resources take the initiative in the **path**; others sit flat under the
-project and take it as a **query parameter**:
+Every initiative-scoped resource takes the initiative in the **path**:
 
 ```text
-GET /api/v1/projects/{projectId}/initiatives/{id}/tasks        # path
-GET /api/v1/projects/{projectId}/change-sets?initiative_id=…   # query
+GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/tasks
+GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets
 ```
 
-| Shape | Endpoints |
-|---|---|
-| Path-nested under `/initiatives/{id}` | `understanding`, `next-move`, `next`, `changed`, `tasks`, `docs`, `why`, `impact`, `trace`, `diff`, plus all the lifecycle `POST`s |
-| Flat under the project, `?initiative_id=` | `change-sets`, `risk`, `decisions`, `questions`, `requirements`, `assertions`, `artifacts`, `findings`, `doctor`, `suggested-answers` |
+This was not always true. Ten reads — `change-sets`, `risk`, `decisions`, `questions`,
+`requirements`, `assertions`, `artifacts`, `findings`, `doctor`, `suggested-answers` — used to sit
+flat under the project and take `?initiative_id=`, so the same question had two shapes depending on
+which resource you asked about. Worse, omitting the parameter was not an error: the daemon picked an
+initiative for you, which in a project with more than one was a silent wrong answer.
 
-The query-parameter form resolves through `initiativeFromQuery`
-(`internal/daemon/handlers.go`), and **omitting `initiative_id` is not an error**: it falls back to
-the project's most recent initiative, matching what the CLI means by "the initiative you are working
-on" (`resolveInitiative`, `internal/cli/advance.go`). It fell back to the oldest until `de4dcdb`,
-which meant the daemon could answer about a different initiative than the CLI was asking about. In a
-single-initiative project the fallback is invisible either way; in a multi-initiative project it is
-still a guess. Always send it.
+Those flat routes are **gone**, not deprecated. A request to one returns 404. The initiative is now
+a required path segment, so there is nothing left to guess and no way to ask an ambiguous question.
+A stale `?initiative_id=` appended to a nested URL is ignored.
 
-This is known, and deferred rather than fixed. Unifying the two shapes is a breaking change to
-every client at once, and the web UI consumes both forms today — `web/src/App.tsx`,
-`ProductHome.tsx` and `BuildPage.tsx` build `change-sets?initiative_id=`, `HealthPage.tsx` builds
-`risk?initiative_id=`, while the same components read the path-nested `tasks` and `understanding`.
-`handleListTasks` carries a comment recording that it was already migrated from the query form to
-the path form; the rest of that migration has not happened. Route unification is listed as out of
-scope in [`docs/plans/dx-audit-fix-plan.md`](plans/dx-audit-fix-plan.md) and needs its own plan.
+Resources addressed by their own id keep their shape — `change-sets/{id}/apply`,
+`artifacts/{id}/raw`, `decisions/{id}/resolve` and friends are unambiguous already — and so do the
+genuinely project-scoped routes (`providers`, `models`, `executors`, `seen`).
 
-### `/next` and `/next-move` are different things
+### `/next` and `/guidance` are different things
 
 Two endpoints on the same initiative, one letter apart, with unrelated outputs. Neither is a rename
 of the other:
 
-| | `GET …/initiatives/{id}/next` | `GET …/initiatives/{id}/next-move` |
+| | `GET …/initiatives/{id}/next` | `GET …/initiatives/{id}/guidance` |
 |---|---|---|
 | Computed by | `workflow.Engine.NextAction` (`internal/workflow/next.go`) | `projection.BuildNextMove` (`internal/projection/projection.go`) |
 | Response | `{"action": "review CHG-1"}` | `{"action": "Resolve open decisions", "why": "2 decision(s) need your judgment before proceeding.", "affected": ["Product Definition"]}` |
@@ -157,9 +160,9 @@ of the other:
 | Blocked/failed | collapses `running` and `failed` to the same `wait` | distinguishes them, and surfaces the initiative's `failure_reason` in `why` |
 | Consumed by | `idea next` — the token is dispatched as the next CLI command | the web UI's Next Move card |
 
-So: `/next` is **machine-executable and change-set aware**; `/next-move` is **display copy and
+So: `/next` is **machine-executable and change-set aware**; `/guidance` is **display copy and
 change-set blind**. They can disagree legitimately — a `plan_approved` initiative with an approved
-change set returns `apply CHG-1` from `/next` and "Execution plan approved" from `/next-move`. Do
+change set returns `apply CHG-1` from `/next` and "Execution plan approved" from `/guidance`. Do
 not treat one as a richer rendering of the other.
 
 ## Endpoints
@@ -203,7 +206,7 @@ not treat one as a richer rendering of the other.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
-| GET | `/projects/{projectId}/initiatives/{id}/next-move` | Human-readable next move + rationale + affected areas (see above). |
+| GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
@@ -211,14 +214,14 @@ not treat one as a richer rendering of the other.
 | GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff across artifact versions. |
-| GET | `/projects/{projectId}/doctor?initiative_id=` | Product-graph traceability audit: untraced nodes, dependency cycles. |
-| GET | `/projects/{projectId}/risk?initiative_id=` | Deterministic risk profile computed from the initiative's patches; persisted as a side effect. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/risk` | Deterministic risk profile computed from the initiative's patches; persisted as a side effect. |
 
 ### Plan tasks
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in dependency order. |
+| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `depends_on[]`). |
 | PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority or estimate. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Delete a task. |
@@ -237,23 +240,23 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/decisions?initiative_id=` | List decisions with status and recommendation. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/decisions` | List decisions with status and recommendation. |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
-| GET | `/projects/{projectId}/questions?initiative_id=` | List open questions. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/questions` | List open questions. |
 | POST | `/projects/{projectId}/questions/{id}/answer` | Record `{"answer": …}`. |
 | POST | `/projects/{projectId}/initiatives/{id}/suggest-answers` | Ask the model to propose answers for the open questions. **202** |
-| GET | `/projects/{projectId}/suggested-answers?initiative_id=` | The persisted AI-suggested answers. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/suggested-answers` | The persisted AI-suggested answers. |
 
 ### Product graph reads
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/requirements?initiative_id=` | Requirements with acceptance criteria. |
-| GET | `/projects/{projectId}/assertions?initiative_id=` | Assertions with their evidence and trust level. |
-| GET | `/projects/{projectId}/artifacts?initiative_id=` | Artifact versions (PRD, design, plan, …). |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/requirements` | Requirements with acceptance criteria. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/assertions` | Assertions with their evidence and trust level. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/artifacts` | Artifact versions (PRD, design, plan, …). |
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
 | GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same body as `text/markdown` for download/export. |
 
@@ -261,7 +264,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/findings?initiative_id=` | Review findings for the initiative. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/findings` | Review findings for the initiative. |
 | POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` (accepted, not applicable, …). |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
 
@@ -269,7 +272,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/change-sets?initiative_id=` | List change sets with status. |
+| GET | `/projects/{projectId}/initiatives/{initiativeId}/change-sets` | List change sets with status. |
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The rendered patch as `{"patch": "…"}` (content redacted at write time). |
@@ -299,7 +302,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/activity` | The raw event timeline (most recent 200), unlike `/changed`'s narrated grouping. |
+| GET | `/projects/{projectId}/activity` | The raw event timeline (oldest 200 by sequence), unlike `/changed`'s narrated grouping. |
 | GET | `/projects/{projectId}/events` | **Not JSON.** SSE stream of product-graph events; `Last-Event-ID` resumes; accepts `?token=`. |
 
 ## Related

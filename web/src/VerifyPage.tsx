@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post } from "./api";
+import { get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 
 interface Criterion {
@@ -27,7 +27,7 @@ export default function VerifyPage({
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    const r = await get<Requirement[]>(`/projects/${projectId}/requirements?initiative_id=${initiativeId}`).catch(() => []);
+    const r = await get<Requirement[]>(resource(projectId, initiativeId, "requirements")).catch(() => []);
     setReqs(r ?? []);
   }, [projectId, initiativeId]);
 

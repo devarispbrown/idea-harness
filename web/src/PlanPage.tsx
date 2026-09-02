@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post, token } from "./api";
+import { get, post, resource, token } from "./api";
 import PhasePage from "./PhasePage";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
@@ -40,7 +40,7 @@ export default function PlanPage({
   const load = useCallback(async () => {
     const [t, a] = await Promise.all([
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
-      get<Artifact[]>(`/projects/${projectId}/artifacts?initiative_id=${initiativeId}`).catch(() => []),
+      get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
     ]);
     setTasks(t ?? []);
     setArtifacts(a ?? []);

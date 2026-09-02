@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post } from "./api";
+import { get, post, resource } from "./api";
 import { navigate } from "./router";
 
 interface Decision {
@@ -36,7 +36,7 @@ export default function DecisionPage({
 
   const load = useCallback(async () => {
     const [ds, th, ch] = await Promise.all([
-      get<Decision[]>(`/projects/${projectId}/decisions?initiative_id=${initiativeId}`).catch(() => []),
+      get<Decision[]>(resource(projectId, initiativeId, "decisions")).catch(() => []),
       get<DiscussionMessage[]>(`/projects/${projectId}/decisions/${decisionId}/discussion`).catch(() => []),
       get<Changed>(`/projects/${projectId}/initiatives/${initiativeId}/changed`).catch(() => null),
     ]);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get } from "./api";
+import { get, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 
 interface RiskProfile {
@@ -32,8 +32,8 @@ export default function HealthPage({
 
   const load = useCallback(async () => {
     const [r, d, h] = await Promise.all([
-      get<RiskProfile>(`/projects/${projectId}/risk?initiative_id=${initiativeId}`).catch(() => null),
-      get<Finding[]>(`/projects/${projectId}/doctor?initiative_id=${initiativeId}`).catch(() => []),
+      get<RiskProfile>(resource(projectId, initiativeId, "risk")).catch(() => null),
+      get<Finding[]>(resource(projectId, initiativeId, "doctor")).catch(() => []),
       get<Health>("/health").catch(() => null),
     ]);
     setRisk(r);

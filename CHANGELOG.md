@@ -9,6 +9,41 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING (HTTP API)
+
+- Ten initiative-scoped reads moved from the flat `?initiative_id=` form to the nested path, so the
+  API now has one addressing convention instead of two:
+
+  ```text
+  GET /projects/{projectId}/requirements?initiative_id=X   →  removed (404)
+  GET /projects/{projectId}/initiatives/X/requirements     →  use this
+  ```
+
+  Affected: `requirements`, `assertions`, `artifacts`, `decisions`, `questions`, `findings`,
+  `change-sets`, `suggested-answers`, `risk`, `doctor`. Resources addressed by their own id
+  (`change-sets/{id}/apply`, `artifacts/{id}/raw`, …) and genuinely project-scoped routes
+  (`providers`, `models`, `executors`) are unchanged.
+
+  The initiative is now a required path segment. Omitting it used to be legal and made the daemon
+  pick one for you — invisible in a single-initiative project, a silent wrong answer in any other.
+  A stale `?initiative_id=` on a nested URL is ignored.
+
+- `GET /initiatives/{id}/next-move` is now `GET /initiatives/{id}/guidance`. The response is
+  unchanged. `/next` and `/next-move` read as variants of one endpoint and are not: `/next` returns
+  a machine-executable command token and is change-set aware, while this one returns display copy
+  and is change-set blind, so the two can legitimately disagree.
+
+- `idea decisions` and `idea reviews` take an optional initiative argument, like `idea tasks`. In a
+  project with no initiative they now say `no initiatives yet; run \`idea new\` first` instead of the
+  daemon's `no initiatives in project`.
+
+### Added
+
+- `docs/openapi.yaml` — an OpenAPI 3.1 description of all 70 operations, and `make api-check`, which
+  fails when a route exists that the spec does not document or the reverse.
+- A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
+  `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.
+
 ### Added
 
 - CI builds, vets, tests and smoke-tests on macOS as well as Linux. Nothing in the codebase branches

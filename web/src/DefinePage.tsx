@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post } from "./api";
+import { get, post, resource } from "./api";
 import PhasePage from "./PhasePage";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
@@ -41,11 +41,11 @@ export default function DefinePage({
 
   const load = useCallback(async () => {
     const [d, f, q, a, s] = await Promise.all([
-      get<DecisionItem[]>(`/projects/${projectId}/decisions?initiative_id=${initiativeId}`).catch(() => []),
-      get<FindingItem[]>(`/projects/${projectId}/findings?initiative_id=${initiativeId}`).catch(() => []),
-      get<QuestionItem[]>(`/projects/${projectId}/questions?initiative_id=${initiativeId}`).catch(() => []),
-      get<Artifact[]>(`/projects/${projectId}/artifacts?initiative_id=${initiativeId}`).catch(() => []),
-      get<SuggestedAnswer[]>(`/projects/${projectId}/suggested-answers?initiative_id=${initiativeId}`).catch(() => []),
+      get<DecisionItem[]>(resource(projectId, initiativeId, "decisions")).catch(() => []),
+      get<FindingItem[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
+      get<QuestionItem[]>(resource(projectId, initiativeId, "questions")).catch(() => []),
+      get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
+      get<SuggestedAnswer[]>(resource(projectId, initiativeId, "suggested-answers")).catch(() => []),
     ]);
     setDecisions(d ?? []);
     setFindings(f ?? []);

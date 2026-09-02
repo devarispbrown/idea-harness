@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, post, uploadDoc, apiBlob } from "./api";
+import { apiBlob, get, post, resource, uploadDoc } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import type { StatusPill } from "./PhaseHeader";
 import { navigate } from "./router";
@@ -55,7 +55,7 @@ export default function ExplorePage({
   const load = useCallback(async () => {
     const [d, a] = await Promise.all([
       get<ContextDoc[]>(`/projects/${projectId}/initiatives/${initiativeId}/docs`).catch(() => []),
-      get<Artifact[]>(`/projects/${projectId}/artifacts?initiative_id=${initiativeId}`).catch(() => []),
+      get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
     ]);
     setDocs(d ?? []);
     setArtifacts(a ?? []);

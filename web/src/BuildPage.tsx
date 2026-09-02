@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post, apiRaw } from "./api";
+import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 
 interface Task {
@@ -60,8 +60,8 @@ export default function BuildPage({
   const load = useCallback(async () => {
     const [t, c, f, ex] = await Promise.all([
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
-      get<ChangeSet[]>(`/projects/${projectId}/change-sets?initiative_id=${initiativeId}`).catch(() => []),
-      get<Finding[]>(`/projects/${projectId}/findings?initiative_id=${initiativeId}`).catch(() => []),
+      get<ChangeSet[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
+      get<Finding[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
       get<{ name: string; selected: boolean }[]>(`/projects/${projectId}/executors`).catch(() => []),
     ]);
     setTasks(t ?? []);

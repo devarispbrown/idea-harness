@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { get } from "./api";
+import { get, resource } from "./api";
 import { derivePhases, PHASE_LABELS } from "./phases";
 import type { PhaseName } from "./router";
 
@@ -50,9 +50,9 @@ export default function ProductHome({
       await Promise.all(
         initiatives.map(async (ini) => {
           const [a, t, c] = await Promise.all([
-            get<Artifact[]>(`/projects/${projectId}/artifacts?initiative_id=${ini.id}`).catch(() => []),
+            get<Artifact[]>(resource(projectId, ini.id, "artifacts")).catch(() => []),
             get<Task[]>(`/projects/${projectId}/initiatives/${ini.id}/tasks`).catch(() => []),
-            get<ChangeSet[]>(`/projects/${projectId}/change-sets?initiative_id=${ini.id}`).catch(() => []),
+            get<ChangeSet[]>(resource(projectId, ini.id, "change-sets")).catch(() => []),
           ]);
           const states = derivePhases({
             status: ini.status,
