@@ -48,8 +48,8 @@ func (e *Engine) implementerKeyEnv() string {
 		_, _, keyEnv := config.ResolveProvider(provider, pc)
 		return keyEnv
 	}
-	// Bare/unknown provider: fall back to the default model's provider, then to
-	// the first preset key actually present in the environment.
+	// Bare provider: fall back to the provider of the configured default model,
+	// which the operator chose explicitly.
 	if dm := e.cfg.DefaultModel; dm != "" {
 		if i := strings.Index(dm, "/"); i > 0 {
 			if p := config.PresetFor(dm[:i]); p != nil {
@@ -57,27 +57,41 @@ func (e *Engine) implementerKeyEnv() string {
 			}
 		}
 	}
-	for _, p := range config.Presets {
-		if p.DefaultKeyEnv != "" && os.Getenv(p.DefaultKeyEnv) != "" {
-			return p.DefaultKeyEnv
-		}
-	}
+	// Unknown provider: fail closed.
+	//
+	// This used to scan config.Presets and return the first key that happened to
+	// be set in the environment. A typo in executor.model therefore handed some
+	// other provider's real API key to the coding agent -- which runs in a
+	// container with deliberate network egress (internal/executor/agent.go), so
+	// the key leaves the machine. An unresolvable provider now yields no key and
+	// the run fails with a message naming it, rather than silently spending a
+	// credential the operator did not choose.
 	return ""
 }
 
 // selectExecutor returns the executor selected by harness.executor.kind. The
 // kind is a config field (deterministic), never model output; an unknown kind
 // fails closed to the internal executor.
-func (e *Engine) selectExecutor() executor.Executor {
+func (e *Engine) selectExecutor() (executor.Executor, error) {
 	switch e.cfg.Executor.Kind {
 	case config.ExecutorContainer:
-		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image)
-	case config.ExecutorOMP:
-		return executor.NewOMPExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image, e.implementerKeyEnv())
-	case config.ExecutorHermes:
-		return executor.NewHermesExecutor(e.contentBlobs(), e.implementerModel(), e.cfg.Executor.Image, e.implementerKeyEnv())
+		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image), nil
+	case config.ExecutorOMP, config.ExecutorHermes:
+		model := e.implementerModel()
+		keyEnv := e.implementerKeyEnv()
+		// A coding agent runs with network egress, so it must not be launched
+		// with a credential nobody chose. An unresolvable provider stops the run
+		// here, naming what could not be resolved.
+		if keyEnv == "" {
+			return nil, fmt.Errorf("executor: cannot resolve a provider for model %q; "+
+				"set harness.executor.model (or default_model) to a configured provider, or add the provider under providers: in .idea-harness/harness.yaml", model)
+		}
+		if e.cfg.Executor.Kind == config.ExecutorOMP {
+			return executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
+		}
+		return executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
 	default:
-		return executor.NewInternalExecutor(e.contentBlobs())
+		return executor.NewInternalExecutor(e.contentBlobs()), nil
 	}
 }
 
@@ -218,7 +232,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
 	}
 
-	exec := e.selectExecutor()
+	exec, err := e.selectExecutor()
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
 	// The capability gate is the deterministic trust-tier policy, not the
 	// executor's self-declared capability list: the engine authorizes the
 	// selected executor's engine-assigned trust tier (§49).
