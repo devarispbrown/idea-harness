@@ -64,6 +64,13 @@ Each provider entry supports:
 | `base_url` | endpoint override | derived from the key |
 | `models` | extra model names to show in the picker | catalog defaults |
 
+`base_url` must be `https`, or `http` on loopback (`localhost`, `127.0.0.1`, `::1`) for local
+runtimes such as Ollama and LM Studio. The built-in presets' endpoints may not be overridden: a
+preset name keeps inheriting its well-known `api_key_env`, so repointing it would send that key and
+the full prompt context to another host. Point a differently-named provider at the endpoint instead.
+Keyless local presets (`ollama`) may still move between loopback ports. `idea config validate`
+reports a `harness.yaml` that breaks these rules, and the API rejects the write.
+
 ## Supported providers
 
 | Provider | Wire type | Default endpoint | Key env |

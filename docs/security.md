@@ -16,6 +16,7 @@ M1 threats and mitigations:
 | Secret leakage to persistence (§47) | secrets from env only; redaction choke point (store/blob/slog/SSE) with pattern catalog |
 | Prompt injection from untrusted content | trust levels assigned by deterministic code; untrusted content data-only-framed at lowest context priority |
 | Stored XSS via artifact bodies | artifact bodies sanitized before serving; UI renders markdown without raw HTML |
+| Credential/prompt exfiltration via provider `base_url` | `base_url` must be https, or http on loopback; a built-in preset's endpoint may not be overridden (it would inherit that preset's `api_key_env`); enforced on the write path and reported by `idea config validate` |
 | SSRF via research web tool | public-address-only fetch (loopback/private/link-local/metadata blocked), 5-redirect cap, 2 MiB/30s limits, deterministic config-supplied URLs (§46) |
 | Agent self-approval (§14) | review runs require a distinct actor; `accepted_risk` disposition is human-only |
 
