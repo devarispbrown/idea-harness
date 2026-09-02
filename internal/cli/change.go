@@ -325,8 +325,14 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 	if kind != "hermes" && kind != "omp" {
 		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
 	}
+	// Resolve the image: Hermes has a pinned default (auto-downloaded); OMP has
+	// no canonical image so --image is required.
 	if image == "" {
-		return fmt.Errorf("--image is required (the container image containing the %s CLI)", kind)
+		image = executor.DefaultAgentImage(kind)
+		if image == "" {
+			return fmt.Errorf("--image is required: no canonical %s image (provide one you trust)", kind)
+		}
+		fmt.Fprintln(stderr, muted("no --image; using pinned default ")+code(image)+muted(" and downloading it now"))
 	}
 
 	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" a "+kind+" executor runs with network egress and auto-approve, and receives its provider API key. Only use an image you trust.")
@@ -334,6 +340,10 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
 	}
 
+	digest, err := executor.PullImage(context.Background(), image)
+	if err != nil {
+		return fmt.Errorf("pull failed: %w", err)
+	}
 	if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
@@ -351,6 +361,9 @@ func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code(kind)+" ("+code(image)+")")
+	if digest != "" {
+		fmt.Fprintln(stdout, muted("image digest: ")+code(digest))
+	}
 	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil
 }

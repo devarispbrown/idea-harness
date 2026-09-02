@@ -24,17 +24,22 @@ diff.
 ### One command (recommended)
 
 ```bash
-# Hermes (default)
+# Hermes (default) — auto-downloads the pinned official image
+idea executors setup --model anthropic/claude-3-7-sonnet --yes
+
+# Hermes with a custom/self-built image
 idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet --yes
 
-# OMP (alternative)
+# OMP (bring your own image — there is no canonical OMP image)
 idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
 ```
 
 `idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
-pull), prints the security tradeoff, and writes `executor.kind/image/model` to `harness.yaml` (with
-`--model` optional if a default model is already configured). It does **not** fall back silently —
-pass `--kind omp` explicitly to choose OMP.
+pull), prints the security tradeoff, and writes `executor.kind/image/model` to `harness.yaml`.
+For **Hermes** `--image` is optional: when omitted it downloads the pinned official image
+(`nousresearch/hermes-agent:<version>`) and prints the pulled digest. For **OMP** `--image` is
+required. `--model` is optional if a default model is already configured. There is **no silent
+fallback** — pass `--kind omp` explicitly to choose OMP.
 
 ### Manual (equivalent)
 
