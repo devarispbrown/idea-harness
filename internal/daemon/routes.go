@@ -1,6 +1,5 @@
 package daemon
 
-
 func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /api/v1/health", s.handleHealth)
@@ -82,5 +81,21 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/revert", s.handleRevertChangeSet)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/risk", s.handleRisk)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
+
+	// The initiative-scoped reads, on the nested path. These ten answered only
+	// at the flat `/projects/{projectId}/<resource>?initiative_id=` form, which
+	// is why the same question had two shapes depending on the resource. Both
+	// forms are live during the migration; the flat ones come out once the CLI
+	// and the web UI are moved over (docs/plans/api-consistency-and-ci-plan.md).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/requirements", s.handleListRequirements)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/assertions", s.handleListAssertions)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/artifacts", s.handleListArtifacts)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/decisions", s.handleListDecisions)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/questions", s.handleListQuestions)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/findings", s.handleListFindings)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets", s.handleListChangeSets)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/suggested-answers", s.handleListSuggestedAnswers)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/risk", s.handleRisk)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/doctor", s.handleDoctor)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
 }

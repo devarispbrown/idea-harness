@@ -1969,6 +1969,14 @@ func (s *Server) initiativeFromQuery(r *http.Request) (*projectRuntime, domain.I
 	if err != nil {
 		return nil, domain.Initiative{}, err
 	}
+	// The nested route is the one we are migrating to, so the path wins. Each of
+	// these ten endpoints is registered twice during the migration -- nested and
+	// flat -- and both forms reach this helper; the flat form and its fallback
+	// go away once the CLI and the UI are moved over.
+	if id := r.PathValue("initiativeId"); id != "" {
+		ini, err := pr.db.GetInitiative(r.Context(), id)
+		return pr, ini, err
+	}
 	if id := r.URL.Query().Get("initiative_id"); id != "" {
 		ini, err := pr.db.GetInitiative(r.Context(), id)
 		return pr, ini, err
