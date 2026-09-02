@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web restore-embed check-embed clean
+.PHONY: build test lint vet web web-build embed-web restore-embed check-embed docs docs-check clean
 
 BINARY := bin/idea
 
@@ -26,6 +26,17 @@ check-embed:
 		echo "internal/web/dist/index.html is not the committed placeholder."; \
 		echo "Run 'make restore-embed' before committing (a real build belongs in a release, not in git)."; \
 		exit 1; }
+
+# Regenerate the command table in docs/cli.md from the CLI's own table
+# (internal/cli/cli.go, via `idea help --format=md`). Prose outside the
+# generated-block markers is left alone.
+docs:
+	go run ./internal/docsgen
+
+# Fails when docs/cli.md no longer matches the command table — a new command
+# cannot ship undocumented (CI runs this; see .github/workflows/ci.yml).
+docs-check:
+	go run ./internal/docsgen -check
 
 test:
 	go test ./...

@@ -31,6 +31,11 @@ jobs:
       - name: Committed embed placeholder is intact
         run: make check-embed
 
+      # Cheap: the generator is a `go run` against packages this job has already
+      # compiled, and it needs no daemon, no network and no Node.
+      - name: docs/cli.md matches the CLI command table
+        run: make docs-check
+
   backend:
     name: Go (vet + test + smoke)
     runs-on: ubuntu-latest # Docker is preinstalled, so the sandbox test RUNS

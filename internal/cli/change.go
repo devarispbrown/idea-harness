@@ -79,14 +79,18 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 
 // cmdCancel interrupts a running asynchronous operation by id (§16, M3).
 func cmdCancel(args []string, stdout, stderr io.Writer) error {
-	if len(args) < 1 {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea cancel <operation-id>")
 	}
 	c, _, err := connect()
 	if err != nil {
 		return err
 	}
-	opID := args[0]
+	opID := positional[0]
 	var out map[string]string
 	if err := c.do("POST", "/api/v1/operations/"+opID+"/cancel", nil, &out); err != nil {
 		return err
@@ -149,7 +153,11 @@ func cmdChanges(args []string, stdout, stderr io.Writer) error {
 
 // cmdChange shows a single change set by id.
 func cmdChange(args []string, stdout, stderr io.Writer) error {
-	if len(args) < 1 {
+	positional, flags, err := parseArgs(jsonFlag, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea change <id>")
 	}
 	c, projectID, err := connect()
@@ -157,10 +165,10 @@ func cmdChange(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var cs cliChangeSet
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/change-sets/"+args[0], nil, &cs); err != nil {
+	if err := c.do("GET", "/api/v1/projects/"+projectID+"/change-sets/"+positional[0], nil, &cs); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if flags.has("--json") {
 		return dumpJSON(stdout, cs)
 	}
 	fmt.Fprintln(stdout, heading("Change Set "+code(cs.HumanID)))
@@ -189,10 +197,14 @@ func cmdRevert(args []string, stdout, stderr io.Writer) error {
 
 // cmdReview applies a review verdict to a change set.
 func cmdReview(args []string, stdout, stderr io.Writer) error {
-	if len(args) < 2 {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested>")
 	}
-	verdict := args[1]
+	verdict := positional[1]
 	switch verdict {
 	case "approve":
 		verdict = "approved"
@@ -200,35 +212,40 @@ func cmdReview(args []string, stdout, stderr io.Writer) error {
 		verdict = "rejected"
 	case "approved", "rejected", "changes_requested":
 	default:
-		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested)", args[1])
+		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested)", positional[1])
 	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+args[0]+"/review",
+	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+positional[0]+"/review",
 		map[string]string{"verdict": verdict}, &out); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, ok("✓ review recorded")+" "+code(args[0])+" → "+verdict)
+	fmt.Fprintln(stdout, ok("✓ review recorded")+" "+code(positional[0])+" → "+verdict)
 	return nil
 }
 
 // runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the result.
 func runChangeSetAction(action string, args []string, stdout io.Writer) error {
-	if len(args) < 1 {
+	positional, _, err := parseArgs(flagSpec{}, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea %s <id>", action)
 	}
+	id := positional[0]
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+args[0]+"/"+action, nil, &out); err != nil {
+	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+id+"/"+action, nil, &out); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(args[0]))
+	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(id))
 	if opID := out["operation_id"]; opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
 	}
