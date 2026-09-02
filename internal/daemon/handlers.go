@@ -1688,12 +1688,37 @@ func (s *Server) handleApplyChangeSet(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Apply is asynchronous, so a status that cannot be applied has to be
+	// caught here: launching the operation and failing in the background made
+	// `idea apply CHG-1` on an already-applied change set answer "✓ apply
+	// started" with the failure only visible in the log.
+	if cs.Status != domain.ChangeSetApproved {
+		writeError(w, http.StatusConflict, applyStateMessage(cs))
+		return
+	}
 	opID, err := s.rt.ApplyChangeSetInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+}
+
+// applyStateMessage explains why a change set cannot be applied, in terms of
+// what the reader should do next.
+func applyStateMessage(cs *domain.ChangeSet) string {
+	switch cs.Status {
+	case domain.ChangeSetApplied:
+		return "change set " + cs.HumanID + " is already applied; `idea revert " + cs.HumanID + "` rolls it back"
+	case domain.ChangeSetApplying:
+		return "change set " + cs.HumanID + " is being applied; `idea changes` shows when it lands"
+	case domain.ChangeSetReviewRequired:
+		return "change set " + cs.HumanID + " needs approval first: `idea review " + cs.HumanID + " approve`"
+	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested:
+		return "change set " + cs.HumanID + " was " + string(cs.Status) + "; `idea reviews` shows why"
+	default:
+		return "change set " + cs.HumanID + " cannot be applied from status " + string(cs.Status)
+	}
 }
 
 // handleRevertChangeSet records a rolled-back journal entry asynchronously.
