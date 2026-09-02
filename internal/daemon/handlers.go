@@ -540,7 +540,7 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 // ---------- decisions / questions ----------
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -625,7 +625,7 @@ func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -666,7 +666,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 // ---------- requirements / assertions / artifacts ----------
 
 func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -680,7 +680,7 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1052,7 +1052,7 @@ func (s *Server) handleSuggestAnswers(w http.ResponseWriter, r *http.Request) {
 
 // handleListSuggestedAnswers returns the persisted AI-suggested answers.
 func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1066,7 +1066,7 @@ func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1442,7 +1442,7 @@ func truncateRunes(s string, n int) string {
 // ---------- findings ----------
 
 func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1504,7 +1504,7 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 // handleDoctor audits the initiative's product-graph edges and returns any
 // traceability gaps (untraced tasks/objects, dependency cycles).
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1600,7 +1600,7 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 
 // handleListChangeSets returns the change sets for an initiative.
 func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1806,7 +1806,7 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 // handleRisk computes the deterministic risk profile for an initiative from its
 // produced patches.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromQuery(r)
+	pr, ini, err := s.initiativeFromPath(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1962,35 +1962,27 @@ func (s *Server) initiative(r *http.Request) (*projectRuntime, domain.Initiative
 	return pr, ini, err
 }
 
-// initiativeFromQuery resolves an initiative from the ?initiative_id= query or
-// falls back to the single initiative in the project.
-func (s *Server) initiativeFromQuery(r *http.Request) (*projectRuntime, domain.Initiative, error) {
+// initiativeFromPath resolves the initiative named by the route's
+// {initiativeId} path value.
+//
+// This used to accept ?initiative_id= and, failing that, guess: it fell back to
+// one of the project's initiatives, which meant an omitted parameter was
+// answered about whichever initiative the daemon picked rather than rejected.
+// In a single-initiative project that was invisible; in any other it was a
+// silent wrong answer. Every one of these endpoints is now nested under the
+// initiative it is about, so there is nothing left to guess.
+func (s *Server) initiativeFromPath(r *http.Request) (*projectRuntime, domain.Initiative, error) {
 	pr, err := s.project(r)
 	if err != nil {
 		return nil, domain.Initiative{}, err
 	}
-	// The nested route is the one we are migrating to, so the path wins. Each of
-	// these ten endpoints is registered twice during the migration -- nested and
-	// flat -- and both forms reach this helper; the flat form and its fallback
-	// go away once the CLI and the UI are moved over.
-	if id := r.PathValue("initiativeId"); id != "" {
-		ini, err := pr.db.GetInitiative(r.Context(), id)
-		return pr, ini, err
+	id := r.PathValue("initiativeId")
+	if id == "" {
+		// Unreachable through the mux, which only routes these handlers on
+		// patterns carrying {initiativeId}. Explicit rather than a nil-value
+		// lookup if a future route forgets it.
+		return pr, domain.Initiative{}, errors.New("route is missing an initiative id")
 	}
-	if id := r.URL.Query().Get("initiative_id"); id != "" {
-		ini, err := pr.db.GetInitiative(r.Context(), id)
-		return pr, ini, err
-	}
-	list, err := pr.db.ListInitiatives(r.Context())
-	if err != nil || len(list) == 0 {
-		return pr, domain.Initiative{}, errors.New("no initiatives in project")
-	}
-	// Fall back to the MOST RECENT initiative, matching what the CLI means by
-	// "the initiative you are working on" (resolveInitiative, internal/cli).
-	// ListInitiatives is ordered by creation, and this used to return list[0] --
-	// the oldest -- so in a project with more than one initiative the ten
-	// endpoints that resolve this way answered about a different initiative than
-	// the CLI was asking about, silently. Callers that mean a specific one
-	// should still send ?initiative_id=.
-	return pr, list[len(list)-1], nil
+	ini, err := pr.db.GetInitiative(r.Context(), id)
+	return pr, ini, err
 }

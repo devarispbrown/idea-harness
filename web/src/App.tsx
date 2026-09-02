@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post } from "./api";
+import { get, post, resource } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import PhasePage from "./PhasePage";
@@ -89,9 +89,9 @@ export default function App() {
 
   const loadInitiativeData = useCallback(async (pid: string, iniId: string) => {
     const [a, t, c] = await Promise.all([
-      get<Artifact[]>(`/projects/${pid}/artifacts?initiative_id=${encodeURIComponent(iniId)}`).catch(() => []),
+      get<Artifact[]>(resource(pid, iniId, "artifacts")).catch(() => []),
       get<Task[]>(`/projects/${pid}/initiatives/${iniId}/tasks`).catch(() => []),
-      get<ChangeSet[]>(`/projects/${pid}/change-sets?initiative_id=${encodeURIComponent(iniId)}`).catch(() => []),
+      get<ChangeSet[]>(resource(pid, iniId, "change-sets")).catch(() => []),
     ]);
     setArtifacts(a ?? []);
     setTasks(t ?? []);

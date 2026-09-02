@@ -1,21 +1,44 @@
 package daemon
 
 import (
-	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
-// M2 step 1: the ten initiative-scoped reads are registered on both the nested
-// path and the flat `?initiative_id=` form, sharing a handler. While both exist,
-// they must answer identically — that equivalence is what makes step 2 (moving
-// the CLI and the UI over) safe to do incrementally, and step 3 (deleting the
-// flat form) a removal rather than a change.
-func TestNestedAndFlatRoutesAgree(t *testing.T) {
-	_, ts, token := newTestServer(t)
+// waitForOperation blocks until an asynchronous operation reaches a terminal
+// state, so a test does not return while the workflow is still writing into the
+// state root that t.TempDir is about to remove.
+func waitForOperation(t *testing.T, ts *httptest.Server, token, opID string) {
+	t.Helper()
+	if opID == "" {
+		return
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		resp := doReq(t, http.MethodGet, ts.URL+"/api/v1/operations/"+opID, token, "", "")
+		var op struct {
+			Status string `json:"status"`
+		}
+		decode(t, resp, &op)
+		switch op.Status {
+		case "succeeded", "failed", "cancelled":
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation %s did not finish (last status %q)", opID, op.Status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
+// newSeededProject creates a project with one initiative and waits for its
+// framing workflow, returning the project base URL and the initiative id.
+func newSeededProject(t *testing.T, ts *httptest.Server, token, rootPath string) (string, string) {
+	t.Helper()
 	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "",
-		`{"name":"p","root_path":"/tmp/nested-routes-test"}`)
+		`{"name":"p","root_path":"`+rootPath+`"}`)
 	var project struct {
 		ProjectID string `json:"project_id"`
 	}
@@ -26,7 +49,7 @@ func TestNestedAndFlatRoutesAgree(t *testing.T) {
 	base := ts.URL + "/api/v1/projects/" + project.ProjectID
 
 	resp = doReq(t, http.MethodPost, base+"/initiatives", token, "",
-		`{"title":"nested route test","description":"x"}`)
+		`{"title":"route test","description":"x"}`)
 	var created struct {
 		ID          string `json:"initiative_id"`
 		OperationID string `json:"operation_id"`
@@ -35,102 +58,72 @@ func TestNestedAndFlatRoutesAgree(t *testing.T) {
 	if created.ID == "" {
 		t.Fatal("could not create an initiative")
 	}
-	// The framing workflow writes into the state root; let it finish so the
-	// temp dir teardown does not race it.
 	waitForOperation(t, ts, token, created.OperationID)
+	return base, created.ID
+}
 
-	for _, resource := range []string{
-		"requirements", "assertions", "artifacts", "decisions", "questions",
-		"findings", "change-sets", "suggested-answers", "risk", "doctor",
-	} {
+// initiativeScopedResources are the ten reads that used to answer at
+// /projects/{projectId}/<resource>?initiative_id= and now answer only under the
+// initiative they describe.
+var initiativeScopedResources = []string{
+	"requirements", "assertions", "artifacts", "decisions", "questions",
+	"findings", "change-sets", "suggested-answers", "risk", "doctor",
+}
+
+// M2 step 3: the flat forms are gone. Asserted rather than assumed, because a
+// removal that silently left a route behind would leave the API with the two
+// shapes this migration existed to collapse.
+func TestFlatInitiativeRoutesAreGone(t *testing.T) {
+	_, ts, token := newTestServer(t)
+	base, iniID := newSeededProject(t, ts, token, "/tmp/flat-routes-gone")
+
+	for _, resource := range initiativeScopedResources {
 		t.Run(resource, func(t *testing.T) {
 			flat := doReq(t, http.MethodGet,
-				base+"/"+resource+"?initiative_id="+created.ID, token, "", "")
-			flatBody := readBody(t, flat)
-
-			nested := doReq(t, http.MethodGet,
-				base+"/initiatives/"+created.ID+"/"+resource, token, "", "")
-			nestedBody := readBody(t, nested)
-
-			if nested.StatusCode != flat.StatusCode {
-				t.Errorf("status: nested %d, flat %d", nested.StatusCode, flat.StatusCode)
+				base+"/"+resource+"?initiative_id="+iniID, token, "", "")
+			defer flat.Body.Close()
+			if flat.StatusCode != http.StatusNotFound {
+				t.Errorf("flat route still answers with %d; it should be gone", flat.StatusCode)
 			}
+
+			nested := doReq(t, http.MethodGet, base+"/initiatives/"+iniID+"/"+resource, token, "", "")
+			defer nested.Body.Close()
 			if nested.StatusCode != http.StatusOK {
-				t.Fatalf("expected 200 from both, got %d (nested body: %s)", nested.StatusCode, nestedBody)
-			}
-
-			// /risk computes a fresh profile per request, so its id and
-			// created_at differ between any two calls regardless of routing.
-			// Everything else — including the initiative_id the route resolved,
-			// which is what this test is actually about — must match exactly.
-			if resource == "risk" {
-				nestedBody = stripVolatile(t, nestedBody)
-				flatBody = stripVolatile(t, flatBody)
-			}
-			if nestedBody != flatBody {
-				t.Errorf("bodies differ.\n nested: %s\n   flat: %s", nestedBody, flatBody)
+				t.Errorf("nested route answers %d, want 200", nested.StatusCode)
 			}
 		})
 	}
 }
 
-// stripVolatile removes the per-request fields of a risk profile, so two calls
-// can be compared for everything the routing decides.
-func stripVolatile(t *testing.T, body string) string {
-	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
-		t.Fatalf("not JSON: %v (%s)", err, body)
-	}
-	delete(m, "id")
-	delete(m, "created_at")
-	out, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
-// The path value wins over the query, so a request carrying both is answered
-// about the path's initiative. Without that precedence the migration would have
-// a window where a half-migrated client could be answered about the wrong one.
-func TestNestedPathBeatsTheQueryParameter(t *testing.T) {
+// A client that has not caught up may still append ?initiative_id= to a nested
+// URL. The path is the only thing that decides now, so a stale parameter naming
+// a different initiative must be ignored rather than honored.
+func TestQueryParameterNoLongerSelectsTheInitiative(t *testing.T) {
 	_, ts, token := newTestServer(t)
+	base, first := newSeededProject(t, ts, token, "/tmp/query-ignored")
 
-	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "",
-		`{"name":"p","root_path":"/tmp/nested-precedence-test"}`)
-	var project struct {
-		ProjectID string `json:"project_id"`
+	resp := doReq(t, http.MethodPost, base+"/initiatives", token, "",
+		`{"title":"second","description":"x"}`)
+	var second struct {
+		ID          string `json:"initiative_id"`
+		OperationID string `json:"operation_id"`
 	}
-	decode(t, resp, &project)
-	base := ts.URL + "/api/v1/projects/" + project.ProjectID
-
-	var ids []string
-	for _, title := range []string{"first", "second"} {
-		resp := doReq(t, http.MethodPost, base+"/initiatives", token, "",
-			`{"title":"`+title+`","description":"x"}`)
-		var created struct {
-			ID          string `json:"initiative_id"`
-			OperationID string `json:"operation_id"`
-		}
-		decode(t, resp, &created)
-		waitForOperation(t, ts, token, created.OperationID)
-		ids = append(ids, created.ID)
-	}
-	if len(ids) != 2 || ids[0] == ids[1] {
-		t.Fatalf("expected two distinct initiatives, got %v", ids)
+	decode(t, resp, &second)
+	waitForOperation(t, ts, token, second.OperationID)
+	if second.ID == "" || second.ID == first {
+		t.Fatalf("expected a distinct second initiative, got %q and %q", first, second.ID)
 	}
 
-	// Path names the first, query names the second: the path must win.
-	both := doReq(t, http.MethodGet,
-		base+"/initiatives/"+ids[0]+"/doctor?initiative_id="+ids[1], token, "", "")
-	pathOnly := doReq(t, http.MethodGet, base+"/initiatives/"+ids[0]+"/doctor", token, "", "")
+	withStale := doReq(t, http.MethodGet,
+		base+"/initiatives/"+first+"/doctor?initiative_id="+second.ID, token, "", "")
+	pathOnly := doReq(t, http.MethodGet, base+"/initiatives/"+first+"/doctor", token, "", "")
 
-	bothBody, pathBody := readBody(t, both), readBody(t, pathOnly)
-	if both.StatusCode != http.StatusOK || pathOnly.StatusCode != http.StatusOK {
-		t.Fatalf("status: both=%d pathOnly=%d", both.StatusCode, pathOnly.StatusCode)
+	staleBody, pathBody := readBody(t, withStale), readBody(t, pathOnly)
+	if withStale.StatusCode != http.StatusOK || pathOnly.StatusCode != http.StatusOK {
+		t.Fatalf("status: withStale=%d pathOnly=%d", withStale.StatusCode, pathOnly.StatusCode)
 	}
-	if bothBody != pathBody {
-		t.Errorf("the query overrode the path.\n with query: %s\n path only: %s", bothBody, pathBody)
+	if staleBody != pathBody {
+		t.Errorf("a stale ?initiative_id= changed the answer.\n with param: %s\n path only: %s",
+			staleBody, pathBody)
 	}
 }

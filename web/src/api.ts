@@ -35,6 +35,27 @@ export async function apiRaw(method: string, path: string): Promise<string> {
   return res.text();
 }
 
+// resource builds the URL of an initiative-scoped resource:
+//
+//   /projects/{projectId}/initiatives/{initiativeId}/{name}
+//
+// One builder rather than a template literal per call site. The flat
+// `?initiative_id=` form this replaces was hand-rolled at all seventeen call
+// sites, which is how the API ended up with two shapes for the same question --
+// and this is what stops the eighteenth site from reintroducing it.
+//
+// Both ids are encoded. In query position an id containing a slash or ".." was
+// inert; in path position fetch() normalizes it, so encoding is load-bearing
+// rather than tidiness. Only one of the seventeen sites encoded anything.
+export const resource = (
+  projectId: string,
+  initiativeId: string,
+  name: string,
+) =>
+  `/projects/${encodeURIComponent(projectId)}/initiatives/${encodeURIComponent(
+    initiativeId,
+  )}/${name}`;
+
 export const get = <T>(path: string) => api<T>("GET", path);
 export const post = <T>(path: string, body: unknown) =>
   api<T>("POST", path, body);
