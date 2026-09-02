@@ -200,7 +200,7 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
@@ -212,14 +212,14 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	}
 	maxSeq, err := pr.db.MaxEventSeq(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if body.Through > maxSeq {
 		body.Through = maxSeq
 	}
 	if err := pr.db.SetReadCursor(r.Context(), "ui", body.Through); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"seen_seq": body.Through})
@@ -471,7 +471,7 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReopenDecision(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if err := pr.db.ReopenDecision(r.Context(), r.PathValue("id"), store.HumanActor); err != nil {
@@ -644,7 +644,7 @@ func (s *Server) taskEditableGuard(ctx context.Context, pr *projectRuntime, ini 
 func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
@@ -669,7 +669,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 	if body.Implements != "" {
 		reqs, err := pr.db.ListRequirements(r.Context(), ini.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 		for _, req := range reqs {
@@ -703,7 +703,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		Estimate:     body.Estimate,
 	}
 	if err := pr.db.CreateTask(r.Context(), task, implementsID, depIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
@@ -712,7 +712,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
@@ -752,7 +752,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		statement = pr.redactor.RedactString(body.Statement)
 	}
 	if err := pr.db.UpdateTask(r.Context(), ini.ID, task.ID, title, statement, priority, body.Estimate); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
@@ -762,7 +762,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
@@ -777,7 +777,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	// Refuse if any other task depends on this one.
 	edges, err := pr.db.ListGraphEdgesTo(r.Context(), ini.ID, "task", task.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	for _, e := range edges {
@@ -787,7 +787,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := pr.db.DeleteTask(r.Context(), ini.ID, task.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
@@ -796,7 +796,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
@@ -809,7 +809,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pr.db.SetTaskStatus(r.Context(), task.ID, domain.TaskCancelled); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.TaskCancelled)})
@@ -818,7 +818,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
@@ -1523,12 +1523,12 @@ func (s *Server) handleGetChangeSet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListChecks(w http.ResponseWriter, r *http.Request) {
 	pr, cs, err := s.changeSet(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	findings, err := pr.db.ListFindingsByTarget(r.Context(), "change_set", cs.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	type check struct {
@@ -1572,7 +1572,7 @@ func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	pr, cs, err := s.changeSet(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, changeSetRefError(err))
+		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
 	var body struct {
