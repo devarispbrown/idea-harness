@@ -15,8 +15,23 @@ interface Provider {
 
 interface ProvidersView {
   default_model: string;
+  git_commit?: boolean;
   providers: Provider[];
 }
+
+interface ExecutorInfo {
+  name: string;
+  trust: string;
+  sandbox_mode: string;
+  network: string;
+  capabilities: string[];
+  selected: boolean;
+  image?: string;
+  model?: string;
+  default_image?: string;
+}
+
+const EXECUTOR_KINDS = ["internal", "container", "omp", "hermes"];
 
 const PRESETS = [
   { key: "openai", label: "OpenAI", type: "openai", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
@@ -42,11 +57,23 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [keyEnv, setKeyEnv] = useState("");
 
+  // executor form state
+  const [executorKind, setExecutorKind] = useState("internal");
+  const [executorImage, setExecutorImage] = useState("");
+  const [executorModel, setExecutorModel] = useState("");
+  const [initialKind, setInitialKind] = useState("internal");
+  const [initialImage, setInitialImage] = useState("");
+  const [initialModel, setInitialModel] = useState("");
+
+  // git commit on apply toggle
+  const [gitCommit, setGitCommit] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const v = await get<ProvidersView>(`/projects/${projectId}/providers`);
       setView(v);
       setDefaultModel(v.default_model || "");
+      setGitCommit(v.git_commit ?? false);
       const p = v.default_model?.includes("/")
         ? v.default_model.split("/")[0]
         : "openai";
@@ -56,9 +83,36 @@ export default function Settings({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
+  const loadExecutors = useCallback(async () => {
+    try {
+      const executors = await get<ExecutorInfo[]>(
+        `/projects/${projectId}/executors`,
+      );
+      const selected = executors.find((e) => e.selected);
+      if (selected && EXECUTOR_KINDS.includes(selected.name)) {
+        setExecutorKind(selected.name);
+        setInitialKind(selected.name);
+        // Prefill image/model from the persisted config, falling back to the
+        // pinned default image (Hermes) so an empty image never silently runs
+        // the agent in a toolchain-less alpine image.
+        const image = selected.image || selected.default_image || "";
+        setExecutorImage(image);
+        setInitialImage(image);
+        setExecutorModel(selected.model || "");
+        setInitialModel(selected.model || "");
+      }
+    } catch {
+      // executors endpoint may not exist yet; leave defaults in place.
+    }
+  }, [projectId]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    loadExecutors();
+  }, [loadExecutors]);
 
   const allModels = () => {
     const seen = new Set<string>();
@@ -118,6 +172,41 @@ export default function Settings({ projectId }: { projectId: string }) {
       await load();
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const saveExecutor = async () => {
+    setError("");
+    setSaved("");
+    const body: { kind?: string; image?: string; model?: string } = {};
+    if (executorKind !== initialKind) body.kind = executorKind;
+    if (executorImage !== initialImage) body.image = executorImage;
+    if (executorModel !== initialModel) body.model = executorModel;
+    if (Object.keys(body).length === 0) {
+      setSaved("Executor is unchanged.");
+      return;
+    }
+    try {
+      await put(`/projects/${projectId}/executors`, body);
+      setSaved("Executor saved.");
+      setInitialKind(executorKind);
+      setInitialImage(executorImage);
+      setInitialModel(executorModel);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const toggleGitCommit = async (checked: boolean) => {
+    setGitCommit(checked);
+    setError("");
+    setSaved("");
+    try {
+      await put(`/projects/${projectId}/providers`, { git_commit: checked });
+      setSaved(`git commit on apply ${checked ? "enabled" : "disabled"}.`);
+    } catch (e) {
+      setError(String(e));
+      setGitCommit(!checked);
     }
   };
 
@@ -284,6 +373,97 @@ export default function Settings({ projectId }: { projectId: string }) {
         <div className="row">
           <button onClick={addProvider}>Add provider</button>
         </div>
+      </section>
+
+      <section className="card">
+        <h2>Executor</h2>
+
+        <label className="field-label" htmlFor="executor-kind">
+          Kind
+        </label>
+        <select
+          id="executor-kind"
+          className="text-input"
+          value={executorKind}
+          onChange={(e) => setExecutorKind(e.target.value)}
+        >
+          {EXECUTOR_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+
+        <label className="field-label" htmlFor="executor-image">
+          Image
+        </label>
+        <input
+          id="executor-image"
+          className="text-input"
+          value={executorImage}
+          placeholder="container image (e.g. ghcr.io/org/agent:latest)"
+          onChange={(e) => setExecutorImage(e.target.value)}
+        />
+
+        <label className="field-label" htmlFor="executor-model">
+          Model
+        </label>
+        <input
+          id="executor-model"
+          className="text-input"
+          value={executorModel}
+          placeholder="provider/model — leave empty for default"
+          onChange={(e) => setExecutorModel(e.target.value)}
+        />
+
+        {(executorKind === "omp" || executorKind === "hermes") && (
+          <p
+            style={{
+              marginTop: 12,
+              padding: "10px 14px",
+              borderRadius: 8,
+              background: "#fffbeb",
+              border: "1px solid #fde68a",
+              color: "#92400e",
+              fontSize: "0.9rem",
+            }}
+          >
+            Runs with network egress + auto-approve and receives its provider
+            API key. Only use an image you trust.
+          </p>
+        )}
+        {executorKind === "internal" && (
+          <p className="muted" style={{ marginTop: 12 }}>
+            placeholder executor — writes no real code. Select hermes/omp for
+            real code.
+          </p>
+        )}
+
+        <div className="row">
+          <button onClick={saveExecutor}>Save executor</button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Apply</h2>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: "0.95rem",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={gitCommit}
+            onChange={(e) => toggleGitCommit(e.target.checked)}
+          />
+          git commit on apply
+        </label>
+        <p className="muted" style={{ marginTop: 8 }}>
+          Automatically commit changes when an initiative is applied.
+        </p>
       </section>
 
       {saved && <p className="ok-text">{saved}</p>}

@@ -129,6 +129,9 @@ what to run next. After you wire a real executor (see [`docs/agents.md`](docs/ag
 
 The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/`.
 
+**Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
+· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
+
 ## Model providers
 
 idea-harness supports **OpenAI, Anthropic, Google Gemini, OpenRouter, and Ollama (local)** — plus
@@ -172,6 +175,8 @@ scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 ## Documentation
 
 - [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
+- [`docs/quickstart.md`](docs/quickstart.md) — annotated end-to-end walkthrough (recipe-sharing app).
+- [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
