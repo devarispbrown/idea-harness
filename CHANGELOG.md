@@ -7,7 +7,10 @@ Versioning is pre-1.0: the CLI surface, the HTTP API, and the on-disk config sch
 any release. Breaking changes are listed under **Changed** or **Removed** with the migration in the
 entry itself. Once 1.0 ships, this project follows semantic versioning.
 
-## [Unreleased]
+## [0.1.0] - 2026-09-02
+
+First tagged release. The entries below are the whole history to date: everything
+before this tag shipped as "whatever main was that day".
 
 ### Fixed
 
