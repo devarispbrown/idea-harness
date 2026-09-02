@@ -92,6 +92,24 @@ func TestDecisionResolveAndImmutability(t *testing.T) {
 	if err := db.ResolveDecision(ctx, d.ID, "never", HumanActor); err == nil {
 		t.Fatal("expected second resolution to fail")
 	}
+	// Reopen undoes the resolution; it can then be resolved again.
+	if err := db.ReopenDecision(ctx, d.ID, HumanActor); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil || len(got) != 1 || got[0].Status != domain.DecisionOpen || got[0].Resolution != "" {
+		t.Fatalf("reopen did not clear decision: %+v (err=%v)", got, err)
+	}
+	if err := db.ResolveDecision(ctx, d.ID, "90 days", HumanActor); err != nil {
+		t.Fatalf("re-resolve after reopen: %v", err)
+	}
+	// Reopening an already-open decision must fail.
+	if err := db.ReopenDecision(ctx, d.ID, HumanActor); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReopenDecision(ctx, d.ID, HumanActor); err == nil {
+		t.Fatal("expected reopening an open decision to fail")
+	}
 }
 
 func TestFindingDispositionAndAcceptedRisk(t *testing.T) {

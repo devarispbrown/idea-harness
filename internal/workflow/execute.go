@@ -1176,6 +1176,51 @@ func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 	}
 }
 
+// ResetConflictedForRetry resets a conflicted change set back to approved so the
+// existing apply path can be re-run unchanged (approved→applying→applied).
+func (e *Engine) ResetConflictedForRetry(ctx context.Context, initiativeID, changeSetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cs, err := e.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return err
+	}
+	if cs.InitiativeID != initiativeID {
+		return fmt.Errorf("workflow: change set %q does not belong to initiative %q", changeSetID, initiativeID)
+	}
+	if cs.Status != domain.ChangeSetConflicted {
+		return fmt.Errorf("workflow: cannot retry change set in status %q", cs.Status)
+	}
+	return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetConflicted, domain.ChangeSetApproved, store.ActorOrchestrator)
+}
+
+// RejectConflicted resolves a conflicted change set by rejecting it and
+// re-opening its task (mirrors the existing rejected recovery path).
+func (e *Engine) RejectConflicted(ctx context.Context, initiativeID, changeSetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cs, err := e.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return err
+	}
+	if cs.InitiativeID != initiativeID {
+		return fmt.Errorf("workflow: change set %q does not belong to initiative %q", changeSetID, initiativeID)
+	}
+	if cs.Status != domain.ChangeSetConflicted {
+		return fmt.Errorf("workflow: cannot reject change set in status %q", cs.Status)
+	}
+	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetConflicted, domain.ChangeSetRejected, store.HumanActor); err != nil {
+		return err
+	}
+	// Best-effort task re-open (mirrors the system-deny recovery path): the
+	// rejection itself is the durable outcome; a missing/terminal task must not
+	// wedge it.
+	if cs.TaskID != "" {
+		_ = e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
+	}
+	return nil
+}
+
 // runChangeSetAdversarialReview runs the adversarial reviewer over a change set
 // and converts its structured output into findings.
 func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, error) {
