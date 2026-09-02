@@ -8,6 +8,7 @@ import ExplorePage from "./ExplorePage";
 import BuildPage from "./BuildPage";
 import PlanPage from "./PlanPage";
 import VerifyPage from "./VerifyPage";
+import RunningCard from "./RunningCard";
 import DocReader from "./DocReader";
 import DecisionPage from "./DecisionPage";
 import HealthPage from "./HealthPage";
@@ -214,6 +215,10 @@ export default function App() {
       />
 
       <main className="phase-main">
+        {currentInitiativeId && (
+          <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
+        )}
+
         {route.name === "home" && (
           <ProductHome
             projectId={projectId}
