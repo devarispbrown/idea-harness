@@ -545,6 +545,38 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	return opID, nil
 }
 
+// ApprovePlanInitiative re-runs the execution-plan review asynchronously.
+func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "", fmt.Errorf("initiative is running; wait for it to finish")
+	}
+	if ini.Status != domain.InitiativeNeedsHumanJudgment && ini.Status != domain.InitiativePlanApproved {
+		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
+	if err != nil {
+		return "", err
+	}
+	r.launchOperation(opID, func(bg context.Context) {
+		status, runErr := pr.engine.ApprovePlan(bg, initiativeID)
+		if runErr != nil {
+			r.failOperation(opID, initiativeID, "plan approval failed", bg, pr, runErr, true)
+			return
+		}
+		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		r.log.Info("plan approval complete", "initiative", initiativeID, "status", status)
+	})
+	return opID, nil
+}
+
 // RetryConflictedApply resets a conflicted change set to approved and re-runs the
 // existing async apply path. Returns the operation id.
 func (r *Runtime) RetryConflictedApply(ctx context.Context, projectID, initiativeID, changeSetID string) (string, error) {

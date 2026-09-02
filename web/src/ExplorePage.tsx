@@ -120,6 +120,19 @@ export default function ExplorePage({
     <div className="phase-page">
       <PhaseHeader title="Explore" purpose="Framing the idea, then researching what's known." pill={pill} />
 
+      {status === "running" && (
+        <section className="running-card">
+          <div className="running-row">
+            <span className="pill-spinner" aria-hidden="true" />
+            <div className="running-body">
+              <div className="running-title">An expert is working</div>
+              <div className="running-sub">Framing the idea, then researching what's known.</div>
+            </div>
+          </div>
+          <div className="running-safe">You can leave this page — it keeps running and the sidebar will show when it's done.</div>
+        </section>
+      )}
+
       <div className="doc-eyebrow" style={{ marginTop: 22 }}>Grounding</div>
       <p className="grounding-desc">
         Your own material, injected into design, planning, and PRD revisions. Everything is
