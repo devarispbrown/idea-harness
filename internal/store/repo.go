@@ -122,7 +122,10 @@ func (db *DB) SetInitiativeStatus(ctx context.Context, initiativeID string, stat
 		EventType:     "initiative.status_changed",
 		Operation:     string(status),
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ?`,
+		// Any transition out of "failed" clears the stale failure reason (the
+		// only writer of failure_reason is FailInitiative, which sets status
+		// failed in the same row update).
+		_, err := tx.Exec(`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ? WHERE id = ?`,
 			status, time.Now().UTC().UnixMilli(), initiativeID)
 		return err
 	})
@@ -167,6 +170,22 @@ func (db *DB) CreateAssertion(ctx context.Context, a *domain.Assertion) error {
 			edges = append(edges, EdgeToWrite{FromType: "assertion", FromID: a.ID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: a.ProducedByRun})
 		}
 		return db.wireEdges(tx, a.InitiativeID, edges)
+	})
+}
+
+// SupersedeAssertions marks every active assertion of an initiative as
+// superseded, mirroring SupersedeRequirements, so a full workflow retry does not
+// accumulate duplicate framing/research assumptions.
+func (db *DB) SupersedeAssertions(ctx context.Context, initiativeID, supersededBy string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "assertion",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "assertions.superseded",
+	}, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE assertions SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
+			domain.AssertionSuperseded, supersededBy, initiativeID, domain.AssertionSuperseded)
+		return err
 	})
 }
 

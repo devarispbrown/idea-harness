@@ -284,6 +284,25 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 }
 
+// handleRetry re-runs a failed initiative's workflow with a chosen model.
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	initiativeID := r.PathValue("id")
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Model) == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	opID, err := s.rt.RetryInitiative(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model))
+	if err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+}
+
 // handleApprovePlan re-runs the execution-plan review (human approval gate).
 func (s *Server) handleApprovePlan(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
