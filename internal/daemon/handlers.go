@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -696,7 +697,8 @@ func (e ingestError) Error() string { return e.msg }
 // redact → content-addressed blob → row. Two request shapes are accepted:
 //   - JSON (`content`/`kind`/`title`) — the paste-text path.
 //   - multipart/form-data (`file` + optional `kind`/`title`) — the upload path;
-//     the daemon sniffs the format and extracts text from .md/.txt/.pdf/.docx.
+//     the daemon sniffs the format and extracts text from .md/.txt/.pdf/.docx/
+//     .xlsx, or stores an image (.jpg/.png/…) for the vision-describe path.
 func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
@@ -710,10 +712,23 @@ func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes)
 
 	var content, kind, title string
+	var imageData []byte
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		content, kind, title, err = s.readMultipartDoc(w, r)
+		data, filename, k, t, err := s.readMultipartFile(w, r)
 		if err != nil {
-			return // readMultipartDoc already wrote the error
+			return // readMultipartFile already wrote the error
+		}
+		kind, title = k, t
+		switch docparse.Sniff(filename, data) {
+		case "image":
+			imageData = data
+		default:
+			extracted, err := docparse.ExtractText(filename, data)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "could not parse document")
+				return
+			}
+			content = extracted
 		}
 	} else {
 		var body struct {
@@ -733,7 +748,12 @@ func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 		content, kind, title = body.Content, body.Kind, body.Title
 	}
 
-	doc, err := s.ingestDoc(r, pr, ini, content, kind, title)
+	var doc *domain.ContextDoc
+	if imageData != nil {
+		doc, err = s.ingestImageDoc(r, pr, ini, imageData, kind, title)
+	} else {
+		doc, err = s.ingestDoc(r, pr, ini, content, kind, title)
+	}
 	if err != nil {
 		var ie ingestError
 		if errors.As(err, &ie) {
@@ -743,13 +763,22 @@ func (s *Server) handleAddDoc(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if doc.Format == "image" {
+		// Describe the image asynchronously so the upload returns immediately;
+		// the description then flows into contextDocs for subsequent runs.
+		go func() {
+			if derr := pr.engine.DescribeImages(context.Background(), ini.ID); derr != nil {
+				s.rt.log.Warn("describe images failed", "initiative", ini.ID, "err", derr)
+			}
+		}()
+	}
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// readMultipartDoc parses a multipart upload, extracts text from the uploaded
-// file, and returns content/kind/title. On failure it writes the error response
-// and returns a non-nil err.
-func (s *Server) readMultipartDoc(w http.ResponseWriter, r *http.Request) (string, string, string, error) {
+// readMultipartFile parses a multipart upload and returns the raw file bytes,
+// filename, and kind/title. On failure it writes the error response and returns
+// a non-nil err.
+func (s *Server) readMultipartFile(w http.ResponseWriter, r *http.Request) ([]byte, string, string, string, error) {
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
@@ -757,7 +786,7 @@ func (s *Server) readMultipartDoc(w http.ResponseWriter, r *http.Request) (strin
 		} else {
 			writeError(w, http.StatusBadRequest, "invalid multipart body")
 		}
-		return "", "", "", err
+		return nil, "", "", "", err
 	}
 	defer r.MultipartForm.RemoveAll()
 
@@ -766,23 +795,18 @@ func (s *Server) readMultipartDoc(w http.ResponseWriter, r *http.Request) (strin
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "file is required")
-		return "", "", "", err
+		return nil, "", "", "", err
 	}
 	defer file.Close()
 
 	data, err := io.ReadAll(io.LimitReader(file, maxDocFileBytes+1))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not read file")
-		return "", "", "", err
+		return nil, "", "", "", err
 	}
 	if len(data) > maxDocFileBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "document too large")
-		return "", "", "", err
-	}
-	extracted, err := docparse.ExtractText(hdr.Filename, data)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not parse document")
-		return "", "", "", err
+		return nil, "", "", "", err
 	}
 	if kind == "" {
 		kind = docparse.InferKind(hdr.Filename)
@@ -790,7 +814,36 @@ func (s *Server) readMultipartDoc(w http.ResponseWriter, r *http.Request) (strin
 	if title == "" {
 		title = filepath.Base(hdr.Filename)
 	}
-	return extracted, kind, title, nil
+	return data, hdr.Filename, kind, title, nil
+}
+
+// ingestImageDoc stores an image upload byte-for-byte in the redaction-free
+// store and records a context_docs row with Format="image". The vision
+// description is produced asynchronously and stored separately.
+func (s *Server) ingestImageDoc(r *http.Request, pr *projectRuntime, ini domain.Initiative, data []byte, kind, title string) (*domain.ContextDoc, error) {
+	kind = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(kind)), 64)
+	if kind == "" {
+		kind = "other"
+	}
+	title = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(title)), 200)
+	if title == "" {
+		title = "untitled"
+	}
+	digest, err := pr.rawBlobs.Put(data)
+	if err != nil {
+		return nil, err
+	}
+	doc := &domain.ContextDoc{
+		InitiativeID: ini.ID,
+		Kind:         kind,
+		Title:        title,
+		Digest:       digest,
+		Format:       "image",
+	}
+	if err := pr.db.CreateContextDoc(r.Context(), doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
 }
 
 // ingestDoc applies the shared ingest pipeline: trim → credential sweep →

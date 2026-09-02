@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/idea-harness/idea-harness/internal/config"
@@ -82,5 +83,43 @@ func TestContextDocsWireConsumesEdges(t *testing.T) {
 	}
 	if !impactSeesRun {
 		t.Fatal("Impact(doc) did not resolve the consuming run")
+	}
+}
+
+// TestDescribeImages verifies an image doc gets a vision description recorded
+// and injected into the context block.
+func TestDescribeImages(t *testing.T) {
+	fp := scriptedProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := eng.rawBlobs.Put([]byte("\x89PNG\r\n\x1a\nfake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := &domain.ContextDoc{InitiativeID: ini.ID, Kind: "design", Title: "mockup", Digest: digest, Format: "image"}
+	if err := db.CreateContextDoc(ctx, img); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.DescribeImages(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetContextDoc(ctx, img.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DescriptionDigest == "" {
+		t.Fatal("expected a description digest after DescribeImages")
+	}
+
+	// The description (not the raw image) is injected as context.
+	block := eng.contextDocs(ctx, ini.ID)
+	if !strings.Contains(block, "image") {
+		t.Fatalf("context block should label the image doc, got %q", block)
 	}
 }

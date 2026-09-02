@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -864,11 +865,11 @@ func truncateRunesForContext(s string, n int) string {
 }
 
 // contextDocs assembles the initiative's uploaded context documents as a single
-// context block. Each document's content is stored in the redacting blob store,
-// so it is already redacted at the write boundary; no further redaction is
-// applied here. Per-doc and total caps bound the prompt contribution, and
-// failures are logged rather than silently dropping a document. Returns "" when
-// there are no documents.
+// context block. Text docs contribute their (already-redacted) content; image
+// docs contribute their vision-generated description (already-redacted text).
+// Per-doc and total caps bound the prompt contribution, and failures are logged
+// rather than silently dropping a document. Returns "" when there are no
+// documents (or only undescribed images).
 func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 	docs, err := e.db.ListContextDocs(ctx, initiativeID)
 	if err != nil {
@@ -877,22 +878,100 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 	}
 	var b strings.Builder
 	for _, doc := range docs {
-		content, err := e.blobs.Get(doc.Digest)
+		digest := doc.Digest
+		label := doc.Kind
+		if doc.Format == "image" {
+			if doc.DescriptionDigest == "" {
+				e.log.Warn("image context doc not yet described", "initiative", initiativeID, "doc", doc.ID, "title", doc.Title)
+				continue
+			}
+			digest = doc.DescriptionDigest
+			label = doc.Kind + " (image)"
+		}
+		content, err := e.blobs.Get(digest)
 		if err != nil {
-			e.log.Warn("context doc blob missing", "initiative", initiativeID, "doc", doc.ID, "digest", doc.Digest, "err", err)
+			e.log.Warn("context doc blob missing", "initiative", initiativeID, "doc", doc.ID, "digest", digest, "err", err)
 			continue
 		}
 		body := string(content)
 		if len([]rune(body)) > contextDocsMaxPerDoc {
 			body = truncateRunesForContext(body, contextDocsMaxPerDoc)
 		}
-		fmt.Fprintf(&b, "## Context document: %s (kind: %s)\n\n%s\n", doc.Title, doc.Kind, body)
+		fmt.Fprintf(&b, "## Context document: %s (kind: %s)\n\n%s\n", doc.Title, label, body)
 		if b.Len() >= contextDocsMaxTotal {
 			break
 		}
 	}
 	out := b.String()
 	return truncateRunesForContext(out, contextDocsMaxTotal)
+}
+
+// DescribeImages describes every image context doc that lacks a description,
+// using a vision-capable model. Each description is stored (redacted) and its
+// digest recorded so contextDocs can inject it. Failures are logged per-doc and
+// do not block the remaining docs.
+func (e *Engine) DescribeImages(ctx context.Context, initiativeID string) error {
+	docs, err := e.db.ListContextDocs(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	for _, doc := range docs {
+		if doc.Format != "image" || doc.DescriptionDigest != "" {
+			continue
+		}
+		if err := e.describeImage(ctx, doc); err != nil {
+			e.log.Warn("image description failed", "initiative", initiativeID, "doc", doc.ID, "err", err)
+			continue
+		}
+	}
+	return nil
+}
+
+// describeImage runs one vision-model call over an image doc's bytes and stores
+// the returned description.
+func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error {
+	if e.rawBlobs == nil {
+		return fmt.Errorf("image store not configured")
+	}
+	image, err := e.rawBlobs.Get(doc.Digest)
+	if err != nil {
+		return fmt.Errorf("image blob: %w", err)
+	}
+	spec := e.visionModelSpec()
+	prov, modelName, err := e.registry.Resolve(spec)
+	if err != nil {
+		return err
+	}
+	req := model.Request{
+		Model:  modelName,
+		System: "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
+		Messages: []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
+		Images:   []model.Image{{Data: image, MediaType: http.DetectContentType(image)}},
+		MaxOutput: 2048,
+	}
+	resp, err := prov.Complete(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := e.chargeUSD(resp.Usage.CostUSD); err != nil {
+		return err
+	}
+	text := strings.TrimSpace(resp.Text)
+	if text == "" {
+		return fmt.Errorf("empty image description")
+	}
+	digest := e.storeBlob(e.redact(text))
+	if digest == "" {
+		return fmt.Errorf("could not store image description")
+	}
+	return e.db.SetContextDocDescription(ctx, doc.ID, digest)
+}
+
+// visionModelSpec resolves the model for image description: the default-model
+// chain (the built-in presets are vision-capable), overridable via a per-role
+// "vision" entry.
+func (e *Engine) visionModelSpec() string {
+	return e.resolveModelSpec("vision")
 }
 
 // wireDocConsumesIfAny records run --consumes--> context_doc edges for any run

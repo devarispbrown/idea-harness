@@ -120,17 +120,21 @@ type Artifact struct {
 }
 
 // ContextDoc is one source document attached to an initiative: a PRD, design
-// note, technical spec, market research, or other free-form labeled context.
-// The body is stored as a content-addressed blob; this row records its digest
-// plus a short redacted text preview.
+// note, technical spec, market research, a wireframe/mockup image, or other
+// free-form labeled context. The body is stored as a content-addressed blob;
+// this row records its digest plus a short redacted text preview. Image docs
+// (Format=="image") carry the raw image in Digest and, once described by a
+// vision model, the description text digest in DescriptionDigest.
 type ContextDoc struct {
-	ID           string    `json:"id"`
-	InitiativeID string    `json:"initiative_id"`
-	Kind         string    `json:"kind"`
-	Title        string    `json:"title"`
-	Digest       string    `json:"digest"`
-	Preview      string    `json:"preview"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	InitiativeID      string    `json:"initiative_id"`
+	Kind              string    `json:"kind"`
+	Title             string    `json:"title"`
+	Digest            string    `json:"digest"`
+	Preview           string    `json:"preview"`
+	Format            string    `json:"format"`
+	DescriptionDigest string    `json:"description_digest,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // SuggestedAnswer is one AI-proposed answer to an open question.

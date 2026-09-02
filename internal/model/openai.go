@@ -52,13 +52,51 @@ func (p *OpenAIProvider) Capabilities() Capabilities { return p.caps }
 
 type openAIChatRequest struct {
 	Model          string              `json:"model"`
-	Messages       []Message           `json:"messages"`
+	Messages       []openAIMessage     `json:"messages"`
 	MaxTokens      int                 `json:"max_completion_tokens,omitempty"`
 	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
 }
 
+// openAIMessage renders a message whose content is either a plain string or,
+// for a vision request, an array of text/image_url parts.
+type openAIMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type openAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL string `json:"url"`
+}
+
 type openAIResponseFormat struct {
 	Type string `json:"type"`
+}
+
+// openAIMessages prepends the system message and renders any user message with
+// attached images as multimodal content parts.
+func openAIMessages(req Request, system string) []openAIMessage {
+	msgs := []openAIMessage{{Role: "system", Content: system}}
+	for _, m := range req.Messages {
+		if m.Role == "user" && len(req.Images) > 0 {
+			parts := make([]openAIContentPart, 0, 1+len(req.Images))
+			if m.Content != "" {
+				parts = append(parts, openAIContentPart{Type: "text", Text: m.Content})
+			}
+			for _, img := range req.Images {
+				parts = append(parts, openAIContentPart{Type: "image_url", ImageURL: &openAIImageURL{URL: dataURL(img)}})
+			}
+			msgs = append(msgs, openAIMessage{Role: "user", Content: parts})
+			continue
+		}
+		msgs = append(msgs, openAIMessage{Role: m.Role, Content: m.Content})
+	}
+	return msgs
 }
 
 type openAIChatResponse struct {
@@ -85,7 +123,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	body := openAIChatRequest{
 		Model:     req.Model,
-		Messages:  append([]Message{{Role: "system", Content: system}}, req.Messages...),
+		Messages:  openAIMessages(req, system),
 		MaxTokens: req.MaxOutput,
 	}
 	if len(req.JSONSchema) > 0 {

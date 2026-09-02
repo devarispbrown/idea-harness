@@ -4,7 +4,16 @@
 // by the tagged real-provider smoke test.
 package model
 
-import "context"
+import (
+	"context"
+	"encoding/base64"
+)
+
+// dataURL renders an image as a base64 data URL for providers that accept
+// inline image URLs.
+func dataURL(img Image) string {
+	return "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
+}
 
 // Capabilities describes what a provider/model supports (§40).
 type Capabilities struct {
@@ -22,11 +31,19 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-// Request is a normalized model request.
+// Image is one image attached to a request (for vision models).
+type Image struct {
+	Data      []byte
+	MediaType string // e.g. "image/png", "image/jpeg"
+}
+
+// Request is a normalized model request. Images, when present, are attached to
+// the (single) user message as vision content by providers that support it.
 type Request struct {
 	Model           string
 	System          string
 	Messages        []Message
+	Images          []Image
 	ReasoningEffort string
 	MaxOutput       int
 	JSONSchema      []byte // if set, structured output is requested

@@ -438,6 +438,13 @@ CREATE TABLE IF NOT EXISTS context_docs (
 );
 CREATE INDEX IF NOT EXISTS idx_context_docs_initiative ON context_docs(initiative_id);
 `,
+	// 14: context-doc format (text | image) + the digest of the vision-generated
+	// text description for image docs (mockups/wireframes are described once and
+	// the description feeds the text pipeline).
+	`
+ALTER TABLE context_docs ADD COLUMN format TEXT NOT NULL DEFAULT 'text';
+ALTER TABLE context_docs ADD COLUMN description_digest TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -43,7 +44,28 @@ func (p *GeminiProvider) Name() string              { return "gemini" }
 func (p *GeminiProvider) Capabilities() Capabilities { return p.caps }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text       string           `json:"text,omitempty"`
+	InlineData *geminiInlineData `json:"inline_data,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"`
+}
+
+// geminiParts renders the user content parts, appending image inline_data
+// parts when a request carries images.
+func geminiParts(req Request) []geminiPart {
+	parts := make([]geminiPart, 0, len(req.Images)+1)
+	for _, img := range req.Images {
+		parts = append(parts, geminiPart{InlineData: &geminiInlineData{
+			MimeType: img.MediaType, Data: base64.StdEncoding.EncodeToString(img.Data),
+		}})
+	}
+	if text := lastUserText(req); text != "" {
+		parts = append(parts, geminiPart{Text: text})
+	}
+	return parts
 }
 
 type geminiContent struct {
@@ -86,7 +108,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 
 	body := geminiRequest{
-		Contents: []geminiContent{{Role: "user", Parts: []geminiPart{{Text: lastUserText(req)}}}},
+		Contents:         []geminiContent{{Role: "user", Parts: geminiParts(req)}},
 		GenerationConfig: geminiGenConfig{MaxOutputTokens: req.MaxOutput},
 	}
 	if system != "" {

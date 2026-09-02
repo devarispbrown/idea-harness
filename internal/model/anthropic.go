@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,10 +43,52 @@ func (p *AnthropicProvider) Name() string               { return "anthropic" }
 func (p *AnthropicProvider) Capabilities() Capabilities { return p.caps }
 
 type anthropicRequest struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
-	Messages  []Message `json:"messages"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
+}
+
+// anthropicMessage renders a message whose content is either a plain string or,
+// for a vision request, an array of text/image blocks.
+type anthropicMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type anthropicContentBlock struct {
+	Type   string           `json:"type"`
+	Text   string           `json:"text,omitempty"`
+	Source *anthropicSource `json:"source,omitempty"`
+}
+
+type anthropicSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// anthropicMessages renders user messages with attached images as content
+// blocks (Anthropic requires image blocks before text blocks).
+func anthropicMessages(req Request) []anthropicMessage {
+	msgs := make([]anthropicMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		if m.Role == "user" && len(req.Images) > 0 {
+			blocks := make([]anthropicContentBlock, 0, len(req.Images)+1)
+			for _, img := range req.Images {
+				blocks = append(blocks, anthropicContentBlock{Type: "image", Source: &anthropicSource{
+					Type: "base64", MediaType: img.MediaType, Data: base64.StdEncoding.EncodeToString(img.Data),
+				}})
+			}
+			if m.Content != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
+			msgs = append(msgs, anthropicMessage{Role: "user", Content: blocks})
+			continue
+		}
+		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})
+	}
+	return msgs
 }
 
 type anthropicResponse struct {
@@ -74,7 +117,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 		Model:     req.Model,
 		MaxTokens: req.MaxOutput,
 		System:    system,
-		Messages:  req.Messages,
+		Messages:  anthropicMessages(req),
 	}
 
 	var buf bytes.Buffer

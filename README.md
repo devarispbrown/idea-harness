@@ -127,12 +127,13 @@ idea next                              # → "✓ initiative complete"
 what to run next. After you wire a real executor (see [`docs/agents.md`](docs/agents.md)),
 `execute` produces real file changes instead of a placeholder.
 
-**Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc, or
-market analysis and it's redacted, content-addressed, and injected into design & planning (and PRD
-revisions) so the team works from your context:
+**Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc,
+market analysis, or a UI mockup image and it's redacted, content-addressed, and injected into
+design & planning (and PRD revisions) so the team works from your context. Images are described by
+a vision model; text formats are extracted directly.
 
 ```bash
-idea docs add prd.md        # .md / .txt / .pdf / .docx / .xlsx — or `-` to paste from stdin
+idea docs add prd.md        # .md / .txt / .pdf / .docx / .xlsx / .jpg / .png — or `-` to paste
 idea docs                   # list uploaded context docs
 ```
 

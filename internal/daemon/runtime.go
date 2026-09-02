@@ -45,7 +45,8 @@ type Runtime struct {
 
 type projectRuntime struct {
 	db       *store.DB
-	blobs    *blob.Store
+	blobs    *blob.Store // redacted store: model artifacts/context
+	rawBlobs *blob.Store // redaction-free store: diff/apply + image bytes
 	cfg      config.Config
 	rootPath string
 	dotEnv   map[string]string
@@ -169,7 +170,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// project root (the user's real source tree).
 	engine.SetWorkspaceRoot(rec.RootPath)
 
-	pr := &projectRuntime{db: db, blobs: blobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
+	pr := &projectRuntime{db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
 
 	r.projects[projectID] = pr
 
