@@ -31,6 +31,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   in a fresh clone with `pattern dist: no matching files found`. A placeholder `dist/index.html` is
   committed; `make build` overwrites it with the real UI.
 
+### Added
+
+- `idea next --until-human` runs the automatable steps (`advance` → `execute` → `verify`) back to
+  back, waiting for each to finish, and stops at the first human judgment point. The documented
+  quick start drops from 13 commands to 8. A failed step stops the loop rather than continuing.
+
 ### Security
 
 - A change set can no longer modify the harness control plane. `.idea-harness/**` (providers and

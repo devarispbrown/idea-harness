@@ -109,26 +109,31 @@ mkdir my-product && cd my-product
 idea init                              # creates .idea-harness/ (works with no Git)
 idea model set openai/gpt-4o-mini      # pick a model (or use the web UI Settings)
 idea new "Build usage-based billing"   # M1: idea → reviewed PRD
-idea watch                             # follow the run live (Bubble Tea spinner)
-
-idea prd                               # read the reviewed PRD in your terminal (Glamour)
-idea advance                           # M2: design → execution plan
-idea plan                              # (optional) render the execution plan
-idea tasks                             # (optional) list the dependency-ordered tasks
-
-idea execute                           # M3: run the next ready task → change set
-idea changes                           # list change sets (e.g. CHG-1)
+idea next --until-human                # M2–M3: design → plan → change set, then stops for you
 idea review CHG-1 approve              # human approves the change set
 idea apply CHG-1                       # M4: apply it to your workspace
-
 idea verify REQ-1 --pass               # record pass evidence; repeat per requirement
 idea next                              # → "✓ initiative complete"
 ```
 
-`idea next` drives the whole loop: it runs the next automatable step (`advance` → `execute` →
-`verify`) and stops at each human judgment point (`review`, `apply`, `resolve`), printing exactly
-what to run next. After you wire a real executor (see [`docs/agents.md`](docs/agents.md)),
-`execute` produces real file changes instead of a placeholder.
+`idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
+and stops at each human judgment point (`review`, `apply`, `resolve`), printing exactly what to run
+next. `--until-human` keeps going through the automatable steps — waiting for each to finish —
+instead of stopping after one, which is why the block above is eight commands rather than thirteen.
+The judgment points stay yours either way: `idea new` never drives itself past them.
+
+Look closer whenever you want:
+
+```bash
+idea watch                             # follow a run live (Bubble Tea spinner)
+idea prd                               # read the reviewed PRD in your terminal (Glamour)
+idea plan                              # render the execution plan
+idea tasks                             # list the dependency-ordered tasks
+idea changes                           # list change sets (e.g. CHG-1)
+```
+
+After you wire a real executor (see [`docs/agents.md`](docs/agents.md)), `execute` produces real
+file changes instead of a placeholder.
 
 **Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc,
 market analysis, or a UI mockup image and it's redacted, content-addressed, and injected into
