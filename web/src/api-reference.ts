@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 // Entry point for the standalone API reference page (web/api-reference.html),
 // served by the daemon at /api-reference.
 //
@@ -12,7 +13,12 @@ createApiReference("#app", {
   // The daemon serves the embedded spec here. It is outside /api/, so no token
   // is needed — the auth middleware guards /api/ only, and a fetch from this
   // page has no credential to offer.
-  url: "/openapi.yaml",
+  // Relative by default so the page works wherever it is served from: at the
+  // daemon's /api-reference (no trailing slash, so this resolves to
+  // /openapi.yaml) and at a CDN subpath like example.com/api-docs/, where an
+  // absolute "/openapi.yaml" would miss. API_REFERENCE_SPEC_URL overrides it
+  // for a spec hosted somewhere else again.
+  url: import.meta.env.VITE_SPEC_URL || "./openapi.yaml",
   title: "idea-harness daemon API",
 
   // Scalar's default fonts are @font-face rules pointing at fonts.scalar.com

@@ -71,6 +71,13 @@ jobs:
       - name: docs/cli.md matches the CLI command table
         run: make docs-check
 
+      # Same shape, same cost, and it has already caught three endpoints added
+      # by other work in progress: a route registered in routes.go that
+      # docs/openapi.yaml does not document, or a documented operation no route
+      # serves. Until now it only ran when someone remembered to type it.
+      - name: docs/openapi.yaml matches the daemon's routes
+        run: make api-check
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,
