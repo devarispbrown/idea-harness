@@ -66,7 +66,7 @@ export default function App() {
 
   const loadInitiativeData = useCallback(async (pid: string, iniId: string) => {
     const [a, t, c] = await Promise.all([
-      get<Artifact[]>(`/projects/${pid}/artifacts`).catch(() => []),
+      get<Artifact[]>(`/projects/${pid}/artifacts?initiative_id=${encodeURIComponent(iniId)}`).catch(() => []),
       get<Task[]>(`/projects/${pid}/initiatives/${iniId}/tasks`).catch(() => []),
       get<ChangeSet[]>(`/projects/${pid}/change-sets?initiative_id=${encodeURIComponent(iniId)}`).catch(() => []),
     ]);
@@ -99,29 +99,29 @@ export default function App() {
   const currentInitiative = initiativeId
     ? initiatives.find((i) => i.id === initiativeId) ?? null
     : null;
+  const currentInitiativeId = currentInitiative?.id ?? "";
 
   useEffect(() => {
-    if (projectId && currentInitiative) {
-      loadInitiativeData(projectId, currentInitiative.id);
+    if (projectId && currentInitiativeId) {
+      loadInitiativeData(projectId, currentInitiativeId);
     }
-  }, [projectId, currentInitiative, loadInitiativeData]);
+  }, [projectId, currentInitiativeId, loadInitiativeData]);
 
   // Poll for freshness (SSE live-update arrives with the running-state work).
   useEffect(() => {
     if (!projectId) return;
     const id = setInterval(() => {
       loadInitiatives(projectId);
-      const ini = currentInitiative;
-      if (ini) loadInitiativeData(projectId, ini.id);
+      if (currentInitiativeId) loadInitiativeData(projectId, currentInitiativeId);
     }, 2500);
     return () => clearInterval(id);
-  }, [projectId, currentInitiative, loadInitiatives, loadInitiativeData]);
+  }, [projectId, currentInitiativeId, loadInitiatives, loadInitiativeData]);
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",
     artifacts,
-    taskCount: tasks.length,
-    appliedChangeSets: changeSets.filter((c) => c.status === "applied").length,
+    tasks,
+    changeSets,
     verifiedRequirements: 0, // wired in the Verify page (step 9)
   };
   const phases = derivePhases(phaseSource);
@@ -254,9 +254,7 @@ function ProductHome({
           onChange={(e) => setIdea(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && createIdea()}
         />
-        <button onClick={createIdea} disabled={!idea.trim()}>
-          Start
-        </button>
+        {idea.trim() && <button onClick={createIdea}>Start</button>}
       </div>
       <ul className="list" style={{ marginTop: 18 }}>
         {initiatives.map((i) => (

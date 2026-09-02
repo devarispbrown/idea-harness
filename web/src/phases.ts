@@ -1,13 +1,14 @@
 import type { PhaseName } from "./router";
 
 // Phase completion + summary derivation (§design rule 7: completed phases state
-// what they produced). Client-side only, from status + artifact/change-set data.
+// what they produced). Client-side only, from status + artifact/task/change-set
+// data.
 
 export interface PhaseSource {
   status: string;
   artifacts: { kind: string; version: number }[];
-  taskCount: number;
-  appliedChangeSets: number;
+  tasks: { status: string }[];
+  changeSets: { status: string }[];
   verifiedRequirements: number;
 }
 
@@ -39,12 +40,22 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
   const { artifacts, status } = src;
   const complete = status === "complete";
 
+  const taskCount = src.tasks.length;
+  const appliedChangeSets = src.changeSets.filter((c) => c.status === "applied").length;
+  // Build is done only when the whole plan has been executed AND every change
+  // set reached a terminal state (applied/reverted) — never on a single apply.
+  const allTasksFinished =
+    taskCount > 0 && src.tasks.every((t) => t.status === "done" || t.status === "cancelled");
+  const allChangeSetsTerminal =
+    src.changeSets.length > 0 &&
+    src.changeSets.every((c) => c.status === "applied" || c.status === "reverted");
+
   const done: Record<PhaseName, boolean> = {
     explore: hasAll(artifacts, ["idea_brief", "research_brief"]),
     define: hasAll(artifacts, ["prd"]),
     design: hasAll(artifacts, ["technical_design", "design_spec", "verification_plan"]),
     plan: status === "plan_approved" || complete,
-    build: src.appliedChangeSets > 0,
+    build: allTasksFinished && allChangeSetsTerminal,
     verify: complete,
   };
 
@@ -53,8 +64,8 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
     explore: "brief + research",
     define: `PRD v${prdVersion} approved`,
     design: "architecture + spec",
-    plan: `${src.taskCount} task${src.taskCount === 1 ? "" : "s"} approved`,
-    build: `${src.appliedChangeSets} change set${src.appliedChangeSets === 1 ? "" : "s"} applied`,
+    plan: `${taskCount} task${taskCount === 1 ? "" : "s"} approved`,
+    build: `${appliedChangeSets} change set${appliedChangeSets === 1 ? "" : "s"} applied`,
     verify: `${src.verifiedRequirements} requirement${src.verifiedRequirements === 1 ? "" : "s"} verified`,
   };
 

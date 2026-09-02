@@ -78,38 +78,41 @@ export default function PhaseNav({
         </div>
       )}
 
-      <div className="pn-eyebrow">Phases</div>
+      {initiative && (
+        <>
+          <div className="pn-eyebrow">Phases</div>
 
-      <nav className="pn-rail">
-        {phases.map((p, i) => {
-          const on = initiative && active === p.phase;
-          const isLast = i === phases.length - 1;
-          const live = p.state === "current" && on ? cur : null;
-          return (
-            <button
-              key={p.phase}
-              className={`pn-phase ${p.state} ${on ? "on" : ""}`}
-              onClick={() => initiative && onNavigate(phaseHref(initiative.id, p.phase))}
-              disabled={!initiative}
-            >
-              <span className="pn-dot-wrap">
-                <span className="pn-dot">{p.state === "done" ? "✓" : p.state === "current" ? "▶" : ""}</span>
-                {!isLast && <span className="pn-line" />}
-              </span>
-              <span className="pn-phase-body">
-                <span className="pn-phase-row">
-                  <span className="pn-phase-label">{p.label}</span>
-                  {p.state === "current" && live && live.pill && (
-                    <span className={`pn-pill state-${p.state}`}>{live.pill}</span>
-                  )}
-                </span>
-                {p.state === "done" && <span className="pn-note">{p.summary}</span>}
-                {p.state === "current" && live && live.note && <span className="pn-note live">{live.note}</span>}
-              </span>
-            </button>
-          );
-        })}
-      </nav>
+          <nav className="pn-rail">
+            {phases.map((p, i) => {
+              const on = active === p.phase;
+              const isLast = i === phases.length - 1;
+              const live = p.state === "current" ? cur : null;
+              return (
+                <button
+                  key={p.phase}
+                  className={`pn-phase ${p.state} ${on ? "on" : ""}`}
+                  onClick={() => onNavigate(phaseHref(initiative.id, p.phase))}
+                >
+                  <span className="pn-dot-wrap">
+                    <span className="pn-dot">{p.state === "done" ? "✓" : p.state === "current" ? "▶" : ""}</span>
+                    {!isLast && <span className="pn-line" />}
+                  </span>
+                  <span className="pn-phase-body">
+                    <span className="pn-phase-row">
+                      <span className="pn-phase-label">{p.label}</span>
+                      {p.state === "current" && live && live.pill && (
+                        <span className={`pn-pill state-${p.state}`}>{live.pill}</span>
+                      )}
+                    </span>
+                    {p.state === "done" && <span className="pn-note">{p.summary}</span>}
+                    {p.state === "current" && live && live.note && <span className="pn-note live">{live.note}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </>
+      )}
 
       <div className="pn-footer">
         <button className="pn-model" onClick={() => onNavigate("#/settings")}>
