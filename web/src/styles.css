@@ -10,23 +10,23 @@
   --text-muted: #78716c;
   --text-faint: #a8a29e;
   --accent: #4f46e5;
-  --accent-bg: var(--accent-bg);
-  --accent-line: var(--accent-line);
+  --accent-bg: #eef2ff;
+  --accent-line: #c7d2fe;
 
   /* Semantic states (fg / bg / line) */
-  --needs-you-fg: var(--needs-you-fg);
-  --needs-you-bg: var(--needs-you-bg);
-  --needs-you-line: var(--needs-you-line);
-  --running-fg: var(--running-fg);
+  --needs-you-fg: #92400e;
+  --needs-you-bg: #fffbeb;
+  --needs-you-line: #fde68a;
+  --running-fg: #3730a3;
   --running-bg: #f8f8ff;
-  --running-line: var(--accent-line);
-  --verified-fg: var(--verified-fg);
+  --running-line: #c7d2fe;
+  --verified-fg: #166534;
   --verified-bg: #ffffff;
-  --verified-line: var(--verified-line);
-  --failing-fg: var(--failing-fg);
-  --failing-bg: var(--failing-bg);
-  --failing-line: var(--failing-line);
-  --unverified-fg: var(--needs-you-fg);
+  --verified-line: #bbf7d0;
+  --failing-fg: #991b1b;
+  --failing-bg: #fef2f2;
+  --failing-line: #fecaca;
+  --unverified-fg: #92400e;
   --unverified-bg: #ffffff;
   --unverified-line: #e8c96e;
   --inactive-fg: #78716c;
@@ -34,10 +34,10 @@
   --inactive-line: #e8e6e1;
 
   /* Pill fills (chip/pill background per state) */
-  --needs-you-pill: var(--needs-you-pill);
-  --running-pill: var(--running-pill);
-  --verified-pill: var(--verified-pill);
-  --failing-pill: var(--failing-pill);
+  --needs-you-pill: #fef3c7;
+  --running-pill: #e0e7ff;
+  --verified-pill: #dcfce7;
+  --failing-pill: #fee2e2;
   --inactive-pill: #f5f4f1;
 }
 
@@ -1171,7 +1171,7 @@ button.ghost.small {
 .pn-phase.future .pn-phase-label { font-weight: 400; color: var(--text-faint); }
 .pn-phase.done .pn-phase-label { font-weight: 400; color: #57534e; }
 .pn-phase.current .pn-phase-label { font-weight: 600; color: var(--text); }
-.pn-phase.current.on .pn-phase-label { font-weight: 650; color: var(--accent); }
+.pn-phase.on .pn-phase-label { font-weight: 650; color: var(--accent); }
 .pn-pill {
   font: 700 9.5px ui-monospace, Menlo, monospace;
   border-radius: 999px;

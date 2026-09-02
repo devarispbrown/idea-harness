@@ -21,14 +21,18 @@ export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "");
   const segs = path.split("/").filter(Boolean);
   if (segs.length === 0) return { name: "home" };
-  if (segs[0] === "settings") return { name: "settings" };
-  if (segs[0] === "i" && segs.length >= 2) {
+  if (segs[0] === "settings" && segs.length === 1) return { name: "settings" };
+  if (segs[0] === "i" && segs.length >= 3) {
     const id = segs[1];
     const rest = segs[2];
-    if (rest === "decision" && segs[3]) return { name: "decision", id, decisionId: segs[3] };
-    if (rest === "health") return { name: "health", id };
-    if (rest === "doc" && segs[3]) return { name: "doc", id, artifact: segs[3], version: segs[4] ?? "latest" };
-    if ((PHASES as string[]).includes(rest)) return { name: "phase", id, phase: rest as PhaseName };
+    if (rest === "decision" && segs.length === 4) return { name: "decision", id, decisionId: segs[3] };
+    if (rest === "health" && segs.length === 3) return { name: "health", id };
+    if (rest === "doc" && (segs.length === 4 || segs.length === 5)) {
+      return { name: "doc", id, artifact: segs[3], version: segs[4] ?? "latest" };
+    }
+    if (segs.length === 3 && (PHASES as string[]).includes(rest)) {
+      return { name: "phase", id, phase: rest as PhaseName };
+    }
   }
   return { name: "home" };
 }
