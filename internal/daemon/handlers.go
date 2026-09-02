@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -350,7 +351,13 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// pr.cfg.Harness is copied by value but its maps are shared with the live
+	// runtime config, so writing into them before the request is accepted would
+	// mutate the running daemon even when the write is rejected below. Clone
+	// them and assemble a candidate.
 	cfg := pr.cfg.Harness
+	cfg.Providers = maps.Clone(pr.cfg.Harness.Providers)
+	cfg.Models = maps.Clone(pr.cfg.Harness.Models)
 	if body.DefaultModel != "" {
 		cfg.DefaultModel = body.DefaultModel
 	}
@@ -384,6 +391,21 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 
 	if body.GitCommit != nil {
 		cfg.GitCommit = *body.GitCommit
+	}
+
+	// A model spec naming a provider that does not exist is rejected here rather
+	// than accepted and discovered at the first run: `idea model set
+	// bogus/model` used to answer "✓ default model set to bogus/model", and
+	// executor.model is the field whose unresolvable provider used to make the
+	// engine scavenge an API key.
+	candidate := config.Config{Project: pr.cfg.Project, Harness: cfg}
+	if problems := candidate.ProblemsWithEnv(pr.dotEnv); config.HasErrors(problems) {
+		for _, p := range problems {
+			if p.Severity == config.SeverityError {
+				writeError(w, http.StatusBadRequest, p.Message)
+				return
+			}
+		}
 	}
 
 	// Reject inline secrets (§47) and write harness.yaml.

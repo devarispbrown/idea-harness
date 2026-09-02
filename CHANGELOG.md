@@ -45,6 +45,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - `idea next --until-human` runs the automatable steps (`advance` → `execute` → `verify`) back to
   back, waiting for each to finish, and stops at the first human judgment point. The documented
   quick start drops from 13 commands to 8. A failed step stops the loop rather than continuing.
+- `idea help --format=md` writes the command table as markdown to stdout (the human `idea help`
+  still goes to stderr, unchanged). `docs/cli.md` embeds that table between generated-block markers,
+  and `make docs` regenerates it. `docs/cli.md` documented 16 of the 36 commands the CLI dispatches;
+  `risk`, `diff`, `cancel` and `change <id>` appeared in no document at all. `make docs-check` fails
+  on drift and runs in CI, so a new command can no longer ship undocumented.
 
 ### Security
 
@@ -68,6 +73,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
+  answered `✓ default model set to bogus/model` and failed at the first run.
+- `idea doctor` exits non-zero when a check fails. It printed the failure and exited 0, so a script
+  that ran it as the post-install check could not tell.
+- `idea help` now lists `verify`, `next` and `help` itself, which were dispatched but never shown.
+
 - Unknown flags are now an error naming the command's accepted flags, instead of being silently
   treated as a positional argument (or, for `idea next`, discarded).
 - `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
@@ -76,6 +87,9 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   previously printed the raw response body behind a `daemon: ` prefix.
 - `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
   the flag and printed human-formatted output.
+- `docs/configuration.md` documents the top-level `harness.yaml` fields, including `git_commit`,
+  which README, the quick start and `docs/ui.md` all referenced while the configuration reference
+  did not mention it at all.
 
 - `README.md` no longer describes Node and pnpm as optional for installing. They are needed only to
   change the web UI.

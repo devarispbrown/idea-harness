@@ -53,7 +53,35 @@ providers:
     type: openai
     api_key_env: GROQ_API_KEY
     base_url: https://api.groq.com/openai/v1
+
+# Create a git commit (with repository hooks disabled) for every applied change
+# set, on top of the byte-for-byte snapshot revert. Off by default (§M7).
+git_commit: false
 ```
+
+Top-level fields:
+
+| Field | Meaning | Default |
+|---|---|---|
+| `network` | `disabled` \| `enabled` — whether research may fetch `research.urls` | `disabled` |
+| `review.max_cycles` | maximum revise cycles before the work goes to human judgment | `3` |
+| `review.max_tokens`, `review.max_cost_usd` | optional per-review budgets (`0` = unlimited) | `0` |
+| `research.urls` | seed URLs fetched during research when `network: enabled` | none |
+| `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
+| `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
+| `providers` | provider map (fields below) | none |
+| `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
+| `executor.image` | container image for the non-internal kinds | — |
+| `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
+| `check.image` | image holding the project toolchain for the build/test checks | — |
+| `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — the check is recorded `not_applicable` |
+| `check_timeout_seconds` | per-check timeout | `600` |
+| `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
+
+`git_commit` is off by default on purpose: a repository hook would run arbitrary code in the
+daemon's environment, so committing is never implied. Applied change sets are always revertible from
+the snapshot regardless of this setting — the commit is an extra, not the mechanism. The web UI
+exposes the same switch under **Settings**.
 
 Each provider entry supports:
 
