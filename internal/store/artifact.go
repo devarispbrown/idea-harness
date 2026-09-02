@@ -7,10 +7,11 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
-// ArtifactView is an artifact version joined with its family kind.
+// ArtifactView is an artifact version joined with its family kind + initiative.
 type ArtifactView struct {
 	VersionID     string             `json:"id"`
 	ArtifactID    string             `json:"artifact_id"`
+	InitiativeID  string             `json:"initiative_id"`
 	Kind          domain.ArtifactKind `json:"kind"`
 	Version       int                `json:"version"`
 	Status        string             `json:"status"`
@@ -22,7 +23,7 @@ type ArtifactView struct {
 // ListArtifacts returns artifact versions (with kind) for an initiative.
 func (db *DB) ListArtifacts(ctx context.Context, initiativeID string) ([]ArtifactView, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT av.id, av.artifact_id, a.kind, av.version, av.status, av.body_digest, av.produced_by_run_id, av.created_at
+		SELECT av.id, av.artifact_id, a.initiative_id, a.kind, av.version, av.status, av.body_digest, av.produced_by_run_id, av.created_at
 		FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id
 		WHERE a.initiative_id = ? ORDER BY av.created_at ASC`, initiativeID)
 	if err != nil {
@@ -33,7 +34,7 @@ func (db *DB) ListArtifacts(ctx context.Context, initiativeID string) ([]Artifac
 	for rows.Next() {
 		var v ArtifactView
 		var created int64
-		if err := rows.Scan(&v.VersionID, &v.ArtifactID, &v.Kind, &v.Version, &v.Status, &v.BodyDigest, &v.ProducedByRun, &created); err != nil {
+		if err := rows.Scan(&v.VersionID, &v.ArtifactID, &v.InitiativeID, &v.Kind, &v.Version, &v.Status, &v.BodyDigest, &v.ProducedByRun, &created); err != nil {
 			return nil, err
 		}
 		v.CreatedAt = time.UnixMilli(created)
@@ -47,10 +48,10 @@ func (db *DB) GetArtifactVersion(ctx context.Context, versionID string) (Artifac
 	var v ArtifactView
 	var created int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT av.id, av.artifact_id, a.kind, av.version, av.status, av.body_digest, av.produced_by_run_id, av.created_at
+		SELECT av.id, av.artifact_id, a.initiative_id, a.kind, av.version, av.status, av.body_digest, av.produced_by_run_id, av.created_at
 		FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id
 		WHERE av.id = ?`, versionID).
-		Scan(&v.VersionID, &v.ArtifactID, &v.Kind, &v.Version, &v.Status, &v.BodyDigest, &v.ProducedByRun, &created)
+		Scan(&v.VersionID, &v.ArtifactID, &v.InitiativeID, &v.Kind, &v.Version, &v.Status, &v.BodyDigest, &v.ProducedByRun, &created)
 	if err != nil {
 		return v, err
 	}
