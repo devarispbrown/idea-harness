@@ -229,6 +229,8 @@ path to be publicly fetchable.
 - [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, every endpoint.
 - [`docs/api.md`](docs/api.md) — the HTTP API, with [`docs/openapi.yaml`](docs/openapi.yaml) as the
   machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
+- [`docs/api-reference-hosting.md`](docs/api-reference-hosting.md) — building without the bundled
+  reference (3.7 MiB smaller) and hosting it on Cloudflare, AWS or Fastly instead.
 - [`docs/security.md`](docs/security.md) — security model and invariants.
 - [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
 

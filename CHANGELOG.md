@@ -39,6 +39,14 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- The API reference can be hosted away from the binary. `APIDOCS=0 make build` drops it and 3.69 MiB
+  (33.99 MiB → 30.30 MiB); the spec stays embedded either way, so a stripped binary still describes
+  itself at `/openapi.yaml`. `make api-docs-dist` produces a static bundle, and
+  `scripts/publish-api-docs.sh <cloudflare|aws|fastly> [--dry-run]` publishes it. See
+  `docs/api-reference-hosting.md`.
+- `make api-check` now runs in CI. It has caught three endpoints added by other work in progress and
+  previously only ran when someone remembered to type it.
+
 - `docs/openapi.yaml` — an OpenAPI 3.1 description of all 70 operations, and `make api-check`, which
   fails when a route exists that the spec does not document or the reverse.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:

@@ -47,3 +47,4 @@ internal/web/dist/*
 
 # Claude worktrees
 /.claude/
+dist-api-docs/

@@ -1,0 +1,30 @@
+# Response headers for the hosted API reference (Cloudflare Pages / Netlify
+# syntax; the CloudFront equivalent is a response-headers policy, see
+# docs/api-reference-hosting.md).
+#
+# The daemon serves this page with a CSP of its own (internal/daemon/apidocs.go),
+# and that policy is doing real work: it is what makes "nothing in this bundle
+# can reach off-origin" a property of the page rather than a promise from its
+# configuration. A CDN sets no CSP by default, so hosting the page without this
+# file would quietly drop that property.
+#
+# The policy is the daemon's, minus the parts that only make sense locally.
+# script-src 'self' with no 'unsafe-eval': the built Scalar bundle contains no
+# eval or new Function, which was verified against the bundle rather than
+# assumed. connect-src 'self' keeps the spec fetch same-origin and blocks
+# Scalar's request proxy; the page also disables try-it explicitly, so this is
+# defence in depth rather than the only control.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+# Hashed asset filenames change when their bytes do, so they are immutable.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The spec is the point of the site and changes without its URL changing.
+/openapi.yaml
+  Cache-Control: public, max-age=300, must-revalidate
+/openapi.json
+  Cache-Control: public, max-age=300, must-revalidate

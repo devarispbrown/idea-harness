@@ -19,6 +19,10 @@ http://127.0.0.1:8787/openapi.yaml     # the spec itself (also .json)
 There is no SDK, and none is planned: the supported integration surfaces are this API and
 `idea <command> --json`. If a client library is ever wanted, the spec above is what generates it.
 
+The reference can also be hosted away from the binary — `APIDOCS=0 make build` drops it and its
+3.7 MiB, and `make api-docs-dist` produces a static bundle for Cloudflare, AWS or Fastly. See
+[`api-reference-hosting.md`](api-reference-hosting.md).
+
 Pre-1.0 the API may change in any release; breaking changes are recorded in
 [`CHANGELOG.md`](../CHANGELOG.md).
 

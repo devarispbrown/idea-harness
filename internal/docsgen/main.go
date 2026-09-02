@@ -38,7 +38,16 @@ const (
 func main() {
 	check := flag.Bool("check", false, "report drift and exit non-zero instead of rewriting the file")
 	apiCheck := flag.Bool("api-check", false, "compare docs/openapi.yaml against the routes registered in internal/daemon and exit non-zero on drift")
+	specJSON := flag.String("spec-json", "", "write docs/openapi.yaml to this path as JSON (used by `make api-docs-dist`)")
 	flag.Parse()
+
+	if *specJSON != "" {
+		if err := writeSpecJSON(*specJSON); err != nil {
+			fmt.Fprintln(os.Stderr, "spec-json:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *apiCheck {
 		if err := runAPICheck(); err != nil {

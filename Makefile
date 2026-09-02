@@ -71,6 +71,31 @@ docs-check:
 api-check:
 	go run ./internal/docsgen -api-check
 
+# Build the API reference as static files any host can serve, for people who
+# would rather not carry its ~3.7 MiB inside every binary (APIDOCS=0 drops it).
+#
+# API_REFERENCE_BASE=./ is what makes a subpath deploy work: the default build
+# emits absolute /assets/... URLs, correct at a site root and 404 anywhere else.
+# The spec is copied in beside the page rather than fetched from a daemon --
+# hostOriginGuard 403s any request carrying a non-loopback Origin, so a hosted
+# page could not read a local daemon's spec even with CORS headers added, and
+# co-hosting also means the page works with no daemon running at all.
+API_DOCS_DIST := dist-api-docs
+
+api-docs-dist:
+	rm -rf $(API_DOCS_DIST)
+	cd web && CI=true pnpm install --frozen-lockfile && API_REFERENCE_BASE=./ pnpm build
+	mkdir -p $(API_DOCS_DIST)
+	cp web/dist/api-reference.html $(API_DOCS_DIST)/index.html
+	cp -R web/dist/assets $(API_DOCS_DIST)/assets
+	cp docs/openapi.yaml $(API_DOCS_DIST)/openapi.yaml
+	go run ./internal/docsgen -spec-json $(API_DOCS_DIST)/openapi.json
+	cp deploy/api-docs/_headers $(API_DOCS_DIST)/_headers
+	@echo
+	@echo "$(API_DOCS_DIST)/ is ready to publish:"
+	@du -sh $(API_DOCS_DIST) | sed 's/^/  /'
+	@echo "  scripts/publish-api-docs.sh <cloudflare|aws|fastly> --dry-run"
+
 test:
 	go test ./...
 
