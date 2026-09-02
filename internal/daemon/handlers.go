@@ -24,6 +24,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/risk"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/textdiff"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -535,6 +536,22 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"operation_id": opID, "status": string(domain.OperationCancelled)})
+}
+
+// handleListOperations returns an initiative's operations (most recent first)
+// so the UI can surface the running one with elapsed time and a Stop action.
+func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	list, err := pr.db.ListOperationsByInitiative(r.Context(), ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // ---------- decisions / questions ----------
@@ -1105,6 +1122,69 @@ func (s *Server) handleArtifactBody(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleArtifactDiff returns a line diff between two artifact versions of the
+// same artifact family, addressed by version id (from → to).
+func (s *Server) handleArtifactDiff(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	fromID := r.URL.Query().Get("from")
+	toID := r.URL.Query().Get("to")
+	if fromID == "" || toID == "" {
+		writeError(w, http.StatusBadRequest, "from and to version ids are required")
+		return
+	}
+	from, err := pr.db.GetArtifactVersion(r.Context(), fromID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "from version not found")
+		return
+	}
+	to, err := pr.db.GetArtifactVersion(r.Context(), toID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "to version not found")
+		return
+	}
+	if from.ArtifactID != to.ArtifactID {
+		writeError(w, http.StatusBadRequest, "versions belong to different artifacts")
+		return
+	}
+	old, err := pr.blobs.Get(from.BodyDigest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "from body missing")
+		return
+	}
+	newBody, err := pr.blobs.Get(to.BodyDigest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "to body missing")
+		return
+	}
+	// Guard the O(lines²) diff table against pathological inputs. Artifact bodies
+	// are model-output-bounded, but the endpoint still refuses absurd sizes.
+	if len(old) > maxArtifactDiffBytes || len(newBody) > maxArtifactDiffBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "artifact too large to diff")
+		return
+	}
+	if strings.Count(string(old), "\n") > maxArtifactDiffLines || strings.Count(string(newBody), "\n") > maxArtifactDiffLines {
+		writeError(w, http.StatusRequestEntityTooLarge, "artifact has too many lines to diff")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":         to.Kind,
+		"from_version": from.Version,
+		"to_version":   to.Version,
+		"diff":         textdiff.Unified(string(old), string(newBody)),
+	})
+}
+
+const (
+	// maxArtifactDiffBytes caps a single artifact body considered for diffing.
+	maxArtifactDiffBytes = 1 << 20 // 1 MiB
+	// maxArtifactDiffLines caps the line count fed to the O(lines²) LCS diff.
+	maxArtifactDiffLines = 20000
+)
+
 // handleArtifactRaw returns the raw markdown body for download/export (§20).
 func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
@@ -1539,8 +1619,10 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleVerify runs the verification gate and, when a requirement + pass is
-// supplied, records a human pass first (§70, review B4/B10).
+// handleVerify runs the verification gate and, when a requirement + disposition
+// is supplied, records a human judgment (pass/fail/waived) first (§70, review
+// B4/B10). `pass` is retained for backward compatibility; `fail` and `waived`
+// are the new dispositions.
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
@@ -1552,14 +1634,25 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Requirement string `json:"requirement"`
 		Pass        bool   `json:"pass"`
+		Fail        bool   `json:"fail"`
+		Waived      bool   `json:"waived"`
 		Note        string `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if body.Requirement != "" && body.Pass {
-		if err := pr.engine.RecordHumanPass(r.Context(), initiativeID, body.Requirement, body.Note, ""); err != nil {
+	var disposition domain.VerificationStatus
+	switch {
+	case body.Fail:
+		disposition = domain.VerificationFail
+	case body.Waived:
+		disposition = domain.VerificationWaived
+	case body.Pass:
+		disposition = domain.VerificationPass
+	}
+	if body.Requirement != "" && disposition != "" {
+		if err := pr.engine.RecordHumanEvidence(r.Context(), initiativeID, body.Requirement, disposition, body.Note, ""); err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
@@ -1711,8 +1804,10 @@ func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleChangeSetDiff serves the change set's patch as a readable diff (path +
-// content per file). Content blobs are already redacted at write time (§43).
+// handleChangeSetDiff serves the change set's patch as a readable diff: the
+// flat `patch` string plus a per-file `files` list. Content is redacted at this
+// display surface (RenderPatch/StructuredDiff), never at blob-write time — the
+// raw store stays redaction-free for byte-for-byte apply/revert.
 func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -1724,7 +1819,10 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"patch": pr.engine.RenderPatch(cs)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"patch": pr.engine.RenderPatch(cs),
+		"files": pr.engine.StructuredDiff(cs),
+	})
 }
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	pr, cs, err := s.changeSet(r)

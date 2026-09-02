@@ -53,10 +53,13 @@ type Coverage struct {
 	Pass        int    `json:"pass"`
 	Total       int    `json:"total"`
 	NeedsManual int    `json:"needs_manual"`
+	Status      string `json:"status"`
 }
 
 // Coverage computes the verification coverage for each requirement of an
 // initiative (pass criteria / total criteria, plus how many still need a human).
+// The requirement's status is surfaced so consumers can distinguish waived and
+// failed (neither of which is "needs manual sign-off") from genuinely pending.
 func (e *Engine) Coverage(ctx context.Context, initiativeID string) ([]Coverage, error) {
 	reqs, err := e.db.ListRequirements(ctx, initiativeID)
 	if err != nil {
@@ -78,23 +81,35 @@ func (e *Engine) Coverage(ctx context.Context, initiativeID string) ([]Coverage,
 				pass++
 			}
 		}
+		needsManual := total - pass
+		if r.Status == domain.RequirementWaived {
+			needsManual = 0 // waived is out of scope, not waiting on a human
+		}
 		out = append(out, Coverage{
 			Code:        r.Code,
 			Pass:        pass,
 			Total:       total,
-			NeedsManual: total - pass,
+			NeedsManual: needsManual,
+			Status:      string(r.Status),
 		})
 	}
 	return out, nil
 }
 
-// RecordHumanPass records a human "pass" evidence for every acceptance criterion
-// of a requirement (§70, review B10). This is the human sign-off path: UX/security
-// criteria that the deterministic verifier marks needs_manual are cleared here by
-// a human actor, never by a model.
-func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementRef, note, actor string) error {
+// RecordHumanEvidence records a human judgment (pass/fail/waived) for every
+// acceptance criterion of a requirement (§70, review B10), then applies the
+// requirement-level disposition: pass leaves the status for VerifyInitiative to
+// mark verified; fail marks it failed; waived marks it waived. This is the human
+// sign-off path — UX/security criteria that the deterministic verifier marks
+// needs_manual are cleared here by a human actor, never by a model.
+func (e *Engine) RecordHumanEvidence(ctx context.Context, initiativeID, requirementRef string, status domain.VerificationStatus, note, actor string) error {
 	if actor == "" {
 		actor = store.HumanActor
+	}
+	switch status {
+	case domain.VerificationPass, domain.VerificationFail, domain.VerificationWaived:
+	default:
+		return fmt.Errorf("workflow: invalid human verification status %q", status)
 	}
 	r, err := e.db.GetRequirementByRef(ctx, initiativeID, requirementRef)
 	if err != nil {
@@ -103,13 +118,26 @@ func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementR
 	if len(r.AcceptanceCriteria) == 0 {
 		return fmt.Errorf("workflow: requirement %q has no acceptance criteria to verify", requirementRef)
 	}
+	// Reject invalid source states BEFORE writing any evidence, so a human
+	// judgment can never orphan evidence rows on a requirement that is not
+	// approvable (draft/removed).
+	switch r.Status {
+	case domain.RequirementApproved, domain.RequirementVerified, domain.RequirementFailed, domain.RequirementWaived:
+	default:
+		return fmt.Errorf("workflow: requirement %q in state %q cannot take a human judgment", requirementRef, r.Status)
+	}
+	// A new human judgment supersedes all prior evidence for this requirement's
+	// criteria, so a stale pass cannot resurrect a later fail/waive.
+	if err := e.db.ClearVerificationEvidence(ctx, r.ID, actor); err != nil {
+		return err
+	}
 	for i := range r.AcceptanceCriteria {
 		ev := &domain.VerificationEvidence{
 			InitiativeID:  initiativeID,
 			RequirementID: r.ID,
 			CriterionKey:  domain.CriterionKey(r.ID, i),
 			Kind:          domain.VerificationAcceptance,
-			Status:        domain.VerificationPass,
+			Status:        status,
 			VerifiedBy:    actor,
 			Note:          note,
 		}
@@ -117,7 +145,19 @@ func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementR
 			return err
 		}
 	}
+	switch status {
+	case domain.VerificationFail:
+		return e.db.MarkRequirementFailed(ctx, r.ID, actor)
+	case domain.VerificationWaived:
+		return e.db.MarkRequirementWaived(ctx, r.ID, actor)
+	}
 	return nil
+}
+
+// RecordHumanPass records a human "pass" evidence for every acceptance criterion
+// of a requirement (§70, review B10).
+func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementRef, note, actor string) error {
+	return e.RecordHumanEvidence(ctx, initiativeID, requirementRef, domain.VerificationPass, note, actor)
 }
 
 // VerifyInitiative computes coverage across all approved requirements, marks a
@@ -131,8 +171,12 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 	}
 
 	for _, r := range reqs {
-		if r.Status != domain.RequirementApproved {
-			continue
+		// A fully-covered requirement in an approvable state (approved, or a
+		// prior fail/waive that a human has now re-passed) is marked verified.
+		switch r.Status {
+		case domain.RequirementApproved, domain.RequirementFailed, domain.RequirementWaived:
+		default:
+			continue // draft, removed, or already verified
 		}
 		covered, err := e.requirementCovered(ctx, r)
 		if err != nil {
@@ -152,16 +196,32 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 	if err != nil {
 		return err
 	}
+	allVerified := true
 	for _, r := range reqs {
 		// Removed/superseded requirements are not part of the active set and can
 		// never reach "verified"; skip them (review H1) so a revise cycle does not
-		// permanently wedge the completion gate.
-		if r.Status == domain.RequirementRemoved {
+		// permanently wedge the completion gate. Waived requirements are out of
+		// scope, so they are excluded from the gate the same way.
+		if r.Status == domain.RequirementRemoved || r.Status == domain.RequirementWaived {
 			continue
 		}
 		if r.Status != domain.RequirementVerified {
-			return nil // not done yet; no error
+			allVerified = false
+			break
 		}
+	}
+	if !allVerified {
+		// A human can fail a previously-verified requirement after completion
+		// (re-evaluation). That must not leave the initiative in a false
+		// "complete" state, so downgrade it back to needing human judgment.
+		ini, err := e.db.GetInitiative(ctx, initiativeID)
+		if err != nil {
+			return err
+		}
+		if ini.Status == domain.InitiativeComplete {
+			return e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, store.ActorOrchestrator)
+		}
+		return nil // not done yet; no error
 	}
 
 	blocking, err := e.hasOpenBlockingFindings(ctx, initiativeID)

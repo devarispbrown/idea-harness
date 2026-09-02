@@ -792,6 +792,82 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/operations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [operations]
+      operationId: listInitiativeOperations
+      summary: Every operation recorded for this initiative
+      description: |
+        The initiative's operation history, newest last. `GET /operations/{id}` polls one
+        operation; this lists them all, which is what a UI needs to show what has run.
+      responses:
+        "200":
+          description: The operations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Operation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/artifacts/diff:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [artifacts]
+      operationId: diffArtifactVersions
+      summary: Unified line diff between two versions of one artifact
+      description: |
+        Project-scoped rather than initiative-scoped: both versions are named by id, so there is
+        nothing to disambiguate. Both must belong to the SAME artifact — comparing versions of
+        different artifacts is a 400, not an empty diff.
+
+        The diff is O(lines squared), so bodies are capped at 1 MiB and 20,000 lines; exceeding
+        either is a 413 rather than a hung daemon.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string }
+          description: Artifact **version** id to diff from.
+        - name: to
+          in: query
+          required: true
+          schema: { type: string }
+          description: Artifact **version** id to diff to.
+      responses:
+        "200":
+          description: The unified diff.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string, description: "The artifact kind, e.g. `prd`." }
+                  from_version: { type: integer }
+                  to_version: { type: integer }
+                  diff: { type: string, description: Unified diff text. }
+        "400":
+          description: A version id is missing, or the two versions belong to different artifacts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Either version id does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: An artifact body exceeds the diff size or line cap.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectId"

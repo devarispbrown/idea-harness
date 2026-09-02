@@ -51,6 +51,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/decisions/{id}/discuss", s.handleDecisionDiscuss)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/questions/{id}/answer", s.handleAnswerQuestion)
 
+	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/diff", s.handleArtifactDiff)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/body", s.handleArtifactBody)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/artifacts/{id}/raw", s.handleArtifactRaw)
 
@@ -62,6 +63,7 @@ func (s *Server) routes() {
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", s.handleExecute)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", s.handleVerify)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/operations", s.handleListOperations)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/next", s.handleNext)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}", s.handleGetChangeSet)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}/checks", s.handleListChecks)

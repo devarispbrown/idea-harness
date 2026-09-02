@@ -415,15 +415,18 @@ type cliCoverage struct {
 	Pass        int    `json:"pass"`
 	Total       int    `json:"total"`
 	NeedsManual int    `json:"needs_manual"`
+	Status      string `json:"status"`
 }
 
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	positional, flags, err := parseArgs(flagSpec{
-		"--pass": flagBool,
-		"--note": flagValue,
-		"--json": flagBool,
+		"--pass":  flagBool,
+		"--fail":  flagBool,
+		"--waive": flagBool,
+		"--note":  flagValue,
+		"--json":  flagBool,
 	}, args)
 	if err != nil {
 		return err
@@ -437,13 +440,20 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 		req = positional[0]
 	}
 	pass := flags.has("--pass")
+	fail := flags.has("--fail")
+	waive := flags.has("--waive")
 	note := flags.value("--note")
 	iniID, err := resolveInitiative(c, projectID, nil)
 	if err != nil {
 		return err
 	}
 	body := map[string]any{}
-	if req != "" && pass {
+	switch {
+	case req != "" && fail:
+		body = map[string]any{"requirement": req, "fail": true, "note": note}
+	case req != "" && waive:
+		body = map[string]any{"requirement": req, "waived": true, "note": note}
+	case req != "" && pass:
 		body = map[string]any{"requirement": req, "pass": true, "note": note}
 	}
 	var out struct {
@@ -456,14 +466,21 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	if flags.has("--json") {
 		return dumpJSON(stdout, out)
 	}
-	if req != "" && pass {
+	if req != "" && (pass || fail || waive) {
 		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
 	}
 	fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))
 	for _, cov := range out.Coverage {
 		fmt.Fprintf(stdout, "  %s  %d/%d verified", code(cov.Code), cov.Pass, cov.Total)
-		if cov.NeedsManual > 0 {
-			fmt.Fprintf(stdout, "  "+muted("(%d need manual sign-off)"), cov.NeedsManual)
+		switch cov.Status {
+		case "waived":
+			fmt.Fprint(stdout, "  "+muted("(waived)"))
+		case "failed":
+			fmt.Fprint(stdout, "  "+muted("(failed)"))
+		default:
+			if cov.NeedsManual > 0 {
+				fmt.Fprintf(stdout, "  "+muted("(%d need manual sign-off)"), cov.NeedsManual)
+			}
 		}
 		fmt.Fprintln(stdout)
 	}
