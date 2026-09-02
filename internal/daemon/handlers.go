@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -322,6 +323,16 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildProvidersView(r.Context(), pr.cfg, pr.dotEnv, pr.registry))
 }
 
+// sortedProviderNames orders a providers payload so validation is deterministic.
+func sortedProviderNames(providers map[string]config.ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -343,7 +354,19 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	if body.DefaultModel != "" {
 		cfg.DefaultModel = body.DefaultModel
 	}
-	for name, pc := range body.Providers {
+	// A provider entry decides where the API key and the full prompt context are
+	// sent, and buildRegistry registers it over the preset default — so it is
+	// validated before it is stored, not when it is first used. Sorted so a body
+	// with several bad entries always reports the same one.
+	if cfg.Providers == nil {
+		cfg.Providers = map[string]config.ProviderConfig{}
+	}
+	for _, name := range sortedProviderNames(body.Providers) {
+		pc := body.Providers[name]
+		if err := config.ValidateProvider(name, pc); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		cfg.Providers[name] = pc
 	}
 	if body.Models != nil {
