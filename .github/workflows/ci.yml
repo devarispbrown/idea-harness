@@ -28,6 +28,16 @@ jobs:
           ! command -v node || { echo "node is on PATH; this job must run without it"; exit 1; }
           ! command -v pnpm || { echo "pnpm is on PATH; this job must run without it"; exit 1; }
 
+      # This job runs inside a container, so the checkout is owned by a
+      # different uid than the one git runs as. Without this, git refuses the
+      # repository as dubiously owned, exits 128, and every `go build` fails
+      # with "error obtaining VCS status" -- Go stamps VCS info into main
+      # packages by default, and `idea version` depends on that stamp for
+      # binaries built by `go install`. Marking the checkout safe keeps the
+      # stamping rather than disabling it with -buildvcs=false.
+      - name: Trust the checkout inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Build, vet, test from a clean checkout
         run: |
           go build ./...
