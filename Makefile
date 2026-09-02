@@ -23,8 +23,13 @@ build: embed-web
 # --frozen-lockfile so a build cannot silently resolve past pnpm-lock.yaml and
 # produce different bytes than the lockfile that was reviewed. Bumping a
 # dependency is `make web-deps-update`, which shows up as a lockfile diff.
+#
+# CI=true makes pnpm non-interactive. Without it, a node_modules directory
+# installed before web/package.json pinned packageManager makes pnpm ask for
+# confirmation to purge it and then abort with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY,
+# which fails the build on any developer machine that predates the pin.
 embed-web:
-	cd web && pnpm install --frozen-lockfile && pnpm build
+	cd web && CI=true pnpm install --frozen-lockfile && pnpm build
 	rm -rf internal/web/dist && cp -r web/dist internal/web/dist
 
 # Resolve new dependency versions on purpose, updating pnpm-lock.yaml.
