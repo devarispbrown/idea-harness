@@ -19,7 +19,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Concern | Choice |
 |---|---|
 | Daemon / CLI | Go (single `idea` binary) |
-| Web UI | React + TypeScript (Vite), embedded into the binary |
+| Web UI | React + TypeScript (Vite), built by `make build` and embedded into the binary |
 | Database | SQLite (pure-Go `modernc.org/sqlite`), WAL, single writer |
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
 | API | REST + SSE (OpenAPI planned) |

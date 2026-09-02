@@ -70,20 +70,23 @@ requirement verification.
 ### Prerequisites
 
 - **Go 1.25.5 or newer** (`go version` — the module requires it).
-- **Node.js + pnpm** — *optional*, only needed to rebuild the web UI from `web/`. The
-  binary already embeds a built UI, so most users can skip this.
+- **Node.js + pnpm** — *only needed to change the web UI*. Building and installing the binary does
+  not require them; `make build` rebuilds the UI and embeds it.
 
 ### Build & put `idea` on your PATH
 
 ```bash
 cd idea-harness
 
-# Option A — install into your Go bin directory (recommended):
+# Install into your Go bin directory. No Node toolchain required.
 go install ./cmd/idea
 export PATH="$PATH:$(go env GOPATH)/bin"     # add to your shell profile to persist
+```
 
-# Option B — build in-place (also rebuilds the web UI):
-make build                                   # produces ./bin/idea
+To rebuild the web UI from `web/` and embed it (needs Node.js + pnpm):
+
+```bash
+make build                                   # produces ./bin/idea with the UI built in
 export PATH="$PWD/bin:$PATH"
 ```
 
@@ -177,7 +180,7 @@ produce a real PRD, configure a provider and — optionally — research seed UR
 ```text
 cmd/idea/        CLI + daemon entrypoint
 internal/        Go packages (domain, store, blob, model, workflow, review, daemon, …)
-web/             React + TypeScript UI (built and embedded into the binary)
+web/             React + TypeScript UI (source; `make build` embeds it into the binary)
 docs/            architecture, configuration, cli, security, agents, plans
 scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 ```

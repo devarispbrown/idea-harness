@@ -1,5 +1,10 @@
 // Package web serves the built React UI, injecting the per-install token so the
 // UI can call the authenticated API (§15). The dist/ directory is embedded.
+//
+// dist/ is committed (a placeholder index.html when the real UI has not been
+// built) so that go build/test/install work from a clean checkout with no Node
+// toolchain: //go:embed requires the directory to exist at compile time.
+// `make build` overwrites it with the real Vite output.
 package web
 
 import (
@@ -9,7 +14,7 @@ import (
 	"strings"
 )
 
-//go:embed dist
+//go:embed all:dist
 var distFS embed.FS
 
 // Handler returns an http.Handler that serves the embedded UI. The token is

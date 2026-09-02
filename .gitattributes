@@ -1,0 +1,4 @@
+# Generated Vite output. Committed so //go:embed resolves on a clean checkout
+# (see internal/web/web.go); never meaningfully diffable or mergeable by hand.
+# On a merge conflict here, take either side and re-run `make embed-web`.
+internal/web/dist/** -diff -merge linguist-generated=true
