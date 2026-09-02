@@ -28,6 +28,21 @@ M1 threats and mitigations:
 - The canary-secret leak sweep (a canary secret injected as input must not appear in any store)
   is a required failure-injection test.
 
+## Context docs (uploaded source material)
+
+Uploaded context docs — PRDs, design specs, tech docs, market analysis, and image mockups — are
+untrusted input:
+
+- **Text formats** (`.md/.txt/.csv/.pdf/.docx/.xlsx`) are credential-swept (hard-reject on match)
+  and redacted at ingest; the redacted text is stored content-addressed and later injected under
+  the `context_docs` selector at `external_untrusted` trust (data-only framed, never instructions).
+- **Image formats** (`.jpg/.png/.gif/.webp`) are binary and cannot be text-swept: they are stored
+  redaction-free and egressed to a vision-capable model for a one-time description. The vision
+  *description* (text) is redacted before storage, and only that description — never the raw image —
+  enters the agents' context. Uploading an image that itself contains a credential (e.g. a
+  screenshot of an API key) egresses that content to the vision provider unredacted; this is the
+  same accepted network-egress tradeoff as the coding-agent executor (see `docs/agents.md`).
+
 ## Trust levels (§38)
 
 ```text
