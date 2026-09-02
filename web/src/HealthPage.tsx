@@ -1,0 +1,94 @@
+import { useCallback, useEffect, useState } from "react";
+import { get } from "./api";
+import PhaseHeader from "./PhaseHeader";
+
+interface RiskProfile {
+  tier: string;
+  signals: { name: string; detected: boolean }[];
+  reason: string[];
+}
+interface Finding {
+  id: string;
+  severity: string;
+  category: string;
+  finding: string;
+  recommendation: string;
+}
+interface Health {
+  status: string;
+  version: string;
+}
+
+export default function HealthPage({
+  projectId,
+  initiativeId,
+}: {
+  projectId: string;
+  initiativeId: string;
+}) {
+  const [risk, setRisk] = useState<RiskProfile | null>(null);
+  const [doctor, setDoctor] = useState<Finding[]>([]);
+  const [health, setHealth] = useState<Health | null>(null);
+
+  const load = useCallback(async () => {
+    const [r, d, h] = await Promise.all([
+      get<RiskProfile>(`/projects/${projectId}/risk?initiative_id=${initiativeId}`).catch(() => null),
+      get<Finding[]>(`/projects/${projectId}/doctor?initiative_id=${initiativeId}`).catch(() => []),
+      get<Health>("/health").catch(() => null),
+    ]);
+    setRisk(r);
+    setDoctor(d ?? []);
+    setHealth(h);
+  }, [projectId, initiativeId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <div className="phase-page">
+      <PhaseHeader title="Graph health" purpose="Whether the provenance you're relying on is actually complete." />
+
+      {risk && (
+        <section className="risk-card">
+          <div className="risk-head">
+            <span className="risk-pill">risk · {risk.tier}</span>
+            <div className="risk-body">
+              <div className="risk-title">This initiative's applied patches touch billing and auth paths</div>
+              <div className="risk-sub">Derived deterministically from the patch contents — no model, no score.</div>
+            </div>
+          </div>
+          <div className="risk-signals">
+            {(risk.signals ?? []).filter((s) => s.detected).map((s) => (
+              <span key={s.name} className="risk-signal">{s.name}</span>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>
+        Traceability gaps · {doctor.length}
+      </div>
+      <section className="health-card">
+        {doctor.map((d) => (
+          <div key={d.id} className="health-row">
+            <span className={`health-sev sev-${d.severity}`}>{d.severity}</span>
+            <div className="health-body">
+              <div className="health-title">{d.finding}</div>
+              {d.recommendation && <div className="health-sub">{d.recommendation}</div>}
+            </div>
+          </div>
+        ))}
+        {doctor.length === 0 && <div className="muted" style={{ padding: "13px 16px" }}>No gaps.</div>}
+      </section>
+
+      <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>Daemon</div>
+      <section className="health-daemon">
+        <span className="health-dot" />
+        <span className="health-addr">
+          127.0.0.1:8787 · {health?.version ?? "v0.1.0"} · state in ~/.local/share/idea-harness
+        </span>
+      </section>
+    </div>
+  );
+}
