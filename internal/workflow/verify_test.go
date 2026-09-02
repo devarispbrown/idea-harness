@@ -190,3 +190,171 @@ func TestCompletionSkipsRemovedRequirements(t *testing.T) {
 		t.Fatalf("expected complete (removed skipped), got %q", ini.Status)
 	}
 }
+
+func TestFailRequirementBlocksThenPassRecovers(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "latency", Target: "<200ms", Condition: "x"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RecordHumanEvidence(ctx, iniID, req.Code, domain.VerificationFail, "measured 500ms", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementFailed {
+		t.Fatalf("status = %q, want failed", reqs[0].Status)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status == domain.InitiativeComplete {
+		t.Fatal("initiative must not complete with a failed requirement")
+	}
+
+	// A human re-pass clears the fail and completes the initiative.
+	if err := eng.RecordHumanEvidence(ctx, iniID, req.Code, domain.VerificationPass, "re-measured 150ms", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err = db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementVerified {
+		t.Fatalf("status = %q, want verified", reqs[0].Status)
+	}
+	ini, err = db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativeComplete {
+		t.Fatalf("status = %q, want complete", ini.Status)
+	}
+}
+
+func TestWaiveRequirementExcludedFromGate(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req1 := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "latency", Target: "<200ms", Condition: "x"}},
+	}
+	if err := db.CreateRequirement(ctx, req1); err != nil {
+		t.Fatal(err)
+	}
+	req2 := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be shiny (out of scope)", Priority: domain.PriorityCould, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req2); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RecordHumanEvidence(ctx, iniID, req2.Code, domain.VerificationWaived, "deferred", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.RecordHumanEvidence(ctx, iniID, req1.Code, domain.VerificationPass, "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativeComplete {
+		t.Fatalf("expected complete (waived skipped), got %q", ini.Status)
+	}
+	reqs, err := db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range reqs {
+		if r.ID == req2.ID && r.Status != domain.RequirementWaived {
+			t.Fatalf("waived requirement status = %q, want waived", r.Status)
+		}
+	}
+}
+
+func TestFailOnVerifiedRequirementSticksAndCanBeWaived(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "latency", Target: "<200ms", Condition: "x"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it first.
+	if err := eng.RecordHumanEvidence(ctx, iniID, req.Code, domain.VerificationPass, "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A human then fails the verified requirement. Stale pass evidence must not
+	// resurrect it to verified on the next gate run.
+	if err := eng.RecordHumanEvidence(ctx, iniID, req.Code, domain.VerificationFail, "regressed", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementFailed {
+		t.Fatalf("status = %q, want failed (must not resurrect to verified)", reqs[0].Status)
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status == domain.InitiativeComplete {
+		t.Fatal("initiative must not be complete while a requirement is failed")
+	}
+
+	// Failed → waived is a supported transition and excludes it from the gate.
+	if err := eng.RecordHumanEvidence(ctx, iniID, req.Code, domain.VerificationWaived, "defer", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err = db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementWaived {
+		t.Fatalf("status = %q, want waived", reqs[0].Status)
+	}
+	ini, err = db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativeComplete {
+		t.Fatalf("status = %q, want complete (waived skipped)", ini.Status)
+	}
+}

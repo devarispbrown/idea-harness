@@ -237,12 +237,19 @@ const (
 	RequirementDraft    RequirementStatus = "draft"
 	RequirementApproved RequirementStatus = "approved"
 	RequirementVerified RequirementStatus = "verified"
-	RequirementRemoved  RequirementStatus = "removed"
+	// RequirementFailed records a human "fail" judgment: the requirement stays in
+	// the active set and blocks completion until re-verified (a human pass).
+	RequirementFailed RequirementStatus = "failed"
+	// RequirementWaived records a human "waive" judgment: the requirement is out
+	// of scope and is excluded from the completion gate (like removed), but is
+	// retained as a visible, recorded judgment rather than deleted.
+	RequirementWaived  RequirementStatus = "waived"
+	RequirementRemoved RequirementStatus = "removed"
 )
 
 func (s RequirementStatus) Valid() bool {
 	switch s {
-	case RequirementDraft, RequirementApproved, RequirementVerified, RequirementRemoved:
+	case RequirementDraft, RequirementApproved, RequirementVerified, RequirementFailed, RequirementWaived, RequirementRemoved:
 		return true
 	}
 	return false
@@ -290,11 +297,14 @@ const (
 	VerificationFail        VerificationStatus = "fail"
 	VerificationBlocked     VerificationStatus = "blocked"
 	VerificationNeedsManual VerificationStatus = "needs_manual"
+	// VerificationWaived records a human waiver judgment at evidence level (the
+	// corresponding requirement is marked waived, not verified).
+	VerificationWaived VerificationStatus = "waived"
 )
 
 func (s VerificationStatus) Valid() bool {
 	switch s {
-	case VerificationPass, VerificationFail, VerificationBlocked, VerificationNeedsManual:
+	case VerificationPass, VerificationFail, VerificationBlocked, VerificationNeedsManual, VerificationWaived:
 		return true
 	}
 	return false
