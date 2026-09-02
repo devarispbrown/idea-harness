@@ -91,9 +91,10 @@ func (s *Server) auth(next http.Handler) http.Handler {
 				provided = strings.TrimPrefix(h, "Bearer ")
 			}
 		}
-		if provided == "" {
+		if provided == "" && isSSEEventsPath(r.URL.Path) {
 			// EventSource cannot set headers; allow the token as a query param
-			// (local-only API; acceptable for the SSE stream).
+			// on the SSE events stream ONLY. Every other endpoint requires the
+			// header so a token never leaks via URL/logs/history/referrer.
 			provided = r.URL.Query().Get("token")
 		}
 		if !security.TokenEqual(provided, s.rt.Token()) {
@@ -120,6 +121,12 @@ func (s *Server) hostOriginGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isSSEEventsPath reports whether path is the project events SSE stream, the
+// only endpoint allowed to accept the API token as a query parameter.
+func isSSEEventsPath(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/projects/") && strings.HasSuffix(path, "/events")
 }
 
 func isLoopbackHost(host string) bool {

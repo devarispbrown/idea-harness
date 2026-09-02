@@ -59,6 +59,35 @@ func TestUnauthorizedRequestsRejected(t *testing.T) {
 	}
 }
 
+func TestTokenQueryParamRejectedOutsideEvents(t *testing.T) {
+	_, ts, token := newTestServer(t)
+	// A query-param token on a non-events endpoint must be rejected (no header).
+	resp := doReq(t, http.MethodGet, ts.URL+"/api/v1/projects?token="+token, "", "", "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for query token on non-events endpoint, got %d", resp.StatusCode)
+	}
+	// The header token still works.
+	resp2 := doReq(t, http.MethodGet, ts.URL+"/api/v1/projects", token, "", "")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with header token, got %d", resp2.StatusCode)
+	}
+}
+
+func TestIsSSEEventsPath(t *testing.T) {
+	cases := map[string]bool{
+		"/api/v1/projects/p/events":                true,
+		"/api/v1/projects/p/initiatives/i/docs":    false,
+		"/api/v1/projects":                         false,
+		"/api/v1/logs":                             false,
+		"/api/v1/projects/p/events/":               false,
+	}
+	for path, want := range cases {
+		if got := isSSEEventsPath(path); got != want {
+			t.Errorf("isSSEEventsPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 func TestHostRebindingRejected(t *testing.T) {
 	_, ts, token := newTestServer(t)
 	resp := doReq(t, http.MethodGet, ts.URL+"/api/v1/projects", token, "evil.example.com", "")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -310,17 +311,54 @@ func (r *Runtime) CancelOperation(ctx context.Context, opID string) error {
 	return fmt.Errorf("operation %q not found in any project", opID)
 }
 
+// InitiativeDocInput is one context doc supplied atomically at initiative
+// creation (idea new --doc).
+type InitiativeDocInput struct {
+	Content string
+	Kind    string
+	Title   string
+}
+
 // StartInitiative creates an initiative + operation and runs the workflow
 // asynchronously (§34). Returns the initiative and operation ids.
 func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, description string) (string, string, error) {
+	return r.StartInitiativeWithDocs(ctx, projectID, title, description, nil)
+}
+
+// StartInitiativeWithDocs creates an initiative, ingests its context docs, and
+// only THEN launches the M1 run — so `idea new --doc` grounds framing/research/
+// PRD in the supplied material. Docs are credential-swept/validated BEFORE the
+// initiative is created, so a rejected doc never leaves a half-created row.
+func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title, description string, docs []InitiativeDocInput) (string, string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", "", err
 	}
+	if len(docs) > maxContextDocsPerInitiative {
+		return "", "", ingestError{http.StatusBadRequest, "too many context docs"}
+	}
+	// Pre-validate every doc (non-empty + credential sweep) before persisting
+	// anything, so a rejected upload cannot leave a dangling initiative.
+	for _, d := range docs {
+		content := strings.TrimSpace(d.Content)
+		if content == "" {
+			return "", "", ingestError{http.StatusBadRequest, "content is required"}
+		}
+		if pr.redactor.ContainsCredential(content) {
+			return "", "", ingestError{http.StatusBadRequest, "document contains a credential and was rejected"}
+		}
+	}
+
 	ini := &domain.Initiative{Title: pr.redactor.RedactString(title), Description: pr.redactor.RedactString(description), Status: domain.InitiativeRunning}
 	if err := pr.db.CreateInitiative(ctx, ini); err != nil {
 		return "", "", err
 	}
+	for _, d := range docs {
+		if _, err := pr.ingestTextDoc(ctx, ini.ID, d.Content, d.Kind, d.Title); err != nil {
+			return "", "", err
+		}
+	}
+
 	opID, err := pr.db.CreateOperation(ctx, projectID, ini.ID, "run_initiative")
 	if err != nil {
 		return "", "", err
