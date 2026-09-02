@@ -65,7 +65,8 @@ export const ARTIFACT_PHASE: Record<string, PhaseName> = {
 };
 
 function versionOf(artifacts: { kind: string; version: number }[], kind: string): number {
-  return artifacts.find((a) => a.kind === kind)?.version ?? 0;
+  const versions = artifacts.filter((a) => a.kind === kind).map((a) => a.version);
+  return versions.length ? Math.max(...versions) : 0;
 }
 
 function hasAll(artifacts: { kind: string; version: number }[], kinds: string[]): boolean {

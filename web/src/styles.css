@@ -1386,3 +1386,140 @@ button.ghost.small {
   display: inline-block;
   animation: spin 0.8s linear infinite;
 }
+
+/* ---------- judgment cards ---------- */
+.section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+.judgment-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 24px 0 12px;
+}
+.judgment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.judgment-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.judgment-card.resolved {
+  opacity: 0.75;
+}
+.jc-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.jc-title {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+}
+.idchip {
+  font: 600 10.5px ui-monospace, Menlo, monospace;
+  border-radius: 5px;
+  padding: 1px 6px;
+  border-bottom: 1px dashed transparent;
+  flex: none;
+}
+.chip-accent { background: var(--accent-bg); color: #4338ca; border-bottom-color: #818cf8; }
+.chip-failing { background: var(--failing-pill); color: var(--failing-fg); }
+.chip-needs-you { background: var(--needs-you-pill); color: var(--needs-you-fg); }
+.chip-inactive { background: var(--inactive-pill); color: var(--inactive-fg); border-bottom-color: #c8c5bf; }
+
+.jc-rec {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 6px 0 0;
+}
+.jc-rec strong { color: var(--text-body); }
+.jc-resolution {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 8px 0 0;
+}
+.jc-disp {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--verified-pill);
+  color: var(--verified-fg);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.jc-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 11px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.jc-overflow {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.jc-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.jc-secondary {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  color: var(--text-body);
+  cursor: pointer;
+}
+.jc-ghost {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-body);
+  cursor: pointer;
+  margin-top: 8px;
+}
+.jc-own {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+.jc-own .text-input { flex: 1; }
+.jc-ask {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+.jc-ask .text-input { flex: 1; }
+
+.jc-suggested {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.jc-suggested strong { color: var(--text-body); }

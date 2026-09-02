@@ -3,6 +3,7 @@ import { get, post } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import PhasePage from "./PhasePage";
+import DefinePage from "./DefinePage";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -204,7 +205,14 @@ export default function App() {
 
         {route.name === "settings" && <Settings projectId={projectId} />}
 
-        {route.name === "phase" && currentInitiative && (
+        {route.name === "phase" && currentInitiative && route.phase === "define" && (
+          <DefinePage
+            projectId={projectId}
+            initiativeId={currentInitiative.id}
+            status={currentInitiative.status}
+          />
+        )}
+        {route.name === "phase" && currentInitiative && route.phase !== "define" && (
           <PhasePage
             title={PHASE_LABELS[route.phase]}
             purpose={PHASE_PURPOSE[route.phase]}
