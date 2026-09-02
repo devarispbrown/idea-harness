@@ -512,6 +512,41 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	return opID, nil
 }
 
+// RetryInitiative re-runs a failed initiative's workflow under a chosen model
+// (retry-with-a-different-model). Returns the operation id.
+func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, model string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "", fmt.Errorf("initiative is already running")
+	}
+	if ini.Status != domain.InitiativeFailed {
+		return "", fmt.Errorf("retry requires a failed initiative (status=%s)", ini.Status)
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
+	if err != nil {
+		return "", err
+	}
+	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
+	r.launchOperation(opID, func(bg context.Context) {
+		pr.engine.SetModelOverride(initiativeID, model)
+		status, runErr := pr.engine.Retry(bg, initiativeID)
+		if runErr != nil {
+			r.failOperation(opID, initiativeID, "retry failed", bg, pr, runErr, true)
+			return
+		}
+		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		r.log.Info("retry complete", "initiative", initiativeID, "status", status)
+	})
+	return opID, nil
+}
+
 // RevisePlanInitiative regenerates the execution plan (and its review)
 // asynchronously, keeping the PRD/design artifacts. Returns the operation id.
 func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {

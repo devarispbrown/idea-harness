@@ -82,6 +82,13 @@ type Engine struct {
 	// describeMu single-flights image description so concurrent uploads cannot
 	// re-describe the same image or amplify model calls (vision review).
 	describeMu sync.Mutex
+
+	// modelMu guards modelOverride, a per-initiative "provider/model" override set
+	// for a retry-with-a-different-model and cleared once that run finishes. It is
+	// keyed by initiativeID so a retry of one initiative can never bleed into a
+	// concurrent run of another.
+	modelMu       sync.Mutex
+	modelOverride map[string]string
 }
 
 // redact applies the engine's known-values redactor to a free-text string at the
@@ -231,7 +238,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	e.wireDocConsumesIfAny(ctx, initiativeID, runID, inputs)
 
 	bundle := ccontext.Compile(inputs)
-	modelSpec := e.resolveModelSpec(roleName)
+	modelSpec := e.modelSpecFor(initiativeID, roleName)
 	prov, modelName, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
@@ -367,6 +374,39 @@ func (e *Engine) resolveModelSpec(roleName string) string {
 		}
 	}
 	return "idea-harness-default"
+}
+
+// SetModelOverride forces every role to the given "provider/model" spec for the
+// given initiative's next workflow run (retry-with-a-different-model). The
+// engine clears it once that run finishes.
+func (e *Engine) SetModelOverride(initiativeID, spec string) {
+	e.modelMu.Lock()
+	if e.modelOverride == nil {
+		e.modelOverride = map[string]string{}
+	}
+	e.modelOverride[initiativeID] = spec
+	e.modelMu.Unlock()
+}
+
+func (e *Engine) currentModelOverride(initiativeID string) string {
+	e.modelMu.Lock()
+	defer e.modelMu.Unlock()
+	return e.modelOverride[initiativeID]
+}
+
+func (e *Engine) clearModelOverride(initiativeID string) {
+	e.modelMu.Lock()
+	delete(e.modelOverride, initiativeID)
+	e.modelMu.Unlock()
+}
+
+// modelSpecFor returns the "provider/model" spec for a role and initiative: the
+// per-initiative retry override wins, then the normal role resolution chain.
+func (e *Engine) modelSpecFor(initiativeID, roleName string) string {
+	if m := e.currentModelOverride(initiativeID); m != "" {
+		return m
+	}
+	return e.resolveModelSpec(roleName)
 }
 
 // implementerModel resolves the coding agent's model: the per-role map
