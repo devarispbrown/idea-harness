@@ -62,7 +62,7 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 		FROM initiatives WHERE id = ?`, initiativeID).
 		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &created, &updated)
 	if err != nil {
-		return ini, err
+		return ini, notFoundIfNoRows(err, "initiative", initiativeID)
 	}
 	ini.CreatedAt = time.UnixMilli(created)
 	ini.UpdatedAt = time.UnixMilli(updated)
