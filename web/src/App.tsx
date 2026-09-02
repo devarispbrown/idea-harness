@@ -6,6 +6,8 @@ import PhasePage from "./PhasePage";
 import DefinePage from "./DefinePage";
 import ExplorePage from "./ExplorePage";
 import BuildPage from "./BuildPage";
+import PlanPage from "./PlanPage";
+import ProductHome from "./ProductHome";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -58,7 +60,6 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
-  const [idea, setIdea] = useState("");
 
   const loadProjects = useCallback(async () => {
     try {
@@ -147,14 +148,13 @@ export default function App() {
         ? "settings"
         : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
-  const createIdea = async () => {
-    if (!projectId || !idea.trim()) return;
+  const createIdea = async (text: string) => {
+    if (!projectId || !text.trim()) return;
     try {
       const created = await post<{ initiative_id: string }>(`/projects/${projectId}/initiatives`, {
-        title: idea.trim(),
-        description: idea.trim(),
+        title: text.trim(),
+        description: text.trim(),
       });
-      setIdea("");
       await loadInitiatives(projectId);
       navigate(`#/i/${created.initiative_id}/explore`);
     } catch {
@@ -197,11 +197,10 @@ export default function App() {
       <main className="phase-main">
         {route.name === "home" && (
           <ProductHome
+            projectId={projectId}
             initiatives={initiatives}
-            idea={idea}
-            setIdea={setIdea}
-            createIdea={createIdea}
             onOpen={(id) => navigate(`#/i/${id}/explore`)}
+            onCreate={createIdea}
           />
         )}
 
@@ -224,7 +223,14 @@ export default function App() {
         {route.name === "phase" && currentInitiative && route.phase === "build" && (
           <BuildPage projectId={projectId} initiativeId={currentInitiative.id} />
         )}
-        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && (
+        {route.name === "phase" && currentInitiative && route.phase === "plan" && (
+          <PlanPage
+            projectId={projectId}
+            initiativeId={currentInitiative.id}
+            status={currentInitiative.status}
+          />
+        )}
+        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && route.phase !== "plan" && (
           <PhasePage
             title={PHASE_LABELS[route.phase]}
             purpose={PHASE_PURPOSE[route.phase]}
@@ -275,45 +281,4 @@ function artifactRows(artifacts: Artifact[], initiativeId: string, phase: PhaseN
       meta: "",
       onRead: () => navigate(`#/i/${initiativeId}/doc/${a.id}/${a.version}`),
     }));
-}
-
-function ProductHome({
-  initiatives,
-  idea,
-  setIdea,
-  createIdea,
-  onOpen,
-}: {
-  initiatives: Initiative[];
-  idea: string;
-  setIdea: (v: string) => void;
-  createIdea: () => void;
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <div>
-      <h1 style={{ margin: 0 }}>Products</h1>
-      <p className="muted">Your initiatives across this project.</p>
-      <div className="row" style={{ marginTop: 12 }}>
-        <input
-          className="text-input"
-          style={{ flex: 1 }}
-          placeholder="What are you thinking about building?"
-          value={idea}
-          onChange={(e) => setIdea(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && createIdea()}
-        />
-        {idea.trim() && <button onClick={createIdea}>Start</button>}
-      </div>
-      <ul className="list" style={{ marginTop: 18 }}>
-        {initiatives.map((i) => (
-          <li key={i.id}>
-            <button className="ghost" onClick={() => onOpen(i.id)}>
-              <strong>{i.title}</strong> · <span className="muted">{i.status}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
 }

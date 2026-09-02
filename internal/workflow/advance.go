@@ -44,6 +44,13 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
+// ApprovePlan re-runs the execution-plan review only (it does not regenerate
+// tasks). After the human resolves the plan-review blockers, this re-evaluates
+// the plan and transitions it to plan_approved (or back to needs_human_judgment).
+func (e *Engine) ApprovePlan(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	return e.runExecutionPlanReview(ctx, initiativeID)
+}
+
 // RevisePlan regenerates the execution plan (and its review) in place after the
 // human edited or rejected the prior plan. It deletes the prior tasks and their
 // edges and disposes prior plan-review findings first, so no duplicate tasks or

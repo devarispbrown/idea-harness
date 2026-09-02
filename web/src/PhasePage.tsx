@@ -16,7 +16,12 @@ export default function PhasePage({
   pill?: StatusPill;
   docs?: DocumentRowProps[];
   children?: ReactNode;
-  commit?: { explanation: string; actionLabel: string; onAction: () => void };
+  commit?: {
+    explanation: string;
+    actionLabel: string;
+    onAction: () => void;
+    secondary?: { label: string; onAction: () => void };
+  };
 }) {
   return (
     <div className="phase-page">
@@ -33,7 +38,12 @@ export default function PhasePage({
       )}
       {children}
       {commit && (
-        <CommitBar explanation={commit.explanation} actionLabel={commit.actionLabel} onAction={commit.onAction} />
+        <CommitBar
+          explanation={commit.explanation}
+          actionLabel={commit.actionLabel}
+          onAction={commit.onAction}
+          secondary={commit.secondary}
+        />
       )}
     </div>
   );
