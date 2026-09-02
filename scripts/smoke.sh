@@ -21,11 +21,37 @@ export IDEA_HARNESS_ADDR="127.0.0.1:$((19000 + ($$ % 1000)))"
 DAEMON_PID=$!
 trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT
 
+# wait_for <description> <timeout-seconds> <predicate...>
+#
+# Polls <predicate...> (a function name or command, invoked with no pipe
+# needed since predicates are shell functions) every 0.1s until it exits 0,
+# or fails loudly and exits the script non-zero once <timeout-seconds> have
+# elapsed. Everything below that paces the async daemon goes through this
+# instead of a fixed sleep, so the script runs as fast as the daemon allows
+# and never silently races ahead of it.
+wait_for() {
+  local desc="$1" timeout="$2"
+  shift 2
+  local deadline=$((SECONDS + timeout))
+  until "$@" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "ERROR: timed out after ${timeout}s waiting for $desc" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+}
+
+daemon_running() { "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; }
+initiative_left_running() { ! "$ROOT/bin/idea" status 2>/dev/null | grep -q running; }
+tasks_present() { ! "$ROOT/bin/idea" tasks 2>/dev/null | grep -q "No tasks yet"; }
+chg1_in_changes() { "$ROOT/bin/idea" changes 2>/dev/null | grep -q "CHG-1"; }
+hello_txt_present() { test -f "$PROJ/hello.txt"; }
+chg1_committed() { git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:"; }
+chg1_reverted() { "$ROOT/bin/idea" change CHG-1 2>/dev/null | grep -q reverted; }
+
 # wait for health
-for _ in $(seq 1 50); do
-  if "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; then break; fi
-  sleep 0.1
-done
+wait_for "daemon to report running" 5 daemon_running
 
 cd "$PROJ"
 # Make the workspace a Git repo so the opt-in git-commit-on-apply path is
@@ -42,14 +68,11 @@ kill "$DAEMON_PID" 2>/dev/null || true
 wait "$DAEMON_PID" 2>/dev/null || true
 "$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
 DAEMON_PID=$!
-for _ in $(seq 1 50); do
-  if "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; then break; fi
-  sleep 0.1
-done
+wait_for "daemon to report running (post-restart)" 5 daemon_running
 echo "--- NEW ---"
 "$ROOT/bin/idea" new "Build a recipe sharing app"
 echo "--- waiting for workflow ---"
-sleep 3
+wait_for "initiative to leave the running state" 30 initiative_left_running
 echo "--- STATUS ---"
 "$ROOT/bin/idea" status
 echo "--- DECISIONS ---"
@@ -64,7 +87,7 @@ echo "--- PRD (head) ---"
 "$ROOT/bin/idea" prd 2>&1 | head -20
 echo "--- ADVANCE (M2) ---"
 "$ROOT/bin/idea" advance
-sleep 3
+wait_for "the execution plan tasks to appear" 30 tasks_present
 echo "--- TASKS ---"
 "$ROOT/bin/idea" tasks
 echo "--- WHY task TASK-1 ---"
@@ -75,23 +98,23 @@ echo "--- PLAN (head) ---"
 "$ROOT/bin/idea" plan 2>&1 | head -12
 echo "--- EXECUTE (M3) ---"
 "$ROOT/bin/idea" execute
-sleep 3
+wait_for "CHG-1 to appear in changes" 30 chg1_in_changes
 echo "--- CHANGES ---"
 "$ROOT/bin/idea" changes
 echo "--- REVIEW approve CHG-1 ---"
 "$ROOT/bin/idea" review CHG-1 approve
 echo "--- APPLY CHG-1 ---"
 "$ROOT/bin/idea" apply CHG-1
-sleep 2
+# apply is async; the applied file and the opt-in git commit land at
+# (possibly) different points in that async work, so each gets its own poll
+# rather than one sleep sized to cover both.
+wait_for "hello.txt to be written by apply" 30 hello_txt_present
 echo "--- WORKSPACE FILE (after apply) ---"
 test -f "$PROJ/hello.txt" && echo "hello.txt present:" && cat "$PROJ/hello.txt"
 echo "--- GIT COMMIT (after apply) ---"
-# apply is async; wait for the opt-in commit to land, then assert it exists
-# and contains exactly the applied file (path-scoped, hooks-disabled).
-for _ in $(seq 1 25); do
-  if git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:"; then break; fi
-  sleep 0.2
-done
+# wait for the opt-in commit to land, then assert it exists and contains
+# exactly the applied file (path-scoped, hooks-disabled).
+wait_for "the CHG-1 git commit to land" 10 chg1_committed
 git -C "$PROJ" log --oneline 2>/dev/null || true
 git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:" || { echo "ERROR: no CHG-1 git commit after apply"; exit 1; }
 git -C "$PROJ" ls-tree -r --name-only HEAD | grep -q hello.txt || { echo "ERROR: hello.txt not in the git commit"; exit 1; }
@@ -99,7 +122,10 @@ echo "--- CHANGE CHG-1 ---"
 "$ROOT/bin/idea" change CHG-1
 echo "--- REVERT CHG-1 ---"
 "$ROOT/bin/idea" revert CHG-1
-sleep 1
+# revert is async and absence of a file has no positive signal to poll on, so
+# wait for the change set to report reverted first, then assert the file is
+# gone.
+wait_for "CHG-1 to report reverted" 30 chg1_reverted
 echo "--- WORKSPACE FILE (after revert) ---"
 if [ -f "$PROJ/hello.txt" ]; then echo "ERROR: hello.txt still present after revert"; exit 1; else echo "hello.txt removed"; fi
 echo "--- CHANGE CHG-1 (after revert) ---"
