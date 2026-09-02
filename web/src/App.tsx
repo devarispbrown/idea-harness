@@ -155,6 +155,8 @@ interface ContextDoc {
   title: string;
   digest: string;
   preview: string;
+  format?: string;
+  description_digest?: string;
   created_at: string;
 }
 
@@ -1754,6 +1756,12 @@ export default function App() {
                   {docs.map((d) => (
                     <li key={d.id}>
                       <span className="code">{d.kind}</span> <strong>{d.title}</strong>
+                      {d.format === "image" && (
+                        <span className="tag fact">image</span>
+                      )}
+                      {d.format === "image" && !d.description_digest && (
+                        <span className="muted"> describing…</span>
+                      )}
                       {d.preview && <p className="muted">{d.preview}</p>}
                       <button className="ghost small" onClick={() => openTrace("context_doc", d.id, d.title)}>
                         Trace
@@ -1789,10 +1797,10 @@ export default function App() {
                   {docsBusy ? "Adding…" : "Add pasted text"}
                 </button>
                 <label className="ghost small" style={{ cursor: "pointer" }}>
-                  Upload file (.md · .txt · .pdf · .docx)
+                  Upload file (.md · .txt · .pdf · .docx · .xlsx · image)
                   <input
                     type="file"
-                    accept=".md,.txt,.markdown,.pdf,.docx"
+                    accept=".md,.txt,.markdown,.pdf,.docx,.xlsx,.jpg,.jpeg,.png,.gif,.webp"
                     style={{ display: "none" }}
                     disabled={docsBusy}
                     onChange={(e) => {

@@ -119,6 +119,29 @@ func TestAddDocJSONPasteDefaultsTitle(t *testing.T) {
 	}
 }
 
+func TestAddDocImage(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+
+	// A PNG upload must be stored as an image doc (not text-extracted).
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	resp := postMultipartDoc(t, ts, token, projectID, iniID, "mockup.png", string(png), map[string]string{"kind": "design"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("image upload: %d", resp.StatusCode)
+	}
+	var doc domain.ContextDoc
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if doc.Format != "image" {
+		t.Fatalf("format = %q, want image", doc.Format)
+	}
+	if doc.Digest == "" {
+		t.Fatal("expected an image blob digest")
+	}
+}
+
 func TestAddDocRejectsCredential(t *testing.T) {
 	rt, ts, token := newTestServer(t)
 	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)

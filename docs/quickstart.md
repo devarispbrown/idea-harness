@@ -31,12 +31,14 @@ keys are read from environment variables (e.g. `OPENAI_API_KEY`), never stored i
 ## 2. Turn the idea into a reviewed PRD (M1)
 
 > **Ground the agents in your own material (optional).** If you have a PRD, design system, tech
-> spec, or market analysis, feed it to the team. Uploaded docs are credential-swept, redacted, and
-> content-addressed, then injected into design & planning (and PRD revisions) so the team works
-> from your context — never raw:
+> spec, market analysis, or UI mockup images, feed them to the team. Uploaded docs are
+> credential-swept, redacted, and content-addressed, then injected into design & planning (and PRD
+> revisions) so the team works from your context — never raw. Text formats are extracted directly;
+> images are described by a vision model:
 >
 > ```bash
 > idea docs add prd.md                # .md / .txt / .pdf / .docx / .xlsx
+> idea docs add mockup.png            # .jpg / .png — described by a vision model
 > printf '# PRD\n…' | idea docs add - --kind prd --title "pasted PRD"   # paste from stdin
 > idea docs                           # list uploaded docs
 > ```

@@ -63,10 +63,11 @@ Eleven tabs organize the initiative's detail:
 ## Context tab
 
 The **context** tab grounds the agents in your own material. Upload a PRD, design system, tech
-spec, or market analysis (`.md` / `.txt` / `.pdf` / `.docx` / `.xlsx`), or paste text directly. Each doc is
-credential-swept and redacted on ingest, then content-addressed and injected into design & planning
-(and PRD revisions) — never served or fed to a model unredacted. Uploaded docs are listed with a
-**Trace** link to `idea trace context_doc <id>`.
+spec, market analysis (`.md` / `.txt` / `.pdf` / `.docx` / `.xlsx`), a UI mockup image
+(`.jpg` / `.png`), or paste text directly. Each doc is credential-swept and redacted on ingest,
+then content-addressed and injected into design & planning (and PRD revisions) — never served or
+fed to a model unredacted. Images are described by a vision model before they reach the design
+agents. Uploaded docs are listed with a **Trace** link to `idea trace context_doc <id>`.
 
 ## Verify action (Requirements tab)
 
