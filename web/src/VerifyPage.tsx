@@ -54,6 +54,19 @@ export default function VerifyPage({
     }
   };
 
+  const generateTask = async (r: Requirement) => {
+    setError("");
+    try {
+      await post(
+        `/projects/${projectId}/initiatives/${initiativeId}/requirements/${r.id}/verification-task`,
+        {},
+      );
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const activeReqs = reqs.filter((r) => r.status !== "removed");
   // Waived requirements are out of scope: they do not count toward the
   // verifiable criteria or the "requirements verified" denominator.
@@ -121,6 +134,7 @@ export default function VerifyPage({
                     <button className="cs-danger" onClick={() => record(r.code, "fail")}>Fail</button>
                   )}
                   <button className="cs-secondary" onClick={() => record(r.code, "waived")}>Waive</button>
+                  <button className="verify-task" onClick={() => generateTask(r)}>Add verify task</button>
                 </div>
               )}
               {waived && (

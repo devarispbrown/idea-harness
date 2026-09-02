@@ -1955,6 +1955,66 @@ button.ghost.small {
 }
 .running-stop:hover { background: var(--running-bg); }
 
+/* ---------- command palette (⌘K) ---------- */
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(28, 25, 23, 0.28);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+.cmd-panel {
+  width: min(480px, calc(100vw - 32px));
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(28, 25, 23, 0.25);
+  overflow: hidden;
+}
+.cmd-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 16px;
+  font-size: 14px;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  outline: none;
+  color: var(--text);
+  background: var(--surface);
+}
+.cmd-list { list-style: none; margin: 0; padding: 6px; overflow: auto; flex: 1; min-height: 0; }
+.cmd-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+}
+.cmd-item.sel { background: var(--accent-bg); color: #4338ca; }
+.cmd-label { flex: 1; }
+.cmd-hint {
+  font: 600 10px ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.cmd-item.sel .cmd-hint { color: #6d63e5; }
+.cmd-empty { padding: 9px 11px; font-size: 12.5px; color: var(--text-muted); }
+
 .commit-secondary {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1986,8 +2046,18 @@ button.ghost.small {
 .verify-card.current .verify-criterion-mark { color: var(--text-faint); }
 .verify-card:not(.current) .verify-criterion-mark { color: #16a34a; }
 .verify-criterion-text { flex: 1; }
-.verify-pass { display: flex; gap: 8px; margin: 11px 0 0 23px; align-items: center; }
-.verify-pass .text-input { flex: 1; }
+.verify-pass { display: flex; gap: 8px; margin: 11px 0 0 23px; align-items: center; flex-wrap: wrap; }
+.verify-pass .text-input { flex: 1; min-width: 180px; }
+.verify-task {
+  background: none;
+  border: none;
+  padding: 5px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.verify-task:hover { color: var(--accent); }
 
 /* ---------- doc reader / discussion / health ---------- */
 .doc-reader-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
@@ -2050,10 +2120,63 @@ button.ghost.small {
 .doc-reader-body p { margin: 0 0 8px; }
 .doc-reader-body ul { margin: 0 0 8px; padding-left: 18px; }
 .doc-reader-body strong { color: var(--text); }
+
+/* ---------- document comments ---------- */
+.doc-comments { margin-top: 20px; }
+.doc-comment-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.doc-comment-form .text-input { flex: 1; min-width: 160px; }
+.doc-comment {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 13px;
+  margin-bottom: 8px;
+}
+.doc-comment-line { display: flex; flex-wrap: wrap; gap: 7px; align-items: baseline; }
+.doc-comment-section {
+  font: 600 10px ui-monospace, Menlo, monospace;
+  color: var(--accent);
+  flex: none;
+}
+.doc-comment-text { font-size: 12.5px; color: var(--text-body); flex: 1; min-width: 0; }
+.doc-comment-promoted { font-size: 11px; color: var(--verified-fg); margin-top: 6px; display: inline-block; }
 .health-dot.down { background: var(--failing-fg); }
 
 .settings-page { max-width: 760px; display: flex; flex-direction: column; gap: 16px; }
 .settings-page .banner { border-radius: 8px; border: 1px solid var(--needs-you-line); margin: 0; }
+
+/* ---------- accessibility ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Accessible, color-coded diff lines (artifact version diff). */
+.diff-lines {
+  background: var(--canvas);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow: auto;
+}
+.diff-line { white-space: pre-wrap; word-break: break-word; padding: 0 4px; border-radius: 3px; }
+.diff-added { color: var(--verified-fg); background: var(--verified-pill); }
+.diff-removed { color: var(--failing-fg); background: var(--failing-pill); }
+.diff-context { color: var(--text-body); }
 
 /* ---------- responsive: phase rail never collapses away ---------- */
 @media (max-width: 1179px) {

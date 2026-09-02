@@ -11,6 +11,7 @@ import VerifyPage from "./VerifyPage";
 import RunningCard from "./RunningCard";
 import DocReader from "./DocReader";
 import ArtifactDiffPage from "./ArtifactDiffPage";
+import CommandPalette from "./CommandPalette";
 import DecisionPage from "./DecisionPage";
 import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
@@ -308,6 +309,8 @@ export default function App() {
           <ArtifactDiffPage projectId={projectId} from={route.from} to={route.to} />
         )}
       </main>
+
+      <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
     </div>
   );
 }

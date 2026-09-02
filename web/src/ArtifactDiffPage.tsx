@@ -49,9 +49,30 @@ export default function ArtifactDiffPage({
       {error && <p className="error">{error}</p>}
       {!resp && !error && <p className="muted">Loading diff…</p>}
       {resp && (
-        <pre className="cs-diff" style={{ maxHeight: "none" }}>
-          {resp.diff || "(no change)"}
-        </pre>
+        <>
+          <p className="sr-only">
+            Lines starting with + were added, lines starting with - were removed, and all other
+            lines are unchanged context.
+          </p>
+          <div className="diff-lines" role="list">
+            {resp.diff.split("\n").map((line, i) => {
+              const added = line.startsWith("+ ");
+              const removed = line.startsWith("- ");
+              const kind = added ? "added" : removed ? "removed" : "context";
+              const text = kind === "context" ? line : line.slice(2);
+              return (
+                <div
+                  key={i}
+                  role="listitem"
+                  className={`diff-line diff-${kind}`}
+                  aria-label={kind === "context" ? undefined : `${kind}: ${text}`}
+                >
+                  {line || "\u00A0"}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

@@ -25,6 +25,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
 	"github.com/devarispbrown/idea-harness/internal/textdiff"
+	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -980,6 +981,43 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleGenerateVerificationTask creates a plan task whose purpose is verifying
+// a requirement (wired with a `verifies` edge), for a requirement that has no
+// human or automated evidence yet.
+func (s *Server) handleGenerateVerificationTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	req, err := pr.db.GetRequirementByRef(r.Context(), ini.ID, r.PathValue("reqId"))
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	task := &domain.Task{
+		InitiativeID: ini.ID,
+		Title:        "Verify " + req.Code,
+		Statement:    verificationStatement(req),
+		Priority:     req.Priority,
+	}
+	if err := pr.db.CreateVerificationTask(r.Context(), task, req.ID); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+// verificationStatement renders a requirement's acceptance criteria as a short
+// task statement for a generated verification task.
+func verificationStatement(r *domain.Requirement) string {
+	var b strings.Builder
+	for _, ac := range r.AcceptanceCriteria {
+		fmt.Fprintf(&b, "- %s %s (%s)\n", ac.Metric, ac.Target, ac.Condition)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // resolveTaskRefs resolves task references (title, code, or id) to task ids.
 func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
 	if len(refs) == 0 {
@@ -1047,6 +1085,53 @@ func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"why": why, "impact": impact})
 	}
+}
+
+// maxImpactBatchNodes caps the number of nodes a single impact-counts request
+// may ask about, bounding worst-case load (each node is an independent BFS).
+const maxImpactBatchNodes = 200
+
+// handleImpactCounts returns "blocks N" counts for a batch of graph nodes,
+// addressed as comma-separated `type:id` (e.g. decision:D-004,finding:F-012), so
+// the UI can render impact counts without one Impact call per node.
+func (s *Server) handleImpactCounts(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	raw := r.URL.Query().Get("nodes")
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "nodes query param is required (comma-separated type:id)")
+		return
+	}
+	var nodes []workflow.NodeRef
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		typ, id, ok := strings.Cut(part, ":")
+		if !ok || typ == "" || id == "" {
+			writeError(w, http.StatusBadRequest, "each node must be type:id")
+			return
+		}
+		nodes = append(nodes, workflow.NodeRef{Type: typ, ID: id})
+	}
+	if len(nodes) == 0 {
+		writeError(w, http.StatusBadRequest, "nodes query param is required")
+		return
+	}
+	if len(nodes) > maxImpactBatchNodes {
+		writeError(w, http.StatusBadRequest, "too many nodes in one impact-counts request")
+		return
+	}
+	counts, err := pr.engine.ImpactCounts(r.Context(), ini.ID, nodes)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counts": counts})
 }
 
 func (s *Server) handleWhy(w http.ResponseWriter, r *http.Request) { s.handleTraceObject(w, r, "why") }
@@ -1223,6 +1308,74 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-v%d.md", av.Kind, av.Version))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
+}
+
+// handleListDocComments returns the comments on an artifact version.
+func (s *Server) handleListDocComments(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	list, err := pr.db.ListDocComments(r.Context(), av.VersionID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleCreateDocComment adds a human comment to an artifact version section.
+func (s *Server) handleCreateDocComment(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	av, err := pr.db.GetArtifactVersion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	var body struct {
+		Section string `json:"section"`
+		Text    string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	c := &domain.DocComment{
+		InitiativeID:      av.InitiativeID,
+		ArtifactVersionID: av.VersionID,
+		Section:           pr.redactor.RedactString(strings.TrimSpace(body.Section)),
+		Text:              pr.redactor.RedactString(strings.TrimSpace(body.Text)),
+	}
+	if err := pr.db.CreateDocComment(r.Context(), c); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// handlePromoteDocComment promotes a comment into an open Question.
+func (s *Server) handlePromoteDocComment(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	q, err := pr.engine.PromoteDocComment(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
 }
 
 // ---------- context docs ----------
