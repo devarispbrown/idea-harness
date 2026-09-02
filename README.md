@@ -72,6 +72,9 @@ requirement verification.
 - **Go 1.25.5 or newer** (`go version` — the module requires it).
 - **Node.js + pnpm** — *only needed to change the web UI*. Building and installing the binary does
   not require them; `make build` rebuilds the UI and embeds it.
+- **macOS or Linux.** Both are built and tested in CI. **Windows is not supported**: the CLI starts
+  its daemon in a new session (`internal/cli/detach.go`, `//go:build unix`), which has no Windows
+  equivalent here yet.
 
 ### Build & put `idea` on your PATH
 

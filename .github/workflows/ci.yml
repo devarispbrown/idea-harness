@@ -43,7 +43,8 @@ jobs:
       - name: Installed binary serves the UI
         run: |
           go install ./cmd/idea
-          export IDEA_HARNESS_STATE="$(mktemp -d)"
+          IDEA_HARNESS_STATE="$(mktemp -d)"
+          export IDEA_HARNESS_STATE
           export IDEA_HARNESS_ADDR=127.0.0.1:18787
           "$(go env GOPATH)/bin/idea" daemon >"$IDEA_HARNESS_STATE/daemon.log" 2>&1 &
           for _ in $(seq 1 50); do
@@ -59,6 +60,54 @@ jobs:
       # compiled, and it needs no daemon, no network and no Node.
       - name: docs/cli.md matches the CLI command table
         run: make docs-check
+
+  # macOS is a supported platform and nothing in this repo branches on
+  # runtime.GOOS, so the darwin/linux differences that matter are filesystem
+  # semantics — case-insensitivity, /var -> /private/var symlink resolution,
+  # Lstat behavior. That is precisely where the path guard (internal/security),
+  # the change-set deny (internal/fsdiff) and the snapshot walk live. A
+  # case-sensitivity bypass in the control-plane deny reached a release before
+  # this job existed.
+  macos:
+    name: Go (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build and vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      # -json rather than a plain run: `go test` prints nothing for skipped
+      # tests, so a grep for SKIP over normal output reports "no skips" whether
+      # or not anything skipped — which is the misreading this step exists to
+      # prevent. The go test exit status is still the gate (set -o pipefail).
+      # -json, because `go test` prints nothing for a skipped test: a job that
+      # shows only normal output cannot distinguish "ran everything" from
+      # "silently skipped the container-backed tests", which is exactly the
+      # claim this platform's green check would otherwise be making.
+      - name: Test
+        run: go test -json ./... > "$RUNNER_TEMP/gotest.json"
+        continue-on-error: true
+
+      - name: Results — failures and what skipped here
+        run: python3 scripts/ci-test-summary.py "$RUNNER_TEMP/gotest.json"
+
+      - name: Smoke (end-to-end, deterministic demo — no secrets)
+        env:
+          # smoke.sh defaults these into the repo so sandboxed runs never write
+          # to a home dir; point them at the runner's cache instead, or the
+          # module graph is re-downloaded on a runner billed at 10x Linux.
+          GOPATH: ${{ github.workspace }}/.gocache/gopath
+          GOCACHE: ${{ github.workspace }}/.gocache/build
+          GOMODCACHE: ${{ github.workspace }}/.gocache/gopath/pkg/mod
+        run: bash scripts/smoke.sh
 
   backend:
     name: Go (vet + test + smoke)
