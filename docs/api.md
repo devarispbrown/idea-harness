@@ -129,9 +129,11 @@ GET /api/v1/projects/{projectId}/change-sets?initiative_id=…   # query
 
 The query-parameter form resolves through `initiativeFromQuery`
 (`internal/daemon/handlers.go`), and **omitting `initiative_id` is not an error**: it falls back to
-the first initiative the project ever created (`ListInitiatives` is ordered by creation). In a
-single-initiative project that is invisible; in a multi-initiative project an omitted parameter
-silently answers about the wrong initiative. Always send it.
+the project's most recent initiative, matching what the CLI means by "the initiative you are working
+on" (`resolveInitiative`, `internal/cli/advance.go`). It fell back to the oldest until `de4dcdb`,
+which meant the daemon could answer about a different initiative than the CLI was asking about. In a
+single-initiative project the fallback is invisible either way; in a multi-initiative project it is
+still a guess. Always send it.
 
 This is known, and deferred rather than fixed. Unifying the two shapes is a breaking change to
 every client at once, and the web UI consumes both forms today — `web/src/App.tsx`,
