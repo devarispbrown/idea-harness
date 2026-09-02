@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // recordAutomatedEvidence records the verification_engineer's deterministic

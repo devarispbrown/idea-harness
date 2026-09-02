@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	ccontext "github.com/idea-harness/idea-harness/internal/context"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/schema"
-	"github.com/idea-harness/idea-harness/internal/security"
+	ccontext "github.com/devarispbrown/idea-harness/internal/context"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/schema"
+	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
 // ConvergeDecisions runs the orchestrator synthesis across every open decision

@@ -9,8 +9,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/roles"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/roles"
 )
 
 const (

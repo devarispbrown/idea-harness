@@ -6,7 +6,7 @@ package executor
 import (
 	"fmt"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // actionCapabilities maps each executable action to the capability it requires.

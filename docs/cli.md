@@ -57,6 +57,7 @@ if this file has drifted.
 | `idea daemon` | run the daemon in the foreground | — |
 | `idea daemon status\|stop` | manage the managed daemon | — |
 | `idea dev` | start the daemon and serve the web UI | — |
+| `idea version` | print the version, commit and build state | — |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | — |
 
 <!-- END generated commands -->

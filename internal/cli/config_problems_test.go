@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/config"
 )
 
 // writeProject lays out a project root with the given harness.yaml.

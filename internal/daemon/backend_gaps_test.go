@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // setStatus forces an initiative into a status for guard testing.

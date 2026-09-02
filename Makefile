@@ -1,12 +1,21 @@
 .PHONY: build test lint vet web web-build embed-web restore-embed check-embed docs docs-check clean
 
 BINARY := bin/idea
+MODULE := github.com/devarispbrown/idea-harness
+
+# Version and commit are stamped into the binary so `idea version` and the
+# daemon's /api/v1/version can name the build. VERSION comes from the current
+# tag when there is one; a `go install` from a checkout has no stamp and falls
+# back to the toolchain's own vcs.revision (see internal/buildinfo).
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+LDFLAGS := -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' -X '$(MODULE)/internal/buildinfo.commit=$(COMMIT)'
 
 # The binary embeds the real UI at compile time, then the placeholder goes back
 # on disk: the build leaves no modified tracked file, so `git commit -a` cannot
 # ship an index.html that points at assets git does not track.
 build: embed-web
-	go build -o $(BINARY) ./cmd/idea
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/idea
 	$(MAKE) restore-embed
 
 # Build the web UI and copy the dist into the Go embed directory.

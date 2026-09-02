@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // vagueWords are bare evaluative adjectives that must not be used as an

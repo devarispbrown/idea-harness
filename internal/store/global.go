@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // ProjectRecord is a registered project in global.db.

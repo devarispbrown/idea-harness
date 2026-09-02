@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/git"
-	"github.com/idea-harness/idea-harness/internal/model"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/git"
+	"github.com/devarispbrown/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // writeWorkflowFakeGit writes a fake git binary that records each invocation to

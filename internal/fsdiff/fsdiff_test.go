@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func writeFile(t *testing.T, root, rel, content string) {

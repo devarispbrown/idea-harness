@@ -1,4 +1,4 @@
-module github.com/idea-harness/idea-harness
+module github.com/devarispbrown/idea-harness
 
 go 1.25.5
 

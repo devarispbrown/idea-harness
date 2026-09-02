@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege by default; the release job needs to create a GitHub release
+# and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish release binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload archives
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # goreleaser needs tags to derive the version
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # The committed internal/web/dist/index.html is a placeholder, so the real
+      # UI has to be built before the binaries are.
+      - uses: pnpm/action-setup@v5
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Verify the tag builds and passes its tests
+        run: |
+          make embed-web
+          go vet ./...
+          go test ./...
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

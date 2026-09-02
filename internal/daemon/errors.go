@@ -7,7 +7,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // writeErr renders an error for an API client, replacing the pattern

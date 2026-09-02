@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 func TestBuildUnderstandingSummaryAndJudgment(t *testing.T) {

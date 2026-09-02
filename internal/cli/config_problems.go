@@ -5,7 +5,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/idea-harness/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/config"
 )
 
 // validateConfig loads the portable config under root and renders its problems.

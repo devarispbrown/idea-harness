@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // newTestProjectInitiative registers a project and creates one initiative,

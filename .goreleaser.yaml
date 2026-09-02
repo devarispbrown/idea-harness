@@ -1,0 +1,55 @@
+# Release build for idea-harness.
+#
+# Binaries are built in CI, never on a maintainer's laptop: a local `go build`
+# embeds the builder's home directory in the binary (readable with
+# `go version -m`), which -trimpath removes.
+#
+# The web UI must be built and embedded BEFORE goreleaser runs — the committed
+# internal/web/dist/index.html is a placeholder, so a release built without the
+# `make embed-web` hook below would ship a binary whose UI says "not built".
+version: 2
+
+project_name: idea-harness
+
+before:
+  hooks:
+    - make embed-web
+
+builds:
+  - id: idea
+    main: ./cmd/idea
+    binary: idea
+    env:
+      - CGO_ENABLED=0 # modernc.org/sqlite is pure Go, so this stays portable
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/devarispbrown/idea-harness/internal/buildinfo.version={{ .Version }}
+      - -X github.com/devarispbrown/idea-harness/internal/buildinfo.commit={{ .FullCommit }}
+
+archives:
+  - id: idea
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  # CHANGELOG.md is written by hand and is the source of truth; the release
+  # notes point at it rather than restating a commit list.
+  disable: true
+
+release:
+  draft: true # a human reads the notes before it is public
+  footer: |
+    See [CHANGELOG.md](https://github.com/devarispbrown/idea-harness/blob/main/CHANGELOG.md)
+    for what changed.
+
+    Pre-1.0: the CLI surface, HTTP API and config schema may change in any release.

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/id"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // containerScript is the deterministic work the container performs for the M3

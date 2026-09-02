@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/model"
 )
 
 // providerSummary is the API/UI view of one provider (§40).

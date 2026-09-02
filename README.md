@@ -195,6 +195,18 @@ scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 Pre-1.0: the CLI surface, HTTP API, and config schema may change in any release. Breaking changes
 and their migrations are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
+`idea version` prints the build — version, commit, and whether the tree was dirty — so a bug report
+can name one:
+
+```bash
+idea version        # v0.1.0 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
+```
+
+Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI. Until the
+repository is public, the canonical install stays `git clone` + `go install ./cmd/idea`:
+`go install github.com/devarispbrown/idea-harness/cmd/idea@latest` additionally requires the module
+path to be publicly fetchable.
+
 ## Documentation
 
 - [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.

@@ -15,24 +15,23 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/config"
-	"github.com/idea-harness/idea-harness/internal/docparse"
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/executor"
-	"github.com/idea-harness/idea-harness/internal/projection"
-	"github.com/idea-harness/idea-harness/internal/risk"
-	"github.com/idea-harness/idea-harness/internal/security"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/buildinfo"
+	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/docparse"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/projection"
+	"github.com/devarispbrown/idea-harness/internal/risk"
+	"github.com/devarispbrown/idea-harness/internal/security"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
-const version = "0.1.0"
-
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Get().Version})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": version})
+	writeJSON(w, http.StatusOK, buildinfo.Get())
 }
 
 // ---------- projects ----------

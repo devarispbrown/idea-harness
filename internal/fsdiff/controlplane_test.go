@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/blob"
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/blob"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 // The workspace a change set writes into also contains the machinery that

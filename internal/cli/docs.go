@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/docparse"
+	"github.com/devarispbrown/idea-harness/internal/docparse"
 )
 
 // cliContextDoc mirrors the daemon's context-doc response.

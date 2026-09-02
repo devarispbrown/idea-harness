@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
-	"github.com/idea-harness/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // Understanding is the Current Understanding projection.

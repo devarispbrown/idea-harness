@@ -1,6 +1,6 @@
 package security
 
-import "github.com/idea-harness/idea-harness/internal/domain"
+import "github.com/devarispbrown/idea-harness/internal/domain"
 
 // TrustFor classifies context trust deterministically from its selector (§38).
 // Trust is assigned by deterministic code here — never declared by model output.

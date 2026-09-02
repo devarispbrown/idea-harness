@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/idea-harness/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func newTestChangeSet(t *testing.T, db *DB, initiativeID string) *domain.ChangeSet {
