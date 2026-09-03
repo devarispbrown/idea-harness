@@ -570,6 +570,23 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if len(cses) > 0 {
 		return "", fmt.Errorf("cannot reopen a design phase after execution has begun")
 	}
+	// Reopen re-runs design stages, so the design must already exist (the PRD was
+	// approved and design attempted); refuse before that to avoid running design
+	// stages against an empty requirement set.
+	arts, err := pr.db.ListArtifacts(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	hasDesign := false
+	for _, a := range arts {
+		switch a.Kind {
+		case domain.ArtifactTechnicalDesign, domain.ArtifactDesignSpec, domain.ArtifactVerificationPlan, domain.ArtifactThreatModel, domain.ArtifactExecutionPlan:
+			hasDesign = true
+		}
+	}
+	if !hasDesign {
+		return "", fmt.Errorf("no design or plan to reopen — advance the initiative first")
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
 		return "", err
