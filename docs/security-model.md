@@ -92,7 +92,10 @@ page had was an unscoped generalisation, not a typo.
   the network. Filesystem isolation bounds *what it can reach*; nothing bounds
   *what it can send*.
 - **The raw blob store is deliberately redaction-free.** Redaction happens at the
-  read/display surface, never at write time — see `docs/security.md`.
+  read/display surface, never at write time: `RenderPatch` and the structured
+  diff redact what they return, and the bytes underneath stay as written. This
+  page is the canonical statement of that property; `docs/api.md` and
+  `docs/openapi.yaml` link here rather than restating it.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
