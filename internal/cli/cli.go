@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,30 +19,27 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/docparse"
 )
 
-// jsonSupport records how a command answers `--json`. It is documentation, not
-// enforcement — the enforcement lives in each command's flag spec (flags.go) —
-// but it is kept next to the dispatch entry so the generated reference in
-// docs/cli.md and the code move together.
-type jsonSupport int
+// cmdArgs is what a command receives after dispatch has parsed its flags. One
+// parse, from one spec, declared in the table -- so a command cannot silently
+// accept a flag the reference does not document, and cannot reject one it does.
+type cmdArgs struct {
+	// sub is the matched subcommand token ("add", "validate", "status"), or ""
+	// when the command was invoked bare.
+	sub        string
+	positional []string
+	flags      parsedFlags
+}
 
-const (
-	jsonNone     jsonSupport = iota // not a state-returning command
-	jsonYes                         // --json prints the response as JSON
-	jsonNoFlags                     // takes no flags at all; any flag is an error
-	jsonRejected                    // --json is rejected with a pointer elsewhere
-)
+func (a cmdArgs) has(name string) bool      { return a.flags.has(name) }
+func (a cmdArgs) value(name string) string  { return a.flags.value(name) }
+func (a cmdArgs) list(name string) []string { return a.flags.list(name) }
 
-func (j jsonSupport) doc() string {
-	switch j {
-	case jsonYes:
-		return "yes"
-	case jsonNoFlags:
-		return "takes no flags"
-	case jsonRejected:
-		return "rejected — use `idea tasks --json`"
-	default:
-		return "—"
+// arg returns the i-th positional, or "" when there are fewer.
+func (a cmdArgs) arg(i int) string {
+	if i < len(a.positional) {
+		return a.positional[i]
 	}
+	return ""
 }
 
 // command is one row of the CLI's command table: the single source of truth for
@@ -56,9 +54,25 @@ type command struct {
 	usage string
 	// summary is the one-line description.
 	summary string
-	json    jsonSupport
+	// flags is the spec for the bare command; subs holds one spec per
+	// subcommand token. Declared per dispatch target rather than per command
+	// because a union spec would accept `idea model ls --key-env X` -- the
+	// silent-swallow defect this table exists to prevent, one level down.
+	//
+	// A dispatchable row must declare flags, even as the empty flagSpec{}; nil
+	// is a programming error Run rejects, because the compiler cannot catch an
+	// omitted field in a keyed struct literal.
+	flags flagSpec
+	subs  map[string]flagSpec
+	// subsAreRequired marks a command whose leading word must name a subcommand,
+	// so a typo is reported rather than silently falling through to the bare
+	// behaviour.
+	subsAreRequired bool
+	// rejectsJSON marks a command that accepts --json only to refuse it with a
+	// pointer somewhere better (`plan` -> `idea tasks --json`).
+	rejectsJSON bool
 	// run is nil for documentation-only rows.
-	run func(args []string, stdout, stderr io.Writer) error
+	run func(a cmdArgs, stdout, stderr io.Writer) error
 	// inHelp marks the rows `idea help` prints. Rows added since the help
 	// screen was last written are documented but not printed, so that
 	// `idea help` output stays byte-for-byte what it has always been; set the
@@ -71,50 +85,58 @@ type command struct {
 // an initialization cycle.
 func commands() []command {
 	return []command{
-		{names: []string{"init"}, usage: "init", summary: "initialize a project in the current directory", run: func(_ []string, stdout, _ io.Writer) error { return cmdInit(stdout) }, inHelp: true},
-		{names: []string{"new"}, usage: `new "<idea>"`, summary: "create an initiative and start the workflow", run: cmdNew, inHelp: true},
-		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", json: jsonYes, run: cmdStatus, inHelp: true},
-		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", json: jsonYes, run: cmdChanged, inHelp: true},
-		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", json: jsonYes, run: cmdDecisions, inHelp: true},
-		{names: []string{"reviews"}, usage: "reviews", summary: "list review findings", json: jsonYes, run: cmdReviews, inHelp: true},
-		{names: []string{"model"}, usage: "model", summary: "list/set model providers (Gemini, OpenAI, …)", run: cmdModel, inHelp: true},
+		{names: []string{"init"}, usage: "init", summary: "initialize a project in the current directory", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
+		{names: []string{"new"}, usage: `new "<idea>"`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated}, run: cmdNew, inHelp: true},
+		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, run: cmdStatus, inHelp: true},
+		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, run: cmdChanged, inHelp: true},
+		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, run: cmdDecisions, inHelp: true},
+		{names: []string{"reviews"}, usage: "reviews", summary: "list review findings", flags: jsonFlag, run: cmdReviews, inHelp: true},
+		{names: []string{"model"}, usage: "model", summary: "list/set model providers (Gemini, OpenAI, …)", flags: flagSpec{}, subs: map[string]flagSpec{
+			"list": {}, "ls": {},
+			"set": {"--role": flagValue},
+			"add": {"--type": flagValue, "--base-url": flagValue, "--key-env": flagValue},
+		}, subsAreRequired: true, run: cmdModel, inHelp: true},
 		{usage: "model ls <provider>", summary: "list a provider's models live (falls back to the catalog offline)"},
 		{usage: "model set <provider/model>", summary: "set the default model (--role <role> sets one role only)"},
 		{usage: "model add <name>", summary: "add a provider (--type, --base-url, --key-env)"},
-		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", run: cmdPRD, inHelp: true},
-		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", json: jsonYes, run: cmdExplain, inHelp: true},
-		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", run: cmdExport, inHelp: true},
-		{names: []string{"advance"}, usage: "advance", summary: "run Design → Execution Plan (M2)", json: jsonNoFlags, run: cmdAdvance, inHelp: true},
-		{names: []string{"plan"}, usage: "plan", summary: "render the execution plan", json: jsonRejected, run: cmdPlan, inHelp: true},
-		{names: []string{"tasks"}, usage: "tasks", summary: "list the ordered plan tasks", json: jsonYes, run: cmdTasks, inHelp: true},
-		{names: []string{"why"}, usage: "why <type> <id>", summary: "show the provenance chain", json: jsonYes, run: cmdWhy, inHelp: true},
-		{names: []string{"impact"}, usage: "impact <type> <id>", summary: "show dependents + staleness", json: jsonYes, run: cmdImpact, inHelp: true},
-		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", json: jsonYes, run: cmdTrace, inHelp: true},
-		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", json: jsonYes, run: cmdDiff, inHelp: true},
-		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", json: jsonNoFlags, run: cmdExecute, inHelp: true},
-		{names: []string{"changes"}, usage: "changes", summary: "list change sets", json: jsonYes, run: cmdChanges, inHelp: true},
-		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", json: jsonYes, run: cmdChange, inHelp: true},
-		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", run: cmdApply, inHelp: true},
-		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", run: cmdRevert, inHelp: true},
-		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", run: cmdReview, inHelp: true},
-		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass --note <text> record human evidence", json: jsonYes, run: cmdVerify, inHelp: true},
-		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", json: jsonNone, run: cmdNext, inHelp: true},
-		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", json: jsonYes, run: cmdRisk, inHelp: true},
-		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", json: jsonYes, run: cmdExecutors, inHelp: true},
+		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", flags: flagSpec{}, run: cmdPRD, inHelp: true},
+		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", flags: jsonFlag, run: cmdExplain, inHelp: true},
+		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", flags: flagSpec{}, run: cmdExport, inHelp: true},
+		{names: []string{"advance"}, usage: "advance", summary: "run Design → Execution Plan (M2)", flags: flagSpec{}, run: cmdAdvance, inHelp: true},
+		{names: []string{"plan"}, usage: "plan", summary: "render the execution plan", flags: flagSpec{"--json": flagBool}, rejectsJSON: true, run: cmdPlan, inHelp: true},
+		{names: []string{"tasks"}, usage: "tasks", summary: "list the ordered plan tasks", flags: jsonFlag, run: cmdTasks, inHelp: true},
+		{names: []string{"why"}, usage: "why <type> <id>", summary: "show the provenance chain", flags: jsonFlag, run: cmdWhy, inHelp: true},
+		{names: []string{"impact"}, usage: "impact <type> <id>", summary: "show dependents + staleness", flags: jsonFlag, run: cmdImpact, inHelp: true},
+		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, run: cmdTrace, inHelp: true},
+		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, run: cmdDiff, inHelp: true},
+		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", flags: flagSpec{}, run: cmdExecute, inHelp: true},
+		{names: []string{"changes"}, usage: "changes", summary: "list change sets", flags: jsonFlag, run: cmdChanges, inHelp: true},
+		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, run: cmdChange, inHelp: true},
+		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, run: cmdApply, inHelp: true},
+		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", flags: flagSpec{}, run: cmdRevert, inHelp: true},
+		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", flags: flagSpec{}, run: cmdReview, inHelp: true},
+		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass --note <text> record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, run: cmdVerify, inHelp: true},
+		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},
+		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, run: cmdRisk, inHelp: true},
+		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
+			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool},
+		}, subsAreRequired: true, run: cmdExecutors, inHelp: true},
 		{usage: "executors setup", summary: "wire a coding agent (hermes|omp)", inHelp: true},
-		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", json: jsonNoFlags, run: cmdWatch, inHelp: true},
-		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", run: cmdCancel, inHelp: true},
-		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", run: cmdConfig, inHelp: true},
+		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, run: cmdWatch, inHelp: true},
+		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, run: cmdCancel, inHelp: true},
+		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
 		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)"},
-		{names: []string{"doctor"}, usage: "doctor", summary: "check daemon/config/state health", run: func(_ []string, stdout, _ io.Writer) error { return cmdDoctor(stdout) }, inHelp: true},
-		{names: []string{"docs"}, usage: "docs", summary: "list uploaded context docs", json: jsonYes, run: cmdDocs, inHelp: true},
+		{names: []string{"doctor"}, usage: "doctor", summary: "check daemon/config/state health", flags: flagSpec{}, run: func(_ cmdArgs, stdout, _ io.Writer) error { return cmdDoctor(stdout) }, inHelp: true},
+		{names: []string{"docs"}, usage: "docs", summary: "list uploaded context docs", flags: jsonFlag, subs: map[string]flagSpec{
+			"add": {"--kind": flagValue, "--title": flagValue},
+		}, run: cmdDocs, inHelp: true},
 		{usage: "docs add <path>", summary: "upload a context doc (--kind, --title)", inHelp: true},
-		{names: []string{"logs"}, usage: "logs [-f] [n]", summary: "show (or follow) the daemon log", run: func(args []string, stdout, _ io.Writer) error { return cmdLogs(args, stdout) }, inHelp: true},
-		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", run: func(args []string, _, stderr io.Writer) error { return runDaemon(args, stderr) }, inHelp: true},
+		{names: []string{"logs"}, usage: "logs [-f] [n]", summary: "show (or follow) the daemon log", flags: flagSpec{"-f": flagBool, "--follow": flagBool, "-n": flagValue}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdLogs(a, stdout) }, inHelp: true},
+		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", flags: flagSpec{}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
-		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", run: cmdDev, inHelp: true},
-		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", run: cmdVersion, inHelp: true},
-		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", run: cmdHelp, inHelp: true},
+		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
+		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
+		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}
 }
 
@@ -133,28 +155,75 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			continue
 		}
 		for _, name := range c.names {
-			if name == cmd {
-				return c.run(rest, stdout, stderr)
+			if name != cmd {
+				continue
 			}
+			a, err := c.parse(cmd, rest)
+			if err != nil {
+				return err
+			}
+			return c.run(a, stdout, stderr)
 		}
 	}
 	return fmt.Errorf("unknown command %q (try `idea help`)", cmd)
 }
 
+// parse turns a command's remaining argv into cmdArgs, enforcing the spec the
+// table declares. Doing this here rather than inside each command is what stops
+// a command from silently swallowing a flag by forgetting to call parseArgs --
+// ten of them did, so `idea status --jsonn` printed human output to stdout and
+// exited 0, breaking any downstream `jq`.
+func (c command) parse(name string, rest []string) (cmdArgs, error) {
+	if c.flags == nil {
+		// Not reachable through the table, which TestEveryCommandDeclaresItsFlags
+		// keeps complete. Explicit because the compiler cannot catch an omitted
+		// field in a keyed struct literal, and a nil spec would otherwise reject
+		// every flag the command legitimately accepts.
+		return cmdArgs{}, fmt.Errorf("internal: command %q declares no flag spec", name)
+	}
+	spec, sub := c.flags, ""
+	if len(rest) > 0 && c.subs != nil {
+		if subSpec, ok := c.subs[rest[0]]; ok {
+			spec, sub, rest = subSpec, rest[0], rest[1:]
+		} else if !strings.HasPrefix(rest[0], "-") {
+			// A leading word that is not a known subcommand. For a command whose
+			// subcommands are the whole interface, that is a typo worth naming --
+			// `idea daemon stauts` used to start a second daemon in the
+			// foreground, and `idea config valdiate` printed the model list and
+			// exited 0.
+			if c.subsAreRequired {
+				return cmdArgs{}, fmt.Errorf("unknown %s subcommand %q (use %s)",
+					name, rest[0], strings.Join(sortedKeys(c.subs), ", "))
+			}
+		}
+	}
+	positional, flags, err := parseArgs(spec, rest)
+	if err != nil {
+		return cmdArgs{}, err
+	}
+	return cmdArgs{sub: sub, positional: positional, flags: flags}, nil
+}
+
+func sortedKeys(m map[string]flagSpec) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // cmdDev starts the daemon and serves the web UI.
-func cmdDev(_ []string, _, stderr io.Writer) error {
+func cmdDev(_ cmdArgs, _, stderr io.Writer) error {
 	fmt.Fprintln(stderr, muted("starting daemon (web UI served at http://127.0.0.1:8787)"))
-	return runDaemon(nil, stderr)
+	return runDaemon(cmdArgs{}, io.Discard, stderr)
 }
 
 // cmdHelp prints the command list. The human form goes to stderr exactly as it
 // always has; `--format=md` writes the generated docs/cli.md table to the
 // caller's stdout, so a drift check can capture it.
-func cmdHelp(args []string, stdout, stderr io.Writer) error {
-	_, flags, err := parseArgs(flagSpec{"--format": flagValue}, args)
-	if err != nil {
-		return err
-	}
+func cmdHelp(a cmdArgs, stdout, stderr io.Writer) error {
+	flags := a.flags
 	switch format := flags.value("--format"); format {
 	case "", "text":
 		usage(stderr)
@@ -184,11 +253,11 @@ func usage(w io.Writer) {
 // ends a markdown table cell, code span or not.
 func renderCommandTable(w io.Writer) error {
 	var b strings.Builder
-	b.WriteString("| Command | What it does | `--json` |\n")
-	b.WriteString("| --- | --- | --- |\n")
+	b.WriteString("| Command | What it does | Flags | `--json` |\n")
+	b.WriteString("| --- | --- | --- | --- |\n")
 	for _, c := range commands() {
-		fmt.Fprintf(&b, "| `idea %s` | %s | %s |\n",
-			escapeTableCell(c.usage), escapeTableCell(c.summary), c.json.doc())
+		fmt.Fprintf(&b, "| `idea %s` | %s | %s | %s |\n",
+			escapeTableCell(c.usage), escapeTableCell(c.summary), c.flagDoc(), c.jsonDoc())
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -198,19 +267,22 @@ func escapeTableCell(s string) string { return strings.ReplaceAll(s, "|", `\|`) 
 
 // ---------- daemon ----------
 
-func runDaemon(rest []string, stderr io.Writer) error {
-	if len(rest) > 0 {
-		switch rest[0] {
-		case "status":
-			if healthy() {
-				fmt.Println(ok("daemon: running"))
-				return nil
-			}
-			fmt.Println(muted("daemon: not running"))
+func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
+	// The subcommand token is matched by dispatch, so `idea daemon stauts` is
+	// rejected there rather than falling through to run a second daemon in the
+	// foreground, which is what it used to do (DX audit).
+	switch a.sub {
+	case "status":
+		// Exits non-zero when the daemon is down, so `idea daemon status && …`
+		// means what it reads as, and writes to the injected writer so the
+		// output is testable through Run.
+		if healthy() {
+			fmt.Fprintln(stdout, ok("daemon: running"))
 			return nil
-		case "stop":
-			return stopDaemon()
 		}
+		return fmt.Errorf("daemon is not running (it auto-starts on the first command that needs it)")
+	case "stop":
+		return stopDaemon()
 	}
 	log := newDaemonLogger(stderr)
 	writePID()
@@ -261,10 +333,30 @@ func stopDaemon() error {
 
 // ---------- init / new ----------
 
-func cmdInit(stdout io.Writer) error {
+func cmdInit(a cmdArgs, stdout io.Writer) error {
+	// `idea init /some/path` used to initialise the current directory and report
+	// success, so a user watched it create a project somewhere they did not ask
+	// for (DX audit). The argument reads as intent, so it is honoured.
+	if len(a.positional) > 1 {
+		return fmt.Errorf("usage: idea init [<dir>]")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+	if dir := a.arg(0); dir != "" {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return fmt.Errorf("cannot initialize %s: %w", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("cannot initialize %s: not a directory", dir)
+		}
+		cwd = abs
 	}
 	if err := ensureDaemon(); err != nil {
 		return err
@@ -289,28 +381,11 @@ type newDocInput struct {
 	Title   string `json:"title"`
 }
 
-func cmdNew(args []string, stdout, stderr io.Writer) error {
-	// Parse --doc flags (before or after the idea); remaining args are the idea.
-	var ideaParts []string
-	var docPaths []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--doc":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--doc requires a path")
-			}
-			i++
-			docPaths = append(docPaths, args[i])
-		case strings.HasPrefix(a, "--doc="):
-			docPaths = append(docPaths, strings.TrimPrefix(a, "--doc="))
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown flag %q", a)
-		default:
-			ideaParts = append(ideaParts, a)
-		}
-	}
-	idea := strings.Join(ideaParts, " ")
+func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
+	// --doc is declared in the table's spec for `new`; this used to be a
+	// hand-rolled loop with its own "unknown flag" arm.
+	docPaths := a.list("--doc")
+	idea := strings.Join(a.positional, " ")
 	if strings.TrimSpace(idea) == "" {
 		if len(docPaths) > 0 {
 			return fmt.Errorf("an idea is required with --doc (e.g. idea new \"<idea>\" --doc <path>)")
@@ -386,8 +461,8 @@ func connect() (*client, string, error) {
 
 // ---------- config / doctor ----------
 
-func cmdConfig(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 && args[0] == "validate" {
+func cmdConfig(a cmdArgs, stdout, stderr io.Writer) error {
+	if a.sub == "validate" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
@@ -402,18 +477,28 @@ func cmdConfig(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdLogs prints the tail of the daemon log (§57, §61).
-func cmdLogs(args []string, stdout io.Writer) error {
+func cmdLogs(a cmdArgs, stdout io.Writer) error {
+	// `idea logs -n 200` was silently ignored and `idea logs 200x` silently
+	// printed the default 50 lines: the old loop dropped anything Atoi refused
+	// (DX audit).
 	n := 50
-	follow := false
-	for _, a := range args {
-		switch a {
-		case "-f", "--follow":
-			follow = true
-		default:
-			if v, err := strconv.Atoi(a); err == nil && v > 0 {
-				n = v
-			}
+	follow := a.has("-f") || a.has("--follow")
+	if v := a.value("-n"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("-n needs a positive number of lines, got %q", v)
 		}
+		n = parsed
+	}
+	if arg := a.arg(0); arg != "" {
+		parsed, err := strconv.Atoi(arg)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("idea logs takes a positive line count, got %q", arg)
+		}
+		n = parsed
+	}
+	if len(a.positional) > 1 {
+		return fmt.Errorf("usage: idea logs [-f] [-n <lines>] [<lines>]")
 	}
 	if follow {
 		return followLogs(stdout)
@@ -463,10 +548,7 @@ func followLogs(stdout io.Writer) error {
 
 // cmdVersion prints what build this is. A bug report that cannot name a build
 // is most of a bug report missing, and every install used to answer "0.1.0".
-func cmdVersion(args []string, stdout, _ io.Writer) error {
-	if _, _, err := parseArgs(flagSpec{}, args); err != nil {
-		return err
-	}
+func cmdVersion(a cmdArgs, stdout, _ io.Writer) error {
 	fmt.Fprintln(stdout, buildinfo.Get())
 	return nil
 }
@@ -574,3 +656,55 @@ func printDoctorFindings(stdout io.Writer, findings []cliFinding) {
 }
 
 var _ = json.RawMessage{}
+
+// flagDoc renders a command's accepted flags for the generated reference.
+//
+// This column is the point of the exercise. Deriving only the --json column
+// from the spec would centralise enforcement while leaving the flag *names*
+// keyed to the hand-written summary string -- so `verify --waive` could be
+// parsed, enforced, and still absent from docs/cli.md with `make docs-check`
+// green, which is exactly the drift the audit found. With the names rendered
+// from the spec, a flag that exists in code cannot be missing from the docs.
+func (c command) flagDoc() string {
+	if c.run == nil {
+		return "—"
+	}
+	var parts []string
+	for _, name := range c.flags.names() {
+		parts = append(parts, "`"+name+"`")
+	}
+	for _, sub := range sortedKeys(c.subs) {
+		for _, name := range c.subs[sub].names() {
+			parts = append(parts, "`"+sub+" "+name+"`")
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// jsonDoc records how a command answers --json, derived from its spec rather
+// than kept beside it as a hand-maintained field. The old field rendered the
+// same "—" for six commands that reject every flag and for ten that silently
+// swallowed them, which is two opposite behaviours under one symbol.
+func (c command) jsonDoc() string {
+	switch {
+	case c.run == nil:
+		return "—"
+	// Checked before the empty-spec case: `plan` declares --json precisely so it
+	// can refuse it with a pointer somewhere better, and an ordering that tested
+	// the spec first would silently relabel it "takes no flags".
+	case c.rejectsJSON:
+		return "rejected — use `idea tasks --json`"
+	case len(c.flags) == 0 && len(c.subs) == 0:
+		return "takes no flags"
+	// accepts() rather than a direct comparison: a map miss returns flagUnset,
+	// and comparing against flagBool would be true for every command that does
+	// not declare --json.
+	case c.flags.accepts("--json", flagBool):
+		return "yes"
+	default:
+		return "no"
+	}
+}

@@ -7,22 +7,19 @@ import (
 
 // cliExplainUnderstanding mirrors the projection response for `idea explain`.
 type cliExplainUnderstanding struct {
-	Title         string   `json:"title"`
-	Description   string   `json:"description"`
-	Status        string   `json:"status"`
-	Summary       string   `json:"summary"`
-	NeedsJudgment []string `json:"needs_judgment"`
+	Title         string           `json:"title"`
+	Description   string           `json:"description"`
+	Status        string           `json:"status"`
+	Summary       string           `json:"summary"`
+	NeedsJudgment []string         `json:"needs_judgment"`
 	Requirements  []cliRequirement `json:"requirements"`
 	Decisions     []cliDecision    `json:"decisions"`
 	Questions     []cliQuestion    `json:"questions"`
 }
 
 // cmdExplain renders the Current Understanding (§5, §60 "Explain").
-func cmdExplain(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdExplain(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -89,11 +86,8 @@ func cmdExplain(args []string, stdout, stderr io.Writer) error {
 // error, since export accepts none), and the artifact list is scoped to the
 // resolved initiative via resolveInitiative, exactly like `idea tasks` /
 // `idea changes` — `idea export [kind] [initiative]`.
-func cmdExport(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdExport(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	kind := "prd"
 	if len(positional) > 0 {
 		kind = positional[0]

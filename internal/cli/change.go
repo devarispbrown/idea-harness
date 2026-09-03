@@ -49,11 +49,8 @@ type cliExecutor struct {
 }
 
 // cmdExecute launches the execute pipeline for the next ready task.
-func cmdExecute(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -78,11 +75,8 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdCancel interrupts a running asynchronous operation by id (§16, M3).
-func cmdCancel(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdCancel(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea cancel <operation-id>")
 	}
@@ -103,24 +97,21 @@ func cmdCancel(args []string, stdout, stderr io.Writer) error {
 // humanStatus maps a ChangeSet status to human language (§52, Track C). Raw
 // status stays available under --json.
 var humanStatus = map[string]string{
-	"draft":            "draft",
-	"checks_running":   "checking",
-	"review_required":  "needs your approval",
-	"rejected":         "rejected",
+	"draft":             "draft",
+	"checks_running":    "checking",
+	"review_required":   "needs your approval",
+	"rejected":          "rejected",
 	"changes_requested": "changes requested",
-	"superseded":       "superseded",
-	"approved":         "approved — apply it",
-	"applying":         "applying",
-	"applied":          "applied",
-	"reverted":         "reverted",
-	"conflicted":       "conflicted",
+	"superseded":        "superseded",
+	"approved":          "approved — apply it",
+	"applying":          "applying",
+	"applied":           "applied",
+	"reverted":          "reverted",
+	"conflicted":        "conflicted",
 }
 
-func cmdChanges(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdChanges(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -152,11 +143,8 @@ func cmdChanges(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdChange shows a single change set by id.
-func cmdChange(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdChange(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea change <id>")
 	}
@@ -186,21 +174,18 @@ func cmdChange(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdApply applies an approved change set by id.
-func cmdApply(args []string, stdout, stderr io.Writer) error {
-	return runChangeSetAction("apply", args, stdout)
+func cmdApply(a cmdArgs, stdout, stderr io.Writer) error {
+	return runChangeSetAction("apply", a, stdout)
 }
 
 // cmdRevert rolls back a change set by id.
-func cmdRevert(args []string, stdout, stderr io.Writer) error {
-	return runChangeSetAction("revert", args, stdout)
+func cmdRevert(a cmdArgs, stdout, stderr io.Writer) error {
+	return runChangeSetAction("revert", a, stdout)
 }
 
 // cmdReview applies a review verdict to a change set.
-func cmdReview(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested>")
 	}
@@ -228,11 +213,8 @@ func cmdReview(args []string, stdout, stderr io.Writer) error {
 }
 
 // runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the result.
-func runChangeSetAction(action string, args []string, stdout io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
+	positional := a.positional
 	if len(positional) < 1 {
 		return fmt.Errorf("usage: idea %s <id>", action)
 	}
@@ -253,11 +235,8 @@ func runChangeSetAction(action string, args []string, stdout io.Writer) error {
 }
 
 // cmdRisk prints the deterministic risk profile for an initiative.
-func cmdRisk(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdRisk(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -286,9 +265,9 @@ func cmdRisk(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdExecutors lists the available executors and their capabilities.
-func cmdExecutors(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 && args[0] == "setup" {
-		return cmdExecutorSetup(args[1:], stdout, stderr)
+func cmdExecutors(a cmdArgs, stdout, stderr io.Writer) error {
+	if a.sub == "setup" {
+		return cmdExecutorSetup(a, stdout, stderr)
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -298,7 +277,7 @@ func cmdExecutors(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/executors", nil, &executors); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, executors)
 	}
 	fmt.Fprintln(stdout, heading("Executors"))
@@ -319,40 +298,15 @@ func cmdExecutors(args []string, stdout, stderr io.Writer) error {
 // with a single command: it verifies the CLI is present in the image (hardened,
 // no pull), then writes executor config via the daemon. Requires --yes to accept
 // the network-egress/auto-approve/key-forwarding security tradeoff.
-func cmdExecutorSetup(args []string, stdout, stderr io.Writer) error {
-	kind := "hermes"
-	image := ""
-	model := ""
-	yes := false
-	smoke := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--kind":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--kind requires a value")
-			}
-			kind = args[i+1]
-			i++
-		case "--image":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--image requires a value")
-			}
-			image = args[i+1]
-			i++
-		case "--model":
-			if i+1 >= len(args) {
-				return fmt.Errorf("--model requires a value")
-			}
-			model = args[i+1]
-			i++
-		case "--yes":
-			yes = true
-		case "--smoke":
-			smoke = true
-		default:
-			return fmt.Errorf("unknown flag %q", args[i])
-		}
+func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
+	// Flags come from the table's spec for `executors setup`; this used to be a
+	// hand-rolled loop, one of four that predated parseArgs.
+	kind := a.value("--kind")
+	if kind == "" {
+		kind = "hermes"
 	}
+	image, model := a.value("--image"), a.value("--model")
+	yes, smoke := a.has("--yes"), a.has("--smoke")
 	if kind != "hermes" && kind != "omp" {
 		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
 	}
@@ -420,17 +374,8 @@ type cliCoverage struct {
 
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
-func cmdVerify(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(flagSpec{
-		"--pass":  flagBool,
-		"--fail":  flagBool,
-		"--waive": flagBool,
-		"--note":  flagValue,
-		"--json":  flagBool,
-	}, args)
-	if err != nil {
-		return err
-	}
+func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
