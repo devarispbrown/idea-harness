@@ -50,8 +50,10 @@ existed, and each new guard checks a second axis.
 - `idea model add` rejects misspelled flags rather than dropping them, and refuses a provider with
   neither `--type` nor `--base-url` — which previously wrote a provider with no endpoint and
   reported success.
-- `idea doctor` reports "no project here" and exits non-zero outside a project, instead of "✓ config
-  valid" and "all checks passed" anywhere on the filesystem.
+- `idea doctor` no longer claims "✓ config valid" and "all checks passed" in a directory with no
+  project. Outside a project it reports the install and says there is none, and exits 0 — README
+  puts it under "Verify:" before the quick start, so the documented post-install check runs exactly
+  there.
 - `idea init <dir>` initializes that directory instead of silently initializing the current one.
 - `idea watch` stops on a not-found initiative rather than polling forever and exiting 0.
 - `idea daemon status` exits non-zero when the daemon is not running.

@@ -23,7 +23,7 @@ before you change it:
 ```bash
 idea why requirement REQ-1      # the evidence → assertions → decisions behind it
 idea impact decision DEC-1      # what breaks or goes stale if you change it
-idea trace task T-3             # both directions (why + dependents)
+idea trace task TASK-3         # both directions (why + dependents)
 idea changed                    # What Changed since your last look
 ```
 
@@ -94,6 +94,7 @@ requirement verification.
 ### Build & put `idea` on your PATH
 
 ```bash
+git clone git@github.com:devarispbrown/idea-harness.git
 cd idea-harness
 
 # Install into your Go bin directory. No Node toolchain required.

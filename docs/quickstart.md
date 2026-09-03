@@ -93,12 +93,12 @@ the ordered list of tasks the implementer will tackle one at a time.
 
 ```bash
 idea plan      # render the execution plan
-idea tasks     # list the tasks in dependency order (T-1, T-2, …)
+idea tasks     # list the tasks in dependency order (TASK-1, TASK-2, …)
 ```
 
 Each task shows its priority, estimate, and statement. Order matters: a task that depends on
-another can't run first. Trace any node to its evidence with `idea why task T-1` or
-`idea trace task T-1`.
+another can't run first. Trace any node to its evidence with `idea why task TASK-1` or
+`idea trace task TASK-1`.
 
 ## 4. Execute the first task (M3)
 
