@@ -375,19 +375,35 @@ type cliCoverage struct {
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
-	positional, flags := a.positional, a.flags
+	req := a.arg(0)
+	pass, fail, waive := a.has("--pass"), a.has("--fail"), a.has("--waive")
+	note := a.value("--note")
+
+	// Validated before connect(), because the failure here is silence rather
+	// than an error: `idea verify --pass --note "checked manually"` with no
+	// requirement parsed the flags, discarded them, ran the gate and printed
+	// "✓ verified" with exit 0 -- so a user believed they had signed off and no
+	// evidence existed anywhere (DX audit).
+	dispositions := 0
+	for _, set := range []bool{pass, fail, waive} {
+		if set {
+			dispositions++
+		}
+	}
+	if dispositions > 1 {
+		return fmt.Errorf("--pass, --fail and --waive are alternatives; give exactly one")
+	}
+	if req == "" && (dispositions > 0 || note != "") {
+		return fmt.Errorf("recording evidence needs the requirement it is about: idea verify <req> --pass|--fail|--waive [--note <text>]")
+	}
+	if len(a.positional) > 1 {
+		return fmt.Errorf("usage: idea verify [<req>] [--pass|--fail|--waive] [--note <text>]")
+	}
+
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	req := ""
-	if len(positional) > 0 {
-		req = positional[0]
-	}
-	pass := flags.has("--pass")
-	fail := flags.has("--fail")
-	waive := flags.has("--waive")
-	note := flags.value("--note")
 	iniID, err := resolveInitiative(c, projectID, nil)
 	if err != nil {
 		return err
@@ -408,7 +424,7 @@ func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
 	}
-	if flags.has("--json") {
+	if a.has("--json") {
 		return dumpJSON(stdout, out)
 	}
 	if req != "" && (pass || fail || waive) {

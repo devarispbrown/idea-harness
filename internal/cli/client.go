@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -77,7 +78,7 @@ func (c *client) send(req *http.Request, out any) error {
 		if msg == "" {
 			msg = resp.Status
 		}
-		return fmt.Errorf("%s", msg)
+		return &httpError{Status: resp.StatusCode, Message: msg}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -242,4 +243,20 @@ func samePath(a, b string) bool {
 		return aa == bb
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// httpError carries the status alongside the daemon's message, so a caller can
+// tell a mistake that will never succeed (404) from one that might (503 during
+// a restart). watch needs that distinction to know when to stop polling.
+type httpError struct {
+	Status  int
+	Message string
+}
+
+func (e *httpError) Error() string { return e.Message }
+
+// isNotFound reports whether err is the daemon answering 404.
+func isNotFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }
