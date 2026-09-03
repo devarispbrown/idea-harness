@@ -564,16 +564,29 @@ func cmdDoctor(stdout io.Writer) error {
 	}
 	cwd, _ := os.Getwd()
 
-	// No project here is a finding, not a clean bill of health. config.Load
-	// returns a usable default for a directory with no .idea-harness, so doctor
-	// printed "✓ config valid" and "all checks passed" with exit 0 anywhere on
-	// the filesystem -- flagged in the first DX audit and still true in the
-	// second. The daemon and version lines above stay, since they are useful
-	// outside a project.
+	// Outside a project, report the install and stop -- without claiming
+	// anything about a config that is not there.
+	//
+	// config.Load returns a usable default for a directory with no
+	// .idea-harness, so doctor used to print "✓ config valid" and "all checks
+	// passed" anywhere on the filesystem: a false green, flagged in the first DX
+	// audit and still true in the second.
+	//
+	// The first fix for that exited non-zero here, which broke the other thing
+	// doctor is for. README puts `idea doctor` under "Verify:" straight after
+	// the install block and before the quick start, so the documented
+	// post-install check runs in exactly this situation -- and a developer who
+	// has just installed correctly would have been told their install failed.
+	// The third DX audit caught it as an install-stage failure.
+	//
+	// So: no claim about config, an explicit note that there is no project, and
+	// exit 0, because nothing is actually wrong. The bug was the false claim,
+	// not the exit code.
 	if _, err := os.Stat(filepath.Join(cwd, config.Dir)); err != nil {
-		fmt.Fprintln(stdout, errText("✗ no project here")+" "+muted("("+cwd+")"))
-		fmt.Fprintln(stdout, muted("  run ")+bold("idea init")+muted(" to create one"))
-		return fmt.Errorf("no idea-harness project in %s", cwd)
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, ok("install looks good")+" "+muted("— no idea-harness project in this directory"))
+		fmt.Fprintln(stdout, muted("  ")+bold("idea init")+muted(" creates one, then `idea doctor` checks it"))
+		return nil
 	}
 
 	// doctor is what the README names as the post-install check, so it has to
