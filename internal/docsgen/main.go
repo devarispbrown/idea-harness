@@ -38,6 +38,7 @@ const (
 func main() {
 	check := flag.Bool("check", false, "report drift and exit non-zero instead of rewriting the file")
 	apiCheck := flag.Bool("api-check", false, "compare docs/openapi.yaml against the routes registered in internal/daemon and exit non-zero on drift")
+	docsLint := flag.Bool("docs-lint", false, "check that every `idea ...` command in README and the quickstart names a real verb and a resolvable reference")
 	apiDocs := flag.Bool("api-docs", false, "add a row to docs/api.md for every route that has none")
 	apiDocsCheck := flag.Bool("api-docs-check", false, "fail if docs/api.md is missing a row for any route, or has one for a route that does not exist")
 	specJSON := flag.String("spec-json", "", "write docs/openapi.yaml to this path as JSON (used by `make api-docs-dist`)")
@@ -51,6 +52,14 @@ func main() {
 		return
 	}
 
+	if *docsLint {
+		if err := runDocsLint(); err != nil {
+			fmt.Fprintln(os.Stderr, "docs-lint:", err)
+			os.Exit(1)
+		}
+		fmt.Println("docs-lint: every documented `idea` command names a real verb and a resolvable reference")
+		return
+	}
 	if *apiDocs {
 		if err := runAPIDocsGenerate(); err != nil {
 			fmt.Fprintln(os.Stderr, "api-docs:", err)
