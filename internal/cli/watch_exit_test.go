@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"io"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -68,4 +70,40 @@ func isQuit(cmd tea.Cmd) bool {
 	}
 	_, ok := cmd().(tea.QuitMsg)
 	return ok
+}
+
+// TestWatchInitiativeReturnsTheFatalError drives the real program, which the
+// previous round's test could not.
+//
+// That test called poll() on a *watchModel directly. Bubble Tea does not use
+// that shape: Update has a value receiver, so the program copies the model and
+// carries the returned value, leaving the outer struct untouched. `return
+// m.fatal` was therefore always nil and `idea watch CHG-1` exited 0 while
+// printing an error — the exact bug the round claimed to fix, shipped with a
+// test that passed either way.
+//
+// tea.WithInput(nil) plus WithoutRenderer makes the program run headlessly, so
+// this can assert what the function actually returns.
+func TestWatchInitiativeReturnsTheFatalError(t *testing.T) {
+	f := newFakeDaemon(t)
+	// Deliberately unseeded: every poll 404s.
+	c, err := newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- watchInitiativeWith(c, f.projectID, "CHG-1", io.Discard,
+			tea.WithInput(nil), tea.WithoutRenderer())
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("watchInitiative returned nil on a not-found initiative; main.go exits 0")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("watchInitiative did not return; it is still polling")
+	}
 }
