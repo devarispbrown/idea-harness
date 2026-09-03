@@ -122,7 +122,10 @@ func (db *DB) SetInitiativeStatus(ctx context.Context, initiativeID string, stat
 		EventType:     "initiative.status_changed",
 		Operation:     string(status),
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ?`,
+		// Any transition out of "failed" clears the stale failure reason (the
+		// only writer of failure_reason is FailInitiative, which sets status
+		// failed in the same row update).
+		_, err := tx.Exec(`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ? WHERE id = ?`,
 			status, time.Now().UTC().UnixMilli(), initiativeID)
 		return err
 	})
@@ -167,6 +170,22 @@ func (db *DB) CreateAssertion(ctx context.Context, a *domain.Assertion) error {
 			edges = append(edges, EdgeToWrite{FromType: "assertion", FromID: a.ID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: a.ProducedByRun})
 		}
 		return db.wireEdges(tx, a.InitiativeID, edges)
+	})
+}
+
+// SupersedeAssertions marks every active assertion of an initiative as
+// superseded, mirroring SupersedeRequirements, so a full workflow retry does not
+// accumulate duplicate framing/research assumptions.
+func (db *DB) SupersedeAssertions(ctx context.Context, initiativeID, supersededBy string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "assertion",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "assertions.superseded",
+	}, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE assertions SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
+			domain.AssertionSuperseded, supersededBy, initiativeID, domain.AssertionSuperseded)
+		return err
 	})
 }
 
@@ -367,6 +386,40 @@ func (db *DB) ListDecisions(ctx context.Context, initiativeID string) ([]domain.
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// WireDecisionDerivedFromQuestion links a decision to the open question it
+// resolves (decision derived_from question), so the decision's provenance is
+// traceable through why/impact.
+func (db *DB) WireDecisionDerivedFromQuestion(ctx context.Context, initiativeID, decisionID, questionID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "decision",
+		AggregateID:   decisionID,
+		Actor:         ActorOrchestrator,
+		EventType:     "decision.derived_from_question",
+		Operation:     questionID,
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{
+			FromType: "decision", FromID: decisionID, EdgeType: domain.EdgeDerivedFrom, ToType: "question", ToID: questionID,
+		}})
+	})
+}
+
+// WireRequirementDerivedFromDecision links a requirement to the decision that
+// shaped it (requirement derived_from decision), so an open decision's impact
+// ("blocks N") is the set of requirements waiting on its resolution.
+func (db *DB) WireRequirementDerivedFromDecision(ctx context.Context, initiativeID, requirementID, decisionID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   requirementID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirement.derived_from_decision",
+		Operation:     decisionID,
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{
+			FromType: "requirement", FromID: requirementID, EdgeType: domain.EdgeDerivedFrom, ToType: "decision", ToID: decisionID,
+		}})
+	})
 }
 
 // GetDecision returns a single decision by id.

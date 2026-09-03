@@ -54,24 +54,28 @@ export default function ArtifactDiffPage({
             Lines starting with + were added, lines starting with - were removed, and all other
             lines are unchanged context.
           </p>
-          <div className="diff-lines" role="list">
-            {resp.diff.split("\n").map((line, i) => {
-              const added = line.startsWith("+ ");
-              const removed = line.startsWith("- ");
-              const kind = added ? "added" : removed ? "removed" : "context";
-              const text = kind === "context" ? line : line.slice(2);
-              return (
-                <div
-                  key={i}
-                  role="listitem"
-                  className={`diff-line diff-${kind}`}
-                  aria-label={kind === "context" ? undefined : `${kind}: ${text}`}
-                >
-                  {line || "\u00A0"}
-                </div>
-              );
-            })}
-          </div>
+          {resp.diff ? (
+            <div className="diff-lines" role="list">
+              {resp.diff.split("\n").map((line, i) => {
+                const added = line.startsWith("+ ");
+                const removed = line.startsWith("- ");
+                const kind = added ? "added" : removed ? "removed" : "context";
+                const text = line.slice(2);
+                return (
+                  <div
+                    key={i}
+                    role="listitem"
+                    className={`diff-line diff-${kind}`}
+                    aria-label={kind === "context" ? undefined : `${kind}: ${text}`}
+                  >
+                    {line}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">(no change)</p>
+          )}
         </>
       )}
     </div>

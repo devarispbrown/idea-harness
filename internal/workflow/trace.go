@@ -49,6 +49,9 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 				return nil, err
 			}
 			for _, ed := range edges {
+				if ed.ToType == "requirement" && !cache.isActiveRequirement(ed.ToID) {
+					continue
+				}
 				out = append(out, TraceItem{
 					EdgeType: string(ed.EdgeType), FromType: n[0], FromID: n[1],
 					FromLabel: cache.label(n[0], n[1]), ToType: ed.ToType, ToID: ed.ToID, ToLabel: cache.label(ed.ToType, ed.ToID),
@@ -84,6 +87,9 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 				return nil, err
 			}
 			for _, ed := range edges {
+				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
+					continue
+				}
 				out = append(out, ImpactItem{
 					TraceItem: TraceItem{
 						EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
@@ -118,9 +124,10 @@ type NodeRef struct {
 // the queried node itself may appear among its dependents (mirroring Impact's
 // frontier semantics).
 func (e *Engine) ImpactCounts(ctx context.Context, initiativeID string, nodes []NodeRef) (map[string]int, error) {
+	cache := e.buildLabelCache(ctx, initiativeID)
 	out := make(map[string]int, len(nodes))
 	for _, n := range nodes {
-		count, err := e.impactNodeCount(ctx, initiativeID, n.Type, n.ID)
+		count, err := e.impactNodeCount(ctx, initiativeID, n.Type, n.ID, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -130,8 +137,9 @@ func (e *Engine) ImpactCounts(ctx context.Context, initiativeID string, nodes []
 }
 
 // impactNodeCount counts unique transitive dependents of one node (the incoming
-// edge frontier), bounded by the same limits as Impact.
-func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, nodeID string) (int, error) {
+// edge frontier), bounded by the same limits as Impact. Superseded/removed
+// requirements are not counted as live dependents.
+func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, nodeID string, cache labelCache) (int, error) {
 	visited := map[string]bool{}
 	dependents := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
@@ -148,6 +156,9 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 				return 0, err
 			}
 			for _, ed := range edges {
+				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
+					continue
+				}
 				dk := ed.FromType + ":" + ed.FromID
 				if !dependents[dk] {
 					dependents[dk] = true
@@ -173,13 +184,21 @@ func stalenessFor(edgeType domain.EdgeType) string {
 	}
 }
 
-// labelCache resolves short human labels for graph nodes.
+// labelCache resolves short human labels for graph nodes. requirement holds only
+// ACTIVE requirements (not superseded/removed), so it doubles as the active-set
+// check used to keep trace traversal from counting superseded rows.
 type labelCache struct {
 	task        map[string]string
 	requirement map[string]string
 	decision    map[string]string
+	question    map[string]string
 	artifact    map[string]string
 	contextDoc  map[string]string
+}
+
+func (c labelCache) isActiveRequirement(id string) bool {
+	_, ok := c.requirement[id]
+	return ok
 }
 
 func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) labelCache {
@@ -187,6 +206,7 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 		task:        map[string]string{},
 		requirement: map[string]string{},
 		decision:    map[string]string{},
+		question:    map[string]string{},
 		artifact:    map[string]string{},
 		contextDoc:  map[string]string{},
 	}
@@ -197,12 +217,20 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 	}
 	if reqs, err := e.db.ListRequirements(ctx, initiativeID); err == nil {
 		for _, r := range reqs {
+			if r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+				continue
+			}
 			c.requirement[r.ID] = r.Code
 		}
 	}
 	if decs, err := e.db.ListDecisions(ctx, initiativeID); err == nil {
 		for _, d := range decs {
 			c.decision[d.ID] = d.Code + " " + d.Question
+		}
+	}
+	if qs, err := e.db.ListQuestions(ctx, initiativeID); err == nil {
+		for _, q := range qs {
+			c.question[q.ID] = q.Question
 		}
 	}
 	if arts, err := e.db.ListArtifacts(ctx, initiativeID); err == nil {
@@ -234,6 +262,10 @@ func (c labelCache) label(typ, id string) string {
 		}
 	case "decision":
 		if s, ok := c.decision[id]; ok {
+			return s
+		}
+	case "question":
+		if s, ok := c.question[id]; ok {
 			return s
 		}
 	case "artifact":
