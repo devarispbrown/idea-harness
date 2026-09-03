@@ -938,9 +938,24 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		EventType:     "finding.dispositioned",
 		Operation:     string(disp),
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ? WHERE id = ?`,
+		// RowsAffected, because db.Apply commits the finding.dispositioned event
+		// in this same transaction. Without the check, a stale or wrong id
+		// returned 200 and durably recorded that a human accepted a risk on a
+		// finding that does not exist -- in the event log this product sells as
+		// provable provenance.
+		res, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ? WHERE id = ?`,
 			disp, actor, findingID)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return &NotFoundError{Kind: "finding", Ref: findingID}
+		}
+		return nil
 	})
 }
 
@@ -954,7 +969,19 @@ func (db *DB) SetFindingNote(ctx context.Context, findingID, note, actor string)
 		Actor:         actor,
 		EventType:     "finding.noted",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE findings SET note = ? WHERE id = ?`, note, findingID)
-		return err
+		// Same reason as SetFindingDisposition: the event is committed with the
+		// row update, so a miss must fail rather than record a note nobody wrote.
+		res, err := tx.Exec(`UPDATE findings SET note = ? WHERE id = ?`, note, findingID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return &NotFoundError{Kind: "finding", Ref: findingID}
+		}
+		return nil
 	})
 }
