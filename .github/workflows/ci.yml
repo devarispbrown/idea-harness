@@ -101,10 +101,6 @@ jobs:
           go build ./...
           go vet ./...
 
-      # -json rather than a plain run: `go test` prints nothing for skipped
-      # tests, so a grep for SKIP over normal output reports "no skips" whether
-      # or not anything skipped — which is the misreading this step exists to
-      # prevent. The go test exit status is still the gate (set -o pipefail).
       # -json, because `go test` prints nothing for a skipped test: a job that
       # shows only normal output cannot distinguish "ran everything" from
       # "silently skipped the container-backed tests", which is exactly the
