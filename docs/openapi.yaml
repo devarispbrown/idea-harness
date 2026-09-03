@@ -653,6 +653,12 @@ paths:
                 pass:
                   type: boolean
                   description: Only `true` records evidence; `false` records nothing.
+                fail:
+                  type: boolean
+                  description: Records the requirement as failing verification. Mutually exclusive with `pass` and `waived`.
+                waived:
+                  type: boolean
+                  description: Records the requirement as waived. Mutually exclusive with `pass` and `fail`.
                 note: { type: string }
       responses:
         "200":
