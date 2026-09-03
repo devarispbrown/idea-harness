@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -305,7 +306,16 @@ func (r *Runtime) CancelOperation(ctx context.Context, opID string) error {
 			continue
 		}
 		if _, err := pr.db.GetOperation(ctx, opID); err == nil {
-			return pr.db.SetOperationStatus(ctx, opID, domain.OperationCancelled, "")
+			// Guarded: a cancel that arrives after the operation finished is a
+			// no-op rather than overwriting the real outcome. The goroutine's own
+			// terminal write stays unconditional, because it knows what actually
+			// happened -- an apply can complete after cancellation, and the log
+			// has to say so.
+			err := pr.db.CancelOperationStatus(ctx, opID)
+			if errors.Is(err, store.ErrOperationNotLive) {
+				return preconditionf("operation %q has already finished and cannot be cancelled", opID)
+			}
+			return err
 		}
 	}
 	return fmt.Errorf("operation %q not found in any project", opID)

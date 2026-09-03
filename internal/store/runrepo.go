@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -159,6 +160,55 @@ func (db *DB) SetOperationStatus(ctx context.Context, opID string, status domain
 		return err
 	})
 }
+
+// CancelOperationStatus marks an operation cancelled, but only while it is still
+// pending or running.
+//
+// Separate from SetOperationStatus, and compare-and-swap, because the two
+// writers are not equals. The operation's own goroutine knows what actually
+// happened and must be able to record it unconditionally; a cancel is a request,
+// and a request that arrives after the work finished has to lose.
+//
+// Both used to be unconditional, so they raced and whichever reached SQLite last
+// won -- an apply that had already committed files and marked the change set
+// applied could be recorded as cancelled, the operation log disagreeing with the
+// disk. Guarding only the cancel side fixes that in both orders: a late cancel is
+// a no-op, and a cancel during a run is overwritten by the goroutine's terminal
+// write when the work turns out to have completed anyway.
+//
+// Modelled on TransitionChangeSet, the CAS precedent in this package.
+func (db *DB) CancelOperationStatus(ctx context.Context, opID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "operation",
+		AggregateID:   opID,
+		Actor:         ActorOrchestrator,
+		EventType:     "operation.status_changed",
+		Operation:     string(domain.OperationCancelled),
+	}, func(tx *sql.Tx) error {
+		finished := sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
+		res, err := tx.Exec(
+			`UPDATE operations SET status = ?, finished_at = ?
+			 WHERE id = ? AND status IN (?, ?)`,
+			domain.OperationCancelled, finished, opID,
+			domain.OperationPending, domain.OperationRunning)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrOperationNotLive
+		}
+		return nil
+	})
+}
+
+// ErrOperationNotLive reports that a cancel found no pending-or-running row: the
+// operation had already finished, or the id does not exist. Callers report it as
+// "not cancellable" rather than treating it as a write failure.
+var ErrOperationNotLive = errors.New("store: operation is not pending or running")
 
 // GetOperation returns an operation.
 func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, error) {
