@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -79,7 +80,7 @@ func listProviderModels(provider string, stdout io.Writer) error {
 		Provider string   `json:"provider"`
 		Models   []string `json:"models"`
 	}
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/models?provider="+provider, nil, &v); err != nil {
+	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/models?"+url.Values{"provider": {provider}}.Encode(), nil, &v); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, heading("Models")+muted("  ("+provider+")"))
@@ -154,9 +155,9 @@ func listModels(stdout io.Writer) error {
 		}
 	}
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, muted("set the default: ") + bold("idea model set <provider/model>"))
-	fmt.Fprintln(stdout, muted("set per-role:    ") + bold("idea model set <provider/model> --role <role>"))
-	fmt.Fprintln(stdout, muted("add a provider:  ") + bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
+	fmt.Fprintln(stdout, muted("set the default: ")+bold("idea model set <provider/model>"))
+	fmt.Fprintln(stdout, muted("set per-role:    ")+bold("idea model set <provider/model> --role <role>"))
+	fmt.Fprintln(stdout, muted("add a provider:  ")+bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
 	return nil
 }
 

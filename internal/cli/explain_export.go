@@ -40,7 +40,7 @@ func cmdExplain(args []string, stdout, stderr io.Writer) error {
 	}
 
 	var u cliExplainUnderstanding
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/understanding", nil, &u); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "understanding"), nil, &u); err != nil {
 		return err
 	}
 	if flags.has("--json") {

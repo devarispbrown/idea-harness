@@ -84,7 +84,7 @@ func nextAction(c *client, projectID, iniID string) (string, error) {
 	var out struct {
 		Action string `json:"action"`
 	}
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/next", nil, &out); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "next"), nil, &out); err != nil {
 		return "", err
 	}
 	return out.Action, nil
@@ -100,7 +100,7 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 	case "advance", "execute":
 		fmt.Fprintln(stdout, muted("→ ")+action+muted(" …"))
 		var out map[string]string
-		if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/"+action, nil, &out); err != nil {
+		if err := c.do("POST", initiativeResource(projectID, iniID, action), nil, &out); err != nil {
 			return err
 		}
 		if kind := out["executor_kind"]; kind == "internal" || kind == "" {
@@ -162,7 +162,7 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 	var out struct {
 		Coverage []cliCoverage `json:"coverage"`
 	}
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", map[string]any{}, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), map[string]any{}, &out); err != nil {
 		return err
 	}
 	var pending []string

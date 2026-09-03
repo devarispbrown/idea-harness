@@ -42,7 +42,7 @@ func cmdDocs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var docs []cliContextDoc
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/docs", nil, &docs); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "docs"), nil, &docs); err != nil {
 		return err
 	}
 	if wantJSON(args) {
@@ -114,7 +114,7 @@ func cmdDocsAdd(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	endpoint := "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/docs"
+	endpoint := initiativeResource(projectID, iniID, "docs")
 	var doc cliContextDoc
 
 	if path == "-" {

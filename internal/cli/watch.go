@@ -90,7 +90,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *watchModel) poll() {
 	var u cliUnderstanding
-	if err := m.c.do("GET", "/api/v1/projects/"+m.projectID+"/initiatives/"+m.initiativeID+"/understanding", nil, &u); err != nil {
+	if err := m.c.do("GET", initiativeResource(m.projectID, m.initiativeID, "understanding"), nil, &u); err != nil {
 		m.lastErr = err.Error()
 		return
 	}
