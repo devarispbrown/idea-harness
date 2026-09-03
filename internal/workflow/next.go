@@ -38,6 +38,20 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 				return "verify", nil
 			}
 		}
+		// Only propose execute when there is something to execute. This used to
+		// return "execute" unconditionally, so an initiative whose tasks were
+		// all done -- or whose remaining tasks were blocked on unsatisfied
+		// dependencies -- was told to execute and then failed in the background.
+		// `idea next --until-human` drives itself from this string, so once the
+		// execute handler gained a precondition (audit finding b) an
+		// unconditional "execute" would have turned that background failure into
+		// a hard error out of the loop.
+		if _, err := e.nextReadyTask(ctx, initiativeID); err != nil {
+			// nextReadyTask reports "no ready tasks" as an error rather than a
+			// zero value, and it is the only non-storage failure it has, so any
+			// error here means there is nothing to run.
+			return "verify", nil
+		}
 		return "execute", nil
 	case domain.InitiativeNeedsHumanJudgment:
 		return "resolve", nil

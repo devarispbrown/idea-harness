@@ -389,10 +389,10 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is already running")
+		return "", preconditionf("initiative is already running")
 	}
 	if ini.Status != domain.InitiativeApproved {
-		return "", fmt.Errorf("advance requires an approved PRD (status=%s)", ini.Status)
+		return "", preconditionf("advance requires an approved PRD (status=%s)", ini.Status)
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
 	if err != nil {
@@ -420,8 +420,27 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	if err != nil {
 		return "", err
 	}
-	if _, err := pr.db.GetInitiative(ctx, initiativeID); err != nil {
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
 		return "", err
+	}
+	// Execute is asynchronous, so a state that cannot execute has to be caught
+	// here or the caller gets "✓ execute started" and exit 0 with the failure
+	// only in the log -- the same defect apply was fixed for (audit finding b).
+	//
+	// Scoped deliberately to the status. The stronger check, "a ready task
+	// exists", needs nextReadyTask, which walks tasks, graph edges and each
+	// dependency's change sets; Execute holds the engine mutex across a model
+	// call and a container run, so a synchronous ready-task check here either
+	// blocks this handler for minutes or races the pipeline it guards.
+	// NextAction does that check instead, so `idea next` never proposes an
+	// execute that cannot run, and the async failure path stays the backstop for
+	// the narrow window between this check and the task being claimed.
+	if ini.Status == domain.InitiativeRunning {
+		return "", preconditionf("initiative is already running")
+	}
+	if ini.Status != domain.InitiativePlanApproved {
+		return "", preconditionf("execute requires an approved plan (status=%s)", ini.Status)
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
@@ -494,7 +513,7 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is running; wait for it to finish before revising")
+		return "", preconditionf("initiative is running; wait for it to finish before revising")
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
@@ -524,7 +543,7 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is already running")
+		return "", preconditionf("initiative is already running")
 	}
 	if ini.Status != domain.InitiativeFailed {
 		return "", fmt.Errorf("retry requires a failed initiative (status=%s)", ini.Status)
@@ -559,7 +578,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is already running")
+		return "", preconditionf("initiative is already running")
 	}
 	// Refuse synchronously once execution has begun (a stale UI click should get
 	// a clean 409, not a 202 that fails asynchronously).

@@ -2099,12 +2099,44 @@ func applyStateMessage(cs *domain.ChangeSet) string {
 	}
 }
 
+// revertStateMessage explains why a change set cannot be reverted, in terms of
+// what the reader should do next -- the counterpart to applyStateMessage.
+//
+// `applied` is the complete revertible set. Every failure path in ApplyChangeSet
+// restores the pre-image and then marks the change set `conflicted`, so a
+// conflicted one has nothing left to roll back; and reconcileStaleOperations
+// moves a crashed `applying` to `conflicted`, or back to `approved` when no
+// bytes were written. So neither is ever a stable revertible state.
+func revertStateMessage(cs *domain.ChangeSet) string {
+	switch cs.Status {
+	case domain.ChangeSetReverted:
+		return "change set " + cs.HumanID + " is already reverted; `idea changes` shows the current state"
+	case domain.ChangeSetApproved, domain.ChangeSetReviewRequired:
+		return "change set " + cs.HumanID + " was never applied, so there is nothing to roll back"
+	case domain.ChangeSetApplying:
+		return "change set " + cs.HumanID + " is still being applied; `idea changes` shows when it lands"
+	case domain.ChangeSetConflicted:
+		return "change set " + cs.HumanID + " conflicted during apply and was already rolled back"
+	default:
+		return "change set " + cs.HumanID + " cannot be reverted from status " + string(cs.Status)
+	}
+}
+
 // handleRevertChangeSet records a rolled-back journal entry asynchronously.
 func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	_, cs, err := s.changeSet(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Revert is asynchronous, so a status that cannot be reverted has to be
+	// caught here -- the same reason handleApplyChangeSet checks. That guard was
+	// added for apply and never propagated: `idea revert CHG-1` on an
+	// already-reverted change set answered "✓ revert started" and exited 0, with
+	// the real failure visible only in the daemon log (audit finding b).
+	if cs.Status != domain.ChangeSetApplied {
+		writeError(w, http.StatusConflict, revertStateMessage(cs))
 		return
 	}
 	opID, err := s.rt.RevertChangeSetInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)

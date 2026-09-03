@@ -45,6 +45,15 @@ func (s *Server) writeErr(w http.ResponseWriter, status int, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// A precondition failure is the caller asking for something the current
+	// state does not allow: 409, whatever status the handler guessed. Checked
+	// after the store cases so a not-found stays a 404, and before the storage
+	// case so a genuine driver fault still masks itself.
+	var pre *PreconditionError
+	if errors.As(err, &pre) {
+		writeError(w, http.StatusConflict, pre.Error())
+		return
+	}
 	if store.IsStorageFailure(err) {
 		ref := correlationID()
 		s.rt.log.Error("request failed", "correlation_id", ref, "error", err)
