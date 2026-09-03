@@ -17,7 +17,7 @@ import (
 //	$ idea apply CHG-99
 //	idea: sql: no rows in result set        (exit 1)
 //
-// Three cases, in order:
+// Four cases, in order:
 //
 //   - A store miss is the caller's mistake: 404 with the store's message, which
 //     names the kind and the reference asked for.
@@ -26,8 +26,12 @@ import (
 //     caller's: 500 with a generic message plus a correlation id, and the full
 //     error logged server-side under that id. That keeps constraint text,
 //     schema names and absolute state paths out of the response.
+//   - A *PreconditionError is the caller asking for something the current state
+//     does not allow: 409, whatever status the handler passed. Added when advance
+//     and revise were found returning 500 for the condition four sibling
+//     handlers returned 409 for.
 //   - Everything else is a domain error whose message was written to be read —
-//     "initiative is already running", "no initiatives in project". Those keep
+//     "answer is required", "each node must be type:id". Those keep
 //     their message and the status the handler chose. Masking them would have
 //     turned working errors into "internal error", which is why the status stays
 //     a parameter instead of being inferred here.

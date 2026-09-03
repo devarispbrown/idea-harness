@@ -14,6 +14,61 @@ gates passing. Nearly every finding was one instance of the same failure: a fix 
 one place and not propagated to its siblings. So the fixes below are structural where a defect class
 existed, and each new guard checks a second axis.
 
+A third audit of the same tree returned FAIL at 74/100. Its pattern was one level out: the
+remediation corrected each canonical source and left the derivative copies stale, and the security
+review of its fix plan then found two exploitable defects in the credential path that no audit had
+looked for. Those go first below, because a wrong security document is how somebody points this at
+a repository they should not.
+
+### Fixed — security
+
+Both of these were found by an adversarial security review of the *third* audit's fix plan, not by
+either audit: three audits of route sets, request-body fields and 409 declarations were green while
+they stood.
+
+- **Modern provider API keys were never redacted.** The credential catalog's `sk-` pattern required
+  20 or more contiguous alphanumerics immediately after the prefix, so it matched only the legacy
+  flat OpenAI key. Every current format puts a hyphen inside the first few characters —
+  Anthropic's `sk-ant-api03-…`, OpenAI's `sk-proj-…` and `sk-svcacct-…` — and all three passed
+  through every choke point unredacted: blobs, events, context bundles. Anthropic is a first-class
+  provider here and its key is the credential forwarded into the sandboxed agent container, which
+  has unrestricted network egress. Measured before the fix: three of four modern formats not
+  redacted.
+- **The SSRF guard could be defeated by DNS rebinding.** The research fetcher resolved the URL's
+  host, checked every returned address was public, and then dialled the original `host:port` — which
+  Go's dialer resolves a *second* time. A DNS server the URL's owner controls answers public on the
+  first lookup and `127.0.0.1` or `169.254.169.254` on the second, reaching exactly the loopback and
+  cloud-metadata endpoints the check exists to block. It now dials the address it just validated.
+  URLs reach the fetcher from `harness.yaml`'s `research.urls`, so a cloned or shared project could
+  carry the hostile name. The regression test asserts the address the inner dialer receives, because
+  a test that counts resolver calls cannot see this bug at all.
+
+### Fixed — security documentation
+
+- `docs/security-model.md`'s "Execution gateway" described isolation the coding agent does not get.
+  Its list — no network, `--cap-drop ALL`, non-root, a read-only `/repo` mount — belongs to
+  `ContainerSandbox`, whose only non-test caller is the deterministic build/test check. The
+  executors that run model-generated code build a different argv: no `--network` flag at all, the
+  workspace mounted read-write at `/work`, and the provider API key inside the container. The
+  section is now a table of all four selectable executor kinds against their real argv — including
+  `internal`, the default, which runs in the daemon process with no container at all — and the page
+  gains a **"What this does not protect against"** section for the negative space: unrestricted
+  egress, the redaction-free raw store, unredacted image egress, `--user` passing the daemon's own
+  UID so a root daemon yields a root container, an image pinned by tag rather than digest, and a
+  control-plane deny that does not cover `.github/workflows/`.
+- `slog` is no longer listed as a redaction choke point. There is no redacting log handler and
+  `GET /api/v1/logs` returns `daemon.log` verbatim; `docs/security.md` says so instead.
+- `docs/security.md` no longer claims `human_approved` "requires a recorded human action" or that
+  `reviewed_agent_output` "requires a distinct reviewer run". `security.TrustFor` reads no records —
+  it maps a selector string to a level. Three of the six levels have no caller that emits them, and
+  a trust level is consumed by exactly one line of code, the untrusted-data prompt wrapper: it is
+  prompt hygiene, not authorization, and the page now says that.
+- The claim that change-set file contents are "redacted at write time" is inverted, and was in two
+  published artifacts: `docs/api.md` and `docs/openapi.yaml`. Redaction happens at the read/display
+  surface; the raw blob store is deliberately redaction-free so apply and revert round-trip
+  byte-for-byte. Both now state it that way and link to the one canonical statement rather than
+  restating the mechanism a third time.
+
 ### Fixed — BREAKING (HTTP API)
 
 - `GET /projects/{p}/initiatives/{i}/risk` no longer writes. It called an append-only store method,
@@ -90,6 +145,24 @@ existed, and each new guard checks a second axis.
   *trust levels* (content provenance) and *executor trust tiers* (capabilities) are different
   mechanisms whose names both match the code.
 - `docs/configuration.md` gives the real `executor.image` default.
+- The reference documents no longer disagree with the handlers they describe. `docs/api.md` had a
+  documented impact-counts call that returns `400` (the required `nodes` parameter was missing),
+  retry's `model` marked optional when it is required, promote producing "a requirement, decision or
+  question" when it only ever produces a Question, `/raw` called "the same body" as `/body` when
+  `/body` is sanitized and `/raw` is not, a citation of `projection.BuildNextMove`, which is now
+  `BuildGuidance`, `artifacts/diff` called a "structured diff" when it is a unified line
+  diff, the initiative `/diff` described as diffing artifact versions when it reads the graph,
+  "three cases" for `writeErr` when there are four, and a doc-upload row omitting `.gif`/`.webp`.
+  `docs/openapi.yaml`'s change-set diff schema was missing the `files` key the handler has always
+  written. Every one of these sat behind green `api-check` and `api-docs-check` runs: both compare
+  route sets, neither reads prose.
+- `docs/configuration.md` states what the three review budgets each bound, because they bound
+  different things: `max_cycles` is review passes in the M1 loop (and `0` is not unlimited — the
+  engine rewrites any non-positive value to 3), `max_tokens` is a ceiling on one response's output
+  tokens, and only `max_cost_usd` is a cumulative spend ceiling.
+- `docs/agents.md` no longer says the coding agent's provider key may come from the project `.env`.
+  The executor reads the variable from the daemon's own process environment; a key that lives only
+  in `.env` reaches the harness's own model calls and never reaches the container.
 
 ## [0.1.0] - 2026-09-03
 
