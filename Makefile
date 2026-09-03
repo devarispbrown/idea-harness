@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check clean
+.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
