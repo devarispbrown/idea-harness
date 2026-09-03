@@ -54,7 +54,20 @@ func main() {
 			fmt.Fprintln(os.Stderr, "api-check:", err)
 			os.Exit(1)
 		}
-		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go")
+		// Second axis: paths matching is not the same as the contract matching.
+		// api-check proved every route is documented; this proves each handler's
+		// request body is, which is the gap `idea verify --fail` shipped through.
+		root, err := repoRoot()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		if err := runBodyCheck(filepath.Join(root, routesPkg), filepath.Join(root, specPath)); err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go,")
+		fmt.Println("           and every handler's request-body fields are documented")
 		return
 	}
 
