@@ -85,7 +85,7 @@ type command struct {
 // an initialization cycle.
 func commands() []command {
 	return []command{
-		{names: []string{"init"}, usage: "init", summary: "initialize a project in the current directory", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
+		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
 		{names: []string{"new"}, usage: `new "<idea>"`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated}, run: cmdNew, inHelp: true},
 		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, run: cmdStatus, inHelp: true},
 		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, run: cmdChanged, inHelp: true},
@@ -115,7 +115,7 @@ func commands() []command {
 		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, run: cmdApply, inHelp: true},
 		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", flags: flagSpec{}, run: cmdRevert, inHelp: true},
 		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", flags: flagSpec{}, run: cmdReview, inHelp: true},
-		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass --note <text> record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, run: cmdVerify, inHelp: true},
+		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, run: cmdVerify, inHelp: true},
 		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
@@ -563,6 +563,19 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, muted("• daemon: not running (auto-starts on first command)"))
 	}
 	cwd, _ := os.Getwd()
+
+	// No project here is a finding, not a clean bill of health. config.Load
+	// returns a usable default for a directory with no .idea-harness, so doctor
+	// printed "✓ config valid" and "all checks passed" with exit 0 anywhere on
+	// the filesystem -- flagged in the first DX audit and still true in the
+	// second. The daemon and version lines above stay, since they are useful
+	// outside a project.
+	if _, err := os.Stat(filepath.Join(cwd, config.Dir)); err != nil {
+		fmt.Fprintln(stdout, errText("✗ no project here")+" "+muted("("+cwd+")"))
+		fmt.Fprintln(stdout, muted("  run ")+bold("idea init")+muted(" to create one"))
+		return fmt.Errorf("no idea-harness project in %s", cwd)
+	}
+
 	// doctor is what the README names as the post-install check, so it has to
 	// catch a config that parses but cannot work -- a default_model whose
 	// provider does not exist used to pass here and fail at the first run.

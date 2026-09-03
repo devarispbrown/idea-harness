@@ -15,7 +15,7 @@ if this file has drifted.
 
 | Command | What it does | Flags | `--json` |
 | --- | --- | --- | --- |
-| `idea init` | initialize a project in the current directory | none | takes no flags |
+| `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
 | `idea new "<idea>"` | create an initiative and start the workflow | `--doc` | no |
 | `idea status` | show initiative + current work | `--json` | yes |
 | `idea changed` | show What Changed since last look | `--json` | yes |
@@ -41,7 +41,7 @@ if this file has drifted.
 | `idea apply <id>` | apply an approved change set | none | takes no flags |
 | `idea revert <id>` | roll back a change set | none | takes no flags |
 | `idea review <id> <verdict>` | approve\|reject\|changes_requested | none | takes no flags |
-| `idea verify [<req>]` | run the verification gate; --pass --note <text> record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
+| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
 | `idea executors` | list executors + capabilities | `--json`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
