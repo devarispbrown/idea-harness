@@ -244,3 +244,7 @@ make build    # build web UI + binary
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the process (plans are adversarially reviewed before
 implementation; every ChangeSet is independently reviewed).
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 DeVaris Brown.
