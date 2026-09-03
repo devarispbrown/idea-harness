@@ -23,9 +23,25 @@ func TestNextAction(t *testing.T) {
 		t.Errorf("approved -> %q, want advance", a)
 	}
 
+	// plan_approved with nothing runnable must not propose execute. NextAction
+	// used to return "execute" here unconditionally, so an initiative whose
+	// tasks were all done -- or blocked on unsatisfied dependencies -- was told
+	// to execute and then failed in the background. Once ExecuteInitiative
+	// gained a precondition (DX audit finding b) that background failure would
+	// have become a hard error out of `idea next --until-human`, which drives
+	// itself from this string.
 	setStatus(domain.InitiativePlanApproved)
+	if a, _ := eng.NextAction(ctx, iniID); a != "verify" {
+		t.Errorf("plan_approved with no ready task -> %q, want verify", a)
+	}
+
+	// With a ready task it is execute again.
+	task := &domain.Task{InitiativeID: iniID, Title: "T", Statement: "s", Priority: domain.PriorityMust, Status: domain.TaskReady}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
 	if a, _ := eng.NextAction(ctx, iniID); a != "execute" {
-		t.Errorf("plan_approved (no change sets) -> %q, want execute", a)
+		t.Errorf("plan_approved with a ready task -> %q, want execute", a)
 	}
 
 	cs := &domain.ChangeSet{InitiativeID: iniID}

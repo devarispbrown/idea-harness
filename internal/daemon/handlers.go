@@ -619,7 +619,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 // ---------- decisions / questions ----------
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -704,7 +704,7 @@ func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -745,7 +745,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 // ---------- requirements / assertions / artifacts ----------
 
 func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -759,7 +759,7 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1215,7 +1215,7 @@ func (s *Server) handleSuggestAnswers(w http.ResponseWriter, r *http.Request) {
 
 // handleListSuggestedAnswers returns the persisted AI-suggested answers.
 func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1229,7 +1229,7 @@ func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1736,7 +1736,7 @@ func truncateRunes(s string, n int) string {
 // ---------- findings ----------
 
 func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1798,7 +1798,7 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 // handleDoctor audits the initiative's product-graph edges and returns any
 // traceability gaps (untraced tasks/objects, dependency cycles).
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1907,7 +1907,7 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 
 // handleListChangeSets returns the change sets for an initiative.
 func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -2099,12 +2099,44 @@ func applyStateMessage(cs *domain.ChangeSet) string {
 	}
 }
 
+// revertStateMessage explains why a change set cannot be reverted, in terms of
+// what the reader should do next -- the counterpart to applyStateMessage.
+//
+// `applied` is the complete revertible set. Every failure path in ApplyChangeSet
+// restores the pre-image and then marks the change set `conflicted`, so a
+// conflicted one has nothing left to roll back; and reconcileStaleOperations
+// moves a crashed `applying` to `conflicted`, or back to `approved` when no
+// bytes were written. So neither is ever a stable revertible state.
+func revertStateMessage(cs *domain.ChangeSet) string {
+	switch cs.Status {
+	case domain.ChangeSetReverted:
+		return "change set " + cs.HumanID + " is already reverted; `idea changes` shows the current state"
+	case domain.ChangeSetApproved, domain.ChangeSetReviewRequired:
+		return "change set " + cs.HumanID + " was never applied, so there is nothing to roll back"
+	case domain.ChangeSetApplying:
+		return "change set " + cs.HumanID + " is still being applied; `idea changes` shows when it lands"
+	case domain.ChangeSetConflicted:
+		return "change set " + cs.HumanID + " conflicted during apply and was already rolled back"
+	default:
+		return "change set " + cs.HumanID + " cannot be reverted from status " + string(cs.Status)
+	}
+}
+
 // handleRevertChangeSet records a rolled-back journal entry asynchronously.
 func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	_, cs, err := s.changeSet(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Revert is asynchronous, so a status that cannot be reverted has to be
+	// caught here -- the same reason handleApplyChangeSet checks. That guard was
+	// added for apply and never propagated: `idea revert CHG-1` on an
+	// already-reverted change set answered "✓ revert started" and exited 0, with
+	// the real failure visible only in the daemon log (audit finding b).
+	if cs.Status != domain.ChangeSetApplied {
+		writeError(w, http.StatusConflict, revertStateMessage(cs))
 		return
 	}
 	opID, err := s.rt.RevertChangeSetInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
@@ -2118,7 +2150,7 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 // handleRisk computes the deterministic risk profile for an initiative from its
 // produced patches.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -2138,12 +2170,19 @@ func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	signals := risk.RiskSignals(r.Context(), "", diff.String())
 	profile := risk.ComputeRiskProfile(ini.ID, signals)
-	// Persist the profile so the deterministic tier floor is durable and can be
-	// re-derived from past scans, not just computed on demand and lost.
-	if err := pr.db.SaveRiskProfile(r.Context(), &profile); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	// This is a GET and it stays one. It used to call SaveRiskProfile, which is
+	// append-only ("every computed profile is retained"), so every read grew the
+	// database without bound -- and because the save goes through db.Apply, each
+	// read also appended a risk_profile.saved event that handleActivity returns
+	// and handleEvents streams over SSE. Polling the UI's risk panel, a browser
+	// prefetch, or `idea risk --json` in a read-only reporting script all wrote.
+	//
+	// Nothing read any of it: risk_profiles has no SELECT anywhere in the tree,
+	// and both consumers of risk data use this response. The comment that
+	// justified the write claimed durability was needed so the tier floor could
+	// "be re-derived from past scans" -- but ComputeRiskProfile is a pure
+	// function of the patches, so it is recomputable here for free. A durable
+	// profile needs a reader first.
 	writeJSON(w, http.StatusOK, profile)
 }
 
@@ -2227,7 +2266,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
-		writeError(w, http.StatusConflict, "config written but not applied (reload failed): "+err.Error())
+		s.writeReloadErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -2270,29 +2309,12 @@ func (s *Server) initiative(r *http.Request) (*projectRuntime, domain.Initiative
 	if err != nil {
 		return nil, domain.Initiative{}, err
 	}
-	ini, err := pr.db.GetInitiative(r.Context(), r.PathValue("id"))
-	return pr, ini, err
-}
-
-// initiativeFromPath resolves the initiative named by the route's
-// {initiativeId} path value.
-//
-// This used to accept ?initiative_id= and, failing that, guess: it fell back to
-// one of the project's initiatives, which meant an omitted parameter was
-// answered about whichever initiative the daemon picked rather than rejected.
-// In a single-initiative project that was invisible; in any other it was a
-// silent wrong answer. Every one of these endpoints is now nested under the
-// initiative it is about, so there is nothing left to guess.
-func (s *Server) initiativeFromPath(r *http.Request) (*projectRuntime, domain.Initiative, error) {
-	pr, err := s.project(r)
-	if err != nil {
-		return nil, domain.Initiative{}, err
-	}
-	id := r.PathValue("initiativeId")
+	id := r.PathValue("id")
 	if id == "" {
-		// Unreachable through the mux, which only routes these handlers on
-		// patterns carrying {initiativeId}. Explicit rather than a nil-value
-		// lookup if a future route forgets it.
+		// Unreachable through the mux, which routes these handlers only on
+		// patterns carrying {id}. Explicit rather than a nil-value lookup, so a
+		// future route registered under a different wildcard name fails loudly
+		// here instead of silently answering "not found" forever.
 		return pr, domain.Initiative{}, errors.New("route is missing an initiative id")
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), id)

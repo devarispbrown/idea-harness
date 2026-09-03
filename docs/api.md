@@ -101,7 +101,25 @@ The status argument to `writeErr` is therefore a *default* for the third case on
 a handler that passed `500`. Handlers that validate their own request bodies write `400` directly
 (`verdict is required`, `root_path is required`, `type and id query params are required`).
 
-A `409` comes from `POST /api/v1/operations/{id}/cancel` when the operation is not cancellable.
+A `409` means the current state does not allow what was asked. It is not one endpoint but a class,
+described by cause rather than enumerated, because a hand-written list of call sites had already
+gone stale once:
+
+- **An asynchronous operation cannot start from this state.** `apply` on a change set that is not
+  approved, `revert` on one that is not applied, `execute` or `advance` without an approved plan or
+  PRD, and anything at all while the initiative is running. These are checked synchronously and on
+  purpose: the operation is asynchronous, so launching it and failing in the background would answer
+  `202` and report success for work that never happened.
+- **A cancellation that cannot apply.** `POST /operations/{id}/cancel` when the operation has
+  already finished.
+- **A mutation blocked by something that depends on it**, such as deleting a task another task
+  depends on.
+- **Configuration written but not applied**, when the daemon could not reload the project. The
+  config file *was* written; the running daemon kept the previous one.
+
+Preconditions carry their own error type inside the daemon, so a handler cannot accidentally report
+one as a `500` — which `advance` and `revise` both did while four sibling endpoints returned `409`
+for the identical condition.
 
 ## Conventions
 
@@ -132,8 +150,8 @@ second, so it is at-least-once catch-up rather than a push.
 Every initiative-scoped resource takes the initiative in the **path**:
 
 ```text
-GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/tasks
-GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets
+GET /api/v1/projects/{projectId}/initiatives/{id}/tasks
+GET /api/v1/projects/{projectId}/initiatives/{id}/change-sets
 ```
 
 This was not always true. Ten reads — `change-sets`, `risk`, `decisions`, `questions`,
@@ -171,7 +189,9 @@ not treat one as a richer rendering of the other.
 
 ## Endpoints
 
-71 routes. `202` marks an endpoint that starts asynchronous work and returns an `operation_id`.
+`202` marks an endpoint that starts asynchronous work and returns an `operation_id`.
+`make api-docs-check` fails if a registered route has no row here, so this list cannot fall
+behind the daemon again -- it went ten endpoints stale under a hand-counted total.
 
 ### Daemon
 
@@ -188,6 +208,7 @@ not treat one as a richer rendering of the other.
 | POST | `/projects` | Register a project by `root_path`; returns `project_id`. |
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
+| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}`, the one list endpoint with an envelope: it is a cross-initiative rollup, so it has somewhere to put a cursor later. |
 
 ### Initiative lifecycle
 
@@ -196,6 +217,8 @@ not treat one as a richer rendering of the other.
 | POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
+| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed, optionally with a different `{"model": …}`. **202**. `409` when the initiative is running. |
+| POST | `/projects/{projectId}/initiatives/{id}/reopen-phase` | Reopen a completed phase named by `{"phase": …}` so it can be revised. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/resume` | Resume a paused/interrupted initiative; returns the new status. |
 | POST | `/projects/{projectId}/initiatives/{id}/approve` | Human approval of the reviewed PRD. |
 | POST | `/projects/{projectId}/initiatives/{id}/revise` | Apply resolved decisions/answers and regenerate the PRD. **202** |
@@ -212,14 +235,16 @@ not treat one as a richer rendering of the other.
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
 | GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
+| GET | `/projects/{projectId}/initiatives/{id}/impact-counts` | Dependent counts per graph node, for badging the UI without a query per node. |
+| GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
 | GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
 | GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff across artifact versions. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/risk` | Deterministic risk profile computed from the initiative's patches; persisted as a side effect. |
+| GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
+| GET | `/projects/{projectId}/initiatives/{id}/risk` | Deterministic risk profile computed from the initiative's patches. A read: it writes nothing. |
 
 ### Plan tasks
 
@@ -244,23 +269,27 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/decisions` | List decisions with status and recommendation. |
+| GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/questions` | List open questions. |
+| GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions. |
 | POST | `/projects/{projectId}/questions/{id}/answer` | Record `{"answer": …}`. |
 | POST | `/projects/{projectId}/initiatives/{id}/suggest-answers` | Ask the model to propose answers for the open questions. **202** |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/suggested-answers` | The persisted AI-suggested answers. |
+| GET | `/projects/{projectId}/initiatives/{id}/suggested-answers` | The persisted AI-suggested answers. |
 
 ### Product graph reads
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/requirements` | Requirements with acceptance criteria. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/assertions` | Assertions with their evidence and trust level. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/artifacts` | Artifact versions (PRD, design, plan, …). |
+| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
+| GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
+| GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
+| GET | `/projects/{projectId}/artifacts/diff` | Structured diff between two artifact versions, given `?from=` and `?to=`. |
+| GET | `/projects/{projectId}/artifacts/{id}/comments` | Human comments on one artifact version. |
+| POST | `/projects/{projectId}/artifacts/{id}/comments` | Attach a comment to an artifact version, optionally anchored to a quoted span. |
+| POST | `/projects/{projectId}/comments/{id}/promote` | Promote a comment into the product graph as a requirement, decision or question. |
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
 | GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same body as `text/markdown` for download/export. |
 
@@ -268,7 +297,8 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/findings` | Review findings for the initiative. |
+| GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
+| POST | `/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task` | Add a plan task whose purpose is verifying that requirement, wired with a `verifies` edge. |
 | POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` (accepted, not applicable, …). |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
 
@@ -276,7 +306,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/change-sets` | List change sets with status. |
+| GET | `/projects/{projectId}/initiatives/{id}/change-sets` | List change sets with status. |
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The rendered patch as `{"patch": "…"}` (content redacted at write time). |

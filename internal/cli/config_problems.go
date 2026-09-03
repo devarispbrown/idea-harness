@@ -14,7 +14,6 @@ import (
 //
 // config.Load keeps loading a config it disagrees with, so this reports on a
 // wrong config rather than refusing to open it (§D5).
-//
 func validateConfig(root string, stdout io.Writer) error {
 	cfg, err := config.Load(filepath.Join(root, config.Dir))
 	if err != nil {

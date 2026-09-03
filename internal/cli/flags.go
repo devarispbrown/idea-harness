@@ -16,9 +16,15 @@ import (
 type flagKind int
 
 const (
-	flagBool     flagKind = iota // --yes
-	flagValue                    // --note <v> or --note=<v>
-	flagRepeated                 // --doc <v>, repeatable
+	// flagUnset is the zero value and is never a real kind. Without it, a map
+	// miss on a flagSpec returns the same value as flagBool, so
+	// `spec["--json"] == flagBool` is true for every command that does not
+	// declare --json -- which silently mislabelled logs, next and help as
+	// supporting --json when the generated table was first derived from a spec.
+	flagUnset    flagKind = iota
+	flagBool              // --yes
+	flagValue             // --note <v> or --note=<v>
+	flagRepeated          // --doc <v>, repeatable
 )
 
 // flagSpec declares the flags a command accepts, keyed by flag name including
@@ -112,4 +118,22 @@ func acceptedFlags(spec flagSpec) string {
 	}
 	sort.Strings(names)
 	return "accepted flags: " + strings.Join(names, ", ")
+}
+
+// accepts reports whether spec declares name with the given kind. Callers must
+// use this rather than comparing spec[name] directly: a map miss returns
+// flagUnset, and comparing against a real kind would be true for absent flags.
+func (spec flagSpec) accepts(name string, kind flagKind) bool {
+	k, ok := spec[name]
+	return ok && k == kind
+}
+
+// names returns the spec's flags in sorted order, for the generated reference.
+func (spec flagSpec) names() []string {
+	out := make([]string, 0, len(spec))
+	for name := range spec {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

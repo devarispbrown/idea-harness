@@ -45,6 +45,10 @@ Add `--smoke` (with `--model`) to also run a trivial coding task through the age
 produces a real file change — this verifies the agent CLI contract end-to-end, not just that the
 binary exists:
 
+```bash
+idea executors setup --kind hermes --model anthropic/claude-sonnet-4 --smoke --yes
+```
+
 ### Manual (equivalent)
 
 Edit `.idea-harness/harness.yaml`:

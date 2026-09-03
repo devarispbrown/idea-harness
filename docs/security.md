@@ -10,7 +10,8 @@ M1 threats and mitigations:
 
 | Threat | Mitigation |
 |---|---|
-| Unauthorized local API requests (§73) | per-install token (0600) required on every `/api/v1` request; loopback-only bind |
+| A change set editing the control plane | `.idea-harness/**` and `.git/**` are excluded from every change set by `internal/fsdiff`, matched case-insensitively — a case-sensitive check let `.IDEA-HARNESS/harness.yaml` through on macOS, which is why CI runs on macOS as well as Linux |
+| Unauthorized local API requests (§73) | per-install token (0600) required on every `/api/v1` request except `GET /api/v1/health`, which is unauthenticated so a liveness probe needs no secret; loopback-only bind |
 | CSRF / DNS rebinding | exact-match loopback Host/Origin allowlist; `Origin: null` rejected; no CORS for foreign origins |
 | Cross-project leakage | project-scoped API paths + SSE; per-project `state.db` + blob namespaces; path guard |
 | Secret leakage to persistence (§47) | secrets from env only; redaction choke point (store/blob/slog/SSE) with pattern catalog |
@@ -48,6 +49,12 @@ untrusted input:
 
 ## Trust levels (§38)
 
+Not to be confused with the **executor trust tiers** in
+[`security-model.md`](security-model.md). They are different mechanisms with similar names, and
+both names match the code: a *trust level* (`domain.TrustLevel`) rates where a piece of content came
+from and sets its priority in a prompt; a *trust tier* (`internal/executor/broker.go`) rates what an
+executor is allowed to do. Content has a level; an executor has a tier.
+
 ```text
 system → policy → human_approved → reviewed_agent_output → unreviewed_agent_output → external_untrusted
 ```
@@ -56,7 +63,14 @@ Trust is assigned by deterministic code from persisted run/review records — ne
 model output. `human_approved` requires a recorded human action; `reviewed_agent_output` requires
 a distinct reviewer run.
 
-## Out of scope for M1 (deferred to M3)
+## Shipped since this list was written
 
-Sandbox abstraction, capability broker, executor isolation, ChangeSet apply journal, and threat
-model document (produced and approved at the start of M3, per §68).
+The sandbox abstraction, capability broker, executor isolation, ChangeSet apply journal and the
+threat model document were all deferred to M3 when this page was first written. All five shipped in
+0.1.0 — see [`security-model.md`](security-model.md) for the system-deny conditions, the
+engine-assigned trust tiers and the execution gateway.
+
+## See also
+
+- [`security-model.md`](security-model.md) — the system-deny conditions, engine-assigned executor
+  trust tiers, and the execution gateway. That document is the deeper one; this page is the summary.

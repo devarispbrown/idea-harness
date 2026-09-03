@@ -117,3 +117,18 @@ func TestParseArgs(t *testing.T) {
 		})
 	}
 }
+
+// parseFor parses argv for a named command using the table's own spec, so tests
+// that call a command function directly go through the same parse dispatch does.
+func parseFor(t *testing.T, name string, args []string) (cmdArgs, error) {
+	t.Helper()
+	for _, c := range commands() {
+		for _, n := range c.names {
+			if n == name {
+				return c.parse(name, args)
+			}
+		}
+	}
+	t.Fatalf("no command named %q in the table", name)
+	return cmdArgs{}, nil
+}

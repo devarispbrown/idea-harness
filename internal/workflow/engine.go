@@ -1034,10 +1034,10 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		return err
 	}
 	req := model.Request{
-		Model:  modelName,
-		System: "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
-		Messages: []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
-		Images:   []model.Image{{Data: image, MediaType: mediaType}},
+		Model:     modelName,
+		System:    "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
+		Messages:  []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
+		Images:    []model.Image{{Data: image, MediaType: mediaType}},
 		MaxOutput: 2048,
 	}
 	resp, err := prov.Complete(ctx, req)

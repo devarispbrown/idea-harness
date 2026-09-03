@@ -56,7 +56,7 @@ info:
     Breaking, and recorded in `CHANGELOG.md`:
 
     - **Ten initiative-scoped reads moved from a flat project path with `?initiative_id=` to the
-      nested path** `/api/v1/projects/{projectId}/initiatives/{initiativeId}/{resource}`, for
+      nested path** `/api/v1/projects/{projectId}/initiatives/{id}/{resource}`, for
       `requirements`, `assertions`, `artifacts`, `decisions`, `questions`, `findings`,
       `change-sets`, `suggested-answers`, `risk` and `doctor`. Each of those operations names the
       path it replaces. The old form also had a silent fallback — omitting `initiative_id` answered
@@ -78,9 +78,9 @@ info:
     - Paths carry the full `/api/v1` prefix and the server URL is the bare origin, so a path here
       is character-for-character the pattern registered in `internal/daemon/routes.go`. That is
       what `make api-check` compares.
-    - The path parameter for an initiative is `{id}` on the routes that were already nested and
-      `{initiativeId}` on the ten that moved in this release. That mirrors `routes.go` exactly
-      rather than tidying it, because the comparison above is textual.
+    - Every initiative-scoped route names its path parameter `{id}`. The ten reads that moved to
+      the nested path used `{initiativeId}` in 0.1.0; they were unified so a route cannot be
+      registered under one name and read under the other.
   contact:
     name: idea-harness
     url: https://github.com/devarispbrown/idea-harness
@@ -557,6 +557,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/advance:
@@ -571,6 +572,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/approve-plan:
@@ -625,6 +627,7 @@ paths:
                 required: [operation_id, executor_kind]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/verify:
@@ -653,6 +656,12 @@ paths:
                 pass:
                   type: boolean
                   description: Only `true` records evidence; `false` records nothing.
+                fail:
+                  type: boolean
+                  description: Records the requirement as failing verification. Mutually exclusive with `pass` and `waived`.
+                waived:
+                  type: boolean
+                  description: Records the requirement as waived. Mutually exclusive with `pass` and `fail`.
                 note: { type: string }
       responses:
         "200":
@@ -684,7 +693,7 @@ paths:
       tags: [decisions]
       operationId: suggestAnswers
       summary: Ask the model to propose answers for the open questions
-      description: Read the results back from `GET /initiatives/{initiativeId}/suggested-answers`.
+      description: Read the results back from `GET /initiatives/{id}/suggested-answers`.
       responses:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -1456,10 +1465,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/requirements:
+  /api/v1/projects/{projectId}/initiatives/{id}/requirements:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [graph]
       operationId: listRequirements
@@ -1478,10 +1487,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/assertions:
+  /api/v1/projects/{projectId}/initiatives/{id}/assertions:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [graph]
       operationId: listAssertions
@@ -1500,10 +1509,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/artifacts:
+  /api/v1/projects/{projectId}/initiatives/{id}/artifacts:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [graph]
       operationId: listArtifacts
@@ -1525,10 +1534,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/decisions:
+  /api/v1/projects/{projectId}/initiatives/{id}/decisions:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [decisions]
       operationId: listDecisions
@@ -1548,10 +1557,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/questions:
+  /api/v1/projects/{projectId}/initiatives/{id}/questions:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [decisions]
       operationId: listQuestions
@@ -1570,10 +1579,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/findings:
+  /api/v1/projects/{projectId}/initiatives/{id}/findings:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [graph]
       operationId: listFindings
@@ -1592,10 +1601,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets:
+  /api/v1/projects/{projectId}/initiatives/{id}/change-sets:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [change-sets]
       operationId: listChangeSets
@@ -1616,10 +1625,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/suggested-answers:
+  /api/v1/projects/{projectId}/initiatives/{id}/suggested-answers:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [decisions]
       operationId: listSuggestedAnswers
@@ -1641,10 +1650,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/risk:
+  /api/v1/projects/{projectId}/initiatives/{id}/risk:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [change-sets]
       operationId: getRiskProfile
@@ -1653,11 +1662,14 @@ paths:
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/risk?initiative_id=`.
 
         Computed from the rendered patches of the initiative's change sets - no model call, no
-        numeric score, just a tier and the signals that set its floor. The profile is **persisted
-        as a side effect of this GET** so the tier floor is durable.
+        numeric score, just a tier and the signals that set its floor.
+
+        This GET writes nothing. It used to persist each computed profile, which grew the database
+        on every read; the profile is a pure function of the patches, so it is recomputed here
+        instead.
       responses:
         "200":
-          description: The risk profile that was computed and stored.
+          description: The risk profile computed for this initiative.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RiskProfile" }
@@ -1665,10 +1677,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/projects/{projectId}/initiatives/{initiativeId}/doctor:
+  /api/v1/projects/{projectId}/initiatives/{id}/doctor:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/NestedInitiativeId"
+      - $ref: "#/components/parameters/InitiativeId"
     get:
       tags: [graph]
       operationId: auditGraph
@@ -2159,6 +2171,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/resolve-conflict:
@@ -2561,15 +2574,7 @@ components:
       name: id
       in: path
       required: true
-      description: |
-        Initiative id. Named `id` on the routes that were already nested before this release; the
-        ten that moved in this release use `initiativeId`, matching `routes.go`.
-      schema: { type: string }
-    NestedInitiativeId:
-      name: initiativeId
-      in: path
-      required: true
-      description: Initiative id, on one of the ten reads that moved to the nested path in this release.
+      description: Initiative id. Every initiative-scoped route names this path parameter `id`.
       schema: { type: string }
     TaskId:
       name: taskId
