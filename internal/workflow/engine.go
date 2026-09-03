@@ -540,6 +540,7 @@ func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d
 		if normalizeJudgment(q.Question) == norm {
 			digest := e.storeBlob("covered by decision " + d.Code)
 			_ = e.db.AnswerQuestion(ctx, q.ID, digest, store.ActorOrchestrator)
+			_ = e.db.WireDecisionDerivedFromQuestion(ctx, initiativeID, d.ID, q.ID)
 		}
 	}
 	return nil
@@ -608,7 +609,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
 
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements."},
+		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decisions)},
@@ -632,6 +633,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		return err
 	}
 
+	var decisionRefByReqID map[string]string // requirementID -> decision question text
 	for _, r := range objSlice(obj["requirements"]) {
 		var acs []domain.AcceptanceCriterion
 		for _, ac := range objSlice(r["acceptance_criteria"]) {
@@ -639,14 +641,21 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 				Metric: e.redact(str(ac["metric"])), Target: e.redact(str(ac["target"])), Condition: e.redact(str(ac["condition"])),
 			})
 		}
-		if err := e.db.CreateRequirement(ctx, &domain.Requirement{
+		req := &domain.Requirement{
 			InitiativeID:       initiativeID,
 			Statement:          e.redact(str(r["statement"])),
 			Priority:           domain.RequirementPriority(str(r["priority"])),
 			AcceptanceCriteria: acs,
 			ProducedByRun:      runID,
-		}); err != nil {
+		}
+		if err := e.db.CreateRequirement(ctx, req); err != nil {
 			return err
+		}
+		if ref := strings.TrimSpace(e.redact(str(r["decision"]))); ref != "" {
+			if decisionRefByReqID == nil {
+				decisionRefByReqID = map[string]string{}
+			}
+			decisionRefByReqID[req.ID] = ref
 		}
 	}
 	for _, d := range objSlice(obj["decisions"]) {
@@ -658,6 +667,28 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			Recommendation: e.redact(str(d["recommendation"])),
 		}); err != nil {
 			return err
+		}
+	}
+	// Wire requirement→decision edges for requirements shaped by a decision,
+	// matched by the decision's exact question text (normalized), so an open
+	// decision's impact ("blocks N") is the set of requirements waiting on it.
+	if len(decisionRefByReqID) > 0 {
+		decs, err := e.db.ListDecisions(ctx, initiativeID)
+		if err != nil {
+			return err
+		}
+		decIDByNorm := make(map[string]string, len(decs))
+		for _, dec := range decs {
+			decIDByNorm[normalizeJudgment(dec.Question)] = dec.ID
+		}
+		for reqID, ref := range decisionRefByReqID {
+			if decID, ok := decIDByNorm[normalizeJudgment(ref)]; ok {
+				if err := e.db.WireRequirementDerivedFromDecision(ctx, initiativeID, reqID, decID); err != nil {
+					return err
+				}
+			} else {
+				e.log.Debug("requirement decision reference did not match a raised decision; link skipped (best-effort)", "initiative", initiativeID, "requirement", reqID)
+			}
 		}
 	}
 	for _, q := range strSlice(obj["open_questions"]) {

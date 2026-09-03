@@ -165,7 +165,7 @@ export default function DefinePage({
       )}
       <div className="judgment-list">
         {openDecisions.map((d) => (
-          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} />
+          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
         ))}
         {openFindings.map((f) => (
           <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
@@ -181,7 +181,7 @@ export default function DefinePage({
           </div>
           <div className="judgment-list">
             {resolvedDecisions.map((d) => (
-              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} />
+              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
             ))}
             {resolvedFindings.map((f) => (
               <FindingCard key={f.id} f={f} onDisposition={() => {}} />
