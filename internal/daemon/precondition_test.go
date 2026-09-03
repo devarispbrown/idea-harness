@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,3 +165,50 @@ func TestNonPreconditionErrorsKeepTheirStatus(t *testing.T) {
 type errPlain string
 
 func (e errPlain) Error() string { return string(e) }
+
+// TestReloadFailureNeverLeaksAStatePath covers the executor config reload path,
+// which the DX audit found printing an absolute state path at the user and which
+// no test exercised.
+//
+// Both assertions matter. Asserting only "no /Users/ in the body" would pass
+// trivially on a 500 "internal error (correlation id)", which is exactly the
+// regression the naive fix would have introduced: wrapping the cause with %w
+// keeps store.IsStorageFailure able to detect it, so routing this through
+// writeErr would mask the message the caller needs.
+func TestReloadFailureNeverLeaksAStatePath(t *testing.T) {
+	s := &Server{rt: &Runtime{log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+
+	t.Run("storage failure", func(t *testing.T) {
+		err := fmt.Errorf("daemon: state dir: %w", &fs.PathError{
+			Op:   "mkdir",
+			Path: "/Users/someone/.local/share/idea-harness/projects/abc",
+			Err:  errors.New("permission denied"),
+		})
+		w := httptest.NewRecorder()
+		s.writeReloadErr(w, err)
+
+		if w.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 — a 500 would hide that the file was written", w.Code)
+		}
+		body := w.Body.String()
+		assertNoStorageDetail(t, body)
+		if !strings.Contains(body, "config written but not applied") {
+			t.Errorf("body must say the config was written but not applied, got: %s", body)
+		}
+		if !strings.Contains(body, "correlation id") {
+			t.Errorf("a masked error must carry a correlation id, got: %s", body)
+		}
+	})
+
+	t.Run("domain error keeps its message", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		s.writeReloadErr(w, errors.New("daemon: cannot reload project while 2 operation(s) are running"))
+
+		if w.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409", w.Code)
+		}
+		if body := w.Body.String(); !strings.Contains(body, "2 operation(s) are running") {
+			t.Errorf("a domain error must survive verbatim, got: %s", body)
+		}
+	})
+}

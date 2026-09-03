@@ -2266,7 +2266,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
-		writeError(w, http.StatusConflict, "config written but not applied (reload failed): "+err.Error())
+		s.writeReloadErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
