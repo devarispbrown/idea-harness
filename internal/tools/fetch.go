@@ -30,41 +30,51 @@ type ipResolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
+// dialFunc is the inner dialer. Injectable so a test can assert what address
+// the guard actually connects to -- which is the whole property, and cannot be
+// observed by counting resolver calls, because Go's dialer would resolve a
+// hostname through the system resolver rather than the injected one.
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// guardedDial returns a DialContext that resolves the host, refuses any
+// non-public address, and then connects to the address it just checked.
+func guardedDial(res ipResolver, dial dialFunc) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := res.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("tools: no addresses for %s", host)
+		}
+		for _, ip := range ips {
+			if !isPublic(ip.IP) {
+				return nil, fmt.Errorf("tools: refused non-public address %s", ip.IP)
+			}
+		}
+		// Dial the address that was just checked, not the hostname.
+		//
+		// Passing addr here would hand the dialer the original host:port and let
+		// it resolve a second time, so the IP validated above need not be the IP
+		// connected to: a DNS server the URL's owner controls can answer public
+		// on the first lookup and 127.0.0.1 or 169.254.169.254 on the second,
+		// which is exactly the metadata endpoint this guard exists to block.
+		// URLs reach here from harness.yaml's research.urls, so a shared or
+		// cloned project can carry the hostile name.
+		return dial(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+}
+
 // NewFetcher builds a fetcher with SSRF-safe dialing and redirect limits.
 func NewFetcher() *Fetcher { return newFetcherWithResolver(net.DefaultResolver) }
 
 func newFetcherWithResolver(res ipResolver) *Fetcher {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			ips, err := res.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			if len(ips) == 0 {
-				return nil, fmt.Errorf("tools: no addresses for %s", host)
-			}
-			for _, ip := range ips {
-				if !isPublic(ip.IP) {
-					return nil, fmt.Errorf("tools: refused non-public address %s", ip.IP)
-				}
-			}
-			// Dial the address that was just checked, not the hostname.
-			//
-			// Passing addr here would hand the dialer the original host:port and
-			// let it resolve a second time, so the IP validated above need not be
-			// the IP connected to: a DNS server the URL's owner controls can
-			// answer public on the first lookup and 127.0.0.1 or 169.254.169.254
-			// on the second, which is exactly the metadata endpoint this guard
-			// exists to block. URLs reach here from harness.yaml's research.urls,
-			// so a shared or cloned project can carry the hostile name.
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
-		},
-	}
+	transport := &http.Transport{DialContext: guardedDial(res, dialer.DialContext)}
 	return &Fetcher{
 		client: &http.Client{
 			Transport: transport,
