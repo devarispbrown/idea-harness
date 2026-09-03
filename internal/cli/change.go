@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/executor"
 )
@@ -375,6 +376,17 @@ type cliCoverage struct {
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
+	// Invoked directly, an unmet gate is a failure: docs/quickstart.md tells
+	// readers to run this after apply, so `idea verify || exit 1` has to mean
+	// something.
+	return runVerify(a, stdout, stderr, true)
+}
+
+// runVerify runs the verification gate. failOnUnmet distinguishes the two
+// callers: `idea verify` reports an unmet gate as an error, while the
+// `idea next --until-human` loop treats it as the human judgment point it is and
+// stops cleanly.
+func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	req := a.arg(0)
 	pass, fail, waive := a.has("--pass"), a.has("--fail"), a.has("--waive")
 	note := a.value("--note")
@@ -430,7 +442,27 @@ func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
 	if req != "" && (pass || fail || waive) {
 		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
 	}
-	fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))
+	// Headline from the gate, not from the initiative's status. This said
+	// "✓ verified" even for a recorded failure.
+	var unmet []string
+	for _, cov := range out.Coverage {
+		switch cov.Status {
+		case "failed":
+			unmet = append(unmet, cov.Code+" failed")
+		case "waived":
+			// A waiver is a human decision that the requirement is out of scope,
+			// so it satisfies the gate.
+		default:
+			if cov.Pass < cov.Total {
+				unmet = append(unmet, fmt.Sprintf("%s %d/%d verified", cov.Code, cov.Pass, cov.Total))
+			}
+		}
+	}
+	if len(unmet) == 0 {
+		fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))
+	} else {
+		fmt.Fprintln(stdout, warn("● not verified")+" "+muted("status:")+" "+code(out.Status))
+	}
 	for _, cov := range out.Coverage {
 		fmt.Fprintf(stdout, "  %s  %d/%d verified", code(cov.Code), cov.Pass, cov.Total)
 		switch cov.Status {
@@ -444,6 +476,18 @@ func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
 			}
 		}
 		fmt.Fprintln(stdout)
+	}
+
+	// The gate has to be able to fail.
+	//
+	// This printed "✓ verified" and returned nil for every state, including a
+	// recorded failure -- `idea verify REQ-1 --fail` reported success -- because
+	// out.Status is the *initiative's* status, not the gate's. docs/quickstart.md
+	// tells readers to run this after apply, so `idea verify || exit 1` in CI
+	// could never fail. The previous round fixed this command's recording half
+	// and never looked at its reporting half.
+	if failOnUnmet && len(unmet) > 0 {
+		return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
 	}
 	return nil
 }

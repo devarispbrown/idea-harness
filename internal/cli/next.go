@@ -93,7 +93,9 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 	switch action {
 	case "verify":
 		// Synchronous: the response is the result.
-		return cmdVerify(cmdArgs{}, stdout, stderr)
+		// Not a failure here: an unmet gate is exactly the human judgment
+		// point this loop exists to stop at.
+		return runVerify(cmdArgs{}, stdout, stderr, false)
 	case "advance", "execute":
 		fmt.Fprintln(stdout, muted("→ ")+action+muted(" …"))
 		var out map[string]string
@@ -189,7 +191,9 @@ func reportNextAction(c *client, projectID, iniID, action string, stdout, stderr
 	case action == "execute":
 		return cmdExecute(cmdArgs{}, stdout, stderr)
 	case action == "verify":
-		return cmdVerify(cmdArgs{}, stdout, stderr)
+		// Not a failure here: an unmet gate is exactly the human judgment
+		// point this loop exists to stop at.
+		return runVerify(cmdArgs{}, stdout, stderr, false)
 	case strings.HasPrefix(action, "review "):
 		id := strings.TrimPrefix(action, "review ")
 		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id)+" — "+muted("idea review "+id+" approve"))
