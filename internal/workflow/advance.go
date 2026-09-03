@@ -391,7 +391,7 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 			switch ed.EdgeType {
 			case domain.EdgeDependsOn:
 				deps[t.ID] = append(deps[t.ID], ed.ToID)
-			case domain.EdgeImplements:
+			case domain.EdgeImplements, domain.EdgeVerifies:
 				hasImplements = true
 			}
 		}
