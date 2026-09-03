@@ -32,11 +32,8 @@ const (
 // sequence, and the human still decides every judgment point. `idea new` is
 // deliberately NOT made to drive on its own — that would spend model budget
 // through design and implementation before anyone has read the PRD.
-func cmdNext(args []string, stdout, stderr io.Writer) error {
-	_, flags, err := parseArgs(nextFlags, args)
-	if err != nil {
-		return err
-	}
+func cmdNext(a cmdArgs, stdout, stderr io.Writer) error {
+	flags := a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -96,7 +93,7 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 	switch action {
 	case "verify":
 		// Synchronous: the response is the result.
-		return cmdVerify(nil, stdout, stderr)
+		return cmdVerify(cmdArgs{}, stdout, stderr)
 	case "advance", "execute":
 		fmt.Fprintln(stdout, muted("→ ")+action+muted(" …"))
 		var out map[string]string
@@ -188,11 +185,11 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 func reportNextAction(c *client, projectID, iniID, action string, stdout, stderr io.Writer) error {
 	switch {
 	case action == "advance":
-		return cmdAdvance([]string{iniID}, stdout, stderr)
+		return cmdAdvance(cmdArgs{}, stdout, stderr)
 	case action == "execute":
-		return cmdExecute([]string{iniID}, stdout, stderr)
+		return cmdExecute(cmdArgs{}, stdout, stderr)
 	case action == "verify":
-		return cmdVerify(nil, stdout, stderr)
+		return cmdVerify(cmdArgs{}, stdout, stderr)
 	case strings.HasPrefix(action, "review "):
 		id := strings.TrimPrefix(action, "review ")
 		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id)+" — "+muted("idea review "+id+" approve"))

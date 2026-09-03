@@ -22,22 +22,19 @@ type cliContextDoc struct {
 }
 
 // cmdDocs lists uploaded context docs, or dispatches to `docs add`.
-func cmdDocs(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 && args[0] == "add" {
-		return cmdDocsAdd(args[1:], stdout, stderr)
+func cmdDocs(a cmdArgs, stdout, stderr io.Writer) error {
+	if a.sub == "add" {
+		return cmdDocsAdd(a, stdout, stderr)
 	}
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	// Resolve the initiative from an optional positional id, ignoring --json.
-	var listArgs []string
-	for _, a := range args {
-		if a != "--json" {
-			listArgs = append(listArgs, a)
-		}
-	}
-	iniID, err := resolveInitiative(c, projectID, listArgs)
+	// Flags are off the args by the time dispatch calls this, so the positional
+	// is just the optional initiative id. This used to strip "--json" from the
+	// slice by hand and pass the remainder through, so `idea docs --jsn` looked
+	// for an initiative called "--jsn" (DX audit).
+	iniID, err := resolveInitiative(c, projectID, a.positional)
 	if err != nil {
 		return err
 	}
@@ -45,7 +42,7 @@ func cmdDocs(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", initiativeResource(projectID, iniID, "docs"), nil, &docs); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, docs)
 	}
 	if len(docs) == 0 {
@@ -70,40 +67,18 @@ const maxDocUploadBytes = 2 << 20
 // as multipart so the daemon can extract text from .md/.txt/.pdf/.docx/.xlsx;
 // stdin is sent as JSON paste-text. Flags may precede the path and accept both
 // `--kind v` and `--kind=v`.
-func cmdDocsAdd(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
-	}
-	var path, kind, title string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--kind" || a == "--title":
-			name := a
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("%s requires a value", name)
-			}
-			if name == "--kind" {
-				kind = args[i]
-			} else {
-				title = args[i]
-			}
-		case strings.HasPrefix(a, "--kind="):
-			kind = strings.TrimPrefix(a, "--kind=")
-		case strings.HasPrefix(a, "--title="):
-			title = strings.TrimPrefix(a, "--title=")
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown flag %q", a)
-		default:
-			if path != "" {
-				return fmt.Errorf("unexpected argument %q", a)
-			}
-			path = a
-		}
-	}
+func cmdDocsAdd(a cmdArgs, stdout, stderr io.Writer) error {
+	// The parser already carves out a bare "-" as a positional, precisely so
+	// this command can read from stdin. cmdDocsAdd rolled its own loop instead
+	// and rejected "-" as an unknown flag before reaching the positional case --
+	// so `idea docs add -`, documented in README, docs/ui.md, the usage string
+	// and as a literal copy-paste line in docs/quickstart.md, never worked.
+	path, kind, title := a.arg(0), a.value("--kind"), a.value("--title")
 	if path == "" {
 		return fmt.Errorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
+	}
+	if len(a.positional) > 1 {
+		return fmt.Errorf("unexpected argument %q", a.positional[1])
 	}
 
 	c, projectID, err := connect()

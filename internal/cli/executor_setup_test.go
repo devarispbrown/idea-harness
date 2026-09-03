@@ -18,7 +18,13 @@ func TestExecutorSetupValidation(t *testing.T) {
 		{[]string{"--image", "x"}, "pass --yes"}, // missing confirmation, no Docker
 	}
 	for _, c := range cases {
-		err := cmdExecutorSetup(c.args, io.Discard, io.Discard)
+		// Parsed through the table, so the test exercises the same spec dispatch
+		// uses rather than a second one written for the test.
+		a, err := parseFor(t, "executors", append([]string{"setup"}, c.args...))
+		if err != nil {
+			t.Fatalf("args %v: parse: %v", c.args, err)
+		}
+		err = cmdExecutorSetup(a, io.Discard, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("args %v: got %v, want substring %q", c.args, err, c.want)
 		}

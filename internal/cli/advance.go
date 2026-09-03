@@ -31,11 +31,8 @@ func resolveInitiative(c *client, projectID string, args []string) (string, erro
 }
 
 // cmdAdvance launches the M2 Design → Execution Plan pipeline.
-func cmdAdvance(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdAdvance(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -59,21 +56,18 @@ func cmdAdvance(args []string, stdout, stderr io.Writer) error {
 // cmdPlan renders the execution plan artifact. The plan is a markdown
 // artifact, so there is no JSON rendering of it: --json is rejected rather than
 // silently ignored, and the error names the command that does answer in JSON.
-func cmdPlan(args []string, stdout, stderr io.Writer) error {
-	for _, a := range args {
-		if a == "--json" {
-			return fmt.Errorf("--json is not supported for plan (the execution plan is a markdown artifact); use `idea tasks --json`")
-		}
+func cmdPlan(a cmdArgs, stdout, stderr io.Writer) error {
+	// plan declares --json in its spec so dispatch accepts it and this message
+	// is what the user gets, rather than the parser's generic "unknown flag".
+	if a.has("--json") {
+		return fmt.Errorf("--json is not supported for plan (the execution plan is a markdown artifact); use `idea tasks --json`")
 	}
-	return cmdExport(append([]string{"execution_plan"}, args...), stdout, stderr)
+	return cmdExport(cmdArgs{positional: append([]string{"execution_plan"}, a.positional...)}, stdout, stderr)
 }
 
 // cmdTasks lists the ordered execution-plan tasks.
-func cmdTasks(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdTasks(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -151,17 +145,14 @@ type cliImpactItem struct {
 	Staleness string `json:"staleness"`
 }
 
-func cmdWhy(args []string, stdout, stderr io.Writer) error { return runTraceCmd("why", args, stdout) }
-func cmdImpact(args []string, stdout, stderr io.Writer) error {
-	return runTraceCmd("impact", args, stdout)
+func cmdWhy(a cmdArgs, stdout, stderr io.Writer) error { return runTraceCmd("why", a, stdout) }
+func cmdImpact(a cmdArgs, stdout, stderr io.Writer) error {
+	return runTraceCmd("impact", a, stdout)
 }
 
 // cmdTrace renders both provenance (why) and dependents (impact) for a node.
-func cmdTrace(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdTrace(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>")
 	}
@@ -179,19 +170,16 @@ func cmdTrace(args []string, stdout, stderr io.Writer) error {
 		}
 		return dumpJSON(stdout, map[string]any{"why": why, "impact": impact})
 	}
-	if err := runTraceCmd("why", args, stdout); err != nil {
+	if err := runTraceCmd("why", a, stdout); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout)
-	return runTraceCmd("impact", args, stdout)
+	return runTraceCmd("impact", a, stdout)
 }
 
 // cmdDiff renders the structured requirement/decision diff.
-func cmdDiff(args []string, stdout, stderr io.Writer) error {
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdDiff(a cmdArgs, stdout, stderr io.Writer) error {
+	positional, flags := a.positional, a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -268,14 +256,11 @@ func fetchTrace(mode string, positional []string) (any, error) {
 	return items, nil
 }
 
-func runTraceCmd(mode string, args []string, stdout io.Writer) error {
+func runTraceCmd(mode string, a cmdArgs, stdout io.Writer) error {
 	// why/impact/trace take two positionals of their own before the optional
 	// initiative reference, so the flags come off first and the remainder is
 	// sliced by position.
-	positional, flags, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
 		return fmt.Errorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>", mode)
 	}

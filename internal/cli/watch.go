@@ -5,16 +5,13 @@ import (
 	"io"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // cmdWatch follows an initiative to completion with a live spinner (§64).
-func cmdWatch(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdWatch(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	c, projectID, err := connect()
 	if err != nil {
 		return err
