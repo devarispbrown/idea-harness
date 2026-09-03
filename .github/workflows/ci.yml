@@ -101,7 +101,15 @@ jobs:
   # true of this repository and false of the thing shipped, and the untested
   # part was the storage layer.
   #
-  # macos-15-intel is a native x86-64 runner, so this costs a job, not emulation.
+  # macos-15-intel is a native x86-64 runner on the standard (free-minutes) pool,
+  # not a billed -large runner, so this costs a job rather than emulation.
+  #
+  # It has a sunset: GitHub has said macos-15-intel is the last x86_64 Actions
+  # image and it goes away in August 2027, after which hosted x86_64 macOS does
+  # not exist. When that lands, either drop darwin/amd64 from the release
+  # matrix in .goreleaser.yaml or accept that it ships untested and say so in
+  # README's build-vs-test table -- do not let the job quietly disappear and
+  # leave the table claiming coverage that stopped.
   macos:
     name: Go (macOS ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
