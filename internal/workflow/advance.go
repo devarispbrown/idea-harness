@@ -278,7 +278,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	// ordering — backward/typo'd references must not be silently dropped).
 	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
 	type pending struct {
-		task  *domain.Task
+		task      *domain.Task
 		depTitles []string
 	}
 	titleToID := map[string]string{}
@@ -398,10 +398,10 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 		if !hasImplements {
 			out = append(out, domain.Finding{
 				Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
-				Category: "traceability",
-				Finding:  fmt.Sprintf("%s has no implements edge to a requirement", t.Code),
-				Evidence: t.Title,
-				Impact:   "untraced work cannot be verified against the PRD",
+				Category:       "traceability",
+				Finding:        fmt.Sprintf("%s has no implements edge to a requirement", t.Code),
+				Evidence:       t.Title,
+				Impact:         "untraced work cannot be verified against the PRD",
 				Recommendation: "trace the task to a requirement",
 			})
 		}
@@ -409,9 +409,9 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 	if cycle := detectCycle(deps); cycle != "" {
 		out = append(out, domain.Finding{
 			Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
-			Category: "plan",
-			Finding:  "task dependency cycle detected: " + cycle,
-			Impact:   "the plan cannot be scheduled",
+			Category:       "plan",
+			Finding:        "task dependency cycle detected: " + cycle,
+			Impact:         "the plan cannot be scheduled",
 			Recommendation: "break the cycle",
 		})
 	}

@@ -21,7 +21,7 @@ if this file has drifted.
 | `idea changed` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |
 | `idea reviews` | list review findings | `--json` | yes |
-| `idea model` | list/set model providers (Gemini, OpenAI, …) | `add --base-url`, `add --key-env`, `add --type`, `set --role` | no |
+| `idea model` | list/set model providers (Gemini, OpenAI, …) | `add --base-url`, `add --key-env`, `add --type`, `list`, `ls`, `set --role` | takes no flags |
 | `idea model ls <provider>` | list a provider's models live (falls back to the catalog offline) | — | — |
 | `idea model set <provider/model>` | set the default model (--role <role> sets one role only) | — | — |
 | `idea model add <name>` | add a provider (--type, --base-url, --key-env) | — | — |
@@ -48,13 +48,13 @@ if this file has drifted.
 | `idea executors setup` | wire a coding agent (hermes\|omp) | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
-| `idea config` | show or validate .idea-harness config | none | no |
+| `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
 | `idea config validate` | validate .idea-harness/harness.yaml (non-zero exit when invalid) | — | — |
 | `idea doctor` | check daemon/config/state health | none | takes no flags |
 | `idea docs` | list uploaded context docs | `--json`, `add --kind`, `add --title` | yes |
 | `idea docs add <path>` | upload a context doc (--kind, --title) | — | — |
 | `idea logs [-f] [n]` | show (or follow) the daemon log | `--follow`, `-f`, `-n` | no |
-| `idea daemon` | run the daemon in the foreground | none | no |
+| `idea daemon` | run the daemon in the foreground | `status`, `stop` | takes no flags |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
 | `idea version` | print the version, commit and build state | none | takes no flags |
@@ -77,7 +77,8 @@ The **`--json`** column is the contract:
 - **`yes`** — the command prints its response as JSON on stdout and nothing else.
 - **`no`** — the command takes flags, but none of them is `--json`. Its output is human-readable:
   a rendered artifact, or a confirmation line.
-- **`takes no flags`** — the command accepts positional arguments only.
+- **`takes no flags`** — the command itself accepts no flags. Its subcommands still may; the Flags
+  column shows those.
 - **`rejected`** — `plan` renders a markdown artifact, so there is no JSON form of it. It fails with
   a message pointing at `idea tasks --json` rather than ignoring the flag.
 - **`—`** — a documentation row describing a subcommand, listed under its parent.

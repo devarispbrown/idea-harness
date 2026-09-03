@@ -557,6 +557,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/advance:
@@ -571,6 +572,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/approve-plan:
@@ -625,6 +627,7 @@ paths:
                 required: [operation_id, executor_kind]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/verify:
@@ -1659,11 +1662,14 @@ paths:
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/risk?initiative_id=`.
 
         Computed from the rendered patches of the initiative's change sets - no model call, no
-        numeric score, just a tier and the signals that set its floor. The profile is **persisted
-        as a side effect of this GET** so the tier floor is durable.
+        numeric score, just a tier and the signals that set its floor.
+
+        This GET writes nothing. It used to persist each computed profile, which grew the database
+        on every read; the profile is a pure function of the patches, so it is recomputed here
+        instead.
       responses:
         "200":
-          description: The risk profile that was computed and stored.
+          description: The risk profile computed for this initiative.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RiskProfile" }
@@ -2165,6 +2171,7 @@ paths:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/resolve-conflict:

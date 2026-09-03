@@ -263,7 +263,7 @@ func TestSelectExecutor(t *testing.T) {
 	}{
 		{config.ExecutorInternal, "internal"},
 		{config.ExecutorContainer, "container"},
-		{config.ExecutorKind(""), "internal"},  // empty/unknown fails closed to internal
+		{config.ExecutorKind(""), "internal"}, // empty/unknown fails closed to internal
 		{config.ExecutorKind("bogus"), "internal"},
 	}
 	for _, tc := range cases {

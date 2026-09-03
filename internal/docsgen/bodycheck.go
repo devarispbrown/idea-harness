@@ -33,15 +33,51 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// decodesBody reports whether a function body reads the request body at all,
+// independent of the shape it decodes into.
+//
+// This exists so the check fails closed. bodyFieldsIn only recognises
+// `var body struct{…}`; a handler using a named type, or `body := struct{…}{}`,
+// would yield no fields and be silently treated as "reads no JSON body" -- the
+// check would then announce that every handler's fields are documented while
+// having verified nothing about that one. All twenty handlers use the matching
+// form today, but nothing enforces that convention, so it is checked rather
+// than assumed.
+func decodesBody(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		// json.NewDecoder(r.Body).Decode(&x)
+		if sel.Sel.Name == "Decode" {
+			if inner, ok := sel.X.(*ast.CallExpr); ok {
+				if isel, ok := inner.Fun.(*ast.SelectorExpr); ok && isel.Sel.Name == "NewDecoder" {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
 // handlerBodyFields maps a handler function name to the JSON field names it
-// decodes from the request body.
-func handlerBodyFields(dir string) (map[string][]string, error) {
+// decodes from the request body, and separately names handlers that decode a
+// body in a shape this check cannot read.
+func handlerBodyFields(dir string) (map[string][]string, []string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	fset := token.NewFileSet()
 	out := map[string][]string{}
+	var unreadable []string
 
 	for _, e := range entries {
 		name := e.Name()
@@ -50,19 +86,25 @@ func handlerBodyFields(dir string) (map[string][]string, error) {
 		}
 		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if fields := bodyFieldsIn(fn.Body); len(fields) > 0 {
+			fields := bodyFieldsIn(fn.Body)
+			if len(fields) > 0 {
 				out[fn.Name.Name] = fields
+				continue
+			}
+			if decodesBody(fn.Body) {
+				unreadable = append(unreadable, fn.Name.Name)
 			}
 		}
 	}
-	return out, nil
+	sort.Strings(unreadable)
+	return out, unreadable, nil
 }
 
 // bodyFieldsIn finds `var body struct{…}` in a function body and returns its
@@ -262,7 +304,7 @@ func runBodyCheck(routesDir, specPath string) error {
 	if err != nil {
 		return err
 	}
-	fields, err := handlerBodyFields(routesDir)
+	fields, unreadable, err := handlerBodyFields(routesDir)
 	if err != nil {
 		return err
 	}
@@ -276,6 +318,17 @@ func runBodyCheck(routesDir, specPath string) error {
 	}
 
 	var problems []string
+	routed := map[string]bool{}
+	for _, h := range handlers {
+		routed[h] = true
+	}
+	for _, h := range unreadable {
+		if routed[h] {
+			problems = append(problems, fmt.Sprintf(
+				"  %s decodes a request body in a shape this check cannot read, so its fields are unverified;\n"+
+					"    use `var body struct{…}` with json tags, as the other handlers do", h))
+		}
+	}
 	for op, handler := range handlers {
 		got, decodes := fields[handler]
 		if !decodes {

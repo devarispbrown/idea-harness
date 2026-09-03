@@ -686,8 +686,17 @@ func (c command) flagDoc() string {
 	for _, name := range c.flags.names() {
 		parts = append(parts, "`"+name+"`")
 	}
+	// Subcommand names, not only their flags. Rendering flags alone left the
+	// names hand-maintained: a subcommand with no flags contributed nothing, so
+	// adding `daemon restart` would dispatch, document nothing, and keep
+	// docs-check green -- the same defect one level down.
 	for _, sub := range sortedKeys(c.subs) {
-		for _, name := range c.subs[sub].names() {
+		flags := c.subs[sub].names()
+		if len(flags) == 0 {
+			parts = append(parts, "`"+sub+"`")
+			continue
+		}
+		for _, name := range flags {
 			parts = append(parts, "`"+sub+" "+name+"`")
 		}
 	}
@@ -710,7 +719,9 @@ func (c command) jsonDoc() string {
 	// the spec first would silently relabel it "takes no flags".
 	case c.rejectsJSON:
 		return "rejected — use `idea tasks --json`"
-	case len(c.flags) == 0 && len(c.subs) == 0:
+	case len(c.flags) == 0:
+		// Subcommands may still take flags; the Flags column shows them. What
+		// this column reports is the command's own flag surface, and it has none.
 		return "takes no flags"
 	// accepts() rather than a direct comparison: a map miss returns flagUnset,
 	// and comparing against flagBool would be true for every command that does

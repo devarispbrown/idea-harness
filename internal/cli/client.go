@@ -43,6 +43,29 @@ func initiativeResource(projectID, initiativeID, resource string) string {
 		"/initiatives/" + url.PathEscape(initiativeID) + "/" + resource
 }
 
+// changeSetResource builds a change-set path with its segments escaped.
+//
+// `idea change 'CHG-1/diff'` used to build .../change-sets/CHG-1/diff -- a real,
+// different endpoint -- and decode the patch response into a change set, so the
+// user got a blank record printed with exit 0. A silent wrong answer, which is
+// worse than the 404 the unescaped initiative paths produced.
+func changeSetResource(projectID, changeSetID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/change-sets/" + url.PathEscape(changeSetID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
+// operationResource builds an operation path with its id escaped.
+func operationResource(operationID, action string) string {
+	p := "/api/v1/operations/" + url.PathEscape(operationID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
 // client talks to the daemon API.
 type client struct {
 	baseURL string

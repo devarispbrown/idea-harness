@@ -83,8 +83,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "api-check:", err)
 			os.Exit(1)
 		}
+		if err := runConflictCheck(filepath.Join(root, routesPkg), filepath.Join(root, specPath)); err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
 		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go,")
-		fmt.Println("           and every handler's request-body fields are documented")
+		fmt.Println("           every handler's request-body fields are documented, and every")
+		fmt.Println("           operation that can answer 409 declares one")
 		return
 	}
 

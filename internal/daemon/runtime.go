@@ -439,8 +439,13 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	if ini.Status == domain.InitiativeRunning {
 		return "", preconditionf("initiative is already running")
 	}
-	if ini.Status != domain.InitiativePlanApproved {
-		return "", preconditionf("execute requires an approved plan (status=%s)", ini.Status)
+	// plan_approved or needs_human_judgment, matching RevisePlanInitiative,
+	// ApprovePlanInitiative and the task-edit guard. Accepting only the former
+	// would have been a fourth spelling of the same precondition.
+	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+		return "", preconditionf(
+			"execute requires an approved plan (status=%s); `idea next` names the step this initiative is actually ready for",
+			ini.Status)
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
