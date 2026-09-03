@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -36,35 +37,28 @@ func isDemoMode(c *client, projectID string) bool {
 }
 
 // cmdModel lists or updates model providers.
-func cmdModel(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		args = []string{"list"}
-	}
-	switch args[0] {
-	case "list":
-		return listModels(stdout)
+func cmdModel(a cmdArgs, stdout, stderr io.Writer) error {
+	// Each subcommand's flags come from its own spec in the table. A single
+	// union spec would have accepted `idea model ls --key-env FOO`, which is the
+	// same silent-swallow defect one level down; and the old hand-rolled scans
+	// dropped a misspelled --base_url along with its value, writing a provider
+	// with no endpoint and reporting success (DX audit).
+	switch a.sub {
 	case "ls":
-		if len(args) > 1 {
-			return listProviderModels(args[1], stdout)
+		if provider := a.arg(0); provider != "" {
+			return listProviderModels(provider, stdout)
 		}
 		return listModels(stdout)
 	case "set":
-		if len(args) < 2 {
+		spec := a.arg(0)
+		if spec == "" {
 			return fmt.Errorf("usage: idea model set <provider/model> [--role <role>]")
 		}
-		spec := args[1]
-		role := ""
-		for i := 2; i < len(args); i++ {
-			if args[i] == "--role" && i+1 < len(args) {
-				role = args[i+1]
-				i++
-			}
-		}
-		return setModel(spec, role, stdout)
+		return setModel(spec, a.value("--role"), stdout)
 	case "add":
-		return addProvider(args[1:], stdout)
-	default:
-		return fmt.Errorf("usage: idea model [list|ls <provider>|set <provider/model> [--role <role>]|add <name>]")
+		return addProvider(a, stdout)
+	default: // "list" or bare `idea model`
+		return listModels(stdout)
 	}
 }
 
@@ -79,7 +73,7 @@ func listProviderModels(provider string, stdout io.Writer) error {
 		Provider string   `json:"provider"`
 		Models   []string `json:"models"`
 	}
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/models?provider="+provider, nil, &v); err != nil {
+	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/models?"+url.Values{"provider": {provider}}.Encode(), nil, &v); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, heading("Models")+muted("  ("+provider+")"))
@@ -154,9 +148,9 @@ func listModels(stdout io.Writer) error {
 		}
 	}
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, muted("set the default: ") + bold("idea model set <provider/model>"))
-	fmt.Fprintln(stdout, muted("set per-role:    ") + bold("idea model set <provider/model> --role <role>"))
-	fmt.Fprintln(stdout, muted("add a provider:  ") + bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
+	fmt.Fprintln(stdout, muted("set the default: ")+bold("idea model set <provider/model>"))
+	fmt.Fprintln(stdout, muted("set per-role:    ")+bold("idea model set <provider/model> --role <role>"))
+	fmt.Fprintln(stdout, muted("add a provider:  ")+bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
 	return nil
 }
 
@@ -182,31 +176,26 @@ func setModel(spec, role string, stdout io.Writer) error {
 	return nil
 }
 
-func addProvider(args []string, stdout io.Writer) error {
-	if len(args) == 0 {
+func addProvider(a cmdArgs, stdout io.Writer) error {
+	name := a.arg(0)
+	if name == "" {
 		return fmt.Errorf("usage: idea model add <name> [--type <type>] [--base-url <url>] [--key-env <ENV>]")
 	}
-	name := args[0]
 	pc := map[string]any{}
-	flags := args[1:]
-	for i := 0; i < len(flags); i++ {
-		switch flags[i] {
-		case "--type":
-			if i+1 < len(flags) {
-				pc["type"] = flags[i+1]
-				i++
-			}
-		case "--base-url":
-			if i+1 < len(flags) {
-				pc["base_url"] = flags[i+1]
-				i++
-			}
-		case "--key-env":
-			if i+1 < len(flags) {
-				pc["api_key_env"] = flags[i+1]
-				i++
-			}
-		}
+	if v := a.value("--type"); v != "" {
+		pc["type"] = v
+	}
+	if v := a.value("--base-url"); v != "" {
+		pc["base_url"] = v
+	}
+	if v := a.value("--key-env"); v != "" {
+		pc["api_key_env"] = v
+	}
+	// ValidateProvider returns nil early when base_url is empty, so the daemon
+	// accepts an endpoint-less provider and the failure surfaces at the first
+	// model call instead of here.
+	if pc["type"] == nil && pc["base_url"] == nil {
+		return fmt.Errorf("provider %q needs --type (a known preset) or --base-url (a custom endpoint)", name)
 	}
 	c, projectID, err := connect()
 	if err != nil {

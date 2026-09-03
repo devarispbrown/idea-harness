@@ -10,12 +10,12 @@ import (
 
 func TestNormalizeJudgment(t *testing.T) {
 	cases := map[string]string{
-		"Which DNS provider?":                                  "which dns provider",
-		"[Source: external_untrusted DEC-1] Which DNS provider?": "which dns provider",
+		"Which DNS provider?": "which dns provider",
+		"[Source: external_untrusted DEC-1] Which DNS provider?":       "which dns provider",
 		"[Source: external_untrusted DEC-1/DEC-4] Which DNS provider?": "which dns provider",
-		"  Which   DNS   Provider?!  ":                          "which dns provider",
-		"How is billing structured?":                            "how is billing structured",
-		"How is billing structured":                             "how is billing structured",
+		"  Which   DNS   Provider?!  ":                                 "which dns provider",
+		"How is billing structured?":                                   "how is billing structured",
+		"How is billing structured":                                    "how is billing structured",
 	}
 	for in, want := range cases {
 		if got := normalizeJudgment(in); got != want {

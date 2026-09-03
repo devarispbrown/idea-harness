@@ -38,6 +38,8 @@ const (
 func main() {
 	check := flag.Bool("check", false, "report drift and exit non-zero instead of rewriting the file")
 	apiCheck := flag.Bool("api-check", false, "compare docs/openapi.yaml against the routes registered in internal/daemon and exit non-zero on drift")
+	apiDocs := flag.Bool("api-docs", false, "add a row to docs/api.md for every route that has none")
+	apiDocsCheck := flag.Bool("api-docs-check", false, "fail if docs/api.md is missing a row for any route, or has one for a route that does not exist")
 	specJSON := flag.String("spec-json", "", "write docs/openapi.yaml to this path as JSON (used by `make api-docs-dist`)")
 	flag.Parse()
 
@@ -49,12 +51,45 @@ func main() {
 		return
 	}
 
+	if *apiDocs {
+		if err := runAPIDocsGenerate(); err != nil {
+			fmt.Fprintln(os.Stderr, "api-docs:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *apiDocsCheck {
+		if err := runAPIDocsCheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "api-docs-check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("api-docs-check: docs/api.md has a row for every route in internal/daemon/routes.go")
+		return
+	}
 	if *apiCheck {
 		if err := runAPICheck(); err != nil {
 			fmt.Fprintln(os.Stderr, "api-check:", err)
 			os.Exit(1)
 		}
-		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go")
+		// Second axis: paths matching is not the same as the contract matching.
+		// api-check proved every route is documented; this proves each handler's
+		// request body is, which is the gap `idea verify --fail` shipped through.
+		root, err := repoRoot()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		if err := runBodyCheck(filepath.Join(root, routesPkg), filepath.Join(root, specPath)); err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		if err := runConflictCheck(filepath.Join(root, routesPkg), filepath.Join(root, specPath)); err != nil {
+			fmt.Fprintln(os.Stderr, "api-check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go,")
+		fmt.Println("           every handler's request-body fields are documented, and every")
+		fmt.Println("           operation that can answer 409 declares one")
 		return
 	}
 

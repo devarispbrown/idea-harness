@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -42,6 +43,29 @@ func initiativeResource(projectID, initiativeID, resource string) string {
 		"/initiatives/" + url.PathEscape(initiativeID) + "/" + resource
 }
 
+// changeSetResource builds a change-set path with its segments escaped.
+//
+// `idea change 'CHG-1/diff'` used to build .../change-sets/CHG-1/diff -- a real,
+// different endpoint -- and decode the patch response into a change set, so the
+// user got a blank record printed with exit 0. A silent wrong answer, which is
+// worse than the 404 the unescaped initiative paths produced.
+func changeSetResource(projectID, changeSetID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/change-sets/" + url.PathEscape(changeSetID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
+// operationResource builds an operation path with its id escaped.
+func operationResource(operationID, action string) string {
+	p := "/api/v1/operations/" + url.PathEscape(operationID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
 // client talks to the daemon API.
 type client struct {
 	baseURL string
@@ -77,7 +101,7 @@ func (c *client) send(req *http.Request, out any) error {
 		if msg == "" {
 			msg = resp.Status
 		}
-		return fmt.Errorf("%s", msg)
+		return &httpError{Status: resp.StatusCode, Message: msg}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -242,4 +266,20 @@ func samePath(a, b string) bool {
 		return aa == bb
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// httpError carries the status alongside the daemon's message, so a caller can
+// tell a mistake that will never succeed (404) from one that might (503 during
+// a restart). watch needs that distinction to know when to stop polling.
+type httpError struct {
+	Status  int
+	Message string
+}
+
+func (e *httpError) Error() string { return e.Message }
+
+// isNotFound reports whether err is the daemon answering 404.
+func isNotFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }

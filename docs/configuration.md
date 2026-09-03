@@ -71,7 +71,7 @@ Top-level fields:
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
 | `providers` | provider map (fields below) | none |
 | `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | container image for the non-internal kinds | — |
+| `executor.image` | container image for the non-internal kinds | `alpine:3.20` |
 | `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
 | `check.image` | image holding the project toolchain for the build/test checks | — |
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — the check is recorded `not_applicable` |

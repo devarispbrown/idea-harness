@@ -11,8 +11,14 @@ import (
 )
 
 // SaveRiskProfile persists a deterministic risk profile for an initiative. A
-// profile is append-only history: every computed profile is retained so the tier
-// floor can be re-derived from past scans.
+// profile is append-only history: every computed profile is retained.
+//
+// Currently unused, deliberately. handleRisk called this on a GET, so every
+// read appended a row and an event without bound; nothing ever read them back
+// (risk_profiles has no SELECT anywhere). ComputeRiskProfile is a pure function
+// of the change-set patches, so a profile is recomputable on demand and the
+// history bought nothing. Kept -- with the table -- for whenever a durable
+// profile gains an actual reader, which is the thing to add first.
 func (db *DB) SaveRiskProfile(ctx context.Context, p *domain.RiskProfile) error {
 	if p.ID == "" {
 		return fmt.Errorf("store: risk profile id is required")

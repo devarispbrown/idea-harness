@@ -7,6 +7,88 @@ Versioning is pre-1.0: the CLI surface, the HTTP API, and the on-disk config sch
 any release. Breaking changes are listed under **Changed** or **Removed** with the migration in the
 entry itself. Once 1.0 ships, this project follows semantic versioning.
 
+## [Unreleased]
+
+A second developer-experience audit of the published 0.1.0 returned FAIL at 70/100, with both hard
+gates passing. Nearly every finding was one instance of the same failure: a fix made correctly in
+one place and not propagated to its siblings. So the fixes below are structural where a defect class
+existed, and each new guard checks a second axis.
+
+### Fixed — BREAKING (HTTP API)
+
+- `GET /projects/{p}/initiatives/{i}/risk` no longer writes. It called an append-only store method,
+  so every read added a row *and* an event that the activity feed returns and the SSE stream
+  carries — the UI polling its risk panel, or `idea risk --json` in a reporting script, grew the
+  database without bound. Nothing ever read those rows back; the profile is recomputed per request,
+  which it always could have been.
+- `POST …/change-sets/{id}/revert` returns `409` with the blocking status instead of `202` when the
+  change set is not `applied`. `idea revert CHG-1` on an already-reverted change set used to print
+  "✓ revert started" and exit 0, with the real failure only in the daemon log. `POST …/execute` now
+  likewise requires an approved plan.
+- `POST …/advance` and `POST …/revise` return `409` rather than `500` for precondition failures such
+  as "initiative is already running", matching the four sibling endpoints that always did.
+  Preconditions now carry a type, so a handler cannot report one as a server fault.
+- The ten initiative routes registered under `{initiativeId}` are registered under `{id}`, so every
+  initiative-scoped route names its path parameter the same way. Path *values* are unchanged; this
+  is visible only in `openapi.yaml` and to generated clients.
+- Executor config: when the file is written but the reload fails, the response is a `409` naming
+  that state instead of an error string containing an absolute state path.
+
+### Fixed — CLI
+
+- **Unknown flags are an error on every command.** Ten commands ignored them: `idea status --jsonn`
+  printed human output to stdout and exited 0, breaking any downstream `jq`, and `idea logs -n 200`
+  silently showed the default 50 lines. Unknown *subcommands* are errors too — `idea daemon stauts`
+  used to start a second daemon in the foreground, and `idea config valdiate` printed the model list
+  and exited 0.
+- `idea docs add -` reads from stdin, as README, `docs/ui.md`, the usage string and the quickstart's
+  copy-paste line have always said. The shared parser had the carve-out for it; this command rolled
+  its own loop and rejected `-` before reaching it.
+- `idea verify` rejects a disposition with no requirement, and rejects two dispositions at once.
+  `idea verify --pass --note "checked manually"` used to print "✓ verified" and record nothing, so a
+  user believed they had signed off.
+- `idea model add` rejects misspelled flags rather than dropping them, and refuses a provider with
+  neither `--type` nor `--base-url` — which previously wrote a provider with no endpoint and
+  reported success.
+- `idea doctor` reports "no project here" and exits non-zero outside a project, instead of "✓ config
+  valid" and "all checks passed" anywhere on the filesystem.
+- `idea init <dir>` initializes that directory instead of silently initializing the current one.
+- `idea watch` stops on a not-found initiative rather than polling forever and exiting 0.
+- `idea daemon status` exits non-zero when the daemon is not running.
+
+### Added — drift guards
+
+- `make api-docs-check` fails when a registered route has no row in `docs/api.md`. The document said
+  "71 routes" while 81 were registered, and both existing guards stayed green: `api-check` compares
+  routes to `openapi.yaml`, and the spec was correct. `make api-docs` adds a row per missing route.
+- `make api-check` also compares each handler's decoded request-body fields against the operation's
+  documented properties. That gap is how `idea verify --fail` and `--waive` shipped implemented,
+  accepted by the daemon, and documented nowhere.
+- The generated CLI table in `docs/cli.md` carries a **Flags** column rendered from each command's
+  flag spec, so a flag that exists in code cannot be missing from the reference.
+- `idea help` has a golden test. Its stability was asserted only in a comment.
+
+### Added
+
+- `LICENSE` — Apache-2.0, also shipped inside the release archive.
+- CI runs the macOS job on both `darwin/arm64` and `darwin/amd64`. The four release binaries do not
+  share a persistence layer: `modernc.org/sqlite` vendors a machine-translated SQLite per
+  GOOS/GOARCH, so two shipped binaries had never run a test. README now states which platforms are
+  built versus tested.
+
+### Fixed — documentation
+
+- `docs/api.md` documents all 81 routes, and describes `409` by cause rather than naming one of
+  fifteen sources.
+- `docs/architecture.md` no longer claims "no source mutation" (apply writes to the tree, through
+  an approved, revertible journal) or that OpenAPI is "planned".
+- `docs/security.md` records that `GET /api/v1/health` is exempt from the token, drops a
+  "deferred to M3" list describing five features that shipped, and gains a threat-table row for the
+  control-plane deny. `docs/security-model.md` is linked from README; both pages now say that
+  *trust levels* (content provenance) and *executor trust tiers* (capabilities) are different
+  mechanisms whose names both match the code.
+- `docs/configuration.md` gives the real `executor.image` default.
+
 ## [0.1.0] - 2026-09-03
 
 First release. Everything below shipped in it: the tag was cut, held as an
@@ -57,7 +139,7 @@ instead of a change that cost nothing.
 - `make api-check` now runs in CI. It has caught three endpoints added by other work in progress and
   previously only ran when someone remembered to type it.
 
-- `docs/openapi.yaml` — an OpenAPI 3.1 description of all 70 operations, and `make api-check`, which
+- `docs/openapi.yaml` — an OpenAPI 3.1 description of every operation, and `make api-check`, which
   fails when a route exists that the spec does not document or the reverse.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
   `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.

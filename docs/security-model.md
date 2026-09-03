@@ -26,6 +26,9 @@ Each deny produces either a persisted `Finding` (with a machine-readable
 
 ## Engine-assigned trust tiers
 
+A *trust tier* rates what an executor may do, and is distinct from the *trust levels* in
+[`security.md`](security.md), which rate where content came from. Both names match the code.
+
 The engine assigns a trust tier from the selected executor's kind — **never**
 from the executor's self-declared capabilities:
 

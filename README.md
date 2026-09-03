@@ -57,8 +57,9 @@ requirement verification.
   Multiple initiatives are supported; each advances independently, one task at a time.
 - **Placeholder executor by default.** The default `internal` executor is deterministic and hermetic
   (no model, no network) — it writes a placeholder file, not real code. To generate real code, wire
-  a coding agent with one command: `idea executors setup --model <provider/model> --yes`
-  (auto-downloads the pinned Hermes image; OMP needs `--kind omp --image <img>`) — see
+  a coding agent with one command: `idea executors setup --model <provider/model> --yes`, which
+  auto-downloads the pinned Hermes image (OMP needs `--kind omp --image <img>`). Add `--smoke` to
+  run a trivial task through the agent and assert it produces a real file change — see
   [`docs/agents.md`](docs/agents.md).
 - **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
   and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
@@ -72,9 +73,23 @@ requirement verification.
 - **Go 1.25.5 or newer** (`go version` — the module requires it).
 - **Node.js + pnpm** — *only needed to change the web UI*. Building and installing the binary does
   not require them; `make build` rebuilds the UI and embeds it.
-- **macOS or Linux.** Both are built and tested in CI. **Windows is not supported**: the CLI starts
-  its daemon in a new session (`internal/cli/detach.go`, `//go:build unix`), which has no Windows
-  equivalent here yet.
+- **macOS or Linux.** **Windows is not supported**: the CLI starts its daemon in a new session
+  (`internal/cli/detach.go`, `//go:build unix`), which has no Windows equivalent here yet.
+
+  Releases ship four binaries. What CI actually executes:
+
+  | Platform | Built | Tests run in CI |
+  |---|---|---|
+  | `darwin/arm64` | yes | yes (`macos-latest`) |
+  | `darwin/amd64` | yes | yes (`macos-15-intel`) |
+  | `linux/amd64` | yes | yes (`ubuntu-latest`) |
+  | `linux/arm64` | yes | **no** |
+
+  `linux/arm64` is the one gap, and it is the SQLite driver rather than first-party code: nothing
+  here branches on `GOARCH`, but `modernc.org/sqlite` vendors a machine-translated SQLite per
+  GOOS/GOARCH, so that binary's storage layer is compiled and never exercised. Hosted arm64 Linux
+  runners are not available on this repository's plan; on a public repository they are, and adding
+  the job is a two-line change to `.github/workflows/ci.yml`.
 
 ### Build & put `idea` on your PATH
 
@@ -164,7 +179,7 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 ## Model providers
 
 idea-harness supports **OpenAI, Anthropic, Google Gemini, OpenRouter, and Ollama (local)** — plus
-any custom OpenAI-compatible endpoint (Groq, Together, LM Studio, …). Configure via the CLI or the
+any custom OpenAI-compatible endpoint (DeepSeek, Groq, Together, LM Studio, …). Configure via the CLI or the
 web UI (Settings):
 
 ```bash
@@ -213,7 +228,8 @@ can name one:
 idea version        # v0.1.0 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
 ```
 
-Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI. Until the
+Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI; the
+table under [Install](#install) says which of the four are also tested there. Until the
 repository is public, the canonical install stays `git clone` + `go install ./cmd/idea`:
 `go install github.com/devarispbrown/idea-harness/cmd/idea@latest` additionally requires the module
 path to be publicly fetchable.
@@ -226,12 +242,13 @@ path to be publicly fetchable.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
-- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, every endpoint.
-- [`docs/api.md`](docs/api.md) — the HTTP API, with [`docs/openapi.yaml`](docs/openapi.yaml) as the
+- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, and a row per route
+  (`make api-docs-check` keeps it complete), with [`docs/openapi.yaml`](docs/openapi.yaml) as the
   machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
 - [`docs/api-reference-hosting.md`](docs/api-reference-hosting.md) — building without the bundled
   reference (3.7 MiB smaller) and hosting it on Cloudflare, AWS or Fastly instead.
-- [`docs/security.md`](docs/security.md) — security model and invariants.
+- [`docs/security.md`](docs/security.md) — threat model, secrets, trust levels.
+- [`docs/security-model.md`](docs/security-model.md) — system-deny conditions, executor trust tiers, execution gateway.
 - [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
 
 ## Development
@@ -244,3 +261,7 @@ make build    # build web UI + binary
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the process (plans are adversarially reviewed before
 implementation; every ChangeSet is independently reviewed).
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 DeVaris Brown.

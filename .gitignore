@@ -48,3 +48,6 @@ internal/web/dist/*
 # Claude worktrees
 /.claude/
 dist-api-docs/
+
+# Stray binary if someone runs `go build ./internal/docsgen` from the repo root.
+/docsgen

@@ -32,11 +32,8 @@ const (
 // sequence, and the human still decides every judgment point. `idea new` is
 // deliberately NOT made to drive on its own — that would spend model budget
 // through design and implementation before anyone has read the PRD.
-func cmdNext(args []string, stdout, stderr io.Writer) error {
-	_, flags, err := parseArgs(nextFlags, args)
-	if err != nil {
-		return err
-	}
+func cmdNext(a cmdArgs, stdout, stderr io.Writer) error {
+	flags := a.flags
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -84,7 +81,7 @@ func nextAction(c *client, projectID, iniID string) (string, error) {
 	var out struct {
 		Action string `json:"action"`
 	}
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/next", nil, &out); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "next"), nil, &out); err != nil {
 		return "", err
 	}
 	return out.Action, nil
@@ -96,11 +93,11 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 	switch action {
 	case "verify":
 		// Synchronous: the response is the result.
-		return cmdVerify(nil, stdout, stderr)
+		return cmdVerify(cmdArgs{}, stdout, stderr)
 	case "advance", "execute":
 		fmt.Fprintln(stdout, muted("→ ")+action+muted(" …"))
 		var out map[string]string
-		if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/"+action, nil, &out); err != nil {
+		if err := c.do("POST", initiativeResource(projectID, iniID, action), nil, &out); err != nil {
 			return err
 		}
 		if kind := out["executor_kind"]; kind == "internal" || kind == "" {
@@ -129,7 +126,7 @@ func waitForOperation(c *client, opID string, stdout io.Writer) error {
 			Status string `json:"status"`
 			Type   string `json:"type"`
 		}
-		if err := c.do("GET", "/api/v1/operations/"+opID, nil, &op); err != nil {
+		if err := c.do("GET", operationResource(opID, ""), nil, &op); err != nil {
 			return err
 		}
 		switch op.Status {
@@ -162,7 +159,7 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 	var out struct {
 		Coverage []cliCoverage `json:"coverage"`
 	}
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", map[string]any{}, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), map[string]any{}, &out); err != nil {
 		return err
 	}
 	var pending []string
@@ -188,11 +185,11 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 func reportNextAction(c *client, projectID, iniID, action string, stdout, stderr io.Writer) error {
 	switch {
 	case action == "advance":
-		return cmdAdvance([]string{iniID}, stdout, stderr)
+		return cmdAdvance(cmdArgs{}, stdout, stderr)
 	case action == "execute":
-		return cmdExecute([]string{iniID}, stdout, stderr)
+		return cmdExecute(cmdArgs{}, stdout, stderr)
 	case action == "verify":
-		return cmdVerify(nil, stdout, stderr)
+		return cmdVerify(cmdArgs{}, stdout, stderr)
 	case strings.HasPrefix(action, "review "):
 		id := strings.TrimPrefix(action, "review ")
 		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id)+" — "+muted("idea review "+id+" approve"))

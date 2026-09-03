@@ -78,6 +78,13 @@ jobs:
       - name: docs/openapi.yaml matches the daemon's routes
         run: make api-check
 
+      # The second axis. api-check compares routes to the machine spec, and the
+      # spec was right -- all 81 operations -- while docs/api.md described 71 and
+      # README called it "every endpoint". Nothing compared routes to the human
+      # document, so ten endpoints went missing with both guards green.
+      - name: docs/api.md has a row for every route
+        run: make api-docs-check
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,
@@ -85,9 +92,27 @@ jobs:
   # the change-set deny (internal/fsdiff) and the snapshot walk live. A
   # case-sensitivity bypass in the control-plane deny reached a release before
   # this job existed.
+  # Both architectures, because the four release binaries do not share a
+  # persistence layer. Nothing first-party branches on GOARCH -- one //go:build
+  # unix file, no runtime.GOARCH anywhere -- but modernc.org/sqlite vendors a
+  # machine-translated SQLite per GOOS/GOARCH and modernc.org/libc carries 194
+  # arch-suffixed files. Measured on this tree: darwin/arm64 compiles 210 Go
+  # files from those two modules, darwin/amd64 206. "No arch-specific source" is
+  # true of this repository and false of the thing shipped, and the untested
+  # part was the storage layer.
+  #
+  # macos-15-intel is a native x86-64 runner, so this costs a job, not emulation.
   macos:
-    name: Go (macOS)
-    runs-on: macos-latest
+    name: Go (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: amd64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v5
 

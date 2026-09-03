@@ -1,0 +1,46 @@
+idea-harness — a local-first AI product-development control plane
+
+Usage: idea <command>
+Commands:
+  init [<dir>]         initialize a project (defaults to the current directory)
+  new "<idea>"         create an initiative and start the workflow
+  status               show initiative + current work
+  changed              show What Changed since last look
+  decisions            list open/blocked decisions
+  reviews              list review findings
+  model                list/set model providers (Gemini, OpenAI, …)
+  prd                  render the reviewed PRD in your terminal
+  explain              show the Current Understanding
+  export [kind]        export an artifact as markdown
+  advance              run Design → Execution Plan (M2)
+  plan                 render the execution plan
+  tasks                list the ordered plan tasks
+  why <type> <id>      show the provenance chain
+  impact <type> <id>   show dependents + staleness
+  trace <type> <id>    show provenance + dependents
+  diff                 structured requirement/decision diff
+  execute              run the next ready task → change set
+  changes              list change sets
+  change <id>          show a change set
+  apply <id>           apply an approved change set
+  revert <id>          roll back a change set
+  review <id> <verdict> approve|reject|changes_requested
+  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence
+  next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
+  risk                 show the deterministic risk profile
+  executors            list executors + capabilities
+  executors setup      wire a coding agent (hermes|omp)
+  watch                watch a run live
+  cancel <op-id>       interrupt a running operation
+  config               show or validate .idea-harness config
+  doctor               check daemon/config/state health
+  docs                 list uploaded context docs
+  docs add <path>      upload a context doc (--kind, --title)
+  logs [-f] [n]        show (or follow) the daemon log
+  daemon               run the daemon in the foreground
+  daemon status|stop   manage the managed daemon
+  dev                  start the daemon and serve the web UI
+  version              print the version, commit and build state
+  help [--format=md]   show this command list (--format=md emits the docs/cli.md table)
+
+State commands support --json.

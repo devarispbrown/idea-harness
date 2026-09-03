@@ -29,11 +29,8 @@ type cliArtifactBody struct {
 // resolveInitiative + resolveArtifact (explain_export.go) with cmdExport, so
 // `idea prd`, `idea export prd` and `idea plan` all agree on which artifact to
 // show — `idea prd [kind] [initiative]`.
-func cmdPRD(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(flagSpec{}, args)
-	if err != nil {
-		return err
-	}
+func cmdPRD(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	kind := "prd"
 	if len(positional) > 0 {
 		kind = positional[0]

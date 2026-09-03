@@ -16,12 +16,12 @@ type cliInitiative struct {
 }
 
 type cliUnderstanding struct {
-	Title        string          `json:"title"`
-	Status       string          `json:"status"`
-	Assertions   []cliAssertion  `json:"assertions"`
+	Title        string           `json:"title"`
+	Status       string           `json:"status"`
+	Assertions   []cliAssertion   `json:"assertions"`
 	Requirements []cliRequirement `json:"requirements"`
-	Decisions    []cliDecision   `json:"decisions"`
-	Questions    []cliQuestion   `json:"questions"`
+	Decisions    []cliDecision    `json:"decisions"`
+	Questions    []cliQuestion    `json:"questions"`
 }
 
 type cliAssertion struct {
@@ -75,15 +75,6 @@ type cliFinding struct {
 	Disposition    string `json:"disposition"`
 }
 
-func wantJSON(args []string) bool {
-	for _, a := range args {
-		if a == "--json" {
-			return true
-		}
-	}
-	return false
-}
-
 func statusBadge(s string) string {
 	switch s {
 	case "approved":
@@ -100,7 +91,7 @@ func statusBadge(s string) string {
 }
 
 // cmdStatus shows initiative + current work.
-func cmdStatus(args []string, stdout, stderr io.Writer) error {
+func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -109,7 +100,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives", nil, &inis); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, inis)
 	}
 	if isDemoMode(c, projectID) {
@@ -117,21 +108,21 @@ func cmdStatus(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout)
 	}
 	if len(inis) == 0 {
-		fmt.Fprintln(stdout, muted("No initiatives yet. Run ") + bold("idea new") + muted(" to start."))
+		fmt.Fprintln(stdout, muted("No initiatives yet. Run ")+bold("idea new")+muted(" to start."))
 		return nil
 	}
 	for _, ini := range inis {
 		fmt.Fprintln(stdout, bold(ini.Title)+"  "+statusBadge(ini.Status))
 		// Understanding + next move for context.
 		var u cliUnderstanding
-		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/understanding", nil, &u); err == nil {
+		if err := c.do("GET", initiativeResource(projectID, ini.ID, "understanding"), nil, &u); err == nil {
 			fmt.Fprintf(stdout, "  %s %d · %s %d · %s %d\n",
 				muted("requirements:"), len(u.Requirements),
 				muted("decisions:"), len(u.Decisions),
 				muted("questions:"), len(u.Questions))
 		}
 		var nm cliGuidance
-		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/guidance", nil, &nm); err == nil && nm.Action != "" {
+		if err := c.do("GET", initiativeResource(projectID, ini.ID, "guidance"), nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
 			if nm.Why != "" {
 				fmt.Fprintln(stdout, "    "+muted(nm.Why))
@@ -143,7 +134,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdChanged shows What Changed since last look.
-func cmdChanged(args []string, stdout, stderr io.Writer) error {
+func cmdChanged(a cmdArgs, stdout, stderr io.Writer) error {
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -157,10 +148,10 @@ func cmdChanged(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	var changed cliChanged
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+inis[0].ID+"/changed", nil, &changed); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, inis[0].ID, "changed"), nil, &changed); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, changed)
 	}
 	if len(changed.Groups) == 0 {
@@ -178,11 +169,8 @@ func cmdChanged(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdDecisions lists decisions.
-func cmdDecisions(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdDecisions(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -198,7 +186,7 @@ func cmdDecisions(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", initiativeResource(projectID, iniID, "decisions"), nil, &decisions); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, decisions)
 	}
 	open := 0
@@ -228,11 +216,8 @@ func cmdDecisions(args []string, stdout, stderr io.Writer) error {
 }
 
 // cmdReviews lists review findings.
-func cmdReviews(args []string, stdout, stderr io.Writer) error {
-	positional, _, err := parseArgs(jsonFlag, args)
-	if err != nil {
-		return err
-	}
+func cmdReviews(a cmdArgs, stdout, stderr io.Writer) error {
+	positional := a.positional
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -245,7 +230,7 @@ func cmdReviews(args []string, stdout, stderr io.Writer) error {
 	if err := c.do("GET", initiativeResource(projectID, iniID, "findings"), nil, &findings); err != nil {
 		return err
 	}
-	if wantJSON(args) {
+	if a.has("--json") {
 		return dumpJSON(stdout, findings)
 	}
 	if len(findings) == 0 {
