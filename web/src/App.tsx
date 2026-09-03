@@ -13,6 +13,7 @@ import DocReader from "./DocReader";
 import ArtifactDiffPage from "./ArtifactDiffPage";
 import CommandPalette from "./CommandPalette";
 import FailedBanner from "./FailedBanner";
+import DesignPage from "./DesignPage";
 import DecisionPage from "./DecisionPage";
 import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
@@ -293,10 +294,19 @@ export default function App() {
             status={currentInitiative.status}
           />
         )}
+        {route.name === "phase" && currentInitiative && route.phase === "design" && (
+          <DesignPage
+            projectId={projectId}
+            initiativeId={currentInitiative.id}
+            pill={phasePill(phases.find((p) => p.phase === "design"), currentInitiative.status, "design")}
+            docs={artifactRows(artifacts, currentInitiative.id, "design")}
+            canReopen={artifacts.some((a) => a.kind === "execution_plan") && changeSets.length === 0}
+          />
+        )}
         {route.name === "phase" && currentInitiative && route.phase === "verify" && (
           <VerifyPage projectId={projectId} initiativeId={currentInitiative.id} />
         )}
-        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && route.phase !== "plan" && route.phase !== "verify" && (
+        {route.name === "phase" && currentInitiative && route.phase !== "define" && route.phase !== "explore" && route.phase !== "build" && route.phase !== "plan" && route.phase !== "design" && route.phase !== "verify" && (
           <PhasePage
             title={PHASE_LABELS[route.phase]}
             purpose={PHASE_PURPOSE[route.phase]}

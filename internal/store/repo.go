@@ -388,6 +388,40 @@ func (db *DB) ListDecisions(ctx context.Context, initiativeID string) ([]domain.
 	return out, rows.Err()
 }
 
+// WireDecisionDerivedFromQuestion links a decision to the open question it
+// resolves (decision derived_from question), so the decision's provenance is
+// traceable through why/impact.
+func (db *DB) WireDecisionDerivedFromQuestion(ctx context.Context, initiativeID, decisionID, questionID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "decision",
+		AggregateID:   decisionID,
+		Actor:         ActorOrchestrator,
+		EventType:     "decision.derived_from_question",
+		Operation:     questionID,
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{
+			FromType: "decision", FromID: decisionID, EdgeType: domain.EdgeDerivedFrom, ToType: "question", ToID: questionID,
+		}})
+	})
+}
+
+// WireRequirementDerivedFromDecision links a requirement to the decision that
+// shaped it (requirement derived_from decision), so an open decision's impact
+// ("blocks N") is the set of requirements waiting on its resolution.
+func (db *DB) WireRequirementDerivedFromDecision(ctx context.Context, initiativeID, requirementID, decisionID string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   requirementID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirement.derived_from_decision",
+		Operation:     decisionID,
+	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{
+			FromType: "requirement", FromID: requirementID, EdgeType: domain.EdgeDerivedFrom, ToType: "decision", ToID: decisionID,
+		}})
+	})
+}
+
 // GetDecision returns a single decision by id.
 func (db *DB) GetDecision(ctx context.Context, decisionID string) (*domain.Decision, error) {
 	row := db.SQL().QueryRowContext(ctx, `

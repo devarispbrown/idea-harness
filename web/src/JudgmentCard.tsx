@@ -1,4 +1,5 @@
 import { useState } from "react";
+import LineageChip from "./LineageChip";
 
 export interface DecisionItem {
   id: string;
@@ -54,10 +55,14 @@ export function DecisionCard({
   d,
   onResolve,
   onReopen,
+  projectId,
+  initiativeId,
 }: {
   d: DecisionItem;
   onResolve: (resolution: string) => void;
   onReopen: () => void;
+  projectId: string;
+  initiativeId: string;
 }) {
   const [writing, setWriting] = useState(false);
   const [custom, setCustom] = useState("");
@@ -65,7 +70,7 @@ export function DecisionCard({
     return (
       <section className="judgment-card resolved">
         <div className="jc-head">
-          <IdChip label={d.code} className="chip-accent" />
+          <LineageChip label={d.code} className="chip-accent" projectId={projectId} initiativeId={initiativeId} nodeType="decision" nodeId={d.id} />
           <span className="jc-title">{d.question}</span>
         </div>
         <p className="jc-resolution">
@@ -81,7 +86,7 @@ export function DecisionCard({
   return (
     <section className="judgment-card">
       <div className="jc-head">
-        <IdChip label={d.code} className="chip-accent" />
+        <LineageChip label={d.code} className="chip-accent" projectId={projectId} initiativeId={initiativeId} nodeType="decision" nodeId={d.id} />
         <span className="jc-title">{d.question}</span>
       </div>
       {d.recommendation && (

@@ -1436,6 +1436,65 @@ button.ghost.small {
 .chip-failing { background: var(--failing-pill); color: var(--failing-fg); }
 .chip-needs-you { background: var(--needs-you-pill); color: var(--needs-you-fg); }
 .chip-inactive { background: var(--inactive-pill); color: var(--inactive-fg); border-bottom-color: #c8c5bf; }
+/* Clickable (button) variant: reset the browser button chrome, keep the chip look. */
+button.idchip {
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  cursor: pointer;
+  background: none;
+  text-align: left;
+  line-height: inherit;
+}
+button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- lineage popover ---------- */
+.lineage-chip { position: relative; display: inline-flex; flex: none; }
+.lineage-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 240px;
+  max-width: 340px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(28, 25, 23, 0.14);
+  padding: 9px 11px;
+}
+.lineage-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.lineage-pop-title { font: 600 11px ui-monospace, Menlo, monospace; color: var(--text); }
+.lineage-blocks {
+  font: 700 10px ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--needs-you-pill);
+  color: var(--needs-you-fg);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.lineage-pop-sub { font: 700 9.5px ui-monospace, Menlo, monospace; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-top: 6px; }
+.lineage-pop-empty { font-size: 11.5px; color: var(--text-muted); padding: 4px 0; }
+.lineage-pop-list { list-style: none; margin: 3px 0 0; padding: 0; max-height: 200px; overflow: auto; }
+.lineage-pop-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11.5px;
+  padding: 3px 0;
+  color: var(--text-body);
+}
+.lineage-edge { font: 600 10px ui-monospace, Menlo, monospace; color: var(--text-faint); flex: none; }
+.lineage-node { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lineage-pop-more { font-size: 11px; color: var(--text-faint); padding: 3px 0; }
 
 .jc-rec {
   font-size: 12.5px;
@@ -1972,6 +2031,18 @@ button.ghost.small {
 .failed-reason { font-size: 12px; color: var(--failing-fg); margin-top: 2px; line-height: 1.5; word-break: break-word; }
 .failed-banner .text-input { flex: 1; min-width: 140px; }
 .failed-error { flex-basis: 100%; font-size: 11.5px; color: var(--failing-fg); }
+
+/* ---------- reopen a design stage ---------- */
+.reopen-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 14px;
+}
+.reopen-title { font-size: 13px; font-weight: 650; color: var(--text); }
+.reopen-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.55; }
+.reopen-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
 
 /* ---------- command palette (⌘K) ---------- */
 .cmd-overlay {

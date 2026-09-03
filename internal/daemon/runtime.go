@@ -561,6 +561,15 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if ini.Status == domain.InitiativeRunning {
 		return "", fmt.Errorf("initiative is already running")
 	}
+	// Refuse synchronously once execution has begun (a stale UI click should get
+	// a clean 409, not a 202 that fails asynchronously).
+	cses, err := pr.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if len(cses) > 0 {
+		return "", fmt.Errorf("cannot reopen a design phase after execution has begun")
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
 		return "", err
