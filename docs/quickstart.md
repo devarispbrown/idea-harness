@@ -6,7 +6,7 @@ loop, from a one-line idea to a verified codebase. Follow along in a fresh direc
 > Prefer the short version? The ["Quick start" section of the README](../README.md) shows the same
 > commands in one block. This guide adds the "what's happening and why" around each step.
 
-## 1. Create a project and pick a model
+## 1. Create a project
 
 ```bash
 mkdir recipes && cd recipes
@@ -16,40 +16,78 @@ idea init
 `idea init` creates a `.idea-harness/` directory in the current folder (no Git repo required). All
 runtime state lives under `~/.local/share/idea-harness/`, never in your source tree.
 
+### Then pick exactly one path
+
+What you do next depends on whether you have a provider API key. **The two paths are mutually
+exclusive** — do one or the other, not both.
+
+#### Path A — no key: skip the model step entirely
+
+Run nothing here and go straight to step 2. With **no `default_model` set and no provider
+configured**, model resolution falls through to the built-in **demo provider**
+(`internal/workflow/engine.go`, `resolveModelSpec`): no network call is made, and every artifact is
+generated locally and labeled as such ("Synthetic demo PRD for: …"; runs record
+`actual_model: demo`). The build step is synthetic too, and independently so — see step 4.
+
+Following this walkthrough in that mode is deliberate: it proves the control plane — the state
+machine, the review gates, the product graph, apply/revert — without spending a token. It does
+**not** show you the product's actual output. For that, see
+[The real path](#the-real-path--what-it-takes-what-it-costs-what-changes) at the end.
+
+#### Path B — with a key: export it, then set a model
+
 ```bash
+export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
 idea model set openai/gpt-4o-mini
+idea doctor                                # names the key the configured provider needs, if it is missing
 ```
 
-This chooses the model that drives the reasoning pipeline. Any supported provider works — Anthropic,
-Gemini, OpenRouter, or local Ollama — and you can change it later from the web UI's Settings. API
-keys are read from environment variables (e.g. `OPENAI_API_KEY`), never stored inline.
+Any supported provider works — Anthropic, Gemini, DeepSeek, OpenRouter, or local Ollama — and you
+can change it later from the web UI's Settings. API keys are read from environment variables, never
+stored inline.
 
-> **No key yet? Then everything below is synthetic.** With no provider key in the environment,
-> idea-harness falls back to a **demo provider**: no network call is made, and every artifact is
-> generated locally and labeled as such ("Synthetic demo PRD for: …"; runs record
-> `actual_model: demo`). The build step is synthetic too, and independently so — see step 4.
-> Following this walkthrough in that mode is deliberate: it proves the control plane — the state
-> machine, the review gates, the product graph, apply/revert — without spending a token. It does
-> **not** show you the product's actual output. For that, see
-> [The real path](#the-real-path--what-it-takes-what-it-costs-what-changes) at the end.
+> **Do not run `idea model set` without the matching key.** Once `default_model` is set,
+> `resolveModelSpec` returns it *before* it ever reaches the demo fallback, and the built-in presets
+> are always registered — with an empty key when the environment variable is unset
+> (`internal/daemon/runtime.go`, `buildRegistry`). The first model call then comes back
+> `openai: status 401`, which is not in the engine's transient-error list, so the run is not retried
+> and the initiative goes to **failed**. `idea doctor` warns about the missing key, but its wording
+> ("the harness will produce demo output") understates it: with a model set, the run fails instead.
+> If you have no key, take Path A.
 
 ## 2. Turn the idea into a reviewed PRD (M1)
 
 > **Ground the agents in your own material (optional).** If you have a PRD, design system, tech
 > spec, market analysis, or UI mockup images, feed them to the team. Uploaded docs are
-> credential-swept, redacted, and content-addressed, then injected into design & planning (and PRD
-> revisions) so the team works from your context — never raw. Text formats are extracted directly;
-> images are described by a vision model:
+> content-addressed and injected into every downstream stage that compiles a context bundle —
+> design, planning, and PRD revisions among them. Text formats are extracted directly; images are
+> described by a vision model, and only the description reaches the agents.
+>
+> **Text documents go in with the idea itself** (`.md`, `.txt`, `.csv`, `.json`, `.yaml`, … —
+> anything that sniffs as text), because `idea docs add` needs an initiative to attach to and there
+> is none until `idea new` has run. Use this *instead of* the plain `idea new` below:
 >
 > ```bash
-> idea docs add prd.md                # .md / .txt / .pdf / .docx / .xlsx
-> idea docs add mockup.png            # .jpg / .png — described by a vision model
+> idea new "A recipe-sharing app" --doc prd.md --doc notes.txt   # text files only
+> ```
+>
+> Everything else is added *after* the initiative exists — so these run once `idea new` has returned:
+>
+> ```bash
+> idea docs add spec.pdf              # .pdf / .docx / .xlsx (text formats work here too)
+> idea docs add mockup.png            # .jpg / .png / .gif / .webp — described by a vision model
 > printf '# PRD\n…' | idea docs add - --kind prd --title "pasted PRD"   # paste from stdin
 > idea docs                           # list uploaded docs
 > ```
 >
-> They also appear under the **Context** tab in the web UI (`http://127.0.0.1:8787/`). Trace a
-> doc's influence with `idea trace context_doc <id>`.
+> They also appear under **Explore → Grounding** in the web UI (`http://127.0.0.1:8787/`). Trace a
+> doc's influence with `idea trace context_doc prd.md` (the title, which defaults to the file's
+> base name, or the id from `idea docs --json`).
+>
+> **Redaction is not uniform.** Text documents are credential-swept and redacted at ingest; images
+> are stored, served, and sent to the vision provider **unredacted**. See
+> [`docs/security.md` → Context docs](security.md#context-docs-uploaded-source-material) before
+> uploading a screenshot that might contain a secret.
 
 ```bash
 idea new "A recipe-sharing app"
@@ -62,24 +100,35 @@ which an independent reviewer then challenges and revises. Follow it live from a
 idea watch
 ```
 
-`idea watch` tails the run with a Bubble Tea spinner and event feed. When it settles, read the
-result:
+`idea watch` polls the initiative once a second and renders one live line — a spinner, the title,
+a status badge, and `n requirements · n decisions · n questions` — then prints `Done.` when the
+run reaches `approved`, `needs_human_judgment` or `failed`. It is a status view, not an event
+log; `idea logs -f` follows the daemon log. When it settles, read the result:
 
 ```bash
 idea prd
 ```
 
-The reviewed PRD renders in your terminal. Expect to see:
+The reviewed PRD renders in your terminal. With a real model, expect a product summary, the core
+**requirements** (`REQ-1`, `REQ-2`, …) each with measurable acceptance criteria, **decisions**
+(`DEC-1`, …) the team asks you to confirm, and any **open questions** and **review findings** still
+needing your judgment.
 
-- a product summary and the core **requirements** (`REQ-1`, `REQ-2`, …), each with measurable
-  acceptance criteria;
-- **decisions** (`DEC-1`, …) the team asks you to confirm, each with a recommendation;
-- any **open questions** and **review findings** still needing your judgment.
+> **On the no-key path, most of that is empty by construction.** The demo provider emits exactly
+> one requirement (`REQ-1`), **no decisions**, **no review findings**, and two open questions
+> (`internal/model/fake.go`). So `idea decisions` prints "No decisions yet.", `idea reviews` is
+> empty, and `DEC-1` does not exist — any command naming one will fail to resolve it. Downstream,
+> the plan is a single task (`TASK-1`) and execute produces a single change set (`CHG-1`).
 
 Run `idea status` any time to see where the initiative is, and `idea decisions` / `idea reviews`
-to inspect the judgment items the reviewer raised. If you disagree with a recommendation, resolve
-it (via `idea decisions` or the web UI) and the PRD is revised — for a clean first run you can
-accept them.
+to inspect the judgment items the reviewer raised.
+
+**Resolving them is a web-UI (or API) action, not a CLI one.** `idea decisions` and `idea reviews`
+only *list*: the CLI command table has no verb that resolves a decision, answers a question, or
+dispositions a finding. Open `http://127.0.0.1:8787/` → the initiative's **Define** phase to accept a
+recommendation, pick another option, write your own, disposition a finding, or answer a question;
+the PRD then revises. For a clean first run you can leave them: an undecided decision goes into the
+next revise prompt carrying its recommendation rather than a resolution.
 
 ## 3. Design and plan (M2)
 
@@ -93,7 +142,7 @@ the ordered list of tasks the implementer will tackle one at a time.
 
 ```bash
 idea plan      # render the execution plan
-idea tasks     # list the tasks in dependency order (TASK-1, TASK-2, …)
+idea tasks     # list the tasks in dependency order (TASK-1, TASK-2, …; one on the no-key path)
 ```
 
 Each task shows its priority, estimate, and statement. Order matters: a task that depends on
@@ -139,16 +188,19 @@ apply also creates a git commit staging only the patch's files.
 idea verify REQ-1 --pass
 ```
 
-`verify` records evidence that a requirement is met. Repeat for each requirement (`REQ-2`, …). Each
-pass lands in the Product Graph, so "done" is provable, not asserted.
+`verify` records evidence that a requirement is met — the note is optional but is what makes the
+evidence readable later (`idea verify REQ-1 --pass --note "checked the applied file"`). Repeat for
+each requirement your PRD produced; on the no-key path `REQ-1` is the only one. Each pass lands in
+the Product Graph, so "done" is provable, not asserted. `idea verify` with no requirement prints the
+coverage table.
 
 ```bash
 idea next
 ```
 
 `idea next` is the loop driver: it runs the next automatable step and stops at each human judgment
-point (review, apply, resolve), printing exactly what to run next. When every requirement is
-verified it prints:
+point — review, apply, or resolving open judgment items in the web UI — printing exactly what to run
+next. When every requirement is verified it prints:
 
 ```text
 ✓ initiative complete
@@ -165,7 +217,7 @@ default, and it is synthetic in two independent places:
 
 | Layer | Default | What it produces |
 |---|---|---|
-| Reasoning (framing, research, PRD, review, design, plan) | **demo provider** — used whenever no provider key is resolvable | Locally generated, input-aware, explicitly labeled text: "Synthetic demo PRD for: …", assumptions reading "This is synthetic demo output — no model provider is configured." Runs record `actual_model: demo`. |
+| Reasoning (framing, research, PRD, review, design, plan) | **demo provider** — used when no model is set and no provider is configured | Locally generated, input-aware, explicitly labeled text: "Synthetic demo PRD for: …", assumptions reading "This is synthetic demo output — no model provider is configured." Runs record `actual_model: demo`. |
 | Build (`idea execute`) | **`internal` executor** (`executor.kind: internal`) | A deterministic, hermetic placeholder file. No model call, no network, not code. |
 
 They are separate switches. A configured `OPENAI_API_KEY` gives you a real PRD and a real plan and
@@ -180,17 +232,20 @@ idea model set anthropic/claude-3-7-sonnet
 idea doctor                              # names the key the configured provider needs, if it is missing
 ```
 
-Keys are read from the environment (or the project `.env`), never stored in `harness.yaml`. A
-missing key does **not** fail the run — the registry always keeps the demo provider as a last
-resort, so the pipeline quietly produces synthetic output instead. `idea doctor` is what catches
-that before you spend time on it:
+Keys are read from the environment (or the project `.env`), never stored in `harness.yaml`. The two
+commands belong together: **setting the model without exporting the key is worse than doing
+neither**, because `default_model` short-circuits the demo fallback and the first model call fails
+with a non-retryable `401`, sending the initiative to `failed`. `idea doctor` is what catches that
+before you spend time on it:
 
 ```text
 warn  provider "anthropic" needs ANTHROPIC_API_KEY, which is not set; the harness will produce demo output
 demo mode — no model configured; run `idea model set <provider>/<model>` for real output.
 ```
 
-Run it after `idea model set` and before `idea new`.
+Run it after `idea model set` and before `idea new`. Read both lines as "the key is missing" and
+nothing more: with a `default_model` set, the run fails rather than falling back to demo output,
+which is what step 1b spells out.
 
 ### 2. A real executor
 
@@ -250,10 +305,12 @@ So rather than a number this document cannot support, here is how to get your ow
 - **Read the real figures.** Every model response is logged with its cost: `idea logs | grep
   cost_usd` shows `stage`, `actual` model, `duration` and `cost_usd` per call. Run the loop once on
   a throwaway initiative and you have your project's actual number.
-- **Cap it before you start.** `review.max_cost_usd` and `review.max_tokens` in
-  `.idea-harness/harness.yaml` are cumulative per-project ceilings (`0` = unlimited); the engine
-  refuses further model calls once a ceiling is crossed. `review.max_cycles` bounds the most
-  expensive variable in M1.
+- **Cap it before you start.** In `.idea-harness/harness.yaml` (`0` disables each):
+  `review.max_cost_usd` is a **cumulative** ceiling — the engine adds up every model call's cost and
+  fails the call that crosses it, so the run stops; the total is per project and resets when the
+  daemon restarts. `review.max_tokens` is a **per-call** cap on a single response's output tokens,
+  not a running total. `review.max_cycles` bounds the most expensive variable in M1 — the M1 revise
+  loop (default 3). See [`docs/configuration.md`](configuration.md) for the full reference.
 - **The order of magnitude follows from the table above**: a low-double-digit count of structured
   calls for M1 + M2, each carrying a compiled context bundle rather than a whole repository. The
   agent's implementation run is where the cost concentrates.
@@ -267,7 +324,7 @@ are **the model** and **the size of the task statement**.
 
 `idea execute` against a real agent is bounded by the container run, not by idea-harness. This is
 why [`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) waits 12 seconds after `execute` before
-looking for a change set, and why the scripted demo waits 3.
+looking for a change set.
 
 **The one measured number** in this repository is the opt-in CI agent tier
 ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml), job `agent`, `workflow_dispatch` only).
