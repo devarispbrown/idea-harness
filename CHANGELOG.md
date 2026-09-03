@@ -7,9 +7,19 @@ Versioning is pre-1.0: the CLI surface, the HTTP API, and the on-disk config sch
 any release. Breaking changes are listed under **Changed** or **Removed** with the migration in the
 entry itself. Once 1.0 ships, this project follows semantic versioning.
 
-## [Unreleased]
+## [0.1.0] - 2026-09-03
+
+First release. Everything below shipped in it: the tag was cut, held as an
+unpublished draft while the API was unified, and re-cut so the first version
+anyone can install is the one with a single addressing convention rather than
+the two it started with.
 
 ### Changed — BREAKING (HTTP API)
+
+Breaking relative to pre-release builds of `main`, not to any published version: this is the first
+release, and the shape below is the one it ships with. That is why the tag was re-cut rather than
+published as first drafted — publishing the old shape would have made this a migration users owed
+instead of a change that cost nothing.
 
 - Ten initiative-scoped reads moved from the flat `?initiative_id=` form to the nested path, so the
   API now has one addressing convention instead of two:
@@ -52,7 +62,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
   `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.
 
-### Added
 
 - CI builds, vets, tests and smoke-tests on macOS as well as Linux. Nothing in the codebase branches
   on the operating system, so the differences that matter are filesystem semantics — case
@@ -62,10 +71,52 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   supported, because the CLI starts its daemon in a new session and there is no Windows equivalent
   in the tree yet.
 
-## [0.1.0] - 2026-09-02
+- `idea version` (and `--version`) prints the version, commit and whether the build came from a dirty
+  tree; `idea doctor` prints the same stamp. The daemon's `/api/v1/version` reports it too, replacing
+  a hardcoded `0.1.0` that every install returned regardless of what it was built from.
+- Tagged releases build prebuilt macOS and Linux binaries in CI (goreleaser), with the web UI
+  embedded and `-trimpath` so no maintainer's local paths ship inside them.
 
-First tagged release. The entries below are the whole history to date: everything
-before this tag shipped as "whatever main was that day".
+- `idea next --until-human` runs the automatable steps (`advance` → `execute` → `verify`) back to
+  back, waiting for each to finish, and stops at the first human judgment point. The documented
+  quick start drops from 13 commands to 8. A failed step stops the loop rather than continuing.
+- `idea help --format=md` writes the command table as markdown to stdout (the human `idea help`
+  still goes to stderr, unchanged). `docs/cli.md` embeds that table between generated-block markers,
+  and `make docs` regenerates it. `docs/cli.md` documented 16 of the 36 commands the CLI dispatches;
+  `risk`, `diff`, `cancel` and `change <id>` appeared in no document at all. `make docs-check` fails
+  on drift and runs in CI, so a new command can no longer ship undocumented.
+
+### Changed
+
+- `idea apply` on a change set that cannot be applied now fails with what to do instead — already
+  applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
+  Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.
+
+- The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
+  declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
+  made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
+  change the moment either exists, which is why it lands before the first tag.
+
+- `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
+  answered `✓ default model set to bogus/model` and failed at the first run.
+- `idea doctor` exits non-zero when a check fails. It printed the failure and exited 0, so a script
+  that ran it as the post-install check could not tell.
+- `idea help` now lists `verify`, `next` and `help` itself, which were dispatched but never shown.
+
+- Unknown flags are now an error naming the command's accepted flags, instead of being silently
+  treated as a positional argument (or, for `idea next`, discarded).
+- `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
+  the flag and printed markdown. The execution plan is a markdown artifact and has no JSON form.
+- `idea prd` and `idea export` render daemon errors in the same shape as every other command; they
+  previously printed the raw response body behind a `daemon: ` prefix.
+- `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
+  the flag and printed human-formatted output.
+- `docs/configuration.md` documents the top-level `harness.yaml` fields, including `git_commit`,
+  which README, the quick start and `docs/ui.md` all referenced while the configuration reference
+  did not mention it at all.
+
+- `README.md` no longer describes Node and pnpm as optional for installing. They are needed only to
+  change the web UI.
 
 ### Fixed
 
@@ -118,23 +169,6 @@ before this tag shipped as "whatever main was that day".
   in a fresh clone with `pattern dist: no matching files found`. A placeholder `dist/index.html` is
   committed; `make build` overwrites it with the real UI.
 
-### Added
-
-- `idea version` (and `--version`) prints the version, commit and whether the build came from a dirty
-  tree; `idea doctor` prints the same stamp. The daemon's `/api/v1/version` reports it too, replacing
-  a hardcoded `0.1.0` that every install returned regardless of what it was built from.
-- Tagged releases build prebuilt macOS and Linux binaries in CI (goreleaser), with the web UI
-  embedded and `-trimpath` so no maintainer's local paths ship inside them.
-
-- `idea next --until-human` runs the automatable steps (`advance` → `execute` → `verify`) back to
-  back, waiting for each to finish, and stops at the first human judgment point. The documented
-  quick start drops from 13 commands to 8. A failed step stops the loop rather than continuing.
-- `idea help --format=md` writes the command table as markdown to stdout (the human `idea help`
-  still goes to stderr, unchanged). `docs/cli.md` embeds that table between generated-block markers,
-  and `make docs` regenerates it. `docs/cli.md` documented 16 of the 36 commands the CLI dispatches;
-  `risk`, `diff`, `cancel` and `change <id>` appeared in no document at all. `make docs-check` fails
-  on drift and runs in CI, so a new command can no longer ship undocumented.
-
 ### Security
 
 - The control-plane deny is case-insensitive. `.idea-harness/**` and `.git/**` were matched exactly,
@@ -174,35 +208,3 @@ before this tag shipped as "whatever main was that day".
   endpoint is rejected outright; configure a differently-named provider instead. Keyless local
   presets may still move between loopback ports. `idea config validate` applies the same checks to a
   hand-edited `harness.yaml`.
-
-### Changed
-
-- `idea apply` on a change set that cannot be applied now fails with what to do instead — already
-  applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
-  Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.
-
-- The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
-  declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
-  made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
-  change the moment either exists, which is why it lands before the first tag.
-
-- `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
-  answered `✓ default model set to bogus/model` and failed at the first run.
-- `idea doctor` exits non-zero when a check fails. It printed the failure and exited 0, so a script
-  that ran it as the post-install check could not tell.
-- `idea help` now lists `verify`, `next` and `help` itself, which were dispatched but never shown.
-
-- Unknown flags are now an error naming the command's accepted flags, instead of being silently
-  treated as a positional argument (or, for `idea next`, discarded).
-- `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
-  the flag and printed markdown. The execution plan is a markdown artifact and has no JSON form.
-- `idea prd` and `idea export` render daemon errors in the same shape as every other command; they
-  previously printed the raw response body behind a `daemon: ` prefix.
-- `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
-  the flag and printed human-formatted output.
-- `docs/configuration.md` documents the top-level `harness.yaml` fields, including `git_commit`,
-  which README, the quick start and `docs/ui.md` all referenced while the configuration reference
-  did not mention it at all.
-
-- `README.md` no longer describes Node and pnpm as optional for installing. They are needed only to
-  change the web UI.
