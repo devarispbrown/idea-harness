@@ -86,7 +86,7 @@ func cmdCancel(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	opID := positional[0]
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/operations/"+opID+"/cancel", nil, &out); err != nil {
+	if err := c.do("POST", operationResource(opID, "cancel"), nil, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ cancelled operation")+" "+code(opID))
@@ -153,7 +153,7 @@ func cmdChange(a cmdArgs, stdout, stderr io.Writer) error {
 		return err
 	}
 	var cs cliChangeSet
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/change-sets/"+positional[0], nil, &cs); err != nil {
+	if err := c.do("GET", changeSetResource(projectID, positional[0], ""), nil, &cs); err != nil {
 		return err
 	}
 	if flags.has("--json") {
@@ -204,7 +204,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+positional[0]+"/review",
+	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"),
 		map[string]string{"verdict": verdict}, &out); err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/change-sets/"+id+"/"+action, nil, &out); err != nil {
+	if err := c.do("POST", changeSetResource(projectID, id, action), nil, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(id))

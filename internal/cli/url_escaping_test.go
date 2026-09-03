@@ -17,8 +17,13 @@ import (
 // simply bypassed. That is the propagation failure this whole round is about,
 // and a unit test on the helper would not have caught it, because the helper
 // was never wrong.
-func TestNoRawInitiativePathConcatenation(t *testing.T) {
-	raw := regexp.MustCompile(`\+\s*"/initiatives/"\s*\+`)
+func TestNoRawResourcePathConcatenation(t *testing.T) {
+	// Every resource whose segment is a user-supplied id, not just initiatives.
+	// The first version of this guard watched "/initiatives/" alone, so the
+	// identical bug survived for change sets and operations -- where it is worse,
+	// because `idea change 'CHG-1/diff'` reaches a real, different endpoint and
+	// prints a blank record with exit 0 rather than failing.
+	raw := regexp.MustCompile(`\+\s*"/(initiatives|change-sets|operations)/"\s*\+`)
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +39,15 @@ func TestNoRawInitiativePathConcatenation(t *testing.T) {
 		}
 		checked++
 		for i, line := range strings.Split(string(src), "\n") {
+			// The helpers themselves concatenate, but they escape each segment
+			// first, which is the whole point of them.
+			if strings.Contains(line, "url.PathEscape") {
+				continue
+			}
 			if raw.MatchString(line) {
-				t.Errorf(`%s:%d builds an initiative path by concatenation:
+				t.Errorf(`%s:%d builds a resource path by concatenation:
   %s
-Use initiativeResource(projectID, initiativeID, resource), which escapes its segments.`,
+Use initiativeResource / changeSetResource / operationResource, which escape their segments.`,
 					f, i+1, strings.TrimSpace(line))
 			}
 		}
@@ -50,6 +60,12 @@ Use initiativeResource(projectID, initiativeID, resource), which escapes its seg
 // TestInitiativeResourceEscapesItsSegments pins the behaviour the call sites now
 // depend on.
 func TestInitiativeResourceEscapesItsSegments(t *testing.T) {
+	if got := changeSetResource("proj", "CHG-1/diff", ""); strings.Contains(got, "/diff") {
+		t.Errorf("changeSetResource let an id reach a different endpoint: %s", got)
+	}
+	if got := operationResource("op/cancel", ""); strings.Contains(got, "/cancel") {
+		t.Errorf("operationResource let an id reach a different endpoint: %s", got)
+	}
 	got := initiativeResource("proj", "../../health", "tasks")
 	if strings.Contains(got, "../") {
 		t.Errorf("initiativeResource left a traversal in the path: %s", got)

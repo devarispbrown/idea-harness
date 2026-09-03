@@ -126,7 +126,7 @@ func waitForOperation(c *client, opID string, stdout io.Writer) error {
 			Status string `json:"status"`
 			Type   string `json:"type"`
 		}
-		if err := c.do("GET", "/api/v1/operations/"+opID, nil, &op); err != nil {
+		if err := c.do("GET", operationResource(opID, ""), nil, &op); err != nil {
 			return err
 		}
 		switch op.Status {

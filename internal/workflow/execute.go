@@ -3,14 +3,15 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/config"
+	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/fsdiff"
@@ -95,6 +96,12 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 	}
 }
 
+// ErrNoReadyTask is what nextReadyTask returns when the initiative has nothing
+// runnable. A sentinel rather than a bare error so callers can tell it from the
+// storage failures the same function can return -- NextAction has to make
+// exactly that distinction.
+var ErrNoReadyTask = errors.New("workflow: no ready tasks")
+
 // nextReadyTask returns the first task that is ready or proposed (i.e. not yet
 // done) for an initiative, in creation order.
 func (e *Engine) nextReadyTask(ctx context.Context, initiativeID string) (domain.Task, error) {
@@ -114,7 +121,7 @@ func (e *Engine) nextReadyTask(ctx context.Context, initiativeID string) (domain
 			return t, nil
 		}
 	}
-	return domain.Task{}, fmt.Errorf("workflow: no ready tasks for initiative %q (dependencies not satisfied)", initiativeID)
+	return domain.Task{}, fmt.Errorf("%w for initiative %q (dependencies not satisfied)", ErrNoReadyTask, initiativeID)
 }
 
 // taskDependenciesApplied reports whether every depends_on predecessor of taskID

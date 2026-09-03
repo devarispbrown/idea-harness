@@ -39,28 +39,25 @@ var apiRowRe = regexp.MustCompile("^\\| *([A-Z]+) *\\| *`([^`]+)` *\\|(.*)\\|\\s
 
 // docRow is one endpoint row in docs/api.md.
 type docRow struct {
-	op      operation
-	line    int
-	section string
+	op   operation
+	line int
 }
 
 // parseAPIDocs reads the endpoint rows out of docs/api.md.
 //
 // Paths in the document omit the /api/v1 prefix (stated once under "Base URL")
 // and some carry query strings, so both are normalised before comparison.
-func parseAPIDocs(path string) ([]docRow, []string, error) {
+func parseAPIDocs(path string) ([]docRow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	lines := strings.Split(string(data), "\n")
 
 	var rows []docRow
-	var section string
 	inTable := false
 	for i, line := range lines {
 		if strings.HasPrefix(line, "#") {
-			section = strings.TrimLeft(line, "# ")
 			inTable = false
 			continue
 		}
@@ -80,12 +77,11 @@ func parseAPIDocs(path string) ([]docRow, []string, error) {
 			continue // the |---|---|---| separator
 		}
 		rows = append(rows, docRow{
-			op:      operation{method: m[1], path: docPathToRoute(m[2])},
-			line:    i + 1,
-			section: section,
+			op:   operation{method: m[1], path: docPathToRoute(m[2])},
+			line: i + 1,
 		})
 	}
-	return rows, lines, nil
+	return rows, nil
 }
 
 // docPathToRoute turns a documented path into the pattern routes.go registers:
@@ -147,7 +143,7 @@ func apiDocsDiff() (missing, stale []operation, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, _, err := parseAPIDocs(filepath.Join(root, apiDocsPath))
+	rows, err := parseAPIDocs(filepath.Join(root, apiDocsPath))
 	if err != nil {
 		return nil, nil, err
 	}

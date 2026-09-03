@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
@@ -47,9 +48,13 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 		// unconditional "execute" would have turned that background failure into
 		// a hard error out of the loop.
 		if _, err := e.nextReadyTask(ctx, initiativeID); err != nil {
-			// nextReadyTask reports "no ready tasks" as an error rather than a
-			// zero value, and it is the only non-storage failure it has, so any
-			// error here means there is nothing to run.
+			// Only "nothing runnable" means verify. Every other error
+			// nextReadyTask can return is a storage failure, and swallowing one
+			// here would answer 200 {"action":"verify"} on a broken database --
+			// sending the operator to debug verification instead of storage.
+			if !errors.Is(err, ErrNoReadyTask) {
+				return "", err
+			}
 			return "verify", nil
 		}
 		return "execute", nil
