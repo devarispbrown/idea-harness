@@ -404,13 +404,20 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	if ini.Status != domain.InitiativeApproved {
 		return "", preconditionf("advance requires an approved PRD (status=%s)", ini.Status)
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to advance")
+		}
+		return "", err
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
 	if err != nil {
 		return "", err
 	}
-	// Mark the initiative running so the UI reflects "designing & planning"
-	// rather than a stale "approved" during the M2 pipeline.
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.Advance(bg, initiativeID)
 		if runErr != nil {
@@ -456,6 +463,16 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 		return "", preconditionf(
 			"execute requires an approved plan (status=%s); `idea next` names the step this initiative is actually ready for",
 			ini.Status)
+	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to execute")
+		}
+		return "", err
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
@@ -530,6 +547,16 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	if ini.Status == domain.InitiativeRunning {
 		return "", preconditionf("initiative is running; wait for it to finish before revising")
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved, domain.InitiativeComplete, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to revise")
+		}
+		return "", err
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
 		return "", err
@@ -563,11 +590,20 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	if ini.Status != domain.InitiativeFailed {
 		return "", fmt.Errorf("retry requires a failed initiative (status=%s)", ini.Status)
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to retry")
+		}
+		return "", err
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
 	if err != nil {
 		return "", err
 	}
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
 	r.launchOperation(opID, func(bg context.Context) {
 		pr.engine.SetModelOverride(initiativeID, model)
 		status, runErr := pr.engine.Retry(bg, initiativeID)
@@ -621,11 +657,20 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if !hasDesign {
 		return "", fmt.Errorf("no design or plan to reopen — advance the initiative first")
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved, domain.InitiativeComplete, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to reopen-phase")
+		}
+		return "", err
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
 		return "", err
 	}
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.ReopenPhase(bg, initiativeID, phase)
 		if runErr != nil {
@@ -654,6 +699,16 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	}
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return "", fmt.Errorf("no plan to revise (status=%s)", ini.Status)
+	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to revise-plan")
+		}
+		return "", err
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
 	if err != nil {
@@ -686,6 +741,16 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	}
 	if ini.Status != domain.InitiativeNeedsHumanJudgment && ini.Status != domain.InitiativePlanApproved {
 		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
+	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to approve-plan")
+		}
+		return "", err
 	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
 	if err != nil {
