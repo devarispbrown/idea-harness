@@ -23,16 +23,25 @@ type Fetcher struct {
 	maxBytes int64
 }
 
+// ipResolver resolves a host to addresses. Injectable so the rebinding guard
+// below can be tested: the defence is specifically about a resolver that answers
+// differently on a second lookup, which cannot be exercised against the real DNS.
+type ipResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
 // NewFetcher builds a fetcher with SSRF-safe dialing and redirect limits.
-func NewFetcher() *Fetcher {
+func NewFetcher() *Fetcher { return newFetcherWithResolver(net.DefaultResolver) }
+
+func newFetcherWithResolver(res ipResolver) *Fetcher {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
+			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err
 			}
-			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			ips, err := res.LookupIPAddr(ctx, host)
 			if err != nil {
 				return nil, err
 			}
@@ -44,7 +53,16 @@ func NewFetcher() *Fetcher {
 					return nil, fmt.Errorf("tools: refused non-public address %s", ip.IP)
 				}
 			}
-			return dialer.DialContext(ctx, network, addr)
+			// Dial the address that was just checked, not the hostname.
+			//
+			// Passing addr here would hand the dialer the original host:port and
+			// let it resolve a second time, so the IP validated above need not be
+			// the IP connected to: a DNS server the URL's owner controls can
+			// answer public on the first lookup and 127.0.0.1 or 169.254.169.254
+			// on the second, which is exactly the metadata endpoint this guard
+			// exists to block. URLs reach here from harness.yaml's research.urls,
+			// so a shared or cloned project can carry the hostile name.
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 		},
 	}
 	return &Fetcher{
