@@ -133,7 +133,13 @@ The complete loop, from idea to verified product:
 ```bash
 mkdir my-product && cd my-product
 idea init                              # creates .idea-harness/ (works with no Git)
-idea model set openai/gpt-4o-mini      # pick a model (or use the web UI Settings)
+
+# With a provider key — export it first, then pick a model:
+export OPENAI_API_KEY=sk-…
+idea model set openai/gpt-4o-mini      # (or use the web UI Settings)
+# Without a key — skip both lines above. Everything below still runs, on the
+# built-in demo provider, and every artifact is synthetic and labeled as such.
+
 idea new "Build usage-based billing"   # M1: idea → reviewed PRD
 idea next --until-human                # M2–M3: design → plan → change set, then stops for you
 idea review CHG-1 approve              # human approves the change set
@@ -142,8 +148,14 @@ idea verify REQ-1 --pass               # record pass evidence; repeat per requir
 idea next                              # → "✓ initiative complete"
 ```
 
+> **Set a model only if you have its key.** `default_model` is resolved before the demo fallback, so
+> `idea model set` with the environment variable unset turns the first model call into a
+> non-retryable `401` and the initiative into `failed` — where doing nothing would have produced a
+> complete synthetic run. `idea doctor` reports a missing key.
+
 `idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
-and stops at each human judgment point (`review`, `apply`, `resolve`), printing exactly what to run
+and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
+and findings (which is a web-UI action; the CLI only lists them) — printing exactly what to run
 next. `--until-human` keeps going through the automatable steps — waiting for each to finish —
 instead of stopping after one, which is why the block above is eight commands rather than thirteen.
 The judgment points stay yours either way: `idea new` never drives itself past them.
@@ -162,14 +174,21 @@ After you wire a real executor (see [`docs/agents.md`](docs/agents.md)), `execut
 file changes instead of a placeholder.
 
 **Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc,
-market analysis, or a UI mockup image and it's redacted, content-addressed, and injected into
-design & planning (and PRD revisions) so the team works from your context. Images are described by
-a vision model; text formats are extracted directly.
+market analysis, or a UI mockup image and it's content-addressed and injected into every downstream
+stage — design, planning, and PRD revisions among them — so the team works from your context. Text
+formats are extracted directly; images are described by a vision model, and only the description
+reaches the agents.
 
 ```bash
-idea docs add prd.md        # .md / .txt / .pdf / .docx / .xlsx / .jpg / .png — or `-` to paste
+idea new "Build usage-based billing" --doc prd.md   # text files, ingested with the idea
+idea docs add spec.pdf      # .pdf / .docx / .xlsx / .jpg / .png — or `-` to paste
 idea docs                   # list uploaded context docs
 ```
+
+`idea docs add` attaches to an existing initiative, so it runs *after* `idea new`; `--doc` is how
+text material goes in at the same time as the idea. **Text documents are credential-swept and
+redacted at ingest; images are not** — they are stored, served, and sent to the vision provider
+verbatim. See [`docs/security.md`](docs/security.md#context-docs-uploaded-source-material).
 
 The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/` — from
 `make build` or a release binary; see [Install](#install).
@@ -179,9 +198,9 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 
 ## Model providers
 
-idea-harness supports **OpenAI, Anthropic, Google Gemini, OpenRouter, and Ollama (local)** — plus
-any custom OpenAI-compatible endpoint (DeepSeek, Groq, Together, LM Studio, …). Configure via the CLI or the
-web UI (Settings):
+idea-harness ships six built-in presets — **OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter,
+and Ollama (local)** — plus any custom OpenAI-compatible endpoint (Groq, Together, LM Studio, …).
+Configure via the CLI or the web UI (Settings):
 
 ```bash
 idea model                        # list providers + status
@@ -198,6 +217,7 @@ providers:
   openai:    { api_key_env: OPENAI_API_KEY }
   anthropic: { api_key_env: ANTHROPIC_API_KEY }
   gemini:    { api_key_env: GOOGLE_API_KEY }
+  deepseek:  { api_key_env: DEEPSEEK_API_KEY }
   openrouter: { api_key_env: OPENROUTER_API_KEY }
   ollama:    {}                      # local, no key
 ```
