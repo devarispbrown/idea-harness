@@ -54,6 +54,7 @@ const PRD = `{
         "properties": {
           "statement": {"type": "string"},
           "priority": {"enum": ["must", "should", "could"]},
+          "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
           "acceptance_criteria": {
             "type": "array",
             "items": {

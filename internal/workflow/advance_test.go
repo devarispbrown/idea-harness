@@ -279,6 +279,104 @@ func TestImpactCounts(t *testing.T) {
 	}
 }
 
+func TestReopenPhaseGuard(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unknown phase is rejected.
+	if _, err := eng.ReopenPhase(ctx, ini.ID, "nope"); err == nil {
+		t.Fatal("expected unknown phase to be rejected")
+	}
+
+	// Once a change set exists, reopen is refused (pre-execution only).
+	req := &domain.Requirement{
+		InitiativeID: ini.ID, Statement: "Be fast", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChangeSet(ctx, &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.ReopenPhase(ctx, ini.ID, "architecture"); err == nil {
+		t.Fatal("expected reopen to be refused once a change set exists")
+	}
+}
+
+func TestDecisionGraphWiring(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	q := &domain.Question{InitiativeID: ini.ID, Question: "How is billing structured?"}
+	if err := db.CreateQuestion(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	d := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "How is billing structured?"}
+	if err := db.CreateDecision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{
+		InitiativeID: ini.ID, Statement: "Support metered billing", Priority: domain.PriorityMust, Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.WireDecisionDerivedFromQuestion(ctx, ini.ID, d.ID, q.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, d.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Impact(decision) finds the requirement as a dependent.
+	impact, err := eng.Impact(ctx, ini.ID, "decision", d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReq := false
+	for _, it := range impact {
+		if it.FromType == "requirement" && it.FromID == req.ID {
+			foundReq = true
+		}
+	}
+	if !foundReq {
+		t.Fatalf("expected decision impact to include the requirement, got %+v", impact)
+	}
+
+	// Why(decision) finds the question as provenance.
+	why, err := eng.Why(ctx, ini.ID, "decision", d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundQ := false
+	for _, it := range why {
+		if it.ToType == "question" && it.ToID == q.ID {
+			foundQ = true
+		}
+	}
+	if !foundQ {
+		t.Fatalf("expected decision why to include the question, got %+v", why)
+	}
+}
+
 func TestCreateVerificationTaskWiresVerifiesEdge(t *testing.T) {
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
