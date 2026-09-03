@@ -171,7 +171,9 @@ not treat one as a richer rendering of the other.
 
 ## Endpoints
 
-71 routes. `202` marks an endpoint that starts asynchronous work and returns an `operation_id`.
+`202` marks an endpoint that starts asynchronous work and returns an `operation_id`.
+`make api-docs-check` fails if a registered route has no row here, so this list cannot fall
+behind the daemon again -- it went ten endpoints stale under a hand-counted total.
 
 ### Daemon
 
@@ -188,6 +190,7 @@ not treat one as a richer rendering of the other.
 | POST | `/projects` | Register a project by `root_path`; returns `project_id`. |
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
+| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}`, the one list endpoint with an envelope: it is a cross-initiative rollup, so it has somewhere to put a cursor later. |
 
 ### Initiative lifecycle
 
@@ -196,6 +199,8 @@ not treat one as a richer rendering of the other.
 | POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
+| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed, optionally with a different `{"model": …}`. **202**. `409` when the initiative is running. |
+| POST | `/projects/{projectId}/initiatives/{id}/reopen-phase` | Reopen a completed phase named by `{"phase": …}` so it can be revised. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/resume` | Resume a paused/interrupted initiative; returns the new status. |
 | POST | `/projects/{projectId}/initiatives/{id}/approve` | Human approval of the reviewed PRD. |
 | POST | `/projects/{projectId}/initiatives/{id}/revise` | Apply resolved decisions/answers and regenerate the PRD. **202** |
@@ -212,6 +217,8 @@ not treat one as a richer rendering of the other.
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
 | GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
+| GET | `/projects/{projectId}/initiatives/{id}/impact-counts` | Dependent counts per graph node, for badging the UI without a query per node. |
+| GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
 | GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
@@ -261,6 +268,10 @@ not treat one as a richer rendering of the other.
 | GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
 | GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
 | GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
+| GET | `/projects/{projectId}/artifacts/diff` | Structured diff between two artifact versions, given `?from=` and `?to=`. |
+| GET | `/projects/{projectId}/artifacts/{id}/comments` | Human comments on one artifact version. |
+| POST | `/projects/{projectId}/artifacts/{id}/comments` | Attach a comment to an artifact version, optionally anchored to a quoted span. |
+| POST | `/projects/{projectId}/comments/{id}/promote` | Promote a comment into the product graph as a requirement, decision or question. |
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
 | GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same body as `text/markdown` for download/export. |
 
@@ -269,6 +280,7 @@ not treat one as a richer rendering of the other.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
+| POST | `/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task` | Add a plan task whose purpose is verifying that requirement, wired with a `verifies` edge. |
 | POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` (accepted, not applicable, …). |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
 
