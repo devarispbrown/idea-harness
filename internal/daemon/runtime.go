@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -259,8 +260,55 @@ func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	go func() {
 		defer cancel()
 		defer r.unregisterCancel(opID)
+		// These goroutines are detached, so net/http's per-request recovery does
+		// not reach them: one panic in a pipeline took the whole daemon down,
+		// including any other operation mid-apply between committing files and
+		// marking the change set applied.
+		//
+		// It also stranded the initiative claim. Recovering here lets the
+		// operation be recorded as failed and the claim released, which is the
+		// difference between one broken initiative and a dead process.
+		defer func() {
+			if p := recover(); p != nil {
+				r.log.Error("operation panicked",
+					"operation_id", opID, "panic", p, "stack", string(debug.Stack()))
+				r.failOperationAfterPanic(opID, p)
+			}
+		}()
 		fn(ctx)
 	}()
+}
+
+// failOperationAfterPanic records a panicked operation as failed and releases
+// the initiative claim, searching the registry because launchOperation is not
+// told which project owns the id.
+func (r *Runtime) failOperationAfterPanic(opID string, p any) {
+	ctx := context.Background()
+	projects, err := r.ListProjects(ctx)
+	if err != nil {
+		return
+	}
+	for _, proj := range projects {
+		pr, err := r.EnsureProject(ctx, proj.ProjectID)
+		if err != nil {
+			continue
+		}
+		op, err := pr.db.GetOperation(ctx, opID)
+		if err != nil {
+			continue
+		}
+		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
+			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
+		}
+		if op.InitiativeID != "" {
+			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
+				fmt.Sprintf("internal error while running %s", op.Type)); err != nil {
+				r.log.Error("releasing the initiative after a panic failed",
+					"initiative", op.InitiativeID, "error", err)
+			}
+		}
+		return
+	}
 }
 
 // failOperation transitions opID to a terminal failed (or cancelled) status and
@@ -414,8 +462,13 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -474,8 +527,13 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -557,8 +615,13 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -600,8 +663,13 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -667,8 +735,13 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -710,8 +783,13 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -752,8 +830,13 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 		}
 		return "", err
 	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
 	if err != nil {
+		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
