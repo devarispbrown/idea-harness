@@ -101,7 +101,25 @@ The status argument to `writeErr` is therefore a *default* for the third case on
 a handler that passed `500`. Handlers that validate their own request bodies write `400` directly
 (`verdict is required`, `root_path is required`, `type and id query params are required`).
 
-A `409` comes from `POST /api/v1/operations/{id}/cancel` when the operation is not cancellable.
+A `409` means the current state does not allow what was asked. It is not one endpoint but a class,
+described by cause rather than enumerated, because a hand-written list of call sites had already
+gone stale once:
+
+- **An asynchronous operation cannot start from this state.** `apply` on a change set that is not
+  approved, `revert` on one that is not applied, `execute` or `advance` without an approved plan or
+  PRD, and anything at all while the initiative is running. These are checked synchronously and on
+  purpose: the operation is asynchronous, so launching it and failing in the background would answer
+  `202` and report success for work that never happened.
+- **A cancellation that cannot apply.** `POST /operations/{id}/cancel` when the operation has
+  already finished.
+- **A mutation blocked by something that depends on it**, such as deleting a task another task
+  depends on.
+- **Configuration written but not applied**, when the daemon could not reload the project. The
+  config file *was* written; the running daemon kept the previous one.
+
+Preconditions carry their own error type inside the daemon, so a handler cannot accidentally report
+one as a `500` — which `advance` and `revise` both did while four sibling endpoints returned `409`
+for the identical condition.
 
 ## Conventions
 
