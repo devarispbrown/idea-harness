@@ -57,7 +57,7 @@ instead of a change that cost nothing.
 - `make api-check` now runs in CI. It has caught three endpoints added by other work in progress and
   previously only ran when someone remembered to type it.
 
-- `docs/openapi.yaml` — an OpenAPI 3.1 description of all 70 operations, and `make api-check`, which
+- `docs/openapi.yaml` — an OpenAPI 3.1 description of every operation, and `make api-check`, which
   fails when a route exists that the spec does not document or the reverse.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
   `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.

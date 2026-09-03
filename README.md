@@ -164,7 +164,7 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 ## Model providers
 
 idea-harness supports **OpenAI, Anthropic, Google Gemini, OpenRouter, and Ollama (local)** — plus
-any custom OpenAI-compatible endpoint (Groq, Together, LM Studio, …). Configure via the CLI or the
+any custom OpenAI-compatible endpoint (DeepSeek, Groq, Together, LM Studio, …). Configure via the CLI or the
 web UI (Settings):
 
 ```bash
@@ -226,12 +226,13 @@ path to be publicly fetchable.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
-- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, every endpoint.
-- [`docs/api.md`](docs/api.md) — the HTTP API, with [`docs/openapi.yaml`](docs/openapi.yaml) as the
+- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, and a row per route
+  (`make api-docs-check` keeps it complete), with [`docs/openapi.yaml`](docs/openapi.yaml) as the
   machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
 - [`docs/api-reference-hosting.md`](docs/api-reference-hosting.md) — building without the bundled
   reference (3.7 MiB smaller) and hosting it on Cloudflare, AWS or Fastly instead.
-- [`docs/security.md`](docs/security.md) — security model and invariants.
+- [`docs/security.md`](docs/security.md) — threat model, secrets, trust levels.
+- [`docs/security-model.md`](docs/security-model.md) — system-deny conditions, executor trust tiers, execution gateway.
 - [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
 
 ## Development

@@ -141,5 +141,5 @@ idea watch                          # follow the run live
 idea prd                            # read the reviewed PRD in your terminal
 ```
 
-The workflow runs asynchronously (Operations); `idea new` returns an operation id immediately, and
+The workflow runs asynchronously (Operations); `idea new` prints the new `initiative_id` immediately, and
 `idea watch` follows it to completion.

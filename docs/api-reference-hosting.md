@@ -22,9 +22,9 @@ GET /openapi.json     always present (converted from the YAML at request time)
 GET /api-reference    only when built with the renderer
 ```
 
-That split is the point. `docs/openapi.yaml` is 120 KiB of text and it is what any other viewer
+That split is the point. `docs/openapi.yaml` is a plain text file and it is what any other viewer
 consumes — a hosted Scalar, Redocly, `curl | yq`, a generated client. A binary that cannot describe
-itself would be a worse trade than 120 KiB.
+itself would be the worse trade.
 
 ## Building without the renderer
 

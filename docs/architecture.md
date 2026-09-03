@@ -22,7 +22,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Web UI | React + TypeScript (Vite), built by `make build` and embedded into the binary |
 | Database | SQLite (pure-Go `modernc.org/sqlite`), WAL, single writer |
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
-| API | REST + SSE (OpenAPI planned) — see [`api.md`](api.md) |
+| API | REST + SSE, described by [`openapi.yaml`](openapi.yaml) (81 operations, CI-checked against the routes) — see [`api.md`](api.md) |
 | Config | YAML + JSON Schema |
 | Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (OpenRouter, Ollama, custom) + fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |
@@ -70,8 +70,10 @@ internal/web         embedded React UI
   transaction (§32). Not event sourcing.
 - **Single writer**: the daemon owns all state. The CLI is a thin HTTP client that auto-starts a
   managed daemon (§29, D1).
-- **No source mutation in M1**: only `.idea-harness/` is written into the working tree. Git is
-  optional and never auto-initialized (§24).
+- **Source is written only by an approved apply**: `.idea-harness/` is the only thing written as a
+  side effect of running the tool. Change sets do write into the working tree, but only through
+  `idea apply` after a human verdict, and only via the journal that makes `idea revert`
+  byte-for-byte. Git is optional and never auto-initialized (§24).
 - **Structured output is centralized**: model response → schema validation → bounded repair →
   validated object (§39).
 - **No silent model fallback**: every RunManifest records requested vs actual model (§36).
@@ -88,4 +90,6 @@ internal/web         embedded React UI
 ```
 
 Portable config lives in the user's project under `.idea-harness/` (project.yaml, harness.yaml,
-roles/, policies/, …) and is the only thing idea-harness writes into the working tree.
+roles/, policies/, …). It is the only thing written as a side effect of running the tool; the other
+writes into the working tree are applied change sets, which require a human approval and are
+reversible through the apply journal.
