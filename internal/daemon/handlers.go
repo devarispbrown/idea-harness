@@ -2138,12 +2138,19 @@ func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	signals := risk.RiskSignals(r.Context(), "", diff.String())
 	profile := risk.ComputeRiskProfile(ini.ID, signals)
-	// Persist the profile so the deterministic tier floor is durable and can be
-	// re-derived from past scans, not just computed on demand and lost.
-	if err := pr.db.SaveRiskProfile(r.Context(), &profile); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	// This is a GET and it stays one. It used to call SaveRiskProfile, which is
+	// append-only ("every computed profile is retained"), so every read grew the
+	// database without bound -- and because the save goes through db.Apply, each
+	// read also appended a risk_profile.saved event that handleActivity returns
+	// and handleEvents streams over SSE. Polling the UI's risk panel, a browser
+	// prefetch, or `idea risk --json` in a read-only reporting script all wrote.
+	//
+	// Nothing read any of it: risk_profiles has no SELECT anywhere in the tree,
+	// and both consumers of risk data use this response. The comment that
+	// justified the write claimed durability was needed so the tier floor could
+	// "be re-derived from past scans" -- but ComputeRiskProfile is a pure
+	// function of the patches, so it is recomputable here for free. A durable
+	// profile needs a reader first.
 	writeJSON(w, http.StatusOK, profile)
 }
 
