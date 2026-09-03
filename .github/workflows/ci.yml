@@ -85,6 +85,13 @@ jobs:
       - name: docs/api.md has a row for every route
         run: make api-docs-check
 
+      # The third axis. The first two compare code to machine artifacts; this
+      # compares code to the prose a reader copies. `idea trace task T-3` sat on
+      # the README's front page through three audits -- scripts/smoke.sh had said
+      # TASK-1 all along and nothing compared the two.
+      - name: documented commands name real verbs and resolvable references
+        run: make docs-lint
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,
