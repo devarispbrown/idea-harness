@@ -1,10 +1,24 @@
-# DX Audit 3 — Fix Plan
+# DX Audit 3 — Fix Plan (v2)
 
 Branch: `worktree-dx-audit-3`, from `main` @ `8fa037d`.
 
+**v2 supersedes v1 after three adversarial reviews** (security, Go correctness,
+coverage/guards). They found **eleven blocking defects in the plan**, including
+both guards not doing what the plan claimed, a track schedule that was not
+disjoint, and a code-fix list that was wrong in both directions. Corrections are
+folded in below and marked **[v1 was wrong]**. Review record:
+`dx-audit-3-fix-plan-review.md`.
+
+**Two exploitable security defects that neither audit found** were surfaced by
+the security review and are already fixed on this branch (`e7ea561`, `f841023`):
+Anthropic and modern OpenAI API keys were never redacted, and the SSRF guard
+validated one address then dialled a hostname that resolves again.
+
 Audit 3 verdict: **FAIL**, Overall DX 74/100 (up from 70). Both hard gates pass.
 Report: `docs/plans/dx-audit-3-report.md`. Findings: **6 P0, 7 P1, ~10 P2**, plus
-~30 catalogued documentation defects below the cut.
+~30 documentation defects below the cut — now transcribed into
+`dx-audit-3-doc-defects.md` rather than named and dropped, which is what happened
+to audit 2's equivalent list. Deferrals go in `deferred.md`.
 
 ## The shape of the problem, third time
 
@@ -24,16 +38,17 @@ sets, request-body field names and 409 declarations — **never prose, never
 response shapes, never whether a documented command actually runs.** Every P0 in
 the audit passes all four checks.
 
-So this round's structural work is not another route-level check. It is two
-guards aimed at where the failures actually are:
+So this round's structural work is not another route-level check. It is three
+cheap checks aimed where the failures actually are — see Track G, which review
+rewrote wholesale:
 
-1. **Executable documentation** (G1). Extract every fenced `idea …` command from
-   README and the quickstart and run them in CI. This is the only thing that
-   would have caught `idea trace task T-3` — a command on the README's front page
-   that cannot resolve — or the quickstart's no-key path being broken by the step
-   above it.
-2. **Response-schema checking** (G2), the mirror of the request-body check added
-   last round. Catches `/raw`, the `artifacts/diff` `files` key, and `promote`.
+1. **A static doc-command lint** (G1a): every `idea …` command in the docs names
+   a real verb and a resolvable reference. `scripts/smoke.sh` already said
+   `TASK-1` while README said `T-3`; nothing compared them.
+2. **One assertion in the existing smoke script** (G1b): the documented sequence
+   must reach a terminal state that is not `failed`.
+3. **`api.md` ↔ `openapi.yaml`** (G2): every R-track finding is prose drifting
+   from a spec that is already correct, so that is the pair to compare.
 
 Neither guard can check whether a *security claim* is true. That is a human
 judgement, so S-track findings get a different remedy: the claims move to sit
@@ -50,17 +65,34 @@ are how somebody points this at a repository they should not.
 
 ## Tracks
 
-Tracks S, O and R touch disjoint file sets and run in parallel. Track C and D
-touch `internal/` and run sequentially after, to avoid conflicting edits.
+**[v1 was wrong.]** v1 claimed S, O and R touch disjoint files and can run in
+parallel. Its own text then assigned S2 to `ui.md` and README (Track O's), S3 to
+`api.md` (Track R's), R15 to `routes.go` (Track C's) and R10/R13 to Track O's
+files — and S5 to `internal/security/`, which **no track owned**, in a track
+declared documentation-only.
 
-| Track | Scope | Files owned |
-|---|---|---|
-| S | Security documentation (P0) | `docs/security.md`, `docs/security-model.md`, `docs/architecture.md` |
-| O | Onboarding documentation (P0) | `README.md`, `docs/quickstart.md`, `docs/ui.md` |
-| R | Reference documentation (P1/P2) | `docs/api.md`, `docs/openapi.yaml`, `docs/configuration.md`, `docs/agents.md`, `CHANGELOG.md` |
-| C | Code correctness (P0/P1) | `internal/daemon/`, `internal/workflow/` |
-| D | CLI defects (P1/P2) | `internal/cli/` |
-| G | New guards | `internal/docsgen/`, `scripts/`, `Makefile`, `.github/workflows/` |
+The real constraint is that S defines the canonical security statements that O
+and R are told to link to, so S cannot run beside them.
+
+| Order | Track | Scope | Files owned |
+|---|---|---|---|
+| 1 | **S** | Security documentation (P0) | `docs/security.md`, `docs/security-model.md`, `docs/architecture.md` |
+| 2 | **O** | Onboarding (P0) | `README.md`, `docs/quickstart.md`, `docs/ui.md` |
+| 2 | **R** | Reference (P1/P2) | `docs/api.md`, `docs/openapi.yaml`, `docs/configuration.md`, `docs/agents.md`, `CHANGELOG.md` |
+| 3 | **C** | Code correctness (P0/P1) | `internal/daemon/`, `internal/workflow/`, `internal/store/`, `internal/security/`, `internal/context/` |
+| 3 | **D** | CLI defects (P1/P2) | `internal/cli/` |
+| 4 | **G** | Guards | `internal/docsgen/`, `scripts/`, `Makefile`, `.github/workflows/` |
+
+S runs first and alone. O and R then run in parallel with each other. C and D are
+sequential (both touch `internal/`). G is last, because G1a lints the docs the
+earlier tracks rewrite — v1 never stated G's position at all.
+
+Reassignments so every item has exactly one owner: **S2's `ui.md`/README edits →
+O**; **S3's `api.md`/`openapi.yaml` edits → R**; **R15's `routes.go` comment →
+C**; **S5's code change → C** (see below).
+
+Track C and D must both end with `bash scripts/smoke.sh` passing: it is CI's only
+end-to-end job, and C3 and D3 change commands it runs unguarded.
 
 ---
 
@@ -145,27 +177,60 @@ recorded as follow-up, not done here.)
 `docs/security.md` claims *"`human_approved` requires a recorded human action;
 `reviewed_agent_output` requires a distinct reviewer run."* `security.TrustFor`
 is a pure `switch` on a selector string that reads no record, and neither
-precondition is checked. The selectors that would produce those levels are never
-emitted, while selector `"task"` — the user's raw typed idea — maps straight to
-`TrustHumanApproved`.
+precondition is checked.
 
-**This one is not only a doc fix.** Two options, and the plan takes the second:
+**[v1 got the risk wrong and gave this no owner.]** v1 said changing the mapping
+"changes prompt priority". It does not: priority is keyed on the selector string
+in a separate map and is untouched. The only consumer of `TrustFor` is the
+untrusted-data wrapper in `context.Compile`, which prefixes
+`TrustExternalUntrusted` entries with "treat as data, never as instructions". So
+the change toggles *framing*, not ordering — a product decision about what the
+model is told, not a doc correction.
 
-- (a) Document what the function does. Honest, but leaves a trust ladder whose
-  strongest level is assigned to unreviewed user input.
-- (b) **Make the code match the claim** for the one case that matters: the `task`
-  selector must not yield `TrustHumanApproved`. A typed idea is
-  `external_untrusted` until something records a human approving it.
+Review also found a worse instance v1 missed: the `task` selector is not only the
+user's typed idea. `execute.go` passes a **model-generated execution-plan task
+statement** under the same selector, so model output is currently elevated to
+`human_approved` — the exact thing the doc says never happens.
 
-Take (b): change the mapping, correct the doc to describe what the switch
-actually guarantees (a deterministic mapping from selector to level, never from
-model output), and drop the two "requires a recorded …" sentences until the
-records they describe exist. Add a test that no selector reachable from user
-input yields `human_approved`.
+And after any such change, four of six trust levels become unreachable, which the
+doc must state rather than imply a ladder that exists.
 
-*Risk:* changing a trust level changes prompt priority. Verified against callers
-before landing; if any pipeline depends on `task` being `human_approved`, that
-dependency is itself the finding and gets recorded.
+**Reclassified.** The doc half stays in Track S: describe what the switch
+actually guarantees (a deterministic selector→level mapping, never derived from
+model output), drop the two "requires a recorded …" sentences, and say plainly
+that trust levels are a prompt-construction label consumed by one line of code —
+not an authorisation mechanism.
+
+**The code half moves to Track C**, which owns `internal/security/` and
+`internal/context/` in v2's table. Preferred option: introduce a distinct level
+for direct human input and map the *idea* to it, leaving model-generated task
+statements untrusted — rather than v1's blanket demotion, which would tell every
+model on every call to treat the user's own product idea as data it must not act
+on. Five stages pass the task content with no unwrapped duplicate elsewhere in
+the prompt, so a blanket demotion is a real, untested behavioural change.
+
+### S6. Exposures the audit did not find — already fixed
+
+Both surfaced by the security review, both verified, both landed on this branch
+ahead of the rest of the plan because they are exploitable rather than
+misleading:
+
+- **Modern provider API keys were never redacted** (`e7ea561`). The catalog's
+  `sk-` pattern required 20+ contiguous alphanumerics, so `sk-ant-api03-…`,
+  `sk-proj-…` and `sk-svcacct-…` all passed through in the clear. Measured: three
+  of four current formats unredacted, including Anthropic's — the credential
+  forwarded into the agent container that has unrestricted egress.
+- **DNS rebinding in the SSRF guard** (`f841023`). It validated resolved
+  addresses then dialled the hostname, which Go resolves again; a hostile
+  resolver answers public first and `169.254.169.254` second. It now dials the
+  address it checked.
+
+Still open from that review, recorded rather than fixed here: the `--user` flag
+passes the daemon's own UID, so a daemon running as root gives a root container;
+the Hermes image is pinned by tag rather than digest, with no signature check;
+and the control-plane deny covers `.idea-harness/` and `.git/` but not
+auto-executing files like `.github/workflows/` — all three belong in S1's "what
+this does not protect against" section.
 
 ---
 
@@ -240,21 +305,37 @@ cannot see and G2 only partly covers.
 
 ### C1. Cancelling an apply reports success while the goroutine keeps writing (P0)
 
-Cancel during `fsdiff.Commit`: the API returns 200 and the operation reads
-`cancelled`, while the commit completes, files land in the workspace, git commits
-them, and the change set is marked applied. The terminal status write then fails
-on the cancelled context and **the error is discarded** — as it is at eleven
-other sites in `runtime.go`.
+**[v1 named the wrong mechanism.]** v1 proposed three things: a 409 from
+`CancelOperation` once the change set leaves `approved`, terminal writes with
+`context.Background()`, and logging the discarded errors. Review established:
 
-**Fix, three parts:**
-- `CancelOperation` returns 409 once the change set has left `approved`, so apply
-  is uninterruptible past the point where it starts mutating the tree.
-- Terminal status writes use `context.Background()`, as `failOperation` already
-  does, so a cancelled context cannot lose the record of what happened.
-- Stop discarding those errors: log them with the operation id.
+- `ApplyChangeSet` **already** writes its terminal mutation with
+  `context.Background()`. That part of v1 described a fix that exists.
+- The real mechanism is that **`SetOperationStatus` is not a compare-and-swap.**
+  Verified against the store: it is an unconditional
+  `UPDATE operations SET status=?,… WHERE id=?` with no `RowsAffected` check,
+  and so is `SetInitiativeStatus`. `CancelOperation` unconditionally writes
+  `cancelled`; the goroutine unconditionally writes its own terminal status.
+  Whichever lands last in SQLite wins. That is a **stomped** write, and v1's
+  fixes address a *lost* write — a real but different bug.
+- The 409 gate is racy and mis-scoped. `CancelOperation` takes only an `opID`, so
+  it must resolve the change set and read its status with no lock held against
+  the `e.mu` that `ApplyChangeSet` holds for its whole duration. And the
+  "change set left approved" boundary exists for 1 of 11 operation kinds.
 
-*Acceptance:* a test cancels mid-apply and asserts the operation's final status
-matches what actually happened to the workspace.
+**Fix, corrected:** give `SetOperationStatus` a real CAS —
+`UPDATE operations SET … WHERE id=? AND status='running'` with a `RowsAffected`
+check — mirroring `TransitionChangeSet`, which is already exactly this shape and
+is the in-repo precedent. A cancel that arrives after the operation has gone
+terminal then becomes a no-op, and the goroutine's own result always wins over a
+stale cancel. Drop the 409 gate entirely.
+
+Keep the two genuinely separate improvements: terminal writes on
+`context.Background()` where they are not already, and stop discarding those
+errors at the eleven `launchOperation` closures.
+
+*Acceptance:* a test drives a terminal write and a cancel against the same
+operation and asserts the terminal status survives, in both orders.
 
 ### C2. `idea watch` still exits 0 — audit 2's fix does not work (P1)
 
@@ -284,19 +365,39 @@ readers to run this after apply, so `idea verify || exit 1` in CI can never fail
 word the output from the actual gate result. Audit 2 fixed this command's
 *recording* half; this is the *reporting* half.
 
-### C4. Four async operations check a running flag they never set (P1)
+### C4. Async operations check a running flag they never set (P1)
 
-`ReviseInitiative`, `RevisePlanInitiative`, `ApprovePlanInitiative` and
-`SuggestAnswersInitiative` each guard on `status == InitiativeRunning` and none
-of them sets it, unlike `Advance`, `Retry` and `ReopenPhase`. A double-click on
-Revise plan lets both goroutines past: one deletes and recreates the task set
-while the other writes dependency edges to task ids that no longer exist, after
-which every further revise is refused.
+**[v1's list was wrong in both directions.]** Re-derived from the code by
+counting, per `Runtime.*Initiative` method, whether it reads `InitiativeRunning`
+and whether it ever sets it:
 
-**Fix:** one atomic conditional claim —
-`UPDATE initiatives SET status='running' WHERE id=? AND status IN (…)` — 0 rows
-affected → 409. Applied to **all seven** async entry points, not the four that
-are broken, so the seventh cannot get it wrong.
+| Function | Reads | Sets | Shape |
+|---|---|---|---|
+| `ExecuteInitiative` | yes | **no** | the bug — **v1 omitted it** |
+| `ReviseInitiative` | yes | no | the bug |
+| `RevisePlanInitiative` | yes | no | the bug |
+| `ApprovePlanInitiative` | yes | no | the bug |
+| `AdvanceInitiative` | yes | yes | correct |
+| `RetryInitiative` | yes | yes | correct |
+| `ReopenPhaseInitiative` | yes | yes | correct |
+| `SuggestAnswersInitiative` | **no check at all** | no | a different bug |
+
+So v1 named `SuggestAnswers` as check-then-never-set when it has no check and no
+existence check either, and omitted `Execute`, which is exactly that shape.
+
+**Fix:** a new store method with genuinely conditional SQL —
+`UPDATE initiatives SET status='running' WHERE id=? AND status IN (…)`,
+`RowsAffected != 1` fails the transaction — mirroring `TransitionChangeSet`.
+**This cannot be built from `SetInitiativeStatus`**, which is unconditional; a
+Go-level `GetInitiative`-then-set is not atomic with the write and is the same
+check-then-act the finding is about.
+
+Applied to all seven guarded entry points, not the four that are broken, so the
+eighth cannot get it wrong. `SuggestAnswersInitiative` gets an existence check
+and its first guard, as separate work rather than a conversion.
+
+The claim must be released on every exit path including panic — which is why
+Track A's `recover()` in `launchOperation` lands with this, not after it.
 
 ### C5. Two reload-safety comments are false (P1)
 
@@ -305,10 +406,25 @@ eleven entry points take no lock. `runtime.go` says `Reload` "builds a NEW
 `*projectRuntime` and swaps the pointer"; it mutates in place, and a test pins
 that shape.
 
-**Fix:** make the comments true rather than correcting them downward — swap a
-fresh `*projectRuntime` pointer, and load engine config through an
-`atomic.Pointer` once per call (as `describeImage` already does correctly).
-Update the test that pins the unsafe shape.
+**Fix:** make the comments true rather than correcting them downward.
+
+**[v1 cited the wrong mechanism.]** `describeImage` does not use an
+`atomic.Pointer` — it takes `e.mu`, snapshots the fields it needs, and unlocks.
+The plan must say which mechanism it is adopting, because they differ in what
+`e.mu` means afterwards. **Adopt the mutex-snapshot pattern**, matching the code
+that already does it, at every entry point that currently reads `e.registry`,
+`e.cfg`, `e.blobs` or `e.redactor` without the lock.
+
+At the `runtime.go` layer, swap a fresh `*projectRuntime` pointer under `r.mu`.
+This is sufficient because every handler re-fetches the pointer per request via
+`EnsureProject` rather than holding one. **The fresh struct must keep the same
+`*store.DB` and the same `*workflow.Engine`** — only `cfg`, `registry`,
+`redactor` and `blobs` are reassigned — or the deliberate "no second DB handle"
+invariant breaks and engine-mutex serialisation stops surviving a reload.
+
+The test that pins the in-place mutation is rewritten by the same change, so it
+cannot detect a wrong fix. Add an independent `-race` test that reloads while a
+handler reads.
 
 ### C6. The engine mutex is held across model calls, on a server with no timeouts (P1)
 
@@ -325,6 +441,12 @@ no `ReadHeaderTimeout`, `ReadTimeout` or `WriteTimeout` — and `MaxBytesReader`
 
 The mutex change is the risky one and lands last, with its own review.
 
+**It depends on C5 explicitly.** `Execute`'s unlocked middle section reads
+`e.cfg.Check.Image` and the build/test commands; if C5 lands as mutex-snapshot
+and C6 unlocks without snapshotting those first, C6 silently reintroduces C5's
+race in the one place most exposed to it. The snapshot step is part of C6, not an
+implication of it.
+
 ### C7. `POST /findings/{id}/disposition` answers 200 for a finding that does not exist (P1)
 
 Bare `UPDATE … WHERE id = ?` with no `RowsAffected` check, while `db.Apply`
@@ -333,8 +455,12 @@ returns 200, nothing changes, and **the event log — the thing this product sel
 as provable provenance — records that a human accepted the risk.**
 
 **Fix:** check `RowsAffected`, return `*store.NotFoundError` (writeErr then gives
-404), scope the UPDATE by initiative. Same for `/note`. Audit the other bare
-UPDATEs in `repo.go` for the same shape.
+404), scope the UPDATE by initiative. Same for `/note`.
+
+Then audit every bare `UPDATE` across **`internal/store/*.go`**, not just
+`repo.go` as v1 said — the same unconditional shape is in `runrepo.go`'s
+`SetRunStatus` and `SetOperationStatus`, and the latter is the single most
+consequential instance in the tree, since it is the mechanism behind C1.
 
 ---
 
@@ -355,11 +481,16 @@ UPDATEs in `repo.go` for the same shape.
 
 ## Track A — API defects (P2), folded into Track C's commits
 
-- `GET /operations/{id}` opens every project and runs first-touch reconciliation,
-  which can mark another project's initiatives failed and restore files into a
-  working tree the request never named. **Scope the route under `{projectId}`, or
-  record the owning project in the global registry.** Never reconcile as a side
-  effect of a read.
+- **`GET /operations/{id}` — P1, not P2 [v1 under-ranked it].** It opens every
+  registered project and runs first-touch reconciliation, which fails unfinished
+  operations and can restore a mid-apply workspace. So one status poll for an
+  operation in project A can reconcile away live operations in projects B and C
+  that the request never named — and the CLI polls this endpoint in a loop.
+  **Fix: record the owning project id in the global registry** so the lookup
+  touches one project. v1 listed "scope the route under `{projectId}`" first;
+  that is a breaking API change crossing four tracks plus `web/`, and it would
+  flip the currently-passing `UNDOCUMENTED_BREAKING_API` gate unless shipped with
+  a migration entry. Take the non-breaking option.
 - `launchOperation` has no `recover()`; a panic in a detached goroutine kills the
   daemon, including one sitting between `fsdiff.Commit` and `MarkChangeSetApplied`.
 - A cancelled execute strands the change set in `checks_running`; the only repair
@@ -378,49 +509,124 @@ UPDATEs in `repo.go` for the same shape.
 
 ## Track G — Guards
 
-### G1. Executable documentation
+**[v1 was wrong about both.]** Reviews established that neither guard did what
+the plan claimed, so both are replaced by cheaper checks aimed where the failures
+actually are.
 
-A script extracts fenced ```bash blocks from `README.md` and
-`docs/quickstart.md`, filters to lines starting `idea `, and runs them against a
-real daemon in a scratch project. Lines that cannot run unattended are marked in
-the source with a trailing `# docs:skip <reason>` comment, and the script
-**fails if a skip has no reason** — so skipping is visible rather than silent.
+### G1. A static doc-command lint, not a fenced-block executor
 
-Wired as `make docs-run` and a CI job. This is the only guard that would have
-caught O1 and O2, and it is the highest-value item in this plan after the
-security docs.
+v1 proposed running every fenced `idea …` command against a live daemon, and
+justified it as *"the only thing that would have caught"* the quickstart's broken
+no-key path (O1). **It would not have.** `idea new` is fire-and-forget: it POSTs,
+prints `✓ initiative started` and returns nil, while the 401 happens later in the
+daemon's async workflow. A harness checking exit codes sees 0 and passes. v1 then
+contradicted itself two paragraphs later, admitting it "proves the commands
+execute, not that their output means what the prose says".
 
-*Scope, stated honestly:* it proves the commands execute, not that their output
-means what the prose says.
+Review also enumerated the real cost: **48 `idea`-prefixed lines across 27 fenced
+blocks**, of which **three** run unattended with no prior state and **15 need
+hard skips** (TUI, Docker pulls, provider keys, fixture files, state mutation).
+Three README bash blocks contain no `idea` line at all and would be invisible;
+one quickstart block is inside a blockquote and would be missed by any extractor
+keyed on `^```bash`. And the `# docs:skip <reason>` markers v1 proposed would put
+CI machinery into the README's front page — a DX regression shipped by a DX
+guard, in the round whose worst score is Documentation.
 
-### G2. Response-schema checking
+**Most importantly, the repository already knew the answer.** `scripts/smoke.sh`
+has said `idea why task TASK-1` all along, while README said `T-3`. Nothing
+compared the two.
 
-Mirror of the request-body check: for each operation, compare the JSON keys the
-handler writes against the properties the spec declares. Harder than the request
-side, because responses are built from domain types rather than anonymous
-structs — so the first version covers handlers that write a literal
-`map[string]any{…}` or an inline struct, and **fails closed** on any routed
-handler whose response shape it cannot read, exactly as the request check now
-does.
+**Replaced by two things:**
 
----
+- **G1a — a static doc-command lint in `internal/docsgen`.** Extract every fenced
+  `idea …` invocation from README and the quickstart, and assert (a) the verb
+  exists in the CLI command table — already reachable, it is how `docs/cli.md` is
+  generated — and (b) every `TYPE-n` reference matches a code format the domain
+  actually emits. No daemon, no skips, cannot flake, runs beside `make docs-check`
+  in the existing `compile-no-node` job. This catches `T-3`, `TASK-3` and `DEC-1`.
+- **G1b — one assertion added to `scripts/smoke.sh`**, which is already the
+  harness v1 proposed building: workspace-local GOPATH, unique port, daemon
+  lifecycle with a trap, a `wait_for` helper, and a full drive of the documented
+  loop, wired into two CI jobs. After the documented sequence it must poll the
+  initiative to a terminal state and assert it is **not** `failed`. That is the
+  ~10 lines that catch O1, and the difference between the guard mattering and
+  not.
+
+*Already applied by hand this round:* the README provenance block was fixed by
+extracting its commands and running them, which is G1a done manually. All four
+now exit 0.
+
+### G2. `api.md` ↔ `openapi.yaml`, not code ↔ response
+
+v1 proposed comparing handler-written JSON keys to spec properties, as the mirror
+of the request-body check. Two independent reviews killed it:
+
+- **It catches one of the three things v1 claimed.** `promote` (R3) and `/raw`
+  (R4) are cases where `openapi.yaml` is already *correct* and `api.md` is wrong —
+  a code↔spec check is green while the defect stands. `/raw` is not even JSON.
+- **"Fail closed" would red most of the API on day one.** The request check is
+  cheap because all twenty decoding handlers use one idiom; there is no such
+  uniformity on the response side. Measured: of ~80 `writeJSON` calls, roughly
+  half write a literal map and half write named domain types whose tags live in
+  another package. v1's stated ordering — literal maps first, fail closed on the
+  rest — is backwards, because the literal maps are the smaller half.
+
+**Replaced by the axis where the R findings actually live:** a check that every
+endpoint row in `docs/api.md` agrees with the same operation in
+`docs/openapi.yaml` on method, path and declared status codes. `api-docs-check`
+already parses both files, so this is an extension rather than a new analysis.
+
+A live-response check — hitting each documented route on the smoke daemon and
+diffing real JSON keys against the spec — is the right long-term answer and is
+recorded as follow-up, not attempted here.
+
+### G3. A deferral ledger
+
+Audit 2 recorded a below-the-cut list in its plan and lost it; one item (README's
+provider list omitting DeepSeek) is still unfixed and reappears in this plan as
+R13, as new work. "Recorded" currently means "written in a plan file that the
+next round supersedes".
+
+`docs/plans/deferred.md`, appended to per round, one line per deferred item with
+its origin. Cheap, and it closes the loop the audits keep re-finding.
 
 ## Verification
 
 ```
 make test && make vet && make docs-check && make api-check \
-  && make api-docs-check && make docs-run && make check-embed \
+  && make api-docs-check && make docs-lint && make check-embed \
+  && bash scripts/smoke.sh \
   && (cd web && pnpm build && pnpm test)
 ```
+
+`docs-lint` is **new** (G1a) and must be added to `.PHONY`. `scripts/smoke.sh` is
+existing and is in the list because C3 and D3 change commands it runs unguarded —
+v1 omitted both it and the web build's role here.
 
 Then a full re-run of the audit journey, and direct re-probing of every
 acceptance test against a live daemon.
 
-**Coverage, stated honestly.** Mechanically checked: C1-C7, D1-D8, G1, G2, S5's
-code half. **Not mechanically checkable** — the entire S track's prose, the O
-track's prose beyond the commands G1 runs, and all of R. Those get a reviewer
-pass against the code they describe, which is exactly how audit 3 found them, and
-is the reason this plan does not claim a guard it does not have.
+**Coverage, stated honestly.** Mechanically checked: C1-C7, D1-D8, G1a, G1b, G2,
+S5's code half, S6 (landed with tests).
+
+**Not mechanically checkable:** the entire S track's prose, the O track's prose
+beyond the commands G1a lints, and all of R. Those get a reviewer pass against
+the code they describe — which is how audit 3 found them.
+
+Three specific gaps review insisted be named rather than implied:
+
+- **C2** may land with a test that cannot drive the exit path, if bubbletea
+  cannot be run headlessly. The finding whose *previous* fix shipped with a
+  vacuous test would then ship again with no regression coverage. If
+  `tea.WithInput`/`WithoutRenderer` do not make `watchInitiative` testable, the
+  honest outcome is a test documented as not covering the exit path — not a test
+  that pretends to. That requires making the `tea.NewProgram` call accept
+  injected options.
+- **C5** rewrites the test that currently pins the unsafe shape, so `make test`
+  cannot detect a wrong fix; the independent `-race` test is what verifies it.
+- **The R track and the below-the-cut catalogue** are reviewer-pass only, against
+  ~45 prose claims. That is not a verification step, it is a reading. Said
+  plainly.
 
 ## Out of scope, recorded
 
