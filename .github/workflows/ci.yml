@@ -78,6 +78,13 @@ jobs:
       - name: docs/openapi.yaml matches the daemon's routes
         run: make api-check
 
+      # The second axis. api-check compares routes to the machine spec, and the
+      # spec was right -- all 81 operations -- while docs/api.md described 71 and
+      # README called it "every endpoint". Nothing compared routes to the human
+      # document, so ten endpoints went missing with both guards green.
+      - name: docs/api.md has a row for every route
+        run: make api-docs-check
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,
