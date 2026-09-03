@@ -619,7 +619,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 // ---------- decisions / questions ----------
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -704,7 +704,7 @@ func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -745,7 +745,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 // ---------- requirements / assertions / artifacts ----------
 
 func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -759,7 +759,7 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleListAssertions(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1215,7 +1215,7 @@ func (s *Server) handleSuggestAnswers(w http.ResponseWriter, r *http.Request) {
 
 // handleListSuggestedAnswers returns the persisted AI-suggested answers.
 func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1229,7 +1229,7 @@ func (s *Server) handleListSuggestedAnswers(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1736,7 +1736,7 @@ func truncateRunes(s string, n int) string {
 // ---------- findings ----------
 
 func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1798,7 +1798,7 @@ func (s *Server) handleFindingNote(w http.ResponseWriter, r *http.Request) {
 // handleDoctor audits the initiative's product-graph edges and returns any
 // traceability gaps (untraced tasks/objects, dependency cycles).
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -1907,7 +1907,7 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 
 // handleListChangeSets returns the change sets for an initiative.
 func (s *Server) handleListChangeSets(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -2150,7 +2150,7 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 // handleRisk computes the deterministic risk profile for an initiative from its
 // produced patches.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiativeFromPath(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -2309,29 +2309,12 @@ func (s *Server) initiative(r *http.Request) (*projectRuntime, domain.Initiative
 	if err != nil {
 		return nil, domain.Initiative{}, err
 	}
-	ini, err := pr.db.GetInitiative(r.Context(), r.PathValue("id"))
-	return pr, ini, err
-}
-
-// initiativeFromPath resolves the initiative named by the route's
-// {initiativeId} path value.
-//
-// This used to accept ?initiative_id= and, failing that, guess: it fell back to
-// one of the project's initiatives, which meant an omitted parameter was
-// answered about whichever initiative the daemon picked rather than rejected.
-// In a single-initiative project that was invisible; in any other it was a
-// silent wrong answer. Every one of these endpoints is now nested under the
-// initiative it is about, so there is nothing left to guess.
-func (s *Server) initiativeFromPath(r *http.Request) (*projectRuntime, domain.Initiative, error) {
-	pr, err := s.project(r)
-	if err != nil {
-		return nil, domain.Initiative{}, err
-	}
-	id := r.PathValue("initiativeId")
+	id := r.PathValue("id")
 	if id == "" {
-		// Unreachable through the mux, which only routes these handlers on
-		// patterns carrying {initiativeId}. Explicit rather than a nil-value
-		// lookup if a future route forgets it.
+		// Unreachable through the mux, which routes these handlers only on
+		// patterns carrying {id}. Explicit rather than a nil-value lookup, so a
+		// future route registered under a different wildcard name fails loudly
+		// here instead of silently answering "not found" forever.
 		return pr, domain.Initiative{}, errors.New("route is missing an initiative id")
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), id)

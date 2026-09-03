@@ -132,8 +132,8 @@ second, so it is at-least-once catch-up rather than a push.
 Every initiative-scoped resource takes the initiative in the **path**:
 
 ```text
-GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/tasks
-GET /api/v1/projects/{projectId}/initiatives/{initiativeId}/change-sets
+GET /api/v1/projects/{projectId}/initiatives/{id}/tasks
+GET /api/v1/projects/{projectId}/initiatives/{id}/change-sets
 ```
 
 This was not always true. Ten reads — `change-sets`, `risk`, `decisions`, `questions`,
@@ -218,8 +218,8 @@ not treat one as a richer rendering of the other.
 | GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff across artifact versions. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/risk` | Deterministic risk profile computed from the initiative's patches; persisted as a side effect. |
+| GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
+| GET | `/projects/{projectId}/initiatives/{id}/risk` | Deterministic risk profile computed from the initiative's patches; persisted as a side effect. |
 
 ### Plan tasks
 
@@ -244,23 +244,23 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/decisions` | List decisions with status and recommendation. |
+| GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/questions` | List open questions. |
+| GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions. |
 | POST | `/projects/{projectId}/questions/{id}/answer` | Record `{"answer": …}`. |
 | POST | `/projects/{projectId}/initiatives/{id}/suggest-answers` | Ask the model to propose answers for the open questions. **202** |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/suggested-answers` | The persisted AI-suggested answers. |
+| GET | `/projects/{projectId}/initiatives/{id}/suggested-answers` | The persisted AI-suggested answers. |
 
 ### Product graph reads
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/requirements` | Requirements with acceptance criteria. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/assertions` | Assertions with their evidence and trust level. |
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/artifacts` | Artifact versions (PRD, design, plan, …). |
+| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
+| GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
+| GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
 | GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same body as `text/markdown` for download/export. |
 
@@ -268,7 +268,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/findings` | Review findings for the initiative. |
+| GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
 | POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` (accepted, not applicable, …). |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
 
@@ -276,7 +276,7 @@ not treat one as a richer rendering of the other.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{initiativeId}/change-sets` | List change sets with status. |
+| GET | `/projects/{projectId}/initiatives/{id}/change-sets` | List change sets with status. |
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The rendered patch as `{"patch": "…"}` (content redacted at write time). |
