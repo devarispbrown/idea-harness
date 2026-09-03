@@ -960,6 +960,86 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: retryInitiative
+      summary: Re-run a failed initiative under a chosen model
+      description: |
+        Restarts a run that failed, with the model named explicitly rather than inherited - a run
+        that failed on one model is often retried on another, and making the choice part of the
+        request keeps that decision in the operation's record.
+
+        Asynchronous: poll the returned operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model:
+                  type: string
+                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-4-5-20250929`."
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400":
+          description: model was empty.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The initiative is not in a state that can be retried.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: reopenPhase
+      summary: Re-run one design stage and everything downstream of it
+      description: |
+        Reopens a completed design stage and cascades: the stage runs again and the work derived
+        from it is re-derived, rather than leaving a plan built on an assumption that has since
+        changed.
+
+        Asynchronous: poll the returned operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase]
+              properties:
+                phase:
+                  type: string
+                  enum: [architecture, product_design, verification_design]
+      responses:
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400":
+          description: The body was malformed, or phase was not one of the three design stages.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The initiative is not in a state where that phase can be reopened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/attention:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
