@@ -72,9 +72,23 @@ requirement verification.
 - **Go 1.25.5 or newer** (`go version` — the module requires it).
 - **Node.js + pnpm** — *only needed to change the web UI*. Building and installing the binary does
   not require them; `make build` rebuilds the UI and embeds it.
-- **macOS or Linux.** Both are built and tested in CI. **Windows is not supported**: the CLI starts
-  its daemon in a new session (`internal/cli/detach.go`, `//go:build unix`), which has no Windows
-  equivalent here yet.
+- **macOS or Linux.** **Windows is not supported**: the CLI starts its daemon in a new session
+  (`internal/cli/detach.go`, `//go:build unix`), which has no Windows equivalent here yet.
+
+  Releases ship four binaries. What CI actually executes:
+
+  | Platform | Built | Tests run in CI |
+  |---|---|---|
+  | `darwin/arm64` | yes | yes (`macos-latest`) |
+  | `darwin/amd64` | yes | yes (`macos-15-intel`) |
+  | `linux/amd64` | yes | yes (`ubuntu-latest`) |
+  | `linux/arm64` | yes | **no** |
+
+  `linux/arm64` is the one gap, and it is the SQLite driver rather than first-party code: nothing
+  here branches on `GOARCH`, but `modernc.org/sqlite` vendors a machine-translated SQLite per
+  GOOS/GOARCH, so that binary's storage layer is compiled and never exercised. Hosted arm64 Linux
+  runners are not available on this repository's plan; on a public repository they are, and adding
+  the job is a two-line change to `.github/workflows/ci.yml`.
 
 ### Build & put `idea` on your PATH
 
@@ -213,7 +227,8 @@ can name one:
 idea version        # v0.1.0 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
 ```
 
-Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI. Until the
+Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI; the
+table under [Install](#install) says which of the four are also tested there. Until the
 repository is public, the canonical install stays `git clone` + `go install ./cmd/idea`:
 `go install github.com/devarispbrown/idea-harness/cmd/idea@latest` additionally requires the module
 path to be publicly fetchable.
