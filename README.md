@@ -22,8 +22,8 @@ before you change it:
 
 ```bash
 idea why requirement REQ-1      # the evidence → assertions → decisions behind it
-idea impact decision DEC-1      # what breaks or goes stale if you change it
-idea trace task TASK-3         # both directions (why + dependents)
+idea impact requirement REQ-1   # what breaks or goes stale if you change it
+idea trace task TASK-1          # both directions (why + dependents)
 idea changed                    # What Changed since your last look
 ```
 
