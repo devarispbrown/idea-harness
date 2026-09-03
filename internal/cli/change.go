@@ -63,7 +63,7 @@ func cmdExecute(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/execute", nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), nil, &out); err != nil {
 		return err
 	}
 	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
@@ -460,7 +460,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 		Status   string        `json:"status"`
 		Coverage []cliCoverage `json:"coverage"`
 	}
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", body, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
 	}
 	if flags.has("--json") {

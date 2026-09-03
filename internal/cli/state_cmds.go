@@ -124,14 +124,14 @@ func cmdStatus(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, bold(ini.Title)+"  "+statusBadge(ini.Status))
 		// Understanding + next move for context.
 		var u cliUnderstanding
-		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/understanding", nil, &u); err == nil {
+		if err := c.do("GET", initiativeResource(projectID, ini.ID, "understanding"), nil, &u); err == nil {
 			fmt.Fprintf(stdout, "  %s %d · %s %d · %s %d\n",
 				muted("requirements:"), len(u.Requirements),
 				muted("decisions:"), len(u.Decisions),
 				muted("questions:"), len(u.Questions))
 		}
 		var nm cliGuidance
-		if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+ini.ID+"/guidance", nil, &nm); err == nil && nm.Action != "" {
+		if err := c.do("GET", initiativeResource(projectID, ini.ID, "guidance"), nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
 			if nm.Why != "" {
 				fmt.Fprintln(stdout, "    "+muted(nm.Why))
@@ -157,7 +157,7 @@ func cmdChanged(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	var changed cliChanged
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+inis[0].ID+"/changed", nil, &changed); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, inis[0].ID, "changed"), nil, &changed); err != nil {
 		return err
 	}
 	if wantJSON(args) {

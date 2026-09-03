@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 )
 
 type cliTask struct {
@@ -44,7 +45,7 @@ func cmdAdvance(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/advance", nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "advance"), nil, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ advance started")+" "+code(iniID))
@@ -82,7 +83,7 @@ func cmdTasks(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var tasks []cliTask
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/tasks", nil, &tasks); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "tasks"), nil, &tasks); err != nil {
 		return err
 	}
 	if flags.has("--json") {
@@ -115,11 +116,11 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 	case "decision":
 		endpoint = initiativeResource(projectID, iniID, "decisions")
 	case "task":
-		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks"
+		endpoint = initiativeResource(projectID, iniID, "tasks")
 	case "artifact":
 		endpoint = initiativeResource(projectID, iniID, "artifacts")
 	case "context_doc":
-		endpoint = "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/docs"
+		endpoint = initiativeResource(projectID, iniID, "docs")
 	default:
 		return ref, nil // run/assertion/etc: treat ref as the id
 	}
@@ -210,7 +211,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 			Superseded []cliDecision `json:"superseded"`
 		} `json:"decisions"`
 	}
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/diff", nil, &d); err != nil {
+	if err := c.do("GET", initiativeResource(projectID, iniID, "diff"), nil, &d); err != nil {
 		return err
 	}
 	if flags.has("--json") {
@@ -249,7 +250,10 @@ func fetchTrace(mode string, positional []string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	u := "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/" + mode + "?type=" + typ + "&id=" + objID
+	// Query values are user-supplied refs; `idea why assertion 'x&type=task'`
+	// used to rewrite the query by concatenation.
+	q := url.Values{"type": {typ}, "id": {objID}}
+	u := initiativeResource(projectID, iniID, mode) + "?" + q.Encode()
 	if mode == "why" {
 		var items []cliWhyItem
 		if err := c.do("GET", u, nil, &items); err != nil {
@@ -288,7 +292,10 @@ func runTraceCmd(mode string, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	u := "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/" + mode + "?type=" + typ + "&id=" + objID
+	// Query values are user-supplied refs; `idea why assertion 'x&type=task'`
+	// used to rewrite the query by concatenation.
+	q := url.Values{"type": {typ}, "id": {objID}}
+	u := initiativeResource(projectID, iniID, mode) + "?" + q.Encode()
 	if mode == "why" {
 		var items []cliWhyItem
 		if err := c.do("GET", u, nil, &items); err != nil {
