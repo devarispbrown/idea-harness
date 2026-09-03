@@ -45,13 +45,67 @@ sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
 
 ## Execution gateway
 
-The executor sandbox (`ContainerSandbox`) is the OS-isolation boundary: no
-network, read-only root, `--cap-drop ALL`, non-root `--user`, bounded
-memory/pids, writable `/tmp` caches, and a read-only `/repo` mount of the
-canonical workspace. A timeout/cancel genuinely kills the container
-(`docker rm -f`). This mirrors the OpenClaw "Gateway" boundary concept: the
-agent never runs code on the host, and a sandboxed session cannot widen its own
-authority.
+There is no single "the executor sandbox". Four executor kinds are selectable via
+`harness.executor.kind`, and they do not share an isolation posture. Every row
+below is the actual `docker run` argv, not a summary of intent.
+
+| kind | type | network | workspace mount | provider key inside |
+|---|---|---|---|---|
+| `internal` (default) | `InternalExecutor` | n/a — **no container at all** | runs in the daemon process | n/a |
+| `container` | `ContainerExecutor` | `--network none` | `/work` | no |
+| `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
+| (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
+
+**`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
+the deterministic build/test check in `internal/workflow/execute.go`. Its
+`--network none` and read-only `/repo` mount are real, and they apply to
+`run_command`, not to the executors that run model-generated code.
+
+**Coding agents (`omp`, `hermes`) get filesystem and process isolation only.**
+`--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,
+`--user`, `--memory 2g`, `--pids-limit 256`, a `/tmp` tmpfs. A timeout or cancel
+genuinely kills the container. The agent never runs code on the host.
+
+But `internal/executor/agent.go` says the rest plainly, and this page previously
+did not:
+
+> NOT network isolation: the agent needs egress to reach its model API, so the
+> provider keys are forwarded in and `--network none` is deliberately omitted.
+
+So for `omp` and `hermes` specifically:
+
+- **Network egress is unrestricted.** There is no `--network` flag, no
+  destination allowlist and no proxy — the container reaches anything the host
+  can reach, not only the model provider.
+- **The provider API key is inside the container**, written to a 0600 env-file
+  and passed with `--env-file`.
+- **The workspace is mounted read-write** at `/work`. It is not the read-only
+  `/repo` mount described above; that belongs to `ContainerSandbox`.
+
+## What this does not protect against
+
+Kept as a section so the negative space has somewhere to live. The failure this
+page had was an unscoped generalisation, not a typo.
+
+- **A compromised or prompt-injected coding agent** can read anything under
+  `/work`, write to it, use the forwarded provider key, and send both anywhere on
+  the network. Filesystem isolation bounds *what it can reach*; nothing bounds
+  *what it can send*.
+- **The raw blob store is deliberately redaction-free.** Redaction happens at the
+  read/display surface, never at write time — see `docs/security.md`.
+- **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
+  and sent unredacted to the vision provider. Text documents are swept; images
+  are not.
+- **`--user` passes the daemon's own UID/GID.** If the daemon runs as root, the
+  container runs as root inside its capability-dropped, read-only namespace.
+  Nothing refuses to start or warns.
+- **The agent image is pinned by tag, not digest**, and no signature is verified.
+  A re-pushed tag is not detected. `omp` has no default image at all, so the
+  operator supplies one.
+- **The control-plane deny covers `.idea-harness/` and `.git/` only.** A change
+  set may touch `.github/workflows/`, `.envrc` or similar auto-executing files;
+  the defence there is the human review gate, not the deny.
+- **Daemon logs are not redacted**, and `GET /api/v1/logs` returns them.
 
 ## Defense in depth
 
