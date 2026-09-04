@@ -64,15 +64,28 @@ func TestUpdateProvidersReturnsAttributableWarnings(t *testing.T) {
 				t.Fatalf("status field: got %q, want %q", out.Status, "updated")
 			}
 
-			joined := strings.Join(out.Warnings, "\n")
+			// Only the catalog warning is under test. A missing provider key also
+			// produces one, and whether that fires depends on the ambient
+			// environment -- this assertion was "no warnings at all", so it
+			// passed on a developer machine with the keys exported and failed in
+			// CI, which has none. The sibling test in internal/config had already
+			// been fixed for exactly this and the lesson was not carried across.
+			var catalog []string
+			for _, w := range out.Warnings {
+				if strings.Contains(w, "bundled catalog") {
+					catalog = append(catalog, w)
+				}
+			}
+			joined := strings.Join(catalog, "\n")
 			if c.wantWarn == "" {
-				if len(out.Warnings) > 0 {
-					t.Fatalf("unexpected warnings: %s", joined)
+				if len(catalog) > 0 {
+					t.Fatalf("unexpected catalog warning: %s", joined)
 				}
 				return
 			}
 			if !strings.Contains(joined, c.wantWarn) {
-				t.Fatalf("warnings %q do not mention %q", joined, c.wantWarn)
+				t.Fatalf("catalog warnings %q do not mention %q (all warnings: %v)",
+					joined, c.wantWarn, out.Warnings)
 			}
 		})
 	}
@@ -178,15 +191,28 @@ func TestExecutorSetupWarnsOnAnUnknownModel(t *testing.T) {
 			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 				t.Fatal(err)
 			}
-			joined := strings.Join(out.Warnings, "\n")
+			// Only the catalog warning is under test. A missing provider key also
+			// produces one, and whether that fires depends on the ambient
+			// environment -- this assertion was "no warnings at all", so it
+			// passed on a developer machine with the keys exported and failed in
+			// CI, which has none. The sibling test in internal/config had already
+			// been fixed for exactly this and the lesson was not carried across.
+			var catalog []string
+			for _, w := range out.Warnings {
+				if strings.Contains(w, "bundled catalog") {
+					catalog = append(catalog, w)
+				}
+			}
+			joined := strings.Join(catalog, "\n")
 			if c.wantWarn == "" {
-				if len(out.Warnings) > 0 {
-					t.Fatalf("unexpected warnings: %s", joined)
+				if len(catalog) > 0 {
+					t.Fatalf("unexpected catalog warning: %s", joined)
 				}
 				return
 			}
 			if !strings.Contains(joined, c.wantWarn) {
-				t.Fatalf("warnings %q do not mention %q", joined, c.wantWarn)
+				t.Fatalf("catalog warnings %q do not mention %q (all warnings: %v)",
+					joined, c.wantWarn, out.Warnings)
 			}
 		})
 	}
