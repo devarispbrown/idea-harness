@@ -297,8 +297,26 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 		if err != nil {
 			continue
 		}
+		// Both writes are gated on the operation still being live, and on the
+		// SAME outcome.
+		//
+		// A panic can happen after the goroutine's own terminal write -- in a
+		// trailing log line, say. Rewriting a succeeded operation to failed is
+		// bad; rewriting only the initiative is worse, because it leaves
+		// operation=succeeded with initiative=failed and sends a user to
+		// `idea retry` on a run that actually worked, re-running the whole
+		// pipeline and spending real model budget.
+		//
+		// So the initiative release happens only when this call is the one that
+		// actually moved the operation to failed.
+		if op.Status != domain.OperationPending && op.Status != domain.OperationRunning {
+			r.log.Warn("operation panicked after it had already finished; leaving the record alone",
+				"operation_id", opID, "status", op.Status, "panic", p)
+			return
+		}
 		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
+			return
 		}
 		if op.InitiativeID != "" {
 			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
