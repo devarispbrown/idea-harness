@@ -444,7 +444,16 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	}
 
 	r.launchOperation(opID, func(bg context.Context) {
-		status, runErr := pr.engine.Run(bg, ini.ID, description)
+		// ini.Description, not the raw parameter: the redactor already swept it
+		// on the line that created the initiative, and the engine sends this
+		// value straight to the model provider.
+		//
+		// Passing the raw text scrubbed a pasted credential from local storage
+		// and then egressed it to a third party anyway -- strictly worse than
+		// keeping it locally, and invisible because every retry took the
+		// redacted path (workflow/retry.go passes ini.Description), so the leak
+		// only ever happened on a first run.
+		status, runErr := pr.engine.Run(bg, ini.ID, ini.Description)
 		if runErr != nil {
 			r.failOperation(opID, ini.ID, "initiative run failed", bg, pr, runErr, true)
 			return
