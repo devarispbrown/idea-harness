@@ -113,7 +113,7 @@ func modelSpecProblems(field, spec string, known map[string]bool, providers map[
 	// independent mistakes and a user can make both at once. Returning early on
 	// the key problem hid the catalog warning in exactly the case that motivated
 	// it -- someone setting a model they have not configured a key for yet.
-	return append(out, unknownModelProblems(field, spec)...)
+	return append(out, UnknownModelProblems(field, spec)...)
 }
 
 // unknownModelProblems warns when the model half of a spec matches no catalog
@@ -130,7 +130,7 @@ func modelSpecProblems(field, spec string, known map[string]bool, providers map[
 // upstream strings, and ollama serves whatever the operator has pulled locally.
 // For both, the bundled catalog cannot be authoritative by construction, so a
 // warning there would be noise on correct configurations.
-func unknownModelProblems(field, spec string) []Problem {
+func UnknownModelProblems(field, spec string) []Problem {
 	provider, name := ParseModelSpec(spec)
 	if name == "" || provider == "openrouter" || provider == "ollama" {
 		return nil

@@ -145,3 +145,49 @@ func TestListModelsEmitsAnEmptyArrayNotNull(t *testing.T) {
 		t.Fatal("models decoded to nil")
 	}
 }
+
+// TestExecutorSetupWarnsOnAnUnknownModel: the same catalog warning as
+// PUT /providers, on the path that matters most.
+//
+// `idea executors setup --model <dead id>` forwards that id into the agent
+// container, so the 404 surfaces as an agent that produced nothing rather than
+// as a config error. The first pass at O2 wired the warning into the providers
+// endpoint and missed this one, and a review caught it.
+func TestExecutorSetupWarnsOnAnUnknownModel(t *testing.T) {
+	for _, c := range []struct {
+		name, body, wantWarn string
+	}{
+		{"a dead model id warns", `{"kind":"omp","model":"anthropic/claude-3-7-sonnet"}`, "bundled catalog"},
+		{"a correct one does not", `{"kind":"omp","model":"anthropic/claude-sonnet-4-5"}`, ""},
+		{"no model, no warning", `{"kind":"internal"}`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, ts, token := newTestServer(t)
+			projectID := newTestProject(t, ts.URL, token)
+
+			resp := doReq(t, http.MethodPut, ts.URL+"/api/v1/projects/"+projectID+"/executors",
+				token, "", c.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status %d: %s", resp.StatusCode, b)
+			}
+			var out struct {
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(out.Warnings, "\n")
+			if c.wantWarn == "" {
+				if len(out.Warnings) > 0 {
+					t.Fatalf("unexpected warnings: %s", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, c.wantWarn) {
+				t.Fatalf("warnings %q do not mention %q", joined, c.wantWarn)
+			}
+		})
+	}
+}

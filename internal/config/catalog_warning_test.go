@@ -24,7 +24,7 @@ func TestUnknownModelWarns(t *testing.T) {
 		{"ollama/whatever-i-pulled", false, "ollama serves whatever is pulled locally"},
 		{"madeup/model", false, "an unknown provider is a separate, harder error"},
 	} {
-		got := unknownModelProblems("harness.default_model", tc.spec)
+		got := UnknownModelProblems("harness.default_model", tc.spec)
 		if (len(got) > 0) != tc.warn {
 			t.Errorf("%s: warned=%v want %v (%s)", tc.spec, len(got) > 0, tc.warn, tc.why)
 			continue

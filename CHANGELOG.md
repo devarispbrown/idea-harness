@@ -20,7 +20,44 @@ review of its fix plan then found two exploitable defects in the credential path
 looked for. Those go first below, because a wrong security document is how somebody points this at
 a repository they should not.
 
+A fourth audit returned FAIL at 79/100. Its pattern was the correction reaching two of three
+documents — and its P0 was a state-machine hole no guard could see. Three adversarial reviews of
+the remediation then found a security defect neither audit had looked for, two contract bugs, and
+several guards that could not reach their own findings; those are recorded below alongside the
+findings they were meant to catch.
+
+### Fixed — the initiative claim (P0)
+
+- **A successful `idea execute` stranded the initiative in `running` forever.** The claim added in
+  the previous round released only on the error path, so `idea next` answered "workflow running"
+  indefinitely and every later command answered "already running", with no way back short of
+  editing the database. Every gate stayed green: `scripts/smoke.sh` and the audit journey both
+  revert afterwards, and `RevertChangeSet` happens to reset the status one step after the bug
+  corrupts it.
+- **Apply and revert now take the claim too**, from every non-running state, so a concurrent
+  `revise` can no longer supersede requirements while an apply lands. A request that arrives while
+  one is running gets a `409` naming the state instead of interleaving.
+- **A panic after a run had already finished no longer rewrites the record.** `failOperationAfterPanic`
+  wrote `failed` unconditionally, so a panic in a deferred cleanup turned a succeeded operation into
+  a failed one — and the two writes it made were gated on different conditions, so it could also
+  leave the operation failed and the initiative untouched.
+- **Reverting a change set from `complete` lands on `plan_approved`.** The revert releases the claim
+  to the status the engine chose rather than the one captured before it, so a rolled-back initiative
+  is no longer reported as finished.
+- **`failure_reason` survives a claim.** Apply and revert claim from `failed` and release back to
+  it; both writes cleared the reason, so an initiative could be reported as failed with no
+  explanation at all.
+- The nine async entry points are now enumerated from the AST, with each one's claim status checked
+  against the code rather than described in prose.
+
 ### Fixed — security
+
+- **The `sk-` credential pattern missed 27–30% of every modern key shape.** Provider key bodies are
+  base64url; the pattern's body class was alphanumeric, so a `_` or `-` in the first 16 characters
+  of the body broke the match and the key passed every choke point — blobs, events, context bundles
+  — in the clear. Measured over random base64url bodies rather than estimated. This is the second
+  correction to this pattern: the first widening fixed the prefix and left the body wrong.
+- **The idea text is redacted before it reaches the model provider.** It was passed raw.
 
 Both of these were found by an adversarial security review of the *third* audit's fix plan, not by
 either audit: three audits of route sets, request-body fields and 409 declarations were green while
@@ -103,11 +140,12 @@ they stood.
 - `idea docs add -` reads from stdin, as README, `docs/ui.md`, the usage string and the quickstart's
   copy-paste line have always said. The shared parser had the carve-out for it; this command rolled
   its own loop and rejected `-` before reaching it.
-- **`idea verify` exits non-zero when the gate is unmet.** It reported the *initiative's* status,
-  not the gate's, so `idea verify || exit 1` in CI could never fail — the quickstart tells readers
-  to run it exactly that way. `idea next --until-human` still treats an unmet gate as the human
-  judgment point it is and stops cleanly; only the standalone command fails. Any script that relied
-  on the old exit 0 will now stop.
+- **BREAKING: `idea verify` exits non-zero when the gate is unmet.** It reported the *initiative's*
+  status, not the gate's, so it exited 0 whatever the gate said — including on a requirement the
+  user had just recorded as failing. Any script that branched on its exit code saw success
+  unconditionally, and any script that relied on that will now stop. `idea next --until-human`
+  still treats an unmet gate as the human judgment point it is and stops cleanly; only the
+  standalone command fails.
 - `idea verify` rejects a disposition with no requirement, and rejects two dispositions at once.
   `idea verify --pass --note "checked manually"` used to print "✓ verified" and record nothing, so a
   user believed they had signed off.
@@ -122,6 +160,33 @@ they stood.
 - `idea watch` stops on a not-found initiative rather than polling forever and exiting 0.
 - `idea daemon status` exits non-zero when the daemon is not running.
 
+### Changed — BREAKING (HTTP API)
+
+- **Empty arrays are `[]`, not `null`.** Ten response fields marshalled `null` when their collection
+  was empty — `/why`, `/impact`, `/models`, `/risk`'s `signals`, understanding's five, and the
+  nested views' `acceptance_criteria`, `options` and `dissents`. A client generated from
+  `openapi.yaml`, which types them as arrays, rejected those responses. A client that null-checked
+  them keeps working.
+- `POST …/change-sets/{id}/review` documents the verdicts it actually accepts. `openapi.yaml`
+  declared `approve` and `reject`, which the engine has never taken — it takes `approved` and
+  `rejected` — so a client generated from the spec could not approve or reject a change set at all.
+  The CLI accepts the short forms and maps them, which is how the spec came to document the CLI's
+  vocabulary instead of the API's.
+- `RequirementStatus` gains `failed` and `waived` in the spec. Both have been emitted since human
+  evidence landed and neither was declared, so a generated client rejected a valid response.
+
+### Added — CLI
+
+- `idea model set` and `idea executors setup` warn when the model id is absent from the bundled
+  catalog. Setting one that resolves to nothing used to print a checkmark and fail on the first
+  model call with a non-retryable `404`; nine such ids had shipped in the documentation. The
+  executor path matters most, because that id is forwarded into the agent container, where the 404
+  looks like an agent that produced nothing.
+- `idea model set` also warns when your shell has the provider key and the daemon does not. The
+  daemon reads the environment once, at start, and `idea init` starts it — so a key exported
+  afterwards is invisible to it, and the documented order walked readers into exactly that.
+  `PUT /providers` and `PUT /executors` return these as a `warnings` array.
+
 ### Added — drift guards
 
 - `make api-docs-check` fails when a registered route has no row in `docs/api.md`. The document said
@@ -133,10 +198,21 @@ they stood.
 - The generated CLI table in `docs/cli.md` carries a **Flags** column rendered from each command's
   flag spec, so a flag that exists in code cannot be missing from the reference.
 - `make docs-lint` fails on a documented command that is not a real command and on a `TYPE-n`
-  reference that does not resolve, across every Markdown file. Both classes had shipped: prose
-  invented verbs the CLI has never had, and identifiers pointed at rows that no longer existed. It
-  reads fenced blocks inside blockquotes too — the first version did not, which is precisely where
-  one of the defects it was written for was sitting.
+  reference that does not resolve. Both classes had shipped: prose invented verbs the CLI has never
+  had, and identifiers pointed at rows that no longer existed. It covers README and every file in
+  `docs/`, both fence styles, fenced blocks inside blockquotes, and inline code spans — each of
+  those was a blind spot in an earlier version, and the wider scope immediately found a stale
+  `idea revise` in `configuration.md`, a verb the CLI has never had. (`docs/plans/` is excluded:
+  those are records of what was true at the time.)
+- `make ledger-check` evaluates every defect-ledger row against the tree. Each row carries a
+  predicate that is true exactly when its defect is present, so the check fails in both directions:
+  a row marked open whose defect is gone, and a row marked fixed whose defect returned. It also
+  cross-references each plan's "Mechanically checked:" list against `deferred.md`. The previous
+  round's ledger had all 27 rows marked open while 21 were already fixed, and its plan claimed five
+  items `deferred.md` recorded as not attempted.
+- `make enum-check` compares every named string enum in `openapi.yaml` against the domain constants
+  of the same name. Two enums had drifted; the three route-level guards were green through both,
+  because they compare paths and field names and nothing compared a value vocabulary.
 - `idea help` has a golden test. Its stability was asserted only in a comment.
 
 ### Added

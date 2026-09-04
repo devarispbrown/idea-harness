@@ -99,11 +99,20 @@ page had was an unscoped generalisation, not a typo.
   `/work`, write to it, use the forwarded provider key, and send both anywhere on
   the network. Filesystem isolation bounds *what it can reach*; nothing bounds
   *what it can send*.
-- **The raw blob store is deliberately redaction-free.** Redaction happens at the
-  read/display surface, never at write time: `RenderPatch` and the structured
-  diff redact what they return, and the bytes underneath stay as written. This
-  page is the canonical statement of that property; `docs/api.md` and
-  `docs/openapi.yaml` link here rather than restating it.
+- **The raw blob store is deliberately redaction-free.** For *that* store — the
+  one holding file content and uploaded bytes, which must round-trip
+  byte-for-byte — redaction happens at the read/display surface rather than at
+  write time: `RenderPatch` and the structured diff redact what they return, and
+  the bytes underneath stay as written.
+
+  This is not the rule for the whole system, and an earlier version of this
+  sentence read as if it were. The *other* store, `blobs/`, is constructed with
+  the redactor as its write hook (`blob.New(..., redactor.Redact)` in
+  `internal/daemon/runtime.go`), so model artifacts and context bundles are
+  redacted on the way in. Two stores, two rules.
+
+  This page is the canonical statement of both; `docs/api.md` and
+  `docs/openapi.yaml` link here rather than restating them.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.

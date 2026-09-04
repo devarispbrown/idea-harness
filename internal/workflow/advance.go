@@ -14,7 +14,12 @@ import (
 )
 
 // Advance runs the M2 slice: Design (Architecture → Product Design →
-// Verification Design, sequentially) → Execution Plan → independent plan review.
+// Verification Design, sequentially) → Execution Plan → plan review.
+//
+// "Independent" would overstate it: the reviewer is a separate prompt and a
+// separate run, not a separate identity. Every automated write shares one
+// actor, so nothing prevents the implementer and reviewer roles resolving to
+// the same model -- see docs/security.md.
 // It returns the final initiative status.
 // errUnresolvedDependencies signals that the execution plan referenced a task
 // title that could not be resolved; the initiative is left in needs_human_judgment

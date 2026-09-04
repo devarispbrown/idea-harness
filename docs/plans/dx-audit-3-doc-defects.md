@@ -81,7 +81,7 @@ reason the file survived the round.
 | A3 | doc-upload row omits `.gif`/`.webp` | `docparse` accepts them | `absent:docs/api.md:jpg/png/gif/webp` | fixed 0213fa3 |
 | A4 | `artifacts/diff` "Structured diff" | Unified line diff | `absent:docs/api.md:Unified line diff` | fixed 6b275f5 |
 | A5 | diff response schema omits the `files` key | Handler writes it | `absent:docs/openapi.yaml:is the same change set as a` | fixed 6b275f5 |
-| A6 | verify's `fail`/`waived` | In `openapi.yaml`; `api.md` named only `pass` | `absent:docs/api.md:exactly one of` | fixed 046b3f4 |
+| A6 | verify's `fail`/`waived` | In `openapi.yaml`; `api.md` named only `pass` | `absent:docs/api.md:takes the first of` | fixed 046b3f4 |
 
 ## docs/architecture.md
 

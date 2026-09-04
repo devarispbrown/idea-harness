@@ -2293,7 +2293,22 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		s.writeReloadErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	out := map[string]any{"status": "updated"}
+	// The same catalog warning PUT /providers returns. This path was missed the
+	// first time and it is the one that matters most: `idea executors setup
+	// --model <dead id>` forwards that id into the agent container, where the
+	// 404 surfaces as an agent that produced nothing rather than as a config
+	// error.
+	if body.Model != nil && *body.Model != "" {
+		var warnings []string
+		for _, pb := range config.UnknownModelProblems("harness.executor.model", *body.Model) {
+			warnings = append(warnings, pb.Message)
+		}
+		if len(warnings) > 0 {
+			out["warnings"] = warnings
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // changeSet resolves the project runtime + a change set by its {id} path value.

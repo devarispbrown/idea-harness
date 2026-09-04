@@ -118,9 +118,12 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 		if r.Status == domain.RequirementRemoved {
 			continue
 		}
+		// orEmpty on each nested slice, for the same reason as the top-level
+		// ones: a requirement with no criteria yet is ordinary, and a client
+		// should not have to tell null from [] to render it.
 		u.Requirements = append(u.Requirements, RequirementView{
 			ID: r.ID, Code: r.Code, Statement: r.Statement, Priority: r.Priority,
-			Status: r.Status, AcceptanceCriteria: r.AcceptanceCriteria,
+			Status: r.Status, AcceptanceCriteria: orEmpty(r.AcceptanceCriteria),
 		})
 	}
 
@@ -135,8 +138,9 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 		}
 		dv := DecisionView{
 			ID: d.ID, Code: d.Code, Question: d.Question, Recommendation: d.Recommendation,
-			Options: d.Options, Resolution: d.Resolution,
+			Options: orEmpty(d.Options), Resolution: d.Resolution,
 			Status: d.Status, HasDissent: hasDissent,
+			Dissents: []DissentView{},
 		}
 		if hasDissent {
 			ds, err := db.ListDissents(ctx, d.ID)
@@ -468,4 +472,19 @@ func isMachinery(aggregate string) bool {
 		return true
 	}
 	return false
+}
+
+// orEmpty returns a non-nil slice, so an empty one marshals as [] rather than
+// null.
+//
+// The first sweep initialised the top-level projection slices and stopped
+// there, which left every nested view — a requirement's criteria, a decision's
+// options and dissents — still emitting null the moment a collection had
+// anything in it. The test that certified the sweep used an initiative with
+// nothing attached, so it never reached them.
+func orEmpty[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
