@@ -9,6 +9,18 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-09-04
+
+Five developer-experience audits and their remediation. **0.1.0 contained every P0 fixed below**,
+so upgrading is strongly recommended over pinning to it.
+
+This release is breaking in the ways listed under the BREAKING headings: several commands that
+exited 0 on failure now exit non-zero, a handful of HTTP status codes and response shapes changed,
+and empty arrays are `[]` rather than `null`. Pre-1.0, per the versioning note above, those land in
+a minor release; each entry states the consumer impact.
+
 A second developer-experience audit of the published 0.1.0 returned FAIL at 70/100, with both hard
 gates passing. Nearly every finding was one instance of the same failure: a fix made correctly in
 one place and not propagated to its siblings. So the fixes below are structural where a defect class
@@ -25,6 +37,72 @@ documents — and its P0 was a state-machine hole no guard could see. Three adve
 the remediation then found a security defect neither audit had looked for, two contract bugs, and
 several guards that could not reach their own findings; those are recorded below alongside the
 findings they were meant to catch.
+
+A fifth audit returned FAIL at 61/100 with the magic-path gate broken. The score fell because
+this round did two things no previous one had: it ran the README's block **verbatim on the no-key
+path**, and it made **real provider calls**. Every P0 it found had shipped in 0.1.0 and three date
+to the initial commit — four rounds of guards had compared artifacts to artifacts, and nothing
+compared the product to a provider or executed the documented sequence as written.
+
+### Fixed — the documented first run (P0)
+
+- **`idea new` waits for the run it starts.** It received the operation id and discarded it, so it
+  returned while the workflow was still going. That made the README's own eight-command quick start
+  a race: the next command saw the initiative `running`, `idea next --until-human` fell through to
+  "workflow running — try `idea watch`" without doing anything, and the block went on to print
+  `✓ initiative complete` over an initiative with **zero change sets and no file written**.
+  Measured back-to-back with no provider keys: 0 of 5 runs passed before, 5 of 5 after. With keys
+  exported it passed 5 of 5 either way — ambient keys shifted the timing enough to win the race,
+  which is why four audits and a passing smoke test never saw it. `--no-wait` keeps the
+  fire-and-forget shape, and a failed run is now a non-zero exit rather than a silent success.
+
+- **Stage token budgets are capped to what the provider says it can produce.** `maxOutputForStage`
+  asked 32000 tokens for the PRD stage, four lines beneath a comment asserting its values "stay
+  within the providers' declared MaxOutput ceilings (16k for Anthropic/OpenAI)". Nothing compared
+  the two — `Capabilities.MaxOutput` was declared per provider and read nowhere — so the README's
+  own worked example (`openai/gpt-4o-mini`) failed on **every** run with a non-retryable 400. A
+  provider declaring 0 has stated no ceiling and is left alone, so custom OpenAI-compatible
+  endpoints are unaffected.
+
+- **Truncation is detected instead of absorbed.** Capping alone would have traded a loud 400 for a
+  silently shorter artifact: `repairJSON` closes unterminated containers and the review schema has
+  no `minItems`, so an adversarial review cut from 15 findings to 1 validates clean. Each provider
+  now reports its own finish reason (`length`, `max_tokens`, `MAX_TOKENS`) as an error naming the
+  budget that was hit.
+
+- **`idea retry` exists.** Four comments in the daemon named it as the recovery path for a stranded
+  or failed run. It had never been a command — the route and the runtime method were there and only
+  the CLI entry was missing. It defaults to the configured model and takes `--model` to retry
+  against a different one.
+
+### Fixed — configuration (P0)
+
+- **`idea model set` no longer reverts hand edits.** It assembled its write from the daemon's
+  cached config, which is read once at start, and wrote the whole file back — so anything edited
+  since silently reverted, at exit 0, by a command the documentation recommends. Observed:
+  `review.max_cycles` 9 → 3, `research.urls` emptied, `git_commit` true → false. The sibling
+  executor handler had always re-read from disk and said why; the two sat 1800 lines apart and only
+  one was right.
+
+- **A model id with no provider is refused when nothing would resolve it.** `idea model set gpt-4o`
+  was accepted by `model set`, `config validate` and `doctor`, all exit 0, and with a provider key
+  exported the demo banner was suppressed — so the whole workflow ran on the built-in stub while
+  the user believed gpt-4o had written their PRD. It is now an error when no default provider
+  exists and a warning when one does, because `models.critic: gpt-4o` beside a qualified
+  `default_model` is a legitimate form. Separately, the demo banner now asks the question the
+  registry asks rather than scanning for key environment variables, so synthetic output cannot be
+  reported as real.
+
+- **`idea version` no longer reports a version that does not exist.** A build from a checkout
+  claimed Go's module pseudo-version — `v0.1.1-0.20260904033502-…`, one patch above the only
+  release, never tagged, and outranking the real version in a bug report — while the documented
+  `dev (sha, dirty)` form was unreachable. A module version is now trusted only when there is no
+  VCS data, which is the one path (`go install <module>@<version>`) that produces one meaningfully.
+
+- Provider errors carry the response body that explains them, bounded and scrubbed for anything
+  credential-shaped. `openai: status 400` was the message for every OpenAI failure, and the body it
+  discarded named the cause exactly — which is why the token-budget defect above survived four
+  audits.
 
 ### Fixed — the initiative claim (P0)
 

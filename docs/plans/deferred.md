@@ -26,7 +26,7 @@ still unfixed a round later and had reappeared as new work.
 | audit 3 / C4 | `SuggestAnswersInitiative` has no existence check and no running guard — the only entry point with neither | Not attempted; named in the plan and missed in implementation |
 | audit 3 | No SDK | Deliberate; generating one from the spec is a milestone |
 | audit 3 | `linux/arm64` untested in CI | Hosted arm64 Linux runners unavailable on this repo's plan; stated in README |
-| audit 3 | Cutting `0.2.0` | `v0.1.0` is still the only tag and contains every audit-2 defect; a decision after this lands |
+| audit 3 | Cutting `0.2.0` | **No longer deferred** — cut as `v0.2.0` on 2026-09-04, after audit 5. It had been parked since audit 3 as "a decision after this lands", through three more rounds |
 | audit 2 | README provider list omitted DeepSeek | **Was** deferred by omission; fixed in audit 3 as R13 |
 | audit 3 / S3 | `architecture.md`'s redaction half | **No longer deferred** — fixed in audit 4 (`9152317`). Recorded because audit 3 planned it, did not do it, and did not record it either, which is how it survived a round with no owner |
 | audit 3 / R15 | The stale `routes.go` comment claiming the flat routes are still live | **No longer deferred** — fixed in audit 4 (`5823d63`). Same story: planned, undone, unrecorded, and it then survived two rounds |
@@ -39,7 +39,7 @@ still unfixed a round later and had reappeared as new work.
 | audit 5 / F3 | Run the test suite with provider keys unset in CI | **Already true.** `.github/` references `ANTHROPIC_API_KEY` only inside the `workflow_dispatch`-only agent job; every push job is key-free, which is how CI caught the flaky test this round. The real gap is local-vs-CI divergence, and there is no pre-push hook — that is the item worth doing |
 | audit 5 / D3 | JSON 404/405 on the mux | The 404 half is safe (the SPA is hash-routed, so nothing breaks) but the 405 half needs the `server.go:65` catch-all restructured, which is a separate and riskier change. Not attempted this round |
 | audit 5 | `/doctor` returns `null`; `/diff` mixes `[]` and `null` in one response | Audit 4's null sweep converted eight fields and left these two, so the API went from uniformly null-on-empty to mixed. Not attempted this round |
-| audit 5 | Cutting `0.2.0` | Now load-bearing: every P0 this round fixed shipped in `v0.1.0`, which is still the only artifact. Landing these fixes without a release leaves every real user on the broken binary |
+| audit 5 | Cutting `0.2.0` | **No longer deferred** — cut as `v0.2.0`. It was the load-bearing item: every P0 audits 2-5 fixed had shipped in `v0.1.0`, so until the tag existed the only installable artifact contained all of them |
 | audit 5 | No per-command `--help` on any of the 33 subcommands | A CLI-wide discoverability gap; larger than a one-command fix |
-| audit 5 | `idea version` reports `v0.1.1-0.2026…`, a version that does not exist | The `git describe --exact-match` stamp is empty off-tag and Go's module pseudo-version wins; the documented `dev` form is unreachable |
+| audit 5 | `idea version` reports `v0.1.1-0.2026…`, a version that does not exist | **No longer deferred** — fixed in `v0.2.0`. A module version is trusted only when there is no VCS data; the `(devel)` guard it replaced stopped matching when Go began reporting a pseudo-version for local builds |
 | audit 4 / D17 | `container`'s "placeholder" status | **Not reproduced.** `ContainerExecutor` is fully implemented and wired in two call sites; see [`dx-audit-4-doc-defects.md`](dx-audit-4-doc-defects.md) |
