@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/devarispbrown/idea-harness/internal/model"
 	"net"
 	"net/url"
 	"os"
@@ -102,12 +103,55 @@ func modelSpecProblems(field, spec string, known map[string]bool, providers map[
 	}
 	// A referenced preset that was never configured still needs a key; the
 	// configured ones are covered by providerProblems.
+	var out []Problem
 	if _, configured := providers[provider]; !configured {
 		if p := PresetFor(provider); p != nil {
-			return keyProblems(field, provider, p.DefaultKeyEnv, p.NeedsKey, dotEnv)
+			out = append(out, keyProblems(field, provider, p.DefaultKeyEnv, p.NeedsKey, dotEnv)...)
 		}
 	}
-	return nil
+	// Appended, not an alternative: a missing key and a mistyped model are
+	// independent mistakes and a user can make both at once. Returning early on
+	// the key problem hid the catalog warning in exactly the case that motivated
+	// it -- someone setting a model they have not configured a key for yet.
+	return append(out, UnknownModelProblems(field, spec)...)
+}
+
+// unknownModelProblems warns when the model half of a spec matches no catalog
+// entry for a provider whose catalog is known.
+//
+// Nothing validated the model half at all, so `idea model set
+// anthropic/claude-3-7-sonnet` printed success and the first call came back a
+// non-retryable 404 -- and nine such ids shipped in the documentation before an
+// audit caught them by reading.
+//
+// A warning, not an error: a valid model can postdate the bundled catalog, and
+// refusing it would make the tool unusable the week a provider ships something.
+// openrouter and ollama are skipped entirely: openrouter's ids are arbitrary
+// upstream strings, and ollama serves whatever the operator has pulled locally.
+// For both, the bundled catalog cannot be authoritative by construction, so a
+// warning there would be noise on correct configurations.
+func UnknownModelProblems(field, spec string) []Problem {
+	provider, name := ParseModelSpec(spec)
+	if name == "" || provider == "openrouter" || provider == "ollama" {
+		return nil
+	}
+	known, ok := model.DefaultModels[provider]
+	if !ok || len(known) == 0 {
+		return nil
+	}
+	for _, m := range known {
+		if m == name {
+			return nil
+		}
+	}
+	return []Problem{{
+		Severity: SeverityWarn,
+		Field:    field,
+		Message: fmt.Sprintf("%q is not in the bundled catalog for %s (known: %s). "+
+			"If the provider has since added it this is fine; if it is a typo, the first "+
+			"model call will fail with a non-retryable 404.",
+			name, provider, strings.Join(known, ", ")),
+	}}
 }
 
 // providerProblems validates one configured provider entry.

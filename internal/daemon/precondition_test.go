@@ -4,6 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -11,9 +16,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/devarispbrown/idea-harness/internal/domain"
-	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // readError pulls the message out of an error response.
@@ -211,4 +213,63 @@ func TestReloadFailureNeverLeaksAStatePath(t *testing.T) {
 			t.Errorf("a domain error must survive verbatim, got: %s", body)
 		}
 	})
+}
+
+// TestBothConfigEndpointsReportWrittenButNotApplied pins C3.
+//
+// writeReloadErr exists so the caller learns their config file WAS written and
+// the running daemon kept the old one. Only the executors endpoint used it; the
+// providers endpoint sent the identical failure to writeErr, whose storage
+// branch masks it to "internal error (correlation id)". So the same condition
+// told the user two different things depending on which config they edited, and
+// docs/api.md went on to claim a handler cannot get this wrong.
+//
+// Parsed, not string-scanned. A first version searched from the function name to
+// the next "\n}\n", which truncates at the first nested closure -- so the body it
+// examined never contained ReloadProject, the check skipped itself, and the test
+// passed with the fix reverted. Vacuous in exactly the way this round keeps
+// finding elsewhere.
+func TestBothConfigEndpointsReportWrittenButNotApplied(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "handlers.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		if fn.Name.Name != "handleUpdateProviders" && fn.Name.Name != "handleUpdateExecutors" {
+			continue
+		}
+		var reloads, reportsHonestly bool
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "ReloadProject":
+					reloads = true
+				case "writeReloadErr":
+					reportsHonestly = true
+				}
+			}
+			return true
+		})
+		if !reloads {
+			continue
+		}
+		checked++
+		if !reportsHonestly {
+			t.Errorf("%s handles a ReloadProject failure without writeReloadErr, so a caller "+
+				"whose config was written but not applied gets a masked 500", fn.Name.Name)
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("examined %d config endpoints, want 2; the test is not finding them", checked)
+	}
 }

@@ -13,7 +13,10 @@ import (
 
 // ContainerSandbox runs a command inside an isolated Docker container: no
 // network, read-only root filesystem, dropped capabilities, bounded memory/pids,
-// and a non-root user. Only the work root (mounted at /work) and a /tmp tmpfs
+// and the daemon's own UID/GID -- which is not the same as non-root. If the
+// daemon runs as root the container does too, and nothing refuses to start or
+// warns (docs/security-model.md records this under what the gateway does not
+// protect against). Only the work root (mounted at /work) and a /tmp tmpfs
 // are writable; an optional project root is mounted read-only at /repo. This is
 // the OS-isolation boundary for external coding agents and deterministic checks
 // (§52, review B2/H3).
@@ -39,7 +42,8 @@ type RunOptions struct {
 }
 
 // isolatedArgs builds the `docker run` args (after the leading "run") for an
-// isolated, non-root container with writable tmpfs caches under /tmp.
+// isolated container running as the daemon's UID/GID, with writable tmpfs
+// caches under /tmp. See the type comment on why that is not "non-root".
 func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	args := []string{

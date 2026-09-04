@@ -43,7 +43,27 @@ var credentialPatterns = []*regexp.Regexp{
 	// matched any 20+ character hyphenated string starting "sk-", so an ordinary
 	// URL slug like sk-decomposition-of-matrices-and-linear-algebra was redacted,
 	// and ContainsCredential rejected the whole document upload containing it.
-	regexp.MustCompile(`\bsk-(?:[A-Za-z0-9]+-){0,3}[A-Za-z0-9]{16,}`),
+	// Narrowing it to a hyphen-group prefix and an alphanumeric body went too
+	// far the other way, and less visibly: provider key bodies are base64url,
+	// so a "_" or "-" anywhere in the first 16 characters of the body broke the
+	// match and the key passed in the clear. Measured over random base64url
+	// bodies, that missed 27-30% of every modern shape -- a coin-flip redactor
+	// on the credential forwarded into the agent container.
+	//
+	// Three patterns instead of one clever one, because the false-positive risk
+	// and the true-positive shape differ per case:
+	//
+	// 1. A known provider prefix. The prefix is the evidence, so the body is
+	//    plain base64url with no further constraint.
+	regexp.MustCompile(`\bsk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}`),
+	// 2. The legacy flat OpenAI key: "sk-" and one unbroken alphanumeric run.
+	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+	// 3. Any other "sk-" token whose body carries an uppercase letter. That is
+	//    what separates a key from the false positive the previous widening hit
+	//    -- an ordinary URL slug like
+	//    sk-decomposition-of-matrices-and-linear-algebra is lowercase and
+	//    hyphenated, and never carries one.
+	regexp.MustCompile(`\bsk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,}`),
 	// Stripe live secret key.
 	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
 	// Slack tokens (bot, app, refresh, signing, user).

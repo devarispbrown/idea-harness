@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 )
@@ -165,15 +166,59 @@ func setModel(spec, role string, stdout io.Writer) error {
 	} else {
 		body["default_model"] = spec
 	}
-	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/providers", body, nil); err != nil {
+	var res struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/providers", body, &res); err != nil {
 		return err
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintln(stdout, warn("⚠ ")+w)
 	}
 	if role != "" {
 		fmt.Fprintln(stdout, ok("✓ model for role")+" "+code(role)+" "+muted("set to")+" "+accent(spec))
 	} else {
 		fmt.Fprintln(stdout, ok("✓ default model set to")+" "+accent(spec))
 	}
+	warnIfDaemonMissedTheKey(c, projectID, spec, stdout)
 	return nil
+}
+
+// warnIfDaemonMissedTheKey reports the trap the quickstart used to walk readers
+// straight into.
+//
+// The daemon reads the environment once, when it starts -- and `idea init`
+// starts it. A key exported afterwards is invisible to it, so `idea model set`
+// reported success and the first model call came back 401, which is not
+// retryable, sending the initiative to failed.
+//
+// No cross-process introspection is needed: the CLI can read its own
+// environment, and GET /providers already reports the daemon-side Ready and the
+// KeyEnv name. Disagreement between those two facts is exactly this situation.
+func warnIfDaemonMissedTheKey(c *client, projectID, spec string, stdout io.Writer) {
+	provider, _, _ := strings.Cut(spec, "/")
+	if provider == "" {
+		return
+	}
+	var view cliProvidersView
+	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
+		return // advisory only; never fail the command the user asked for
+	}
+	for _, p := range view.Providers {
+		if p.Name != provider || p.KeyEnv == "" || p.Ready {
+			continue
+		}
+		if os.Getenv(p.KeyEnv) == "" {
+			// The key is missing here too, which is the plain "no key" case that
+			// idea doctor already reports.
+			return
+		}
+		fmt.Fprintln(stdout, warn("⚠ the daemon does not have "+p.KeyEnv+", but your shell does."))
+		fmt.Fprintln(stdout, muted("  It reads the environment once, at start, and `idea init` started it"))
+		fmt.Fprintln(stdout, muted("  before you exported the key. Run ")+bold("idea daemon stop")+
+			muted(" — the next command restarts it."))
+		return
+	}
 }
 
 func addProvider(a cmdArgs, stdout io.Writer) error {

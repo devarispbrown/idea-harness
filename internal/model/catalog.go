@@ -1,7 +1,12 @@
 package model
 
-// DefaultModels is a curated catalog of common models per provider, used to
-// seed the UI/CLI pickers. It is advisory: any model name is accepted.
+// DefaultModels is a curated catalog of common models per provider. It seeds
+// the UI/CLI pickers and, since audit 4, backs config.UnknownModelProblems.
+//
+// Still advisory in the sense that matters: any model name is accepted, and a
+// name absent from this list produces a *warning*, never a rejection, because a
+// valid model can postdate the catalog. But it is no longer only cosmetic --
+// deleting an entry here makes a correct id start warning, so keep it current.
 var DefaultModels = map[string][]string{
 	"openai":     {"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini"},
 	"anthropic":  {"claude-sonnet-4-5", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest", "claude-opus-4-1"},

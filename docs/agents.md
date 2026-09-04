@@ -25,13 +25,13 @@ diff.
 
 ```bash
 # Hermes (default) — auto-downloads the pinned official image
-idea executors setup --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --model anthropic/claude-3-7-sonnet-latest --yes
 
 # Hermes with a custom/self-built image
-idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet-latest --yes
 
 # OMP (bring your own image — there is no canonical OMP image)
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet-latest --yes
 ```
 
 `idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
@@ -46,7 +46,7 @@ produces a real file change — this verifies the agent CLI contract end-to-end,
 binary exists:
 
 ```bash
-idea executors setup --kind hermes --model anthropic/claude-sonnet-4 --smoke --yes
+idea executors setup --kind hermes --model anthropic/claude-sonnet-4-5 --smoke --yes
 ```
 
 ### Manual (equivalent)
@@ -58,7 +58,7 @@ Edit `.idea-harness/harness.yaml`:
 executor:
   kind: omp                                       # or hermes
   image: ghcr.io/your-org/omp:latest              # image with the `omp` CLI installed
-  model: anthropic/claude-3-7-sonnet              # coding model (provider/model)
+  model: anthropic/claude-3-7-sonnet-latest              # coding model (provider/model)
 ```
 
 For Hermes:
@@ -68,7 +68,7 @@ For Hermes:
 executor:
   kind: hermes
   image: ghcr.io/your-org/hermes:latest           # image with the `hermes` CLI installed
-  model: anthropic/claude-3-7-sonnet
+  model: anthropic/claude-3-7-sonnet-latest
 ```
 
 Then:
@@ -123,16 +123,18 @@ rather than CI defaults — so it runs manually (workflow_dispatch), not on ever
 
 ## Security / trust tradeoff — read this before wiring an agent
 
-The coding-agent container is sandboxed for **filesystem and process** isolation:
+The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of all four executor kinds against what each one actually passes:
 
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- runs as a **non-root** user (`--user <uid>:<gid>`)
+- runs as the daemon's own UID/GID (`--user <uid>:<gid>`) — so if the daemon runs as root, the
+  container does too; nothing refuses to start or warns
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 
 But it is **not network-isolated**. The agent needs egress to reach its model API, so
-`--network none` is deliberately omitted. Concretely, the agent container:
+`--network none` is deliberately omitted — see [`security-model.md`](security-model.md).
+Concretely, the agent container:
 
 - can reach the network,
 - receives **its own provider API key** (forwarded in via env-file), and
@@ -141,8 +143,13 @@ But it is **not network-isolated**. The agent needs egress to reach its model AP
 
 **A compromised or malicious agent image, or a prompt-injection attack through the task content,
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
-network egress, and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
+network egress ([`security-model.md`](security-model.md) records this under what the execution
+gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
 trust, and prefer a scoped, rotatable API key you can revoke.
+
+The canonical statement of what each executor kind isolates, and what none of them do, is
+[`security-model.md`](security-model.md#what-this-does-not-protect-against). This page repeats the
+agent-specific part because it is where you decide whether to wire one.
 
 The deterministic `internal` executor has none of this exposure (no network, no key, no real code),
 which is why it remains the safe default until you deliberately opt into a real agent.

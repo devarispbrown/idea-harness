@@ -136,8 +136,10 @@ operation id and returns immediately:
 ```
 
 Poll `GET /api/v1/operations/{id}` for its status, or follow
-`GET /api/v1/projects/{projectId}/events` (SSE) — which is what `idea watch` and the UI do. The
-`202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
+`GET /api/v1/projects/{projectId}/events` (SSE). Both shipped clients poll: `idea watch` re-fetches
+the initiative's `understanding` once a second (`internal/cli/watch.go`) and the UI polls on a
+`setInterval` timer (`web/src/App.tsx`). Nothing in-tree consumes the SSE endpoint, so it is offered for your clients,
+not exercised by ours. The `202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
 alongside `operation_id`.
 
 **Events.** `/events` is `text/event-stream`, one event per product-graph event, with the event
@@ -209,7 +211,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects` | Register a project by `root_path`; returns `project_id`. |
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
-| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}`, the one list endpoint with an envelope: it is a cross-initiative rollup, so it has somewhere to put a cursor later. |
+| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}` — the only *collection* endpoint with an envelope, because it is a cross-initiative rollup and so has somewhere to put a cursor later. (`/models` also wraps its list, but in a response whose other field names the provider consulted.) |
 
 ### Initiative lifecycle
 
@@ -227,7 +229,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan (re-runs its review). **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate; with `{"requirement","pass","note"}` records human evidence first. Returns status + coverage. |
+| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. |
 
 ### Understanding, guidance and analysis
 
@@ -328,7 +330,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/providers` | Configured providers plus the unconfigured presets, each with type, base URL, key-env **name**, and a `ready` flag saying whether that key is present. Key values are never returned. |
-| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit}` into `harness.yaml` and reload the runtime. |
+| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit}` into `harness.yaml` and reload the runtime. Answers `{status, warnings?}`; `warnings` carries non-blocking problems attributable to a field this request wrote — a model id absent from the bundled catalog, say — under the same attribution rule as the `400`. |
 | GET | `/projects/{projectId}/models?provider=` | List a provider's models live, falling back to the bundled catalog. Defaults to the default model's provider. |
 | GET | `/projects/{projectId}/executors` | Available executors, their declared capabilities, and which one is configured. |
 | PUT | `/projects/{projectId}/executors` | Field-level merge of `{kind, image, model}` into `harness.yaml`, validated, then reload. |

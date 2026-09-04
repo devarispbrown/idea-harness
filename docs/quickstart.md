@@ -13,6 +13,10 @@ mkdir recipes && cd recipes
 idea init
 ```
 
+`idea init` also starts the background daemon, which inherits your shell environment **at that
+moment** — so if you have a provider API key, export it before this step. (If you forget, Path B
+below shows the one-command fix.)
+
 `idea init` creates a `.idea-harness/` directory in the current folder (no Git repo required). All
 runtime state lives under `~/.local/share/idea-harness/`, never in your source tree.
 
@@ -36,17 +40,33 @@ machine, the review gates, the product graph, apply/revert — without spending 
 
 #### Path B — with a key: export it, then set a model
 
+**If you already exported the key before `idea init` above**, the daemon has it and you only need:
+
 ```bash
-export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
 idea model set openai/gpt-4o-mini
 idea doctor                                # names the key the configured provider needs, if it is missing
+```
+
+**If you are exporting it now**, the daemon is already running without it and must be restarted —
+it reads the environment once, at start:
+
+```bash
+export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
+idea daemon stop                           # the next command restarts it, with the key
+idea model set openai/gpt-4o-mini
+idea doctor
 ```
 
 Any supported provider works — Anthropic, Gemini, DeepSeek, OpenRouter, or local Ollama — and you
 can change it later from the web UI's Settings. API keys are read from environment variables, never
 stored inline.
 
-> **Do not run `idea model set` without the matching key.** Once `default_model` is set,
+> **The daemon reads your environment once, when it starts.** `idea init` starts it, so a key
+> exported *afterwards* is invisible to it — `idea model set` will report success and the first
+> model call still fails with `401`. Either export before `idea init`, or run `idea daemon stop`
+> after exporting so the next command restarts it. `idea model set` warns when it detects this.
+>
+> **And do not set a model without the matching key at all.** Once `default_model` is set,
 > `resolveModelSpec` returns it *before* it ever reaches the demo fallback, and the built-in presets
 > are always registered — with an empty key when the environment variable is unset
 > (`internal/daemon/runtime.go`, `buildRegistry`). The first model call then comes back
@@ -94,7 +114,8 @@ idea new "A recipe-sharing app"
 ```
 
 This starts the M1 pipeline: a team of experts frames your idea, does research, and drafts a PRD,
-which an independent reviewer then challenges and revises. Follow it live from a second terminal:
+which a reviewer role then challenges and revises. (A separate run and prompt — not necessarily a
+different model; see [`security.md`](security.md).) Follow it live from a second terminal:
 
 ```bash
 idea watch
@@ -171,7 +192,8 @@ your last look.
 idea review CHG-1 approve
 ```
 
-Change sets are gated by an independent review and then by you, the human. `approve` records your
+Change sets are gated by a reviewer run and then by you, the human — the verdict is yours, not the
+model's. `approve` records your
 decision (you can also request changes or reject).
 
 ```bash
@@ -228,9 +250,16 @@ leaves the reasoning synthetic. **The real path needs both.**
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
-idea model set anthropic/claude-3-7-sonnet
+idea daemon stop                         # it started at `idea init`, without the key
+idea model set anthropic/claude-3-7-sonnet-latest
 idea doctor                              # names the key the configured provider needs, if it is missing
 ```
+
+The `idea daemon stop` is the same point Path A makes above, and it is easy to skip here because
+this section reads as self-contained: you are already past `idea init`, so the daemon is running
+and it read your environment before this key existed. `idea model set` warns when it can tell —
+it compares your shell against the daemon's own view — but stopping the daemon first is what makes
+the warning unnecessary. The next command restarts it.
 
 Keys are read from the environment (or the project `.env`), never stored in `harness.yaml`. The two
 commands belong together: **setting the model without exporting the key is worse than doing
@@ -251,10 +280,10 @@ which is what step 1b spells out.
 
 ```bash
 # Hermes — downloads the pinned official image and prints its digest
-idea executors setup --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --model anthropic/claude-3-7-sonnet-latest --yes
 
 # OMP — bring your own image
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet-latest --yes
 ```
 
 This verifies the agent CLI exists in the image, prints the security tradeoff, and writes

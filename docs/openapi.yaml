@@ -658,10 +658,14 @@ paths:
                   description: Only `true` records evidence; `false` records nothing.
                 fail:
                   type: boolean
-                  description: Records the requirement as failing verification. Mutually exclusive with `pass` and `waived`.
+                  description: |
+                    Records the requirement as failing verification. Send one disposition: the
+                    handler takes the first of `fail`, `waived`, `pass` rather than rejecting a
+                    request that sets several, so "mutually exclusive" is the CLI's rule, enforced
+                    by `idea verify`, not this endpoint's.
                 waived:
                   type: boolean
-                  description: Records the requirement as waived. Mutually exclusive with `pass` and `fail`.
+                  description: Records the requirement as waived. Same one-disposition rule as `fail`.
                 note: { type: string }
       responses:
         "200":
@@ -810,7 +814,7 @@ paths:
       operationId: listInitiativeOperations
       summary: Every operation recorded for this initiative
       description: |
-        The initiative's operation history, newest last. `GET /operations/{id}` polls one
+        The initiative's operation history, newest first (`ORDER BY created_at DESC`). `GET /operations/{id}` polls one
         operation; this lists them all, which is what a UI needs to show what has run.
       responses:
         "200":
@@ -2122,7 +2126,10 @@ paths:
               properties:
                 verdict:
                   type: string
-                  enum: [approve, reject, changes_requested]
+                  description: |
+                    The wire vocabulary, which is not the CLI's: `idea review <id> approve` sends
+                    `approved`. A client that posts `approve` or `reject` gets a 400.
+                  enum: [approved, rejected, changes_requested]
               required: [verdict]
       responses:
         "200":
@@ -2358,6 +2365,14 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: updated }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: |
+                      Non-blocking problems attributable to a field this request wrote — a model id
+                      absent from the bundled catalog, say. Same attribution rule as the 400: a
+                      pre-existing warning elsewhere in the config is logged, not returned. Omitted
+                      when empty. Clients should print these; the write still succeeded.
                 required: [status]
         "400":
           description: |
@@ -2456,7 +2471,13 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: updated }
-                required: [status]
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: |
+                      Non-blocking problems with the fields this request wrote — a model id absent
+                      from the bundled catalog, say. Omitted when empty; the write still succeeded.
+                  required: [status]
         "400":
           description: "`invalid body`, `invalid executor kind \"...\"`, `invalid executor image`, or a rejected write."
           content:
@@ -2852,7 +2873,11 @@ components:
     RequirementStatus:
       type: string
       title: RequirementStatus
-      enum: [draft, approved, verified, removed]
+      description: |
+        `failed` is a human "fail" judgment — the requirement stays in the active set and blocks
+        completion until re-verified. `waived` is a human "waive" — out of scope, excluded from the
+        completion gate like `removed`, but retained as a visible judgment rather than deleted.
+      enum: [draft, approved, verified, failed, waived, removed]
 
     Requirement:
       type: object
@@ -3451,8 +3476,11 @@ components:
           description: Acceptance criteria in total.
         needs_manual:
           type: integer
-          description: Criteria still waiting on a human.
-      required: [code, pass, total, needs_manual]
+          description: |
+            Criteria still waiting on a human. Zero for a waived requirement — waived is out of
+            scope, not pending — so read this alongside `status` rather than on its own.
+        status: { $ref: "#/components/schemas/RequirementStatus" }
+      required: [code, pass, total, needs_manual, status]
 
     RiskTier:
       type: string

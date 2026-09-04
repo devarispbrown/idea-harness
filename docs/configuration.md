@@ -94,7 +94,9 @@ so it is worth being exact:
   runs the deterministic checks plus the adversarial reviewer; if the pass is blocked and the cap is
   not yet reached, requirements are superseded and the PRD is regenerated before the next pass. At
   the cap the initiative becomes `needs_human_judgment` rather than failing. The cap applies **per
-  invocation of the loop**, so `idea revise` and `resume` each get a fresh count. The M2 plan review
+  invocation of the loop**, so each entry into it — a new `idea new`, or a revise driven through
+  `POST /initiatives/{id}/revise` — gets a fresh count. The CLI has no revise or resume verb
+  of its own; it reaches the loop through `idea new` and `idea next`. The M2 plan review
   is a single pass and does not consult this field.
 - **`review.max_tokens`** is checked against one response's output-token count. It never accumulates,
   and it does not limit input tokens.
@@ -197,8 +199,16 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
   or state, only read for API calls and redaction.
 - `config validate` and the config API reject any key that would store a secret **value** inline
   (e.g. `api_key`, `password`, `token`); `*_env` references are permitted.
-- Secret values are redacted before any persistence (`[REDACTED]`), including logs, events, blobs,
-  and context bundles.
+- Secret values are redacted on the paths that store them: the artifact/blob store, and the event
+  log, whose rows carry digests into that store rather than content.
+
+  Two things this does **not** cover, both deliberate and both documented at
+  [`security-model.md`](security-model.md#what-this-does-not-protect-against): the daemon log is not
+  redacted and `GET /api/v1/logs` returns it verbatim, and the raw blob store (`raw-blobs/`) keeps
+  uploaded file content and image bytes exactly as received.
+
+  Redaction is also not a uniform gate on what leaves for the model provider — it is applied at
+  specific points, not to every outbound request.
 
 ## Role Contracts
 

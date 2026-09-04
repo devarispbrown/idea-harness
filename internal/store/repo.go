@@ -140,8 +140,15 @@ func (db *DB) ClaimInitiativeRunning(ctx context.Context, initiativeID string, f
 		EventType:     "initiative.status_changed",
 		Operation:     string(domain.InitiativeRunning),
 	}, func(tx *sql.Tx) error {
+		// failure_reason is deliberately untouched. Apply and revert claim from
+		// every non-running state -- `failed` included -- and release back to
+		// where they found it, so clearing the reason here erased it before the
+		// release could restore it: an initiative reported as failed with no
+		// reason at all. The reason is cleared by the transition that actually
+		// resolves the failure (SetInitiativeStatus, below), not by taking the
+		// claim.
 		res, err := tx.Exec(
-			`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ?
+			`UPDATE initiatives SET status = ?, updated_at = ?
 			 WHERE id = ? AND status IN (`+placeholders+`)`, args...)
 		if err != nil {
 			return err
@@ -178,6 +185,18 @@ func (db *DB) SetInitiativeStatus(ctx context.Context, initiativeID string, stat
 		// Any transition out of "failed" clears the stale failure reason (the
 		// only writer of failure_reason is FailInitiative, which sets status
 		// failed in the same row update).
+		//
+		// Except a transition *to* failed, which is how apply and revert release
+		// a claim they took from a failed initiative. Clearing there replaced a
+		// real reason with an empty one and left `idea status` reporting a
+		// failure with no explanation. `running` is excluded for the same
+		// reason: it is the claim's own status, and the release that follows it
+		// is what decides whether the reason still applies.
+		if status == domain.InitiativeFailed || status == domain.InitiativeRunning {
+			_, err := tx.Exec(`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ?`,
+				status, time.Now().UTC().UnixMilli(), initiativeID)
+			return err
+		}
 		_, err := tx.Exec(`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ? WHERE id = ?`,
 			status, time.Now().UTC().UnixMilli(), initiativeID)
 		return err
