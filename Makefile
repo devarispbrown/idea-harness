@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check
+.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -76,6 +76,9 @@ api-docs:
 
 api-docs-check:
 	go run ./internal/docsgen -api-docs-check
+
+docs-lint:
+	go run ./internal/docsgen -docs-lint
 
 # Build the API reference as static files any host can serve, for people who
 # would rather not carry its ~3.7 MiB inside every binary (APIDOCS=0 drops it).

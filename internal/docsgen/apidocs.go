@@ -99,16 +99,25 @@ func docPathToRoute(p string) string {
 // routeToDocPath is the inverse, for rows this tool writes.
 func routeToDocPath(p string) string { return strings.TrimPrefix(p, "/api/v1") }
 
-// runAPIDocsCheck compares the endpoint tables against the registered routes.
+// runAPIDocsCheck compares the endpoint tables against the registered routes,
+// and against the spec.
 func runAPIDocsCheck() error {
 	missing, stale, err := apiDocsDiff()
 	if err != nil {
 		return err
 	}
-	if len(missing) == 0 && len(stale) == 0 {
+	specProblems, err := apiDocsVsSpec()
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 && len(stale) == 0 && len(specProblems) == 0 {
 		return nil
 	}
 	var b strings.Builder
+	if len(specProblems) > 0 {
+		fmt.Fprintf(&b, "%d endpoint(s) in %s that %s does not describe the same way:\n%s\n\n",
+			len(specProblems), apiDocsPath, specPath, strings.Join(specProblems, "\n"))
+	}
 	if len(missing) > 0 {
 		var names []string
 		for _, op := range missing {
@@ -218,4 +227,49 @@ func runAPIDocsGenerate() error {
 	}
 	fmt.Printf("api-docs: added %d row(s) to %s under \"Undocumented routes\"\n", len(missing), apiDocsPath)
 	return nil
+}
+
+// apiDocsVsSpec compares the prose tables against the machine spec.
+//
+// The third axis of the same wall. api-docs-check proves every route has a row,
+// and api-check proves every route has an operation -- but every reference
+// finding in that audit was docs/api.md drifting from an openapi.yaml that was
+// already correct, so both checks were green while the prose was wrong. This is
+// the pair that was never compared.
+//
+// Row existence only, in both directions: it cannot see a wrong description, and
+// says so rather than implying otherwise.
+func apiDocsVsSpec() ([]string, error) {
+	root, err := repoRoot()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseAPIDocs(filepath.Join(root, apiDocsPath))
+	if err != nil {
+		return nil, err
+	}
+	ids, err := specOperationIDs(filepath.Join(root, specPath))
+	if err != nil {
+		return nil, err
+	}
+	documented := map[operation]bool{}
+	for _, r := range rows {
+		documented[r.op] = true
+	}
+	var problems []string
+	for op := range ids {
+		if !strings.HasPrefix(op.path, "/api/") {
+			continue
+		}
+		if !documented[op] {
+			problems = append(problems, "  "+op.String()+" is in the spec with no row in the prose tables")
+		}
+	}
+	for _, r := range rows {
+		if _, ok := ids[r.op]; !ok {
+			problems = append(problems, "  "+r.op.String()+" has a prose row that the spec does not declare")
+		}
+	}
+	sort.Strings(problems)
+	return problems, nil
 }

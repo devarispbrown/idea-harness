@@ -89,16 +89,17 @@ Every error response is the same shape (`writeError`, `internal/daemon/server.go
 ```
 
 Status selection is centralized in `writeErr` ([`internal/daemon/errors.go`](../internal/daemon/errors.go)),
-which classifies the error rather than trusting the handler's guess. Three cases, in order:
+which classifies the error rather than trusting the handler's guess. Four cases, in order:
 
 | Case | Status | Body |
 |---|---|---|
 | **Store miss** — `*store.NotFoundError` (or a bare `sql.ErrNoRows` that escaped wrapping) | `404` | The store's own message, which names the kind and the reference asked for: `no requirement matching "REQ-9"`. An unwrapped miss degrades to `not found`. |
+| **Precondition failure** — `*PreconditionError`, the daemon's own type for "the current state does not allow this" | `409` | The precondition's own message: `initiative is already running`, `advance requires an approved PRD (status=…)`. See the `409` notes below. |
 | **Storage failure** — `store.IsStorageFailure`: a `*sqlite.Error` or an `*fs.PathError` | `500` | `internal error (correlation id: a1b2c3d4e5f6)`. The full error is logged server-side under that id (`idea logs`). Driver text, constraint names and absolute state paths never reach the client. |
-| **Domain error** — everything else | the status the handler passed | The error's own message, verbatim: `initiative is already running`, `no initiatives in project`. These messages were written to be read, so they are not masked. |
+| **Domain error** — everything else | the status the handler passed | The error's own message, verbatim: `tasks are editable only after the plan is drafted and before it is executed` (`409`), `comment "…" was already promoted to a question` (`400`). These messages were written to be read, so they are not masked. |
 
-The status argument to `writeErr` is therefore a *default* for the third case only; a 404 wins over
-a handler that passed `500`. Handlers that validate their own request bodies write `400` directly
+The status argument to `writeErr` is therefore a *default* for the fourth case only; a 404 or a 409
+wins over a handler that passed `500`. Handlers that validate their own request bodies write `400` directly
 (`verdict is required`, `root_path is required`, `type and id query params are required`).
 
 A `409` means the current state does not allow what was asked. It is not one endpoint but a class,
@@ -175,7 +176,7 @@ of the other:
 
 | | `GET …/initiatives/{id}/next` | `GET …/initiatives/{id}/guidance` |
 |---|---|---|
-| Computed by | `workflow.Engine.NextAction` (`internal/workflow/next.go`) | `projection.BuildNextMove` (`internal/projection/projection.go`) |
+| Computed by | `workflow.Engine.NextAction` (`internal/workflow/next.go`) | `projection.BuildGuidance` (`internal/projection/projection.go`) |
 | Response | `{"action": "review CHG-1"}` | `{"action": "Resolve open decisions", "why": "2 decision(s) need your judgment before proceeding.", "affected": ["Product Definition"]}` |
 | `action` is | a **command token** from a closed set: `advance`, `execute`, `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `wait` | an **English sentence** for a human to read |
 | Inputs | initiative status **and the initiative's change sets** — it walks them for `review_required`, then `approved`, then `applied`, and names the specific change set to act on | initiative status **and the Understanding projection** — counts of open decisions and open questions. It never loads change sets and can never name one |
@@ -217,7 +218,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
-| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed, optionally with a different `{"model": …}`. **202**. `409` when the initiative is running. |
+| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`, which is **required** — a missing or blank `model` is `400 model is required`. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/reopen-phase` | Reopen a completed phase named by `{"phase": …}` so it can be revised. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/resume` | Resume a paused/interrupted initiative; returns the new status. |
 | POST | `/projects/{projectId}/initiatives/{id}/approve` | Human approval of the reviewed PRD. |
@@ -235,14 +236,14 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
 | GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
-| GET | `/projects/{projectId}/initiatives/{id}/impact-counts` | Dependent counts per graph node, for badging the UI without a query per node. |
+| GET | `/projects/{projectId}/initiatives/{id}/impact-counts?nodes=` | Dependent counts per graph node, for badging the UI without a query per node. `nodes` is **required**: a comma-separated list of `type:id` pairs, where `id` is the graph node id the read endpoints return, not the human code — `decision:<id>,requirement:<id>`. Missing, malformed, or more than 200 entries is `400`. |
 | GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
 | GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
 | GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
-| GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff across artifact versions. |
+| GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff: requirements as added vs. removed, decisions as open/decided/superseded, read from the graph rather than by diffing rendered markdown. Not a source diff — that is `/change-sets/{id}/diff`. |
 | GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
 | GET | `/projects/{projectId}/initiatives/{id}/risk` | Deterministic risk profile computed from the initiative's patches. A read: it writes nothing. |
 
@@ -261,7 +262,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/projects/{projectId}/initiatives/{id}/docs` | Ingest a context doc. Two shapes: JSON `{content, kind, title}` (paste), or `multipart/form-data` with `file` (md/txt/pdf/docx/xlsx/jpg/png). Credential-swept, redacted, content-addressed. |
+| POST | `/projects/{projectId}/initiatives/{id}/docs` | Ingest a context doc. Two shapes: JSON `{content, kind, title}` (paste), or `multipart/form-data` with `file`. Text formats (md/txt/csv/pdf/docx/xlsx) are credential-swept, redacted and content-addressed; image formats (jpg/png/gif/webp, classified by magic bytes) are stored verbatim and described by a vision model — see [`security.md`](security.md). |
 | GET | `/projects/{projectId}/initiatives/{id}/docs` | List the initiative's ingested docs. |
 | GET | `/projects/{projectId}/initiatives/{id}/docs/{docId}` | **Not JSON.** Downloads the stored content as an attachment: raw bytes for images, redacted text otherwise. |
 
@@ -286,12 +287,12 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
 | GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
 | GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
-| GET | `/projects/{projectId}/artifacts/diff` | Structured diff between two artifact versions, given `?from=` and `?to=`. |
+| GET | `/projects/{projectId}/artifacts/diff` | Unified line diff between two versions of one artifact, given `?from=` and `?to=` version ids. Versions from different artifacts are a `400`; bodies over 1 MiB or 20,000 lines are a `413`. |
 | GET | `/projects/{projectId}/artifacts/{id}/comments` | Human comments on one artifact version. |
 | POST | `/projects/{projectId}/artifacts/{id}/comments` | Attach a comment to an artifact version, optionally anchored to a quoted span. |
-| POST | `/projects/{projectId}/comments/{id}/promote` | Promote a comment into the product graph as a requirement, decision or question. |
+| POST | `/projects/{projectId}/comments/{id}/promote` | Promote a comment into the product graph as an open **question** — the only node kind promote produces. Returns that question. |
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
-| GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same body as `text/markdown` for download/export. |
+| GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same artifact version's body as `text/markdown` for download/export — served **unsanitized**, unlike `/body`. |
 
 ### Findings
 
@@ -309,7 +310,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/change-sets` | List change sets with status. |
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
-| GET | `/projects/{projectId}/change-sets/{id}/diff` | The rendered patch as `{"patch": "…"}` (content redacted at write time). |
+| GET | `/projects/{projectId}/change-sets/{id}/diff` | The patch in two forms: `patch`, the whole rendered diff as one string, and `files`, a per-file list (`path`, `change_type`, `size`, `content`). Content is redacted **at this display surface, not at write time** — the raw blob store is deliberately redaction-free so apply and revert round-trip byte-for-byte ([`security-model.md`](security-model.md#what-this-does-not-protect-against)). |
 | POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approve"\|"reject"\|"changes_requested"}`. |
 | POST | `/projects/{projectId}/change-sets/{id}/apply` | Apply an approved change set to the workspace. **202** |
 | POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202** |

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -107,7 +109,58 @@ func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) e
 	})
 }
 
-// SetInitiativeStatus updates the status and appends a transition event.
+// ClaimInitiativeRunning marks an initiative running, but only from one of the
+// states given. It reports ErrInitiativeNotClaimable when no row matched.
+//
+// This is the atomic half of "is it already running?". Seven Runtime entry
+// points asked that question and four of them never set the flag, so two
+// concurrent requests both passed the check -- a double-clicked "Revise plan"
+// let one goroutine delete and recreate the task set while the other wrote
+// dependency edges to task ids that no longer existed, after which every later
+// revise was refused.
+//
+// A Go-level GetInitiative-then-set cannot fix that: the read and the write are
+// not atomic with each other, which is the same check-then-act the finding is
+// about. SetInitiativeStatus is an unconditional UPDATE and cannot be used for a
+// claim. TransitionChangeSet has been the compare-and-swap precedent in this
+// package all along, and this follows it.
+func (db *DB) ClaimInitiativeRunning(ctx context.Context, initiativeID string, from ...domain.InitiativeStatus) error {
+	if len(from) == 0 {
+		return fmt.Errorf("store: ClaimInitiativeRunning needs at least one source status")
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(from)), ",")
+	args := []any{domain.InitiativeRunning, time.Now().UTC().UnixMilli(), initiativeID}
+	for _, f := range from {
+		args = append(args, f)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "initiative.status_changed",
+		Operation:     string(domain.InitiativeRunning),
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ?
+			 WHERE id = ? AND status IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrInitiativeNotClaimable
+		}
+		return nil
+	})
+}
+
+// ErrInitiativeNotClaimable reports that an initiative could not be claimed:
+// another request holds it, or it is not in a state the operation runs from.
+var ErrInitiativeNotClaimable = errors.New("store: initiative is not in a claimable state")
+
 func (db *DB) SetInitiativeStatus(ctx context.Context, initiativeID string, status domain.InitiativeStatus, actor string) error {
 	if !status.Valid() {
 		return fmt.Errorf("store: invalid initiative status %q", status)
@@ -884,9 +937,24 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		EventType:     "finding.dispositioned",
 		Operation:     string(disp),
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ? WHERE id = ?`,
+		// RowsAffected, because db.Apply commits the finding.dispositioned event
+		// in this same transaction. Without the check, a stale or wrong id
+		// returned 200 and durably recorded that a human accepted a risk on a
+		// finding that does not exist -- in the event log this product sells as
+		// provable provenance.
+		res, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ? WHERE id = ?`,
 			disp, actor, findingID)
-		return err
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return &NotFoundError{Kind: "finding", Ref: findingID}
+		}
+		return nil
 	})
 }
 
@@ -900,7 +968,19 @@ func (db *DB) SetFindingNote(ctx context.Context, findingID, note, actor string)
 		Actor:         actor,
 		EventType:     "finding.noted",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE findings SET note = ? WHERE id = ?`, note, findingID)
-		return err
+		// Same reason as SetFindingDisposition: the event is committed with the
+		// row update, so a miss must fail rather than record a note nobody wrote.
+		res, err := tx.Exec(`UPDATE findings SET note = ? WHERE id = ?`, note, findingID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return &NotFoundError{Kind: "finding", Ref: findingID}
+		}
+		return nil
 	})
 }

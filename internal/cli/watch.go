@@ -34,15 +34,36 @@ func cmdWatch(a cmdArgs, stdout, stderr io.Writer) error {
 
 // watchInitiative runs the live Bubble Tea watcher for one initiative.
 func watchInitiative(c *client, projectID, initiativeID string, stdout io.Writer) error {
+	return watchInitiativeWith(c, projectID, initiativeID, stdout)
+}
+
+// watchInitiativeWith runs the watcher with extra program options, so a test can
+// supply a headless input and renderer. Without that, tea.NewProgram fails to
+// open /dev/tty under `go test` and returns before any polling -- which is why
+// the previous round's test could not reach this function's exit path at all,
+// and passed whether or not the fix worked.
+func watchInitiativeWith(c *client, projectID, initiativeID string, stdout io.Writer, opts ...tea.ProgramOption) error {
 	m := watchModel{
 		c:            c,
 		projectID:    projectID,
 		initiativeID: initiativeID,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.Dot)),
 	}
-	p := tea.NewProgram(&m, tea.WithOutput(stdout))
-	if _, err := p.Run(); err != nil {
+	p := tea.NewProgram(&m, append([]tea.ProgramOption{tea.WithOutput(stdout)}, opts...)...)
+	final, err := p.Run()
+	if err != nil {
 		return err
+	}
+	// Read fatal off the model the program returns, not off the local one.
+	//
+	// Update has a value receiver, so Bubble Tea copies the model on the first
+	// update and thereafter carries the returned value. The outer m is never
+	// written again, so `return m.fatal` was always nil -- watch quit correctly
+	// on a bad reference and still exited 0, which is the bug the previous round
+	// thought it had fixed. The test written for it drove poll() on a pointer,
+	// which is not the shape the program uses, so it passed either way.
+	if fm, ok := final.(watchModel); ok {
+		return fm.fatal
 	}
 	return m.fatal
 }

@@ -27,8 +27,23 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`),
 	// npm access token.
 	regexp.MustCompile(`\bnpm_[A-Za-z0-9]{30,}\b`),
-	// OpenAI / generic sk- keys.
-	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+	// Anthropic, OpenAI and other `sk-` keys.
+	//
+	// Shaped as "a few short vendor segments, then a long alphanumeric run",
+	// because every current key format puts hyphens inside the first characters
+	// -- sk-ant-api03-…, sk-proj-…, sk-svcacct-… -- while the secret itself is
+	// one unbroken run.
+	//
+	// The original pattern required 20+ contiguous alphanumerics immediately
+	// after "sk-", so it matched only the legacy flat OpenAI shape and silently
+	// passed every modern key, Anthropic's included -- the credential forwarded
+	// into the sandboxed agent container.
+	//
+	// Simply widening the class to admit "-" went too far the other way: it
+	// matched any 20+ character hyphenated string starting "sk-", so an ordinary
+	// URL slug like sk-decomposition-of-matrices-and-linear-algebra was redacted,
+	// and ContainsCredential rejected the whole document upload containing it.
+	regexp.MustCompile(`\bsk-(?:[A-Za-z0-9]+-){0,3}[A-Za-z0-9]{16,}`),
 	// Stripe live secret key.
 	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
 	// Slack tokens (bot, app, refresh, signing, user).

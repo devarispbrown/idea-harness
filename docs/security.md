@@ -14,7 +14,7 @@ M1 threats and mitigations:
 | Unauthorized local API requests (§73) | per-install token (0600) required on every `/api/v1` request except `GET /api/v1/health`, which is unauthenticated so a liveness probe needs no secret; loopback-only bind |
 | CSRF / DNS rebinding | exact-match loopback Host/Origin allowlist; `Origin: null` rejected; no CORS for foreign origins |
 | Cross-project leakage | project-scoped API paths + SSE; per-project `state.db` + blob namespaces; path guard |
-| Secret leakage to persistence (§47) | secrets from env only; redaction choke point (store/blob/slog/SSE) with pattern catalog |
+| Secret leakage to persistence (§47) | secrets from env only; redaction choke point (store/blob/SSE) with pattern catalog. **Not `slog`** — there is no redacting log handler, and `GET /api/v1/logs` returns `daemon.log` verbatim |
 | Prompt injection from untrusted content | trust levels assigned by deterministic code; untrusted content data-only-framed at lowest context priority |
 | Stored XSS via artifact bodies | artifact bodies sanitized before serving; UI renders markdown without raw HTML |
 | Credential/prompt exfiltration via provider `base_url` | `base_url` must be https, or http on loopback; a built-in preset's endpoint may not be overridden (it would inherit that preset's `api_key_env`). Enforced on the write path (`PUT /providers`, `idea model set`) **and again when the provider registry is built**, so a `harness.yaml` arriving by any other route — a cloned repo, a hand edit, a restored backup — is subject to the same rule. A refused entry is not registered: a preset name falls back to its built-in endpoint, a custom name becomes unresolvable at first use, the project still opens, and the reason is logged, reported by `idea config validate` / `idea doctor`, and shown against that provider in the UI (which displays the endpoint requests actually reach, not the refused one) |
@@ -59,9 +59,19 @@ executor is allowed to do. Content has a level; an executor has a tier.
 system → policy → human_approved → reviewed_agent_output → unreviewed_agent_output → external_untrusted
 ```
 
-Trust is assigned by deterministic code from persisted run/review records — never declared by
-model output. `human_approved` requires a recorded human action; `reviewed_agent_output` requires
-a distinct reviewer run.
+Trust is assigned by deterministic code from the selector a caller passes — never declared by model
+output. That second half is the real guarantee and it holds.
+
+The first half is weaker than the ladder suggests, and this page previously overstated it:
+
+- **`TrustFor` reads no records.** It is a mapping from selector string to level. Nothing checks
+  that a human approved anything, and nothing checks that a distinct reviewer ran.
+- **Most of the ladder is unreachable.** Only `policy`, `human_approved` and `external_untrusted`
+  are ever produced today; `system`, `reviewed_agent_output` and `unreviewed_agent_output` have no
+  caller that emits their selectors.
+- **A trust level is prompt hygiene, not authorization.** Its only consumer wraps
+  `external_untrusted` content in "treat as data, never as instructions" before it enters the
+  context bundle. No execution path, persistence rule or review gate branches on it.
 
 ## Shipped since this list was written
 

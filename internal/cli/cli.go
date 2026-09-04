@@ -64,6 +64,15 @@ type command struct {
 	// omitted field in a keyed struct literal.
 	flags flagSpec
 	subs  map[string]flagSpec
+	// maxPositional bounds the positional arguments a command accepts.
+	//
+	// Zero means unbounded, deliberately: it is the Go zero value, so a row that
+	// does not declare a bound keeps working. The previous round learned this the
+	// hard way with flagSpec, where the zero value silently meant "reject every
+	// flag". A bound is opt-in, set on the commands that take a fixed number of
+	// references -- which is where the defect was: `idea apply CHG-1 CHG-2`
+	// applied only the first and reported success.
+	maxPositional int
 	// subsAreRequired marks a command whose leading word must name a subcommand,
 	// so a typo is reported rather than silently falling through to the bare
 	// behaviour.
@@ -87,10 +96,10 @@ func commands() []command {
 	return []command{
 		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
 		{names: []string{"new"}, usage: `new "<idea>"`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated}, run: cmdNew, inHelp: true},
-		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, run: cmdStatus, inHelp: true},
-		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, run: cmdChanged, inHelp: true},
-		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, run: cmdDecisions, inHelp: true},
-		{names: []string{"reviews"}, usage: "reviews", summary: "list review findings", flags: jsonFlag, run: cmdReviews, inHelp: true},
+		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
+		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
+		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, maxPositional: 1, run: cmdDecisions, inHelp: true},
+		{names: []string{"reviews"}, usage: "reviews", summary: "list review findings", flags: jsonFlag, maxPositional: 1, run: cmdReviews, inHelp: true},
 		{names: []string{"model"}, usage: "model", summary: "list/set model providers (Gemini, OpenAI, …)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"list": {}, "ls": {},
 			"set": {"--role": flagValue},
@@ -99,31 +108,31 @@ func commands() []command {
 		{usage: "model ls <provider>", summary: "list a provider's models live (falls back to the catalog offline)"},
 		{usage: "model set <provider/model>", summary: "set the default model (--role <role> sets one role only)"},
 		{usage: "model add <name>", summary: "add a provider (--type, --base-url, --key-env)"},
-		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", flags: flagSpec{}, run: cmdPRD, inHelp: true},
-		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", flags: jsonFlag, run: cmdExplain, inHelp: true},
-		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", flags: flagSpec{}, run: cmdExport, inHelp: true},
-		{names: []string{"advance"}, usage: "advance", summary: "run Design → Execution Plan (M2)", flags: flagSpec{}, run: cmdAdvance, inHelp: true},
-		{names: []string{"plan"}, usage: "plan", summary: "render the execution plan", flags: flagSpec{"--json": flagBool}, rejectsJSON: true, run: cmdPlan, inHelp: true},
-		{names: []string{"tasks"}, usage: "tasks", summary: "list the ordered plan tasks", flags: jsonFlag, run: cmdTasks, inHelp: true},
-		{names: []string{"why"}, usage: "why <type> <id>", summary: "show the provenance chain", flags: jsonFlag, run: cmdWhy, inHelp: true},
-		{names: []string{"impact"}, usage: "impact <type> <id>", summary: "show dependents + staleness", flags: jsonFlag, run: cmdImpact, inHelp: true},
-		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, run: cmdTrace, inHelp: true},
-		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, run: cmdDiff, inHelp: true},
-		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", flags: flagSpec{}, run: cmdExecute, inHelp: true},
-		{names: []string{"changes"}, usage: "changes", summary: "list change sets", flags: jsonFlag, run: cmdChanges, inHelp: true},
-		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, run: cmdChange, inHelp: true},
-		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, run: cmdApply, inHelp: true},
-		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", flags: flagSpec{}, run: cmdRevert, inHelp: true},
-		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", flags: flagSpec{}, run: cmdReview, inHelp: true},
-		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, run: cmdVerify, inHelp: true},
+		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", flags: flagSpec{}, maxPositional: 2, run: cmdPRD, inHelp: true},
+		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", flags: jsonFlag, maxPositional: 1, run: cmdExplain, inHelp: true},
+		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", flags: flagSpec{}, maxPositional: 2, run: cmdExport, inHelp: true},
+		{names: []string{"advance"}, usage: "advance", summary: "run Design → Execution Plan (M2)", flags: flagSpec{}, maxPositional: 1, run: cmdAdvance, inHelp: true},
+		{names: []string{"plan"}, usage: "plan", summary: "render the execution plan", flags: flagSpec{"--json": flagBool}, rejectsJSON: true, maxPositional: 1, run: cmdPlan, inHelp: true},
+		{names: []string{"tasks"}, usage: "tasks", summary: "list the ordered plan tasks", flags: jsonFlag, maxPositional: 1, run: cmdTasks, inHelp: true},
+		{names: []string{"why"}, usage: "why <type> <id>", summary: "show the provenance chain", flags: jsonFlag, maxPositional: 3, run: cmdWhy, inHelp: true},
+		{names: []string{"impact"}, usage: "impact <type> <id>", summary: "show dependents + staleness", flags: jsonFlag, maxPositional: 3, run: cmdImpact, inHelp: true},
+		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, maxPositional: 3, run: cmdTrace, inHelp: true},
+		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, maxPositional: 1, run: cmdDiff, inHelp: true},
+		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", flags: flagSpec{}, maxPositional: 1, run: cmdExecute, inHelp: true},
+		{names: []string{"changes"}, usage: "changes", summary: "list change sets", flags: jsonFlag, maxPositional: 1, run: cmdChanges, inHelp: true},
+		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, maxPositional: 1, run: cmdChange, inHelp: true},
+		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, maxPositional: 1, run: cmdApply, inHelp: true},
+		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", flags: flagSpec{}, maxPositional: 1, run: cmdRevert, inHelp: true},
+		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", flags: flagSpec{}, maxPositional: 2, run: cmdReview, inHelp: true},
+		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, maxPositional: 1, run: cmdVerify, inHelp: true},
 		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},
-		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, run: cmdRisk, inHelp: true},
+		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, maxPositional: 1, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
 			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool},
 		}, subsAreRequired: true, run: cmdExecutors, inHelp: true},
 		{usage: "executors setup", summary: "wire a coding agent (hermes|omp)", inHelp: true},
-		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, run: cmdWatch, inHelp: true},
-		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, run: cmdCancel, inHelp: true},
+		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
+		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
 		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)"},
 		{names: []string{"doctor"}, usage: "doctor", summary: "check daemon/config/state health", flags: flagSpec{}, run: func(_ cmdArgs, stdout, _ io.Writer) error { return cmdDoctor(stdout) }, inHelp: true},
@@ -185,21 +194,30 @@ func (c command) parse(name string, rest []string) (cmdArgs, error) {
 	if len(rest) > 0 && c.subs != nil {
 		if subSpec, ok := c.subs[rest[0]]; ok {
 			spec, sub, rest = subSpec, rest[0], rest[1:]
-		} else if !strings.HasPrefix(rest[0], "-") {
-			// A leading word that is not a known subcommand. For a command whose
-			// subcommands are the whole interface, that is a typo worth naming --
-			// `idea daemon stauts` used to start a second daemon in the
-			// foreground, and `idea config valdiate` printed the model list and
-			// exited 0.
-			if c.subsAreRequired {
-				return cmdArgs{}, fmt.Errorf("unknown %s subcommand %q (use %s)",
-					name, rest[0], strings.Join(sortedKeys(c.subs), ", "))
-			}
 		}
 	}
 	positional, flags, err := parseArgs(spec, rest)
 	if err != nil {
 		return cmdArgs{}, err
+	}
+
+	// Checked against the PARSED positionals, not the raw argv.
+	//
+	// Testing rest[0] let the "--" terminator walk straight past this: `idea
+	// config -- validate` printed the model list and `idea daemon -- stop`
+	// started a foreground daemon -- the exact two behaviours the previous round
+	// fixed, still reachable one keystroke away.
+	if sub == "" && c.subsAreRequired && len(positional) > 0 {
+		return cmdArgs{}, fmt.Errorf("unknown %s subcommand %q (use %s)",
+			name, positional[0], strings.Join(sortedKeys(c.subs), ", "))
+	}
+
+	// Extra positionals are an error, not something to drop silently. `idea apply
+	// CHG-1 CHG-2` applied only the first and reported success, so the user
+	// believed both had landed.
+	if c.maxPositional > 0 && len(positional) > c.maxPositional {
+		return cmdArgs{}, fmt.Errorf("%s takes at most %d argument(s), got %d: %s",
+			name, c.maxPositional, len(positional), strings.Join(positional, " "))
 	}
 	return cmdArgs{sub: sub, positional: positional, flags: flags}, nil
 }
@@ -466,6 +484,15 @@ func cmdConfig(a cmdArgs, stdout, stderr io.Writer) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
+		}
+		// The same false green doctor was fixed for twice, in its sibling.
+		// config.Load returns usable defaults for a directory with no
+		// .idea-harness, so this printed "config: valid" and exited 0 anywhere on
+		// the filesystem -- while docs/cli.md advertises "non-zero exit when
+		// invalid". Unlike doctor, this command is asked to validate a specific
+		// thing, so the absence of that thing is an error rather than a note.
+		if _, statErr := os.Stat(filepath.Join(cwd, config.Dir)); statErr != nil {
+			return fmt.Errorf("no idea-harness project in %s (run `idea init` to create one)", cwd)
 		}
 		// Schema validity is not the same as a usable config: a default_model
 		// naming a provider that does not exist parses fine and fails at the

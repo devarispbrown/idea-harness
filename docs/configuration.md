@@ -19,11 +19,12 @@ name: my-product   # project display name
 # Network policy v0.1: disabled | enabled (default: disabled).
 network: disabled
 
-# Review budget (§11, §16).
+# Review budget (§11, §16). The three fields bound different things — see the
+# table below; they are not three spellings of one budget.
 review:
-  max_cycles: 3        # maximum revise cycles before human judgment
-  max_tokens: 0        # optional token budget (0 = unlimited)
-  max_cost_usd: 0      # optional cost budget (0 = unlimited)
+  max_cycles: 3        # review passes in M1 before needs_human_judgment (0 also means 3)
+  max_tokens: 0        # per-response output-token ceiling (0 = no ceiling)
+  max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
 
 # Research sources (fetched — public addresses only — during research when
 # network is enabled). Offline/empty means the researcher marks everything as
@@ -64,8 +65,9 @@ Top-level fields:
 | Field | Meaning | Default |
 |---|---|---|
 | `network` | `disabled` \| `enabled` — whether research may fetch `research.urls` | `disabled` |
-| `review.max_cycles` | maximum revise cycles before the work goes to human judgment | `3` |
-| `review.max_tokens`, `review.max_cost_usd` | optional per-review budgets (`0` = unlimited) | `0` |
+| `review.max_cycles` | how many **review passes** the M1 review loop may run before it stops and sets the initiative to `needs_human_judgment`. A revise happens between passes, so `n` passes allow at most `n-1` revisions. `0` is **not** unlimited: the engine coerces any value `<= 0` to 3 | `3` |
+| `review.max_tokens` | ceiling on the **output tokens of a single model response**. A response over it fails that stage — it is a per-call cap, not a pool that drains | `0` (no ceiling) |
+| `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |
 | `research.urls` | seed URLs fetched during research when `network: enabled` | none |
 | `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
@@ -82,6 +84,25 @@ Top-level fields:
 daemon's environment, so committing is never implied. Applied change sets are always revertible from
 the snapshot regardless of this setting — the commit is an extra, not the mechanism. The web UI
 exposes the same switch under **Settings**.
+
+### The three review budgets
+
+`max_cycles`, `max_tokens` and `max_cost_usd` are independent and are enforced in different places,
+so it is worth being exact:
+
+- **`review.max_cycles`** bounds only the M1 review loop (`workflow.Engine.runReviewLoop`). Each pass
+  runs the deterministic checks plus the adversarial reviewer; if the pass is blocked and the cap is
+  not yet reached, requirements are superseded and the PRD is regenerated before the next pass. At
+  the cap the initiative becomes `needs_human_judgment` rather than failing. The cap applies **per
+  invocation of the loop**, so `idea revise` and `resume` each get a fresh count. The M2 plan review
+  is a single pass and does not consult this field.
+- **`review.max_tokens`** is checked against one response's output-token count. It never accumulates,
+  and it does not limit input tokens.
+- **`review.max_cost_usd`** is the only cumulative figure. It is charged in `Engine.chargeUSD` from
+  each response's reported cost, including the vision-description calls for uploaded images.
+
+Reading `0` as "unlimited" is right for `max_tokens` and `max_cost_usd` and wrong for `max_cycles`,
+which the engine rewrites to 3. `idea config validate` rejects a negative `max_cycles`.
 
 Each provider entry supports:
 
