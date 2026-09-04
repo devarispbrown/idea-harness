@@ -89,6 +89,8 @@ type geminiResponse struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
+		// "MAX_TOKENS" means the budget was hit, not that the model finished.
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
@@ -160,6 +162,9 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 	content := sb.String()
 	if strings.TrimSpace(content) == "" {
 		return Response{}, fmt.Errorf("gemini: empty content (output_tokens=%d)", parsed.UsageMetadata.CandidatesTokenCount)
+	}
+	if len(parsed.Candidates) > 0 && parsed.Candidates[0].FinishReason == "MAX_TOKENS" {
+		return Response{}, truncatedError("gemini", req.MaxOutput)
 	}
 	actual := parsed.ModelVersion
 	if actual == "" {

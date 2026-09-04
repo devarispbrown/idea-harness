@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,5 +134,67 @@ func TestScrubStillCatchesSecrets(t *testing.T) {
 		if strings.Contains(got, secret) {
 			t.Errorf("credential survived the scrub: %s", got)
 		}
+	}
+}
+
+// TestTruncationIsDetected pins the safety net under the stage-budget cap.
+//
+// Capping a request to the provider's ceiling turns a guaranteed 400 into a
+// request that succeeds — but a structured reply cut mid-object is not caught
+// downstream: repairJSON closes unterminated containers and the review schema
+// has no minItems, so a findings list truncated from 15 to 1 validates clean.
+// A review flagged that the cap, shipped alone, traded a loud failure for a
+// quietly diminished artifact. Each provider now reports it from its own finish
+// reason.
+func TestTruncationIsDetected(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		call       func(u string) error
+	}{
+		{
+			name: "openai finish_reason=length",
+			body: `{"choices":[{"message":{"content":"{\"findings\":[]"},"finish_reason":"length"}],"usage":{"completion_tokens":8192}}`,
+			call: func(u string) error { _, err := NewOpenAI("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			name: "anthropic stop_reason=max_tokens",
+			body: `{"content":[{"type":"text","text":"{\"findings\":["}],"stop_reason":"max_tokens","usage":{"output_tokens":8192}}`,
+			call: func(u string) error { _, err := NewAnthropic("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			name: "gemini finishReason=MAX_TOKENS",
+			body: `{"candidates":[{"content":{"parts":[{"text":"{\"findings\":["}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"candidatesTokenCount":8192}}`,
+			call: func(u string) error { _, err := NewGemini("k", u).Complete(context.Background(), req()); return err },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer ts.Close()
+
+			err := c.call(ts.URL)
+			if err == nil {
+				t.Fatal("a truncated reply was accepted as a successful one")
+			}
+			if !errors.Is(err, ErrTruncated) {
+				t.Fatalf("error is not ErrTruncated: %v", err)
+			}
+			if !strings.Contains(err.Error(), "100") {
+				t.Errorf("the message should name the budget that was hit: %v", err)
+			}
+		})
+	}
+}
+
+// TestAnUntruncatedReplyIsNotFlagged is the other direction: the ordinary stop
+// reason must pass through.
+func TestAnUntruncatedReplyIsNotFlagged(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}],"usage":{"completion_tokens":2}}`))
+	}))
+	defer ts.Close()
+	if _, err := NewOpenAI("k", ts.URL).Complete(context.Background(), req()); err != nil {
+		t.Fatalf("a complete reply was rejected: %v", err)
 	}
 }

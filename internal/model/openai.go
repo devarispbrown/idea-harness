@@ -104,6 +104,8 @@ type openAIChatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		// "length" means the budget was hit, not that the model finished.
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -159,6 +161,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	if strings.TrimSpace(content) == "" {
 		return Response{}, fmt.Errorf("openai: empty content (completion_tokens=%d)", parsed.Usage.CompletionTokens)
+	}
+	if len(parsed.Choices) > 0 && parsed.Choices[0].FinishReason == "length" {
+		return Response{}, truncatedError("openai", req.MaxOutput)
 	}
 	actual := parsed.Model
 	if actual == "" {

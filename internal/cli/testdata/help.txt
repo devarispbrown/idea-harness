@@ -20,6 +20,7 @@ Commands:
   trace <type> <id>    show provenance + dependents
   diff                 structured requirement/decision diff
   execute              run the next ready task → change set
+  retry [<initiative>] [--model <provider/model>] re-run a failed initiative
   changes              list change sets
   change <id>          show a change set
   apply <id>           apply an approved change set

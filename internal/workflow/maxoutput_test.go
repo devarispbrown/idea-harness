@@ -2,6 +2,11 @@ package workflow
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/model"
@@ -28,34 +33,102 @@ func realProviders() map[string]model.Provider {
 	}
 }
 
-// TestEveryStageBudgetFitsEveryProviderCeiling is audit 5's B1, as a guard.
+// TestEveryModelRequestGoesThroughTheCap is audit 5's B1, as a guard that can
+// actually fail.
 //
-// `maxOutputForStage` returned 32000 for the PRD directly beneath a comment
-// asserting that its values "stay within the providers' declared MaxOutput
-// ceilings (16k for Anthropic/OpenAI)". Nothing compared the two, because
-// Capabilities.MaxOutput was declared per provider and never read. Every real
-// OpenAI run therefore failed at product_definition with a hard 400 -- the
-// README's own worked example -- and it shipped that way in v0.1.0.
+// The first version of this test asserted
+// `effectiveMaxOutput(stage, prov) <= ceiling` — which is unreachable by
+// construction, because effectiveMaxOutput IS the cap. Raising a stage budget
+// to 200000 would have left it green. A pre-merge review caught it: a test that
+// passes for a reason unrelated to the fix, which is the exact pattern four
+// previous rounds of guards kept producing.
 //
-// Four audits missed it because none of them made a real provider call. This
-// test is the cheap mechanical version of that call: it needs no key, no
-// network, and it fails on the exact arithmetic the provider would have
-// rejected.
-func TestEveryStageBudgetFitsEveryProviderCeiling(t *testing.T) {
+// The real invariant is not arithmetic, it is reachability: every model.Request
+// built anywhere in this package must take its MaxOutput from the cap. A new
+// call site that writes `MaxOutput: maxOutputForStage(...)` or a bare literal is
+// how the defect comes back, and only an enumeration can see that.
+func TestEveryModelRequestGoesThroughTheCap(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := 0
+	for _, pkg := range pkgs {
+		for name, file := range pkg.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				sel, ok := lit.Type.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Request" {
+					return true
+				}
+				if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "model" {
+					return true
+				}
+				for _, elt := range lit.Elts {
+					kv, ok := elt.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					key, ok := kv.Key.(*ast.Ident)
+					if !ok || key.Name != "MaxOutput" {
+						continue
+					}
+					found++
+					call, ok := kv.Value.(*ast.CallExpr)
+					if !ok {
+						t.Errorf("%s: model.Request sets MaxOutput to a value that is not a call; "+
+							"it must go through effectiveMaxOutput or minOutput, or the provider "+
+							"rejects the request outright", fset.Position(kv.Pos()))
+						continue
+					}
+					fn, ok := call.Fun.(*ast.Ident)
+					if !ok || (fn.Name != "effectiveMaxOutput" && fn.Name != "minOutput") {
+						t.Errorf("%s: model.Request sets MaxOutput from %s(...); it must go through "+
+							"effectiveMaxOutput or minOutput", fset.Position(kv.Pos()), exprName(call.Fun))
+					}
+				}
+				return true
+			})
+			_ = name
+		}
+	}
+	if found == 0 {
+		t.Fatal("found no model.Request literal setting MaxOutput; this test is not reading the package")
+	}
+	t.Logf("checked %d model.Request MaxOutput site(s)", found)
+}
+
+func exprName(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return exprName(v.X) + "." + v.Sel.Name
+	}
+	return "?"
+}
+
+// TestStageBudgetsThatExceedACeilingAreCapped documents which stages actually
+// need the cap today, so that lowering a raw budget is a visible change rather
+// than a silent one.
+func TestStageBudgetsThatExceedACeilingAreCapped(t *testing.T) {
 	for name, prov := range realProviders() {
 		ceiling := prov.Capabilities().MaxOutput
-		if ceiling <= 0 {
-			t.Errorf("provider %s declares no MaxOutput; the cap cannot protect it", name)
-			continue
-		}
 		for _, stage := range allStages {
+			raw := maxOutputForStage(stage)
 			got := effectiveMaxOutput(stage, prov)
-			if got > ceiling {
-				t.Errorf("stage %q sends MaxOutput %d to %s, which declares %d — "+
-					"the provider rejects the request outright", stage, got, name, ceiling)
+			if raw > ceiling && got != ceiling {
+				t.Errorf("stage %q wants %d, %s declares %d, but %d was sent", stage, raw, name, ceiling, got)
 			}
-			if got <= 0 {
-				t.Errorf("stage %q sends MaxOutput %d to %s", stage, got, name)
+			if raw <= ceiling && got != raw {
+				t.Errorf("stage %q wants %d, which fits %s's %d, but %d was sent", stage, raw, name, ceiling, got)
 			}
 		}
 	}
@@ -81,8 +154,13 @@ func TestTheCapIsOnlyACap(t *testing.T) {
 	}
 }
 
-// uncappedProvider declares no ceiling, like the OpenAI-compatible endpoints a
-// user can point at (Ollama, Groq, LM Studio, LiteLLM).
+// uncappedProvider declares no ceiling.
+//
+// No provider in the tree does today — a review corrected an earlier caption
+// here that named Ollama, Groq and LM Studio, all of which reach
+// NewOpenAICompat and inherit its 16384. The case is kept because MaxOutput is
+// an ordinary int field with no validation: any new provider constructor that
+// omits it declares 0, and `0` must mean "not stated", not "zero tokens".
 type uncappedProvider struct{}
 
 func (uncappedProvider) Name() string                     { return "uncapped" }

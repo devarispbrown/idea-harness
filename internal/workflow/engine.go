@@ -206,10 +206,18 @@ func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.Ini
 // example -- with the upstream explanation discarded (see model.httpError).
 //
 // A provider that declares 0 has not stated a ceiling, so the stage budget
-// stands. Capping is strictly better than the alternative here: an over-budget
-// request is refused outright, while a capped one returns the model's best
-// effort, and a genuinely truncated structured reply already fails schema
-// validation loudly and is retried.
+// stands.
+//
+// Capping alone would have been a bad trade, and a review caught the claim that
+// first sat here. "A truncated structured reply fails schema validation loudly"
+// is false: model.repairJSON closes unterminated strings and containers, and
+// schema.Review has no minItems, so an adversarial review cut from 15 findings
+// to 1 validates clean. Turning a loud 400 into a quietly shorter review is
+// worse than the 400.
+//
+// So the cap is only safe because the providers now detect truncation directly,
+// from their own finish reason, and return model.ErrTruncated (see
+// model.truncatedError). Do not remove that check and leave this one.
 func effectiveMaxOutput(stageKey string, prov model.Provider) int {
 	return minOutput(maxOutputForStage(stageKey), prov)
 }
