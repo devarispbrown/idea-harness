@@ -1,0 +1,12 @@
+{
+  "model": "test-model",
+  "max_tokens": 16384,
+  "system": "You are a product analyst.\nRespond with a single JSON object matching the requested schema. Do not wrap in markdown.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Build usage-based billing"
+    }
+  ]
+}
+
