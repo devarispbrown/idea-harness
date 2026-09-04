@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/executor"
@@ -497,5 +498,50 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	if failOnUnmet && len(unmet) > 0 {
 		return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
 	}
+	return nil
+}
+
+// cmdRetry re-runs a failed initiative, optionally on a different model.
+//
+// The command existed as a route and a Runtime method but never as a CLI verb,
+// while four separate comments in internal/daemon — added by the audit-4
+// remediation — told the reader that "`idea retry` runs from exactly there" as
+// the recovery for a stranded or failed run. Audit 5 found the recovery story
+// pointing at a command that did not exist.
+func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+
+	// The endpoint requires a model. Defaulting to the configured one is what
+	// makes `idea retry` usable as the bare recovery command the comments
+	// promise; --model overrides it for the "same failure, different model"
+	// case, which is the other reason to retry.
+	model := a.value("--model")
+	if model == "" {
+		var view cliProvidersView
+		if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
+			return err
+		}
+		model = view.DefaultModel
+	}
+	if model == "" {
+		return fmt.Errorf("no model configured; set one with `idea model set <provider>/<model>` or pass --model")
+	}
+
+	var out map[string]string
+	if err := c.do("POST", initiativeResource(projectID, iniID, "retry"), map[string]string{"model": model}, &out); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ retry started")+" "+code(iniID)+" "+muted("on")+" "+accent(model))
+	if opID := out["operation_id"]; opID != "" {
+		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil
 }

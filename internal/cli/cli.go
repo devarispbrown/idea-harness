@@ -119,6 +119,7 @@ func commands() []command {
 		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, maxPositional: 3, run: cmdTrace, inHelp: true},
 		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, maxPositional: 1, run: cmdDiff, inHelp: true},
 		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", flags: flagSpec{}, maxPositional: 1, run: cmdExecute, inHelp: true},
+		{names: []string{"retry"}, usage: "retry [<initiative>] [--model <provider/model>]", summary: "re-run a failed initiative", flags: flagSpec{"--model": flagValue}, maxPositional: 1, run: cmdRetry, inHelp: true},
 		{names: []string{"changes"}, usage: "changes", summary: "list change sets", flags: jsonFlag, maxPositional: 1, run: cmdChanges, inHelp: true},
 		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, maxPositional: 1, run: cmdChange, inHelp: true},
 		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, maxPositional: 1, run: cmdApply, inHelp: true},

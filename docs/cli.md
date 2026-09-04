@@ -36,6 +36,7 @@ if this file has drifted.
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute` | run the next ready task → change set | none | takes no flags |
+| `idea retry [<initiative>] [--model <provider/model>]` | re-run a failed initiative | `--model` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
 | `idea apply <id>` | apply an approved change set | none | takes no flags |

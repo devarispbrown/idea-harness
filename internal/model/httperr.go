@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,4 +100,28 @@ func looksLikeSecret(field string) bool {
 	// this rule -- eating the one token the reader needs. A lowercase slug is
 	// never a key; a base64url secret essentially always carries both cases.
 	return other == 0 && upper > 0 && lower > 0 && digits > 0
+}
+
+// ErrTruncated reports that the provider stopped because it hit the output
+// budget rather than because the model finished.
+//
+// This is the safety net under the stage-budget cap. Capping a request to the
+// provider's ceiling turns a guaranteed 400 into a request that succeeds -- but
+// a structured reply cut mid-object is NOT reliably caught downstream:
+// repairJSON closes unterminated strings and containers, and the review schema
+// has no minItems, so a findings list truncated from 15 entries to 1 validates
+// clean. The result would be a silently shorter adversarial review.
+//
+// So truncation is detected where it is actually visible -- the provider's own
+// finish reason -- and raised loudly. The engine's retry loop resends the same
+// request, so a truncation surfaces as a real failure with a message naming the
+// cause instead of a quietly diminished artifact.
+var ErrTruncated = errors.New("model: output truncated at the token budget")
+
+// truncatedError names the budget that was hit, because the fix is to raise it
+// or split the stage, and the reader needs the number.
+func truncatedError(provider string, maxOutput int) error {
+	return fmt.Errorf("%s: %w (max_output=%d); the reply was cut mid-structure, "+
+		"so it is not safe to use -- raise the stage budget or use a model with a larger output ceiling",
+		provider, ErrTruncated, maxOutput)
 }
