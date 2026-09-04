@@ -197,8 +197,16 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
   or state, only read for API calls and redaction.
 - `config validate` and the config API reject any key that would store a secret **value** inline
   (e.g. `api_key`, `password`, `token`); `*_env` references are permitted.
-- Secret values are redacted before any persistence (`[REDACTED]`), including logs, events, blobs,
-  and context bundles.
+- Secret values are redacted on the paths that store them: the artifact/blob store, and the event
+  log, whose rows carry digests into that store rather than content.
+
+  Two things this does **not** cover, both deliberate and both documented at
+  [`security-model.md`](security-model.md#what-this-does-not-protect-against): the daemon log is not
+  redacted and `GET /api/v1/logs` returns it verbatim, and the raw blob store (`raw-blobs/`) keeps
+  uploaded file content and image bytes exactly as received.
+
+  Redaction is also not a uniform gate on what leaves for the model provider — it is applied at
+  specific points, not to every outbound request.
 
 ## Role Contracts
 

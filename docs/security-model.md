@@ -43,6 +43,7 @@ from the executor's self-declared capabilities:
 Note: `run_command` on the host is separately gated by the deterministic-check
 sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
 
+<!-- claim:executor-isolation -->
 ## Execution gateway
 
 There is no single "the executor sandbox". Four executor kinds are selectable via
@@ -82,6 +83,9 @@ So for `omp` and `hermes` specifically:
 - **The workspace is mounted read-write** at `/work`. It is not the read-only
   `/repo` mount described above; that belongs to `ContainerSandbox`.
 
+<!-- /claim -->
+
+<!-- claim:redaction -->
 ## What this does not protect against
 
 Kept as a section so the negative space has somewhere to live. The failure this
@@ -116,3 +120,4 @@ The system-deny decision is an **additive aggregator**, not a replacement. The
 deep enforcers remain independent: `security.ResolveWithin` (path containment),
 `blob.Store.Get` (digest verification), and the redactor sweep all still run at
 their own layer; a regression in one does not disable the others.
+<!-- /claim -->

@@ -298,7 +298,8 @@ GROQ_API_KEY`.
 `internal` shows "placeholder executor — writes no real code. Select hermes/omp for real code."
 Selecting `omp` or `hermes` shows a warning:
 
-> Runs with network egress + auto-approve and receives its provider API key. Only use an image you
+> Runs with network egress + auto-approve and receives its provider API key (see
+> [`security-model.md`](security-model.md#what-this-does-not-protect-against)). Only use an image you
 > trust.
 
 That is the same tradeoff `idea executors setup` prints. Read [`docs/agents.md`](agents.md) before

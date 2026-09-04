@@ -94,7 +94,8 @@ idea new "A recipe-sharing app"
 ```
 
 This starts the M1 pipeline: a team of experts frames your idea, does research, and drafts a PRD,
-which an independent reviewer then challenges and revises. Follow it live from a second terminal:
+which a reviewer role then challenges and revises. (A separate run and prompt — not necessarily a
+different model; see [`security.md`](security.md).) Follow it live from a second terminal:
 
 ```bash
 idea watch
@@ -171,7 +172,8 @@ your last look.
 idea review CHG-1 approve
 ```
 
-Change sets are gated by an independent review and then by you, the human. `approve` records your
+Change sets are gated by a reviewer run and then by you, the human — the verdict is yours, not the
+model's. `approve` records your
 decision (you can also request changes or reject).
 
 ```bash

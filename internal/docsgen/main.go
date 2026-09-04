@@ -38,6 +38,7 @@ const (
 func main() {
 	check := flag.Bool("check", false, "report drift and exit non-zero instead of rewriting the file")
 	apiCheck := flag.Bool("api-check", false, "compare docs/openapi.yaml against the routes registered in internal/daemon and exit non-zero on drift")
+	claimsCheck := flag.Bool("claims-check", false, "fail when a load-bearing security claim is stated outside its canonical document without a link")
 	docsLint := flag.Bool("docs-lint", false, "check that every `idea ...` command in README and the quickstart names a real verb and a resolvable reference")
 	apiDocs := flag.Bool("api-docs", false, "add a row to docs/api.md for every route that has none")
 	apiDocsCheck := flag.Bool("api-docs-check", false, "fail if docs/api.md is missing a row for any route, or has one for a route that does not exist")
@@ -52,6 +53,14 @@ func main() {
 		return
 	}
 
+	if *claimsCheck {
+		if err := runClaimsCheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "claims-check:", err)
+			os.Exit(1)
+		}
+		fmt.Println("claims-check: every load-bearing security claim is stated once and linked elsewhere")
+		return
+	}
 	if *docsLint {
 		if err := runDocsLint(); err != nil {
 			fmt.Fprintln(os.Stderr, "docs-lint:", err)

@@ -44,7 +44,7 @@ challenge, and the human decides what matters.
 
 A coordinated team of Staff-level AI experts moves an initiative through the whole lifecycle —
 framing and research produce a reviewed PRD, design produces a dependency-ordered execution plan,
-the implementer produces change sets, and independent reviewers gate each one before the human
+the implementer produces change sets, and a reviewer role gates each one before the human
 approves, applies, and verifies it.
 
 The durable asset is the **Product Graph** (Evidence → Assertions → Requirements → Decisions →
@@ -281,7 +281,7 @@ make build    # build web UI + binary
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the process (plans are adversarially reviewed before
-implementation; every ChangeSet is independently reviewed).
+implementation; every ChangeSet gets a reviewer run before a human verdict).
 
 ## License
 
