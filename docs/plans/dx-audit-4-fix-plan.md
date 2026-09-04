@@ -1,234 +1,298 @@
-# DX Audit 4 — Fix Plan
+# DX Audit 4 — Fix Plan (v2)
 
 Branch: `worktree-dx-audit-4`, from `main` @ `39ca31a`.
 
 Audit 4 verdict: **FAIL**, Overall DX **79/100** (from 74, from 70). Both hard
-gates pass; six of nine areas now clear the world-class floor. Report:
+gates pass; six of nine areas clear the world-class floor. Report:
 `docs/plans/dx-audit-4-report.md`.
 
-**P0 #1 is already fixed.** The initiative-stranding regression was closed during
-the audit in `39ca31a` — cancellation releases the claim, `releaseOrphanedClaims`
-is the backstop for a daemon killed mid-flight, and both halves are
-mutation-checked. It is listed here for completeness, not as work.
+**v2 supersedes v1 after three adversarial reviews** (security, Go correctness,
+coverage/ledgers). They found **six blocking defects in the plan**, two of which
+would have shipped new P0s — and one blocking defect in the *code* that neither
+the audit nor the plan had found. Corrections are folded in and marked
+**[v1 was wrong]**. Review record: `dx-audit-4-fix-plan-review.md`.
 
-Remaining: **2 P0, 8 P1, and a bookkeeping cluster.**
+## Already fixed on this branch
 
-## The pattern, fourth time — and why this round's structural work is different
+Three items landed ahead of the rest because they are live defects, not planning
+questions:
+
+| Commit | What |
+|---|---|
+| `39ca31a` | **P0-1**: cancellation left the initiative claimed forever (fixed during the audit) |
+| `0ffb976` | **A credential-egress bug neither audit found**: the raw idea text was sent to the model provider while only the stored copy was redacted |
+| `39cb442` | **A P0 on `main` that no audit found**: a *successful* `idea execute` left the initiative claimed forever |
+| `ebc5245` | O2's doc half — nine model ids that resolve to nothing |
+
+### The Execute stranding, and why every gate was green
+
+Surfaced by the Go review, not by the audit. `ExecuteInitiative` claimed the
+initiative and never released it — on success *or* ordinary failure. Verified
+against a live daemon: after a successful `idea execute`, status stayed
+`running`, `idea next` answered "workflow running" indefinitely, and every later
+command answered "already running".
+
+Mine, from the audit-3 round. I added the claim to all seven guarded entry
+points, which was right, without checking each had a release. Six do, as a side
+effect — their engine calls reach a terminal status inside `internal/workflow`.
+Execute's does not.
+
+**`scripts/smoke.sh` and the audit journey both run
+`execute → review → apply → revert`, and `RevertChangeSet` sets the initiative
+status as a side effect** — so both harnesses reset the exact state the bug
+corrupts, one step after corrupting it. Every gate passed. A real multi-task
+initiative that applies without reverting is stuck, and neither harness has that
+shape.
+
+That is the fact this round's structural work has to answer, and it changes the
+sequencing below.
+
+## The pattern, and what actually catches it
 
 | Audit | Pattern |
 |---|---|
 | 2 | A fix made correctly in one place, not propagated to its siblings |
 | 3 | The canonical source corrected, the derivative copies left stale |
-| 4 | **The correction reaching two of three documents** |
+| 4 | The correction reaching two of three documents — and a claim added to seven call sites with a release checked on none |
 
-`security.md` and `security-model.md` now describe redaction correctly;
-`configuration.md` still promises it for logs and blobs. `ui.md` stopped claiming
-an SSE feed; `api.md` and `cli.md` kept it. Each round the remediation gets
-closer and stops one document short.
-
-The guards now cover routes, request-body fields, 409 declarations, prose
-commands, and `api.md` ↔ `openapi.yaml` row existence in both directions. **None
-of them can see a claim that is false, or a state machine with a hole in it** —
-which is exactly where all three of this round's P0s came from, including the one
-the previous remediation introduced.
-
-So the structural work is two checks aimed there:
-
-1. **A security-claim lint** (G1). A small set of load-bearing security
-   properties get one canonical statement each; any *other* document asserting
-   the same property must link rather than restate. Mechanical, and it is the
-   only thing that would have caught `configuration.md` — the third copy, in the
-   one file the last two rounds did not open.
-2. **A state-machine invariant test** (G2). Enumerate every terminal path out of
-   every async entry point and assert the initiative claim is released on each.
-   The claim was reviewed four times — three before implementation, one after —
-   and two of those reviews specifically asked whether it was released on every
-   exit. The answer was no, and nobody traced the cancellation path. Reading did
-   not catch it; enumeration would have.
-
-## Tracks
-
-Ordered, not parallel. S defines the canonical statements that D links to, and C
-changes behaviour that S and D describe.
-
-| Order | Track | Scope | Files owned |
-|---|---|---|---|
-| 1 | **S** | Security docs + the claim lint | `docs/configuration.md`, `docs/security.md`, `docs/architecture.md`, `internal/docsgen/` |
-| 2 | **O** | Onboarding (P0-3, model ids) | `README.md`, `docs/quickstart.md`, `docs/agents.md` |
-| 3 | **C** | Code correctness | `internal/daemon/`, `internal/workflow/`, `internal/config/` |
-| 4 | **R** | Reference docs | `docs/api.md`, `docs/cli.md`, `docs/openapi.yaml`, `CHANGELOG.md` |
-| 5 | **B** | Bookkeeping | `docs/plans/` |
+**[v1 was wrong about the track record.]** v1 implied the guard-building has not
+worked. Review corrected it: of audit 3's three guards, **two were built** —
+`api-docs-check` and `conflictcheck` both run in CI — and only G1b was not. The
+failure was the *claim line* asserting all three were checked, not build
+capacity. That distinction matters, because it means the fix is honesty about
+scope, not more ambition.
 
 ---
 
-## Track S — the false redaction guarantee, and the guard for it
+## Track C — code, and it goes first
+
+**[v1 sequenced this last. It goes first now]**, because C1 as written would have
+broken every `apply` in the tool, and the reason is a code fact v1 did not know.
+
+### C1 (P1). Apply and revert do not claim the initiative
+
+**[v1's fix would have 409'd every apply.]** Review established the ambient
+status at apply time *was* `running`, left there by the Execute stranding — so a
+claim whose source-list excludes `Running` (as every claim's must) would have
+refused the single most basic flow in the tool. That is fixed now (`39cb442`),
+which is why C1 can proceed at all.
+
+Two further corrections:
+
+- **The hazard is narrower than v1 said.** `ApplyChangeSet`, `RevertChangeSet`
+  and `Execute` already take the same engine mutex, so they are *already*
+  mutually exclusive. `RevisePlan` and `ReopenPhase` refuse once any change set
+  exists. **The one real gap is `Revise`**, which supersedes requirements
+  concurrently with an apply — a provenance race, not filesystem corruption.
+- **Apply's success path has no status write at all.** Adding a claim without
+  adding a release would create a second instance of the exact P0 above, in the
+  same round that fixed it.
+
+**Fix.** Claim in both, from the states each is legitimately reachable from, and
+**add an explicit release on every exit of both** — success and failure — to the
+status held before the claim. `RevertChangeSet` currently forces `plan_approved`
+regardless of the prior status; that is preserved but commented, since changing
+it is a separate behavioural question.
+
+*Acceptance:* a test drives apply from each reachable state and asserts neither a
+spurious 409 nor a lingering `running`. The `-race` suite covers the concurrency.
+
+### C2 (P1). `failOperation` and `failOperationAfterPanic` write unconditionally
+
+**[v1's fix would have re-opened P0-1.]** v1 said "make both conditional on the
+operation still being non-terminal". `CancelOperation` writes `cancelled` — a
+terminal status — *before* the goroutine unwinds, so gating `failOperation` would
+skip the `FailInitiative` call that `39ca31a` added, and cancellation would
+strand the initiative again. v1 also cited `CancelOperationStatus` as precedent
+while proposing to invert the design decision that precedent encodes, and
+contradicted a comment written last round for exactly this reason.
+
+**Fix, asymmetric, because the two functions are not the same case:**
+
+- **`failOperationAfterPanic`**: gate the operation write *and* the initiative
+  release on the same CAS outcome. A panic after a successful terminal write must
+  leave both alone. Gating only the operation write — the obvious patch — would
+  leave a self-contradictory record: operation `succeeded`, initiative `failed`,
+  and a user running `idea retry` on a run that actually worked.
+- **`failOperation`**: gate only the operation-status write. `FailInitiative`
+  stays unconditional, because the cancel path reaches it with the row already
+  terminal, and that is the path P0-1 was about.
+
+*Acceptance:* the existing `TestCancellingAnOperationReleasesTheInitiative` must
+still pass, plus a new case driving `CancelOperation` → goroutine-unwind in that
+order, which the existing test does not do.
+
+### C3 (P1). The providers endpoint masks "written but not applied"
+
+Confirmed correct by review, no changes. `handleUpdateProviders` sends the reload
+failure to `writeErr`, whose storage branch masks it to a generic 500; the
+executors endpoint calls `writeReloadErr`. Route the providers endpoint through
+`writeReloadErr` and extend the leak test to both.
+
+### C4 (structural). Terminal-path enumeration — **split, and honestly scoped**
+
+**[v1 over-promised.]** Review established that cancel, fail and panic are cheap
+to test by direct state manipulation — the shape
+`TestCancellingAnOperationReleasesTheInitiative` already uses — but **success is
+not centralised**: each closure inlines its own terminal write, and for six of
+seven entry points the release happens inside `internal/workflow`. A "table of
+entry points" built the cheap way would have **passed while the Execute stranding
+was live**, which is the same vacuity trap as last round.
+
+- **C4a — buildable now.** An AST test enumerating every `launchOperation` call
+  site in `internal/daemon/runtime.go` and asserting each appears in the
+  invariant table. This catches the *forget-a-new-entry-point* class outright,
+  and it is the half that would have flagged Execute as untested.
+- **C4b — cancel, fail and panic per entry point**, driven by direct state
+  manipulation. Real coverage for three of four terminal paths.
+- **C4c — the success path — deferred, in the same commit.** It needs
+  Runtime-level fixtures (a fake executor as well as the fake provider) that do
+  not exist in the tree. Recorded in `deferred.md` with that reason, not implied
+  as covered.
+
+C4a is what makes the deferral safe: a new entry point cannot silently join
+without appearing in the table.
+
+### C5 (from review). `SuggestAnswersInitiative` — the third bypasser
+
+Review found v1 named two claim-bypassing entry points; there are three.
+`SuggestAnswersInitiative` has no existence check and no claim — already recorded
+in `deferred.md` as audit-3 C4, and C4a will fail on it.
+
+**Fix:** give it the existence check and the claim, so C4a ships green rather
+than with an exemption. If that proves larger than it looks, C4a ships with a
+one-entry exemption list naming the `deferred.md` row — never a silent skip.
+
+---
+
+## Track S — security documentation
 
 ### S1 (P0). `configuration.md` promises redaction that does not happen
 
 > *"Secret values are redacted before any persistence (`[REDACTED]`), including
 > logs, events, blobs, and context bundles."*
 
-Both halves are false, and both were the point of last round's rewrite:
+Review traced all four, which v1 had not:
 
-- **Logs.** There is no redacting `slog` handler, and `GET /api/v1/logs` returns
-  `daemon.log` verbatim.
-- **Blobs.** The file-content store is constructed with a **nil redactor** —
-  `blob.New(filepath.Join(projDir, "raw-blobs"), nil)`. `security-model.md`
-  calls it "deliberately redaction-free".
+- **Logs** — not redacted. No redacting handler; `GET /api/v1/logs` returns the
+  log verbatim.
+- **Blobs** — two stores. `blobs/` redacts; `raw-blobs/` is constructed with a
+  nil redactor and holds unredacted file content and raw image bytes.
+- **Events** — technically true, but only because event rows carry a digest into
+  the already-redacted blob store. Not an independent choke point.
+- **Context bundles** — same: the persisted record is a digest.
 
-**Fix:** state what is true — the store and event choke points redact; logs and
-the raw blob store do not — and link to `security-model.md`, which is the
-canonical statement, instead of restating the mechanism a fourth time.
+**[v1's replacement text was incomplete.]** The sentence's deeper problem is that
+it invites the reader to assume redaction happens before the *model call*. It
+does not, uniformly — it is applied field by field. That was not a wording
+problem: `StartInitiativeWithDocs` was sending the raw idea to the provider,
+fixed in `0ffb976`. The prose could not have been made honest while that line
+existed.
+
+**Fix:** state the boundary in both directions — what redacts before persistence,
+what does not (logs, the raw store), and that redaction is not a uniform
+pre-egress gate — and link to `security-model.md` rather than restating.
 
 ### S2 (P1). "Review runs require a distinct actor" is enforced nowhere
 
-`docs/security.md`'s threat row for agent self-approval asserts it. No code
-compares two actors: `ReviewChangeSet` hardcodes the same actor constant for both
-the review record and the transition, and nothing stops one model serving as
-implementer and adversarial reviewer.
+**[v1 scoped this to one sentence. There are six, across four files]** —
+`security.md`, `architecture.md`, `quickstart.md` (×2) and `README.md` (×2).
+Fixing one and calling S2 done reproduces the pattern this plan is named after.
 
-The row's *second* clause — `accepted_risk` requires a human actor — is real and
-enforced in the store.
+Review also confirmed there is no actor identity to enforce against: two
+constants exist system-wide, and every automated write uses the same one. So the
+enforcement stays deferred — but **[v1's replacement wording was too generous]**.
+"A separate reviewer run that is structural" implies a weaker real separation.
+There is none: nothing prevents `implementer` and `adversarial_reviewer`
+resolving to the same model.
 
-**Fix (documentation only this round).** Say what is enforced: a deterministic
-selector→level mapping, a human actor required for `accepted_risk`, and a
-*separate reviewer run* that is structural rather than actor-checked. Record the
-actual enforcement as a deferred item rather than implying it exists. Making the
-reviewer identity a real constraint is a design change, not a doc fix, and
-inventing one under audit pressure is how the trust-level mapping got its current
-shape.
+**Fix:** say plainly that nothing prevents the two roles being the same model,
+and that the only enforced separation is that a human, not the model, issues the
+approval verdict — which is true and is enforced.
 
 ### S3 (P1). `architecture.md` carries the inverted redaction claim a third time
 
-`internal/blob   content-addressed BlobStore (**redaction before Put**)`, and a
-data tree showing only `blobs/`. Two stores exist; `raw-blobs/` holds unredacted
-file content and raw image bytes and appears in no published document.
+Planned last round and never done; one of the three items `deferred.md` omits.
+Also add the raw store to its data tree, and — per review — correct its **SSE**
+claims, which contradict the newly rewritten `ui.md`.
 
-Planned last round as part of S3 and never done — it is one of the three items
-`deferred.md` omits.
+### S4 (P1, from review). The capability broker is documented as shipped
 
-### S4 (structural). A security-claim lint — `make security-claims-check`
+`security.md` lists it among five features that "all five shipped in 0.1.0".
+`CapabilityBroker.Authorize` has **zero non-test callers**; the actual gate is
+`TrustAllows`. Not an active vulnerability — `TrustAllows` is fail-closed — but a
+false "shipped and active" claim about a named component in the canonical
+security document. **[v1 filed this under bookkeeping]**; it belongs here.
 
-A short table of load-bearing properties, each with one canonical location:
+### S5 (structural). The security-claim lint — **redesigned**
 
-| Property | Canonical |
-|---|---|
-| What the executors isolate | `security-model.md` |
-| Where redaction happens, and where it does not | `security-model.md` |
-| Image handling | `security.md` |
-| The token model | `security.md` |
+**[v1's design was not buildable and was self-certifying.]** Review's objections,
+all accepted:
 
-The check scans every published `docs/*.md` plus `README.md` for sentences
-asserting one of these properties, and fails when a file that is not the
-canonical one asserts it without a link to the canonical one.
+- Keyword scanning natural language is a different kind of problem from every
+  other check in `internal/docsgen`, which parse structured artifacts. `token`
+  is majority-noise: most occurrences are `review.max_tokens` or "command token".
+- **Assert-plus-link passes.** A file could restate the same false guarantee and
+  add a link and go green.
+- **It is self-certifying**: written in the same track, same round, by the same
+  author as the doc edits it judges. The allowlist would be tuned until the new
+  wording passed. That is a snapshot test.
 
-**Scope, stated honestly.** It cannot tell whether a claim is *true* — nothing
-mechanical can. It enforces that each property is stated once, which is what
-turns "three documents drifted apart" into "one document to check". That is the
-whole of what the last three audits' documentation P0s had in common.
+**Redesigned, judgement outside the checker.** Each canonical property sits in a
+marked block in its canonical file:
 
-Keyword-driven and therefore approximate: it will want a small allowlist for
-prose that mentions "redact" without asserting a guarantee. The allowlist is in
-the check, not in the docs, so it cannot silently grow the way a `# docs:skip`
-marker in a README would.
+```
+<!-- claim:redaction -->…<!-- /claim -->
+```
+
+The check is then mechanical and needs no NL classification: **any other
+published doc containing a keyword from a fixed list must link to that anchor.**
+Deterministic, one-line fix on failure.
+
+Properties this round: **executor isolation**, **redaction**, and
+**reviewer/implementer separation** — the third added because review found it
+falsely replicated across four files, and v1's table would have been blind to
+exactly the claim this round is correcting. "Image handling" and "the token
+model" are dropped: neither corresponds to an audit-4 finding, and each adds a
+file-set to migrate.
+
+*Scope, stated plainly:* it enforces that a property is stated once. It cannot
+judge whether the statement is true.
 
 ---
 
-## Track O — the with-key path
+## Track O — onboarding
 
 ### O1 (P0). The documented with-key path dead-ends
 
-`idea init` calls `ensureDaemon()`, so the daemon starts with the environment as
-it is *at that instant*. The quickstart and README then tell the user to export
-their key. But keys are resolved inside the daemon, and `idea model set`'s reload
-re-reads the daemon's environment — which still has none. The result is
-`status 401`, which is not in the transient list, so the initiative fails.
+`idea init` starts the daemon, which inherits the environment at that instant.
+The quickstart and README then say to export the key — but keys resolve inside
+the daemon, and `idea model set`'s reload re-reads the daemon's environment.
+Result: a non-retryable 401.
 
-`docs/agents.md` documents the correct sequence: export, then `idea daemon stop`
-so the next command restarts it. The two entry-point documents omit it, and the
-quickstart's warning box attributes the identical failure to a different cause.
+**Doc half:** put the export before `idea init` in both files; where the key
+arrives later, say `idea daemon stop` and why; correct the warning box, which
+attributes the failure to a different cause.
 
-**Fix, both halves:**
+**Product half — [v1 hand-waved the mechanism].** Review showed it needs no
+cross-process introspection: the CLI can read its *own* environment with
+`os.Getenv(keyEnv)`, and `GET /providers` already reports the daemon-side
+`Ready`/`KeyEnv`. The two facts just need comparing after the PUT. Today
+`setModel` discards the response entirely, so that is the change: read the
+updated provider back, and when the caller's environment has the key and the
+daemon's does not, say so.
 
-- **Documentation:** put the export before `idea init` in both files, and where
-  the key arrives later, say `idea daemon stop` and why. Correct the warning box.
-- **Product:** `idea model set` should notice this. When the selected provider's
-  key env var is set in the *caller's* environment but absent in the daemon's,
-  it can say so — "the daemon started before `ANTHROPIC_API_KEY` was set; run
-  `idea daemon stop` and retry" — instead of reporting success and failing on the
-  first call. That is a small, well-scoped check and it turns a documentation
-  trap into an error message.
+### O2 (P1). Model ids that resolve to nothing
 
-The product half is what stops this recurring, because the trap is a property of
-the daemon's lifecycle rather than of the prose.
+Doc half landed in `ebc5245` — nine ids, including one the audit missed.
 
-### O2 (P1). `anthropic/claude-3-7-sonnet` is not a valid model id
-
-Eight occurrences across quickstart and agents.md; the catalog spells it
-`claude-3-7-sonnet-latest`. Nothing validates the model half of a spec —
-`modelSpecProblems` checks only the provider — so `idea model set` prints success
-and the first call returns a non-retryable 404. Two occurrences are
-`executors setup --model` lines, so the bad id is forwarded into the container.
-
-**Fix, both halves again:** correct the eight ids, and have `modelSpecProblems`
-warn when the model half matches no catalog entry for a provider whose catalog is
-known. A warning rather than an error, because a valid model can postdate the
-bundled catalog — but silence is what let eight copies of a dead id ship.
-
----
-
-## Track C — code
-
-### C1 (P1). Apply and revert bypass the claim
-
-Every other async entry point claims the initiative before mutating task or graph
-state. `ApplyChangeSetInitiative` and `RevertChangeSetInitiative` call
-`CreateOperation` directly with no status check and no claim — verified, zero
-`ClaimInitiativeRunning` calls in either.
-
-So an apply can run concurrently with a revise that is regenerating the task
-graph: the corruption the claim exists to prevent, reached through a different
-door.
-
-**Fix.** Both claim the initiative, from the states an apply or revert is
-legitimate in. This needs care: apply and revert are reachable from more states
-than the plan-mutating operations, and `complete` is one of them. Get the source
-list wrong and a legitimate apply starts returning 409 — which is why the
-acceptance test drives a real apply from each reachable state rather than
-asserting the list by inspection.
-
-### C2 (P1). `failOperation` and `failOperationAfterPanic` write unconditionally
-
-Neither is guarded by the row's current status, unlike `CancelOperationStatus`
-and `ClaimInitiativeRunning` in the same round. A panic *after* the goroutine's
-own true terminal write — in a trailing log line, say — is still caught by the
-recover and rewrites a completed, successful run as failed, with the initiative
-failed alongside it.
-
-**Fix.** Make both conditional on the operation still being non-terminal, using
-the CAS that `CancelOperationStatus` already established. A panic after success
-then leaves the success standing, which is the honest record.
-
-### C3 (P1). The provider config endpoint masks "written but not applied"
-
-`writeReloadErr` exists precisely so the caller learns the file *was* written.
-Only the executors endpoint calls it; the providers endpoint sends the same
-failure to `writeErr`, whose storage branch masks it to a generic 500. And
-`api.md` goes on to claim a handler cannot get this wrong.
-
-**Fix.** Route the providers endpoint through `writeReloadErr` too, and add the
-assertion to the existing leak test so both endpoints are covered.
-
-### C4 (structural). The state-machine invariant test
-
-Enumerate every async entry point and every terminal path — success, error,
-cancellation, panic, and a create that fails after the claim — and assert the
-initiative is not left `running`.
-
-Table-driven from a list of entry points, so a new one joins the test by existing
-rather than by being remembered. This is the check that would have caught the
-regression the previous round shipped, and it is the reason this plan does not
-add a fifth prose guard.
+**Product half — [v1's version would have been inert].** Review found
+`handleUpdateProviders` drops every non-error problem before it is returned, so a
+`SeverityWarn` catalog mismatch would never reach `idea model set`'s output — the
+exact case the finding opens with. So either the response carries warnings and
+the CLI prints them, or this item does not fix its motivating scenario and the
+plan says so. **Taking the first.** `openrouter` is excluded from the check: its
+ids are arbitrary upstream strings and would misfire constantly.
 
 ---
 
@@ -236,40 +300,71 @@ add a fifth prose guard.
 
 | # | Finding | Fix |
 |---|---|---|
-| R1 | `api.md` and `cli.md` still assert the SSE feed `ui.md` stopped claiming — `idea watch` polls at 1 Hz, there is no SSE client in `web/src`, and `GET /events` has zero in-tree consumers | correct both; keep the endpoint documented as existing and unused |
-| R2 | `openapi.yaml` says operations are "newest last"; the store orders `DESC` and `api.md` says "newest first" | correct the spec |
-| R3 | A class of `required` arrays the handler emits as `null` — `/why`, `/impact`, `/trace`, understanding's four arrays, `/models` | initialise the slices at the handler so the response matches the contract, which is the half that is actually wrong |
-| R4 | `api.md` claims a handler "cannot accidentally report one as a 500" | true only after C3; sequence it after |
-| R5 | `CHANGELOG` `[Unreleased]` records none of audit 3's code round, including two user-visible changes: `idea verify` now exits non-zero, and finding disposition now answers 404 where it answered 200 | add, with the second under **BREAKING** |
-| R6 | `openapi.yaml`'s `Coverage` omits `status`, the field carrying the waived/failed distinction | add |
-
-R3 is a code fix in a documentation track deliberately: the spec is right and the
-handler is wrong, so correcting the spec would enshrine a `null` the client has
-to special-case.
+| R1 | The SSE claim `ui.md` dropped survives in **four** files, not two — `api.md`, `cli.md`, and `architecture.md` twice. `security.md`'s mentions are correct (the endpoint exists) | correct all four; S3 owns the `architecture.md` edit |
+| R2 | `openapi.yaml` says operations are "newest last"; the store orders `DESC` | correct the spec |
+| R3 | `required` arrays emitted as `null`. **[v1 said "at the handler"; three of four are not]** — `Why`/`Impact` are in `internal/workflow/trace.go`, understanding's four in `internal/projection`, only `/models` is handler-local. Review also found a fifth v1 missed: `/guidance`'s `affected` | initialise at the source |
+| R4 | `api.md` claims a handler "cannot accidentally report one as a 500" | true only after C3; sequence after |
+| R5 | **[v1 overstated this.]** The changelog records most of audit 3's code round. Three specific gaps: `idea verify`'s exit code, disposition's 404 (BREAKING), and `docs-lint` missing from the guards list | add the three |
+| R6 | `openapi.yaml`'s `Coverage` omits `status` | add |
 
 ---
 
 ## Track B — bookkeeping
 
-Both ledgers introduced last round are inaccurate, in opposite directions.
+### B1. The ledgers are wrong, and `ledger-check` as specified cannot see it
 
-- `dx-audit-3-doc-defects.md` reads `open` on every row while at least 17 are
-  fixed. A file built to make coverage falsifiable, with a uniformly stale
-  column, no longer separates the six open rows from the seventeen closed ones.
-- `deferred.md` omits three planned-and-undone items: `architecture.md`'s half of
-  the redaction fix (S3 here), the trust-level code change, and the stale
-  `routes.go` comment.
-- The plan claims *"Mechanically checked: C1–C7"* while `deferred.md` records C5,
-  C6 and part of C4 as not attempted. **The two files contradict each other.**
+**[v1's guard was unimplementable.]** It was specified as "fails when a row marked
+`open` names a file:line that no longer contains the claimed text". The defects
+file contains **zero** `file:line` references — so the check would be **green on
+both ledgers today, certifying the exact stale state it exists to catch**. That
+is audit 3's G1b again: a guard whose specification cannot reach its finding.
 
-**Fix.** Reconcile all three against the tree, and add a `make ledger-check` that
-fails when a row marked `open` names a file:line that no longer contains the
-claimed text. A ledger nobody can trust is worse than no ledger, because it is
-cited as evidence.
+**Fix, format first.** Every row gains a predicate column from a closed set:
+`absent:<path>:<literal>`, `present:<path>:<literal>`, or `manual:<reason>`. The
+check then runs symmetrically — an `open` row whose defect is gone fails
+(stale-open), a `fixed` row whose defect returned fails (regression), a `manual`
+row asserts only that its path exists, and the manual count is printed so the
+un-checkable fraction is visible.
 
-Also open and recorded rather than fixed: the capability broker has zero non-test
-callers while two documents list it as shipped, and `container` is a second
-placeholder executor listed as a real kind in four documents.
+That is a migration of 27 rows, which is real work and is stated as such.
+
+Review's counts, to be applied: **21 of 27 rows are fixed**, not "at least 17";
+six survive (A2, A6, H1, H2, M1, I1), of which H1/H2 close under S3.
+
+### B2. `deferred.md` omits three planned-and-undone items
+
+`architecture.md`'s redaction half, the trust-level code change, and the stale
+`routes.go` comment — which has now survived two rounds with no owner in either.
+
+### B3. The plan contradicts `deferred.md`
+
+Audit 3's plan says "Mechanically checked: C1–C7"; `deferred.md` records C5, C6
+and part of C4 as not attempted. **Review's proposal, accepted:** generate that
+block rather than reconcile it by hand, so the contradiction cannot recur. Cheaper
+than `ledger-check` and higher value.
+
+### B4 (from review). Create `dx-audit-4-doc-defects.md`
+
+The dives produced ~10 unranked documentation findings. **v1 created no ledger for
+them** — the identical failure `dx-audit-3-doc-defects.md` exists to stop, in the
+round whose theme is bookkeeping. Seeded in the new predicate format before
+anything else in B.
+
+---
+
+## Ownership
+
+**[v1's table asserted a disjointness it did not have]** — review found four
+items landing in files no track owned. The tracks are **serial**, so this is a
+forgetting risk rather than a conflict risk, and the table is informational:
+
+| Track | Primary files |
+|---|---|
+| C | `internal/daemon/`, `internal/workflow/`, `internal/store/` |
+| S | `docs/security*.md`, `docs/configuration.md`, `docs/architecture.md`, `internal/docsgen/` |
+| O | `README.md`, `docs/quickstart.md`, `internal/cli/`, `internal/config/` |
+| R | `docs/api.md`, `docs/cli.md`, `docs/openapi.yaml`, `internal/projection/`, `CHANGELOG.md` |
+| B | `docs/plans/`, `internal/docsgen/` |
 
 ---
 
@@ -277,28 +372,42 @@ placeholder executor listed as a real kind in four documents.
 
 ```
 make test && make vet && make docs-check && make api-check \
-  && make api-docs-check && make docs-lint && make security-claims-check \
+  && make api-docs-check && make docs-lint && make claims-check \
   && make ledger-check && make check-embed \
+  && go test -race ./internal/daemon/... ./internal/store/... \
   && bash scripts/smoke.sh \
   && (cd web && pnpm build && pnpm test)
 ```
 
-Then the audit journey, and direct re-probing of every acceptance test against a
-live daemon.
+`claims-check` and `ledger-check` are new and must be added to `.PHONY` and to
+CI. **`-race` is in the list** because C1, C2 and C4 are concurrency properties
+and no existing target runs it — review found audit 3 reasoned the same way and
+then omitted it.
 
-**Coverage, stated honestly.** Mechanically checked: C1–C4, O1's product half,
-O2's product half, R3, S4, B. **Not mechanically checkable:** S1, S2, S3 and R1,
-R2, R5, R6 — prose, reviewed against the code it describes. S4 narrows that set
-by making each property single-sourced, but it cannot judge truth.
+### Coverage — a contract, not a promise
 
-This section is written last, against what actually landed, because last round's
-version claimed two guards that did not exist.
+**[v1's version was dishonest in a new way]**: it said the section would be
+"written last, against what actually landed", which is a promise to be honest
+later placed inside the section it promises to replace.
+
+**The rule instead: the merge commit must replace this list with the measured
+one, and anything that ships unchecked moves to `deferred.md` in the same
+commit.**
+
+Provisionally mechanical: C1, C2, C3, C4a, C4b, C5, O1's product half, O2's
+product half, R3, S5, B1.
+
+**Not mechanically checkable, and not claimed as such:** every prose item in S,
+R and O's doc half; and **B's reconciliation itself** — `ledger-check` verifies
+predicates, not whether the reconciliation was complete. v1 listed B under
+"mechanically checked"; it is not.
 
 ## Out of scope, recorded in `deferred.md`
 
-- **Enforcing a distinct reviewer actor** (S2's code half) — a design change.
-- **A redacting `slog` handler** — documented instead, again.
+- **C4c**, the success-path terminal test — needs Runtime-level fixtures.
+- **Enforcing a distinct reviewer actor** — no actor identity exists to compare.
+- **A redacting `slog` handler.** Recorded with review's caveat: the redaction gap
+  is broader than logs, and `0ffb976` showed the audit had not mapped it.
 - **Response-schema checking** — R3 fixes the instances; the axis stays unguarded.
-- **The capability broker's missing callers**, and `container`'s placeholder
-  status.
-- **No SDK**, **`linux/arm64` CI**, **cutting `0.2.0`** — unchanged.
+- **`container`'s placeholder status**, **no SDK**, **`linux/arm64` CI**,
+  **cutting `0.2.0`** — unchanged.
