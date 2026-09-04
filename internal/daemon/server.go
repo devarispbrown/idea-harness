@@ -62,8 +62,34 @@ type Server struct {
 func NewServer(rt *Runtime) *Server {
 	s := &Server{rt: rt, mux: http.NewServeMux()}
 	s.routes()
-	s.mux.Handle("/", web.Handler(rt.Token()))
+	s.mux.Handle("/", s.apiAwareNotFound(web.Handler(rt.Token())))
 	return s
+}
+
+// apiAwareNotFound answers unmatched API paths in the documented error shape,
+// and hands everything else to the web UI.
+//
+// openapi.yaml states that "every error response in this API has this shape and
+// nothing else". It did not: this catch-all is registered for "/", so it
+// matched every request no pattern claimed — a wrong verb, a typo'd path — and
+// they fell through to the file server's `404 page not found` as text/plain. A
+// client with a token could not JSON-decode the one response it is most likely
+// to hit while integrating, and the CLI surfaced it as `idea: 404 Not Found`,
+// the only raw HTTP status in the product.
+//
+// Scoped on "/api/" rather than "/api/v1/" so a future v2 does not regress. The
+// UI is unaffected: it is hash-routed (web/src/router.ts), so a fragment never
+// reaches the server and there is no deep-link path to break.
+func (s *Server) apiAwareNotFound(ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			ui.ServeHTTP(w, r)
+			return
+		}
+		// nosniff matches what http.Error set on the responses this replaces.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		writeError(w, http.StatusNotFound, "no such endpoint: "+r.Method+" "+r.URL.Path)
+	})
 }
 
 // Handler returns the authenticated, loopback-hardened handler.
