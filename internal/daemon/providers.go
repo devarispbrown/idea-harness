@@ -120,18 +120,31 @@ func providerModels(ctx context.Context, reg *model.Registry, name string, catal
 	return mergeModels(catalog, configured)
 }
 
-// isDemo reports whether no real provider is configured/available, so output
-// will be synthetic (§40).
+// demoProviderName is the registry key of the built-in deterministic provider.
+// It is the value defaultProviderName falls through to, and the one isDemo
+// compares against, so the banner and the registry cannot disagree.
+const demoProviderName = "idea-harness-default"
+
+// isDemo reports whether output will actually be synthetic (§40).
+//
+// It asks the same question buildRegistry does — what provider will the default
+// model resolve to — rather than scanning for key environment variables, which
+// is a different question and was answering it wrongly in both directions:
+//
+//   - `idea model set gpt-4o` (no provider) with OPENAI_API_KEY exported:
+//     defaultProviderName finds no slash and no configured provider, so
+//     everything resolved to the demo provider, while this function saw the key
+//     and suppressed the banner. `idea model set`, `idea config validate`,
+//     `idea doctor`, `idea new` and `idea status` all reported success and the
+//     user believed gpt-4o wrote their PRD. `model=gpt-4o actual=demo` appeared
+//     only in the daemon log.
+//   - the same with no default_model at all: a key alone does not make a
+//     provider the default, but it did silence the banner.
+//
+// A configured provider whose key is missing is a different problem — the call
+// fails 401 rather than going synthetic — and keyProblems reports that one.
 func isDemo(cfg config.Config, dotEnv map[string]string) bool {
-	if len(cfg.Harness.Providers) > 0 {
-		return false
-	}
-	for _, env := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"} {
-		if lookupEnv(env, dotEnv) != "" {
-			return false
-		}
-	}
-	return true
+	return defaultProviderName(cfg) == demoProviderName
 }
 
 // mergeModels merges the catalog defaults with any config-provided models,
