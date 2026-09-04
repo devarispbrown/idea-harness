@@ -253,7 +253,7 @@ and their migrations are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 can name one:
 
 ```bash
-idea version        # v0.2.0 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
+idea version        # v0.2.1 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
 ```
 
 Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI; the
