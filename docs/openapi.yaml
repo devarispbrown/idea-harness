@@ -1352,8 +1352,9 @@ paths:
 
         - `application/json` with `content`/`kind`/`title` - the paste path.
         - `multipart/form-data` with a `file` part and optional `kind`/`title` fields - the upload
-          path. The daemon sniffs the format and extracts text from md, txt, pdf, docx and xlsx, or
-          stores an image (jpg, png) byte-for-byte for the vision-describe path.
+          path. The daemon sniffs the format and extracts text from md, txt, csv, pdf, docx and
+          xlsx, or stores an image (jpg, png, gif, webp - classified by magic bytes, not by
+          extension) byte-for-byte for the vision-describe path.
 
         Every text doc is credential-swept (a hit is a 400, not a redaction), redacted, then stored
         content-addressed. File content is capped at 2 MiB and an initiative holds at most 100
@@ -2078,17 +2079,29 @@ paths:
       tags: [change-sets]
       operationId: getChangeSetDiff
       summary: The change set's patch, rendered
-      description: One string containing the whole rendered patch. File contents were redacted at write time.
+      description: |
+        `patch` is the whole rendered diff as one string; `files` is the same change set as a
+        per-file list, for a UI that renders file by file.
+
+        File contents are redacted **at this display surface, not at write time**: the raw blob
+        store is deliberately redaction-free so apply and revert round-trip byte-for-byte. See
+        `docs/security-model.md`, "What this does not protect against".
       responses:
         "200":
-          description: The rendered patch.
+          description: The rendered patch, plus the per-file list.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   patch: { type: string }
-                required: [patch]
+                  files:
+                    type: array
+                    description: |
+                      One entry per file in the change set, always present (an unreadable patch
+                      manifest yields an empty array, with the reason in `patch`).
+                    items: { $ref: "#/components/schemas/StructuredFile" }
+                required: [patch, files]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -3126,6 +3139,29 @@ components:
         created_by_run_id: { type: string }
         created_at: { type: string, format: date-time }
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
+
+    StructuredFile:
+      type: object
+      title: StructuredFile
+      description: |
+        One file of a change set, for per-file display (`workflow.StructuredFile`). `content` is
+        redacted at this display surface; the raw store keeps the unredacted bytes so apply and
+        revert round-trip byte-for-byte. A deleted file carries no content, and content is also
+        absent (with `size` 0) when the produced bytes were never persisted - a change set rejected
+        by the secret sweep, for example. The post-image digest is deliberately not exposed.
+      properties:
+        path: { type: string }
+        change_type:
+          type: string
+          description: How the file changed.
+          enum: [add, modify, delete]
+        size:
+          type: integer
+          description: Byte length of the stored content, 0 when no content is available.
+        content:
+          type: string
+          description: Redacted file content; empty for a deletion.
+      required: [path, change_type, size, content]
 
     OperationStatus:
       type: string

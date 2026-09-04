@@ -4,11 +4,13 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -258,8 +260,55 @@ func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	go func() {
 		defer cancel()
 		defer r.unregisterCancel(opID)
+		// These goroutines are detached, so net/http's per-request recovery does
+		// not reach them: one panic in a pipeline took the whole daemon down,
+		// including any other operation mid-apply between committing files and
+		// marking the change set applied.
+		//
+		// It also stranded the initiative claim. Recovering here lets the
+		// operation be recorded as failed and the claim released, which is the
+		// difference between one broken initiative and a dead process.
+		defer func() {
+			if p := recover(); p != nil {
+				r.log.Error("operation panicked",
+					"operation_id", opID, "panic", p, "stack", string(debug.Stack()))
+				r.failOperationAfterPanic(opID, p)
+			}
+		}()
 		fn(ctx)
 	}()
+}
+
+// failOperationAfterPanic records a panicked operation as failed and releases
+// the initiative claim, searching the registry because launchOperation is not
+// told which project owns the id.
+func (r *Runtime) failOperationAfterPanic(opID string, p any) {
+	ctx := context.Background()
+	projects, err := r.ListProjects(ctx)
+	if err != nil {
+		return
+	}
+	for _, proj := range projects {
+		pr, err := r.EnsureProject(ctx, proj.ProjectID)
+		if err != nil {
+			continue
+		}
+		op, err := pr.db.GetOperation(ctx, opID)
+		if err != nil {
+			continue
+		}
+		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
+			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
+		}
+		if op.InitiativeID != "" {
+			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
+				fmt.Sprintf("internal error while running %s", op.Type)); err != nil {
+				r.log.Error("releasing the initiative after a panic failed",
+					"initiative", op.InitiativeID, "error", err)
+			}
+		}
+		return
+	}
 }
 
 // failOperation transitions opID to a terminal failed (or cancelled) status and
@@ -305,7 +354,16 @@ func (r *Runtime) CancelOperation(ctx context.Context, opID string) error {
 			continue
 		}
 		if _, err := pr.db.GetOperation(ctx, opID); err == nil {
-			return pr.db.SetOperationStatus(ctx, opID, domain.OperationCancelled, "")
+			// Guarded: a cancel that arrives after the operation finished is a
+			// no-op rather than overwriting the real outcome. The goroutine's own
+			// terminal write stays unconditional, because it knows what actually
+			// happened -- an apply can complete after cancellation, and the log
+			// has to say so.
+			err := pr.db.CancelOperationStatus(ctx, opID)
+			if errors.Is(err, store.ErrOperationNotLive) {
+				return preconditionf("operation %q has already finished and cannot be cancelled", opID)
+			}
+			return err
 		}
 	}
 	return fmt.Errorf("operation %q not found in any project", opID)
@@ -394,13 +452,32 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	if ini.Status != domain.InitiativeApproved {
 		return "", preconditionf("advance requires an approved PRD (status=%s)", ini.Status)
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
-	if err != nil {
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to advance")
+		}
 		return "", err
 	}
-	// Mark the initiative running so the UI reflects "designing & planning"
-	// rather than a stale "approved" during the M2 pipeline.
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.Advance(bg, initiativeID)
 		if runErr != nil {
@@ -447,8 +524,30 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 			"execute requires an approved plan (status=%s); `idea next` names the step this initiative is actually ready for",
 			ini.Status)
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to execute")
+		}
+		return "", err
+	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -520,8 +619,30 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	if ini.Status == domain.InitiativeRunning {
 		return "", preconditionf("initiative is running; wait for it to finish before revising")
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved, domain.InitiativeComplete, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to revise")
+		}
+		return "", err
+	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -553,11 +674,32 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	if ini.Status != domain.InitiativeFailed {
 		return "", fmt.Errorf("retry requires a failed initiative (status=%s)", ini.Status)
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
-	if err != nil {
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to retry")
+		}
 		return "", err
 	}
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		pr.engine.SetModelOverride(initiativeID, model)
 		status, runErr := pr.engine.Retry(bg, initiativeID)
@@ -611,11 +753,32 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if !hasDesign {
 		return "", fmt.Errorf("no design or plan to reopen — advance the initiative first")
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
-	if err != nil {
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeApproved, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved, domain.InitiativeComplete, domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to reopen-phase")
+		}
 		return "", err
 	}
-	_ = pr.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeRunning, store.ActorOrchestrator)
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.ReopenPhase(bg, initiativeID, phase)
 		if runErr != nil {
@@ -645,8 +808,30 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return "", fmt.Errorf("no plan to revise (status=%s)", ini.Status)
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to revise-plan")
+		}
+		return "", err
+	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
 	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -677,8 +862,30 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	if ini.Status != domain.InitiativeNeedsHumanJudgment && ini.Status != domain.InitiativePlanApproved {
 		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
 	}
+	// Claim the initiative atomically. The read-only check above gives the
+	// specific message; this is what actually excludes a second request --
+	// four of these entry points asked "is it running?" and never set it, so
+	// two concurrent callers both passed.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is already running or not ready to approve-plan")
+		}
+		return "", err
+	}
+	// Nothing between the claim and launchOperation may leave the
+	// initiative claimed. A CreateOperation failure here would strand it in
+	// "running" with no operation for reconcileStaleOperations to find --
+	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
 	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {

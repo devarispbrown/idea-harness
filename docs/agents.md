@@ -94,10 +94,25 @@ The per-role model map `models.implementer` overrides `executor.model` if both a
 
 ### API key
 
-The agent's model key is resolved from the model's provider — a built-in preset (e.g.
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or a custom `providers.<name>.api_key_env` — read from the
-process environment (or the project `.env`). It is forwarded into the container via a `0600`
-env-file, so the secret never appears in the `docker run` argv and is never written to state.
+The executor resolves the *name* of the key's environment variable from the model's provider — a
+built-in preset (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or a custom
+`providers.<name>.api_key_env`. It then reads that variable **from the daemon's own process
+environment only** (`os.Getenv`, `internal/executor/agent.go`). The value is forwarded into the
+container via a `0600` env-file, so the secret never appears in the `docker run` argv and is never
+written to state.
+
+> **The project `.env` does not reach the agent.** `.env` is a fallback for the *harness's* own
+> model calls and for redaction (`docs/configuration.md`, Secrets) — the executor does not consult
+> it. A key that exists only in `.env` yields no env-file and no key inside the container, and the
+> agent fails against its provider. Export it into the daemon's environment instead:
+>
+> ```bash
+> export ANTHROPIC_API_KEY=...   # before the daemon starts
+> idea daemon stop               # then any command restarts it with the variable set
+> ```
+>
+> If the provider cannot be resolved at all, the run stops before the container starts, naming the
+> model it could not resolve — it never falls back to some other provider's key.
 
 ## Smoke test
 

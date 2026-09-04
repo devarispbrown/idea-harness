@@ -43,14 +43,14 @@ func newSandboxedAgentExecutor(store *blob.Store, name, model, image, keyEnv str
 		image = "alpine:3.20"
 	}
 	return &SandboxedAgentExecutor{
-		attempts:  make(map[string]*agentAttempt),
-		store:     store,
-		name:      name,
-		model:     model,
-		image:     image,
-		keyEnv:    keyEnv,
+		attempts:   make(map[string]*agentAttempt),
+		store:      store,
+		name:       name,
+		model:      model,
+		image:      image,
+		keyEnv:     keyEnv,
 		dockerPath: "docker",
-		buildArgs: buildArgs,
+		buildArgs:  buildArgs,
 	}
 }
 
@@ -139,23 +139,13 @@ func (e *SandboxedAgentExecutor) Capabilities(ctx context.Context) Capabilities 
 	}
 }
 
-// Start launches the agent inside the isolated container (detached) and records
-// the container id. The provider keys are forwarded so the agent can reach its
-// model; `--network none` is intentionally omitted (the agent must egress to the
-// model API — this is a filesystem/process sandbox, not a network sandbox).
-func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
-	if err := os.MkdirAll(req.WorkRoot, 0o755); err != nil {
-		return Attempt{}, fmt.Errorf("executor: %s: mkdir work root: %w", e.name, err)
-	}
-	// Forward only the agent's own provider key via a 0600 env-file (not argv).
-	keyFile, err := e.writeProviderKeyFile()
-	if err != nil {
-		return Attempt{}, err
-	}
-	if keyFile != "" {
-		defer os.Remove(keyFile)
-	}
-
+// containerArgs builds the `docker run` argv for an agent container.
+//
+// Named rather than inline so docs/security-model.md's isolation table can be
+// asserted against it: that table said "no network" and a read-only /repo mount
+// for three releases, describing ContainerSandbox rather than this, and no check
+// in the repo could see the difference.
+func (e *SandboxedAgentExecutor) containerArgs(req Request, keyFile string) []string {
 	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	args := []string{
 		"run", "-d",
@@ -173,7 +163,27 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	if keyFile != "" {
 		args = append(args, "--env-file", keyFile)
 	}
-	args = append(args, e.image)
+	return append(args, e.image)
+}
+
+// Start launches the agent inside the isolated container (detached) and records
+// the container id. The provider keys are forwarded so the agent can reach its
+// model; `--network none` is intentionally omitted (the agent must egress to the
+// model API — this is a filesystem/process sandbox, not a network sandbox).
+func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
+	if err := os.MkdirAll(req.WorkRoot, 0o755); err != nil {
+		return Attempt{}, fmt.Errorf("executor: %s: mkdir work root: %w", e.name, err)
+	}
+	// Forward only the agent's own provider key via a 0600 env-file (not argv).
+	keyFile, err := e.writeProviderKeyFile()
+	if err != nil {
+		return Attempt{}, err
+	}
+	if keyFile != "" {
+		defer os.Remove(keyFile)
+	}
+
+	args := e.containerArgs(req, keyFile)
 	args = append(args, e.buildArgs(req, e.model)...)
 	out, err := exec.CommandContext(ctx, e.dockerPath, args...).Output()
 	if err != nil {
