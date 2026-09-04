@@ -194,10 +194,45 @@ func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.Ini
 	return status, err
 }
 
-// maxOutputForStage returns the completion token budget for a stage. The PRD is
-// the largest output (full requirement set + acceptance criteria) and was
-// previously truncated at 4096 tokens; framing is a short brief. Values stay
-// within the providers' declared MaxOutput ceilings (16k for Anthropic/OpenAI).
+// effectiveMaxOutput is the budget actually sent: what the stage wants, capped
+// by what the provider says it can produce.
+//
+// The cap is the fix for audit 5's B1, and the defect it closes had been in the
+// tree since the initial commit and shipped in v0.1.0: maxOutputForStage asks
+// 32000 for the PRD, every real provider declares less (OpenAI and Anthropic
+// 16384, Gemini 8192), and nothing compared the two. `Capabilities.MaxOutput`
+// was declared per provider and never read, so the ceiling was decorative. The
+// result was a hard 400 on every real OpenAI run -- the README's own worked
+// example -- with the upstream explanation discarded (see model.httpError).
+//
+// A provider that declares 0 has not stated a ceiling, so the stage budget
+// stands. Capping is strictly better than the alternative here: an over-budget
+// request is refused outright, while a capped one returns the model's best
+// effort, and a genuinely truncated structured reply already fails schema
+// validation loudly and is retried.
+func effectiveMaxOutput(stageKey string, prov model.Provider) int {
+	return minOutput(maxOutputForStage(stageKey), prov)
+}
+
+// minOutput caps a wanted budget by the provider's declared ceiling. A provider
+// declaring 0 has stated no ceiling, so the want stands.
+func minOutput(want int, prov model.Provider) int {
+	if prov == nil {
+		return want
+	}
+	if ceiling := prov.Capabilities().MaxOutput; ceiling > 0 && want > ceiling {
+		return ceiling
+	}
+	return want
+}
+
+// maxOutputForStage returns the completion token budget a stage would like. The
+// PRD is the largest output (full requirement set + acceptance criteria) and was
+// previously truncated at 4096 tokens; framing is a short brief.
+//
+// These are wants, not promises: several exceed the ceilings real providers
+// declare, and effectiveMaxOutput is what reconciles them. Do not read a value
+// here as one that will be sent.
 func maxOutputForStage(stageKey string) int {
 	switch stageKey {
 	case StageProductDefinition:
@@ -254,7 +289,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		Messages:       []model.Message{{Role: "user", Content: userPrompt}},
 		JSONSchema:     []byte(schemaJSON),
 		JSONSchemaName: schemaName,
-		MaxOutput:      maxOutputForStage(stageKey),
+		MaxOutput:      effectiveMaxOutput(stageKey, prov),
 	}
 
 	reqStart := time.Now()
@@ -1038,7 +1073,9 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		System:    "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
 		Messages:  []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
 		Images:    []model.Image{{Data: image, MediaType: mediaType}},
-		MaxOutput: 2048,
+		// Under every declared ceiling today; routed through the cap anyway so
+		// this call site cannot drift into the defect the other one had.
+		MaxOutput: minOutput(2048, prov),
 	}
 	resp, err := prov.Complete(ctx, req)
 	if err != nil {
