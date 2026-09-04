@@ -80,3 +80,43 @@ func TestOrphanedClaimsAreSwept(t *testing.T) {
 		t.Error("an initiative claimed with no operation was not swept; it is stuck forever")
 	}
 }
+
+// TestExecuteReleasesTheInitiativeOnBothPaths pins the P0 that the claim
+// mechanism introduced for the most common command in the tool.
+//
+// Execute is the one claiming entry point whose engine call never sets the
+// initiative status itself — the other six reach a terminal status inside
+// internal/workflow, so their claim is released as a side effect. Execute's
+// closure wrote only the operation status on success and passed
+// failInitiative=false on error, so after the claim was added a *successful*
+// execute left the initiative running forever: `idea next` answered "workflow
+// running" indefinitely and every later command answered "already running".
+//
+// scripts/smoke.sh and the audit journey both missed it because they revert the
+// change set afterwards and RevertChangeSet happens to reset the status. This
+// test deliberately never reverts.
+func TestExecuteReleasesTheInitiativeOnBothPaths(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+
+	opID, err := rt.ExecuteInitiative(t.Context(), projectID, iniID)
+	if err != nil {
+		t.Fatalf("execute was refused from plan_approved: %v", err)
+	}
+	waitForOperation(t, ts, token, opID)
+
+	ini, err := pr.db.GetInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status == domain.InitiativeRunning {
+		t.Fatal("the initiative is still running after execute finished; " +
+			"`idea next` answers \"workflow running\" forever and every command " +
+			"answers \"already running\"")
+	}
+}

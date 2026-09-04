@@ -592,12 +592,39 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 		}
 		return "", err
 	}
+	// The status to return to when the run ends, captured before the claim.
+	//
+	// Execute is the one claiming entry point whose engine call never sets the
+	// initiative status itself: Advance, Revise, Retry, RevisePlan, ReopenPhase
+	// and ApprovePlan all reach a terminal status inside internal/workflow, so
+	// the claim is released for them as a side effect. Execute's closure wrote
+	// only the operation status on success and passed failInitiative=false on
+	// error, so after the claim was introduced a *successful* execute left the
+	// initiative running forever -- `idea next` answered "workflow running"
+	// indefinitely and every later command answered "already running".
+	//
+	// scripts/smoke.sh and the audit journey both missed it because they revert
+	// the change set afterwards, and RevertChangeSet happens to set the status
+	// back. A real multi-task initiative that applies without reverting is stuck.
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after execute",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		cs, runErr := pr.engine.Execute(bg, initiativeID)
 		if runErr != nil {
+			// Released to where it started, not failed: an execute failure is
+			// recoverable by running execute again, which is what this command
+			// did before the claim existed.
+			release()
 			r.failOperation(opID, initiativeID, "execute failed", bg, pr, runErr, false)
 			return
 		}
+		release()
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, cs.ID)
 		r.log.Info("execute complete", "initiative", initiativeID, "change_set", cs.HumanID)
 	})
