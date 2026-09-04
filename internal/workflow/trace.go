@@ -33,7 +33,9 @@ type ImpactItem struct {
 // sources, bounded.
 func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string) ([]TraceItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
-	var out []TraceItem
+	// Non-nil so an empty chain marshals as [] rather than null: a node with no
+	// provenance is a normal answer, and a client should not have to null-check it.
+	out := []TraceItem{}
 	visited := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
 	for depth := 0; depth < maxTraceDepth && len(queue) > 0; depth++ {
@@ -71,7 +73,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 // nodes that point to this node) with a staleness classification.
 func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID string) ([]ImpactItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
-	var out []ImpactItem
+	out := []ImpactItem{} // non-nil: see Why
 	visited := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
 	for depth := 0; depth < maxTraceDepth && len(queue) > 0; depth++ {

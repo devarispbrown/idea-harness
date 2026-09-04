@@ -580,6 +580,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		provider = "openai"
 	}
 	models, _ := pr.registry.ListModels(r.Context(), provider)
+	if models == nil {
+		// The documented behaviour for an unreachable provider is "200 with an
+		// empty models array" -- and the error is deliberately dropped above to
+		// get it. A nil slice marshals as null, which is not an empty array, so
+		// the one case the spec calls out was the one it did not produce.
+		models = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"provider": provider, "models": models})
 }
 

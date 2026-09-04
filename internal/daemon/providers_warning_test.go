@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,5 +109,39 @@ func TestUpdateProvidersDoesNotReturnUnrelatedWarnings(t *testing.T) {
 		if strings.Contains(w, "gpt-4o-typo") {
 			t.Fatalf("a pre-existing warning about an untouched field came back: %s", w)
 		}
+	}
+}
+
+// TestListModelsEmitsAnEmptyArrayNotNull: the spec says an unreachable provider
+// answers "200 with an empty models array rather than an error", and the
+// handler drops the error to get that. It returned `"models":null` — a nil
+// slice, not an empty array — so the single case the spec calls out was the one
+// case it did not actually produce.
+func TestListModelsEmitsAnEmptyArrayNotNull(t *testing.T) {
+	_, ts, token := newTestServer(t)
+	projectID := newTestProject(t, ts.URL, token)
+
+	// A provider that is not configured and cannot be reached.
+	resp := doReq(t, http.MethodGet,
+		ts.URL+"/api/v1/projects/"+projectID+"/models?provider=nonexistent-provider", token, "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"models":null`) {
+		t.Fatalf("models came back null, not []: %s", body)
+	}
+	var out struct {
+		Models []string `json:"models"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Models == nil {
+		t.Fatal("models decoded to nil")
 	}
 }
