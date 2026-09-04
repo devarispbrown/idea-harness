@@ -810,7 +810,7 @@ paths:
       operationId: listInitiativeOperations
       summary: Every operation recorded for this initiative
       description: |
-        The initiative's operation history, newest last. `GET /operations/{id}` polls one
+        The initiative's operation history, newest first (`ORDER BY created_at DESC`). `GET /operations/{id}` polls one
         operation; this lists them all, which is what a UI needs to show what has run.
       responses:
         "200":
@@ -2860,7 +2860,11 @@ components:
     RequirementStatus:
       type: string
       title: RequirementStatus
-      enum: [draft, approved, verified, removed]
+      description: |
+        `failed` is a human "fail" judgment — the requirement stays in the active set and blocks
+        completion until re-verified. `waived` is a human "waive" — out of scope, excluded from the
+        completion gate like `removed`, but retained as a visible judgment rather than deleted.
+      enum: [draft, approved, verified, failed, waived, removed]
 
     Requirement:
       type: object
@@ -3459,8 +3463,11 @@ components:
           description: Acceptance criteria in total.
         needs_manual:
           type: integer
-          description: Criteria still waiting on a human.
-      required: [code, pass, total, needs_manual]
+          description: |
+            Criteria still waiting on a human. Zero for a waived requirement — waived is out of
+            scope, not pending — so read this alongside `status` rather than on its own.
+        status: { $ref: "#/components/schemas/RequirementStatus" }
+      required: [code, pass, total, needs_manual, status]
 
     RiskTier:
       type: string

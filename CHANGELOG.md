@@ -88,6 +88,10 @@ they stood.
   is visible only in `openapi.yaml` and to generated clients.
 - Executor config: when the file is written but the reload fails, the response is a `409` naming
   that state instead of an error string containing an absolute state path.
+- Setting a disposition or a note on a finding that does not exist returns `404` instead of `200`.
+  The update matched no row and reported success, and the provenance event was written regardless —
+  so the record showed a human dispositioning a finding that was never there. `idea review resolve`
+  on a mistyped id printed a checkmark.
 
 ### Fixed — CLI
 
@@ -99,6 +103,11 @@ they stood.
 - `idea docs add -` reads from stdin, as README, `docs/ui.md`, the usage string and the quickstart's
   copy-paste line have always said. The shared parser had the carve-out for it; this command rolled
   its own loop and rejected `-` before reaching it.
+- **`idea verify` exits non-zero when the gate is unmet.** It reported the *initiative's* status,
+  not the gate's, so `idea verify || exit 1` in CI could never fail — the quickstart tells readers
+  to run it exactly that way. `idea next --until-human` still treats an unmet gate as the human
+  judgment point it is and stops cleanly; only the standalone command fails. Any script that relied
+  on the old exit 0 will now stop.
 - `idea verify` rejects a disposition with no requirement, and rejects two dispositions at once.
   `idea verify --pass --note "checked manually"` used to print "✓ verified" and record nothing, so a
   user believed they had signed off.
@@ -123,6 +132,11 @@ they stood.
   accepted by the daemon, and documented nowhere.
 - The generated CLI table in `docs/cli.md` carries a **Flags** column rendered from each command's
   flag spec, so a flag that exists in code cannot be missing from the reference.
+- `make docs-lint` fails on a documented command that is not a real command and on a `TYPE-n`
+  reference that does not resolve, across every Markdown file. Both classes had shipped: prose
+  invented verbs the CLI has never had, and identifiers pointed at rows that no longer existed. It
+  reads fenced blocks inside blockquotes too — the first version did not, which is precisely where
+  one of the defects it was written for was sitting.
 - `idea help` has a golden test. Its stability was asserted only in a comment.
 
 ### Added

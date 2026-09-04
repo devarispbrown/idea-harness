@@ -136,8 +136,10 @@ operation id and returns immediately:
 ```
 
 Poll `GET /api/v1/operations/{id}` for its status, or follow
-`GET /api/v1/projects/{projectId}/events` (SSE) — which is what `idea watch` and the UI do. The
-`202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
+`GET /api/v1/projects/{projectId}/events` (SSE). Both shipped clients poll: `idea watch` polls the
+change set once a second (`internal/cli/watch.go`) and the UI polls on a `setInterval` timer
+(`web/src/App.tsx`). Nothing in-tree consumes the SSE endpoint, so it is offered for your clients,
+not exercised by ours. The `202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
 alongside `operation_id`.
 
 **Events.** `/events` is `text/event-stream`, one event per product-graph event, with the event

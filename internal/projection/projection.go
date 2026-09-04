@@ -16,37 +16,37 @@ import (
 
 // Understanding is the Current Understanding projection.
 type Understanding struct {
-	Title         string                `json:"title"`
-	Description   string                `json:"description"`
+	Title         string                  `json:"title"`
+	Description   string                  `json:"description"`
 	Status        domain.InitiativeStatus `json:"status"`
-	FailureReason string                `json:"failure_reason,omitempty"`
-	Summary       string                `json:"summary"`
-	NeedsJudgment []string              `json:"needs_judgment"`
-	Assertions    []UnderstandingItem   `json:"assertions"`
-	Requirements  []RequirementView     `json:"requirements"`
-	Decisions     []DecisionView        `json:"decisions"`
-	Questions     []QuestionView        `json:"questions"`
+	FailureReason string                  `json:"failure_reason,omitempty"`
+	Summary       string                  `json:"summary"`
+	NeedsJudgment []string                `json:"needs_judgment"`
+	Assertions    []UnderstandingItem     `json:"assertions"`
+	Requirements  []RequirementView       `json:"requirements"`
+	Decisions     []DecisionView          `json:"decisions"`
+	Questions     []QuestionView          `json:"questions"`
 }
 
 // UnderstandingItem is one provenance-backed statement.
 type UnderstandingItem struct {
-	ID         string                `json:"id"`
-	Type       domain.AssertionType  `json:"type"`
-	Status     domain.AssertionStatus `json:"status"`
-	Statement  string                `json:"statement"`
-	Confidence domain.Confidence     `json:"confidence"`
-	Source     string                `json:"source"`
-	Provenance []domain.ProvenanceRef `json:"provenance"`
-	ProducedByRun string             `json:"produced_by_run"`
+	ID            string                 `json:"id"`
+	Type          domain.AssertionType   `json:"type"`
+	Status        domain.AssertionStatus `json:"status"`
+	Statement     string                 `json:"statement"`
+	Confidence    domain.Confidence      `json:"confidence"`
+	Source        string                 `json:"source"`
+	Provenance    []domain.ProvenanceRef `json:"provenance"`
+	ProducedByRun string                 `json:"produced_by_run"`
 }
 
 // RequirementView is a requirement in the projection.
 type RequirementView struct {
-	ID                 string                      `json:"id"`
-	Code               string                      `json:"code"`
-	Statement          string                      `json:"statement"`
-	Priority           domain.RequirementPriority  `json:"priority"`
-	Status             domain.RequirementStatus    `json:"status"`
+	ID                 string                       `json:"id"`
+	Code               string                       `json:"code"`
+	Statement          string                       `json:"statement"`
+	Priority           domain.RequirementPriority   `json:"priority"`
+	Status             domain.RequirementStatus     `json:"status"`
 	AcceptanceCriteria []domain.AcceptanceCriterion `json:"acceptance_criteria"`
 }
 
@@ -72,8 +72,8 @@ type DissentView struct {
 
 // QuestionView is an open question in the projection.
 type QuestionView struct {
-	ID       string             `json:"id"`
-	Question string             `json:"question"`
+	ID       string                `json:"id"`
+	Question string                `json:"question"`
 	Status   domain.QuestionStatus `json:"status"`
 }
 
@@ -86,7 +86,18 @@ type Guidance struct {
 
 // BuildUnderstanding assembles the Current Understanding projection.
 func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative) (Understanding, error) {
-	u := Understanding{Title: ini.Title, Description: ini.Description, Status: ini.Status, FailureReason: ini.FailureReason}
+	// Every slice starts non-nil so an initiative with nothing attached marshals
+	// as [] rather than null. A bare initiative is the normal first state, not an
+	// edge case, and a client should not have to null-check five fields to render
+	// it -- nor should a generated client whose schema says `type: array` reject it.
+	u := Understanding{
+		Title: ini.Title, Description: ini.Description, Status: ini.Status, FailureReason: ini.FailureReason,
+		NeedsJudgment: []string{},
+		Assertions:    []UnderstandingItem{},
+		Requirements:  []RequirementView{},
+		Decisions:     []DecisionView{},
+		Questions:     []QuestionView{},
+	}
 
 	assertions, err := db.ListAssertions(ctx, ini.ID)
 	if err != nil {
@@ -249,7 +260,7 @@ func verbPhrase(title string) bool {
 // judgmentItems lists open decisions and open questions that need the user's
 // attention (§8, §55).
 func judgmentItems(u *Understanding) []string {
-	var out []string
+	out := []string{} // non-nil: the caller assigns it straight to a JSON field
 	for _, d := range u.Decisions {
 		if d.Status == domain.DecisionOpen {
 			out = append(out, d.Code+": "+d.Question)

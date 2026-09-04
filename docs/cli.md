@@ -101,7 +101,7 @@ idea logs -f        # tail the log
 idea daemon         # then run `idea new` in another terminal
 ```
 
-The web UI shows a **Live activity** feed (same events, via SSE).
+The web UI shows a **Live activity** feed (the same events, polled on a timer — see [`ui.md`](ui.md)).
 
 ## How it works
 
