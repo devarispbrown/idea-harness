@@ -9,13 +9,15 @@ import (
 	"strings"
 )
 
-// The defect ledgers. A ledger records what an audit found and what happened to
-// it; the guard exists because a ledger nobody re-checks quietly becomes a list
-// of claims, which is the failure it was created to prevent one level down.
-var ledgerFiles = []string{
-	"docs/plans/dx-audit-3-doc-defects.md",
-	"docs/plans/dx-audit-4-doc-defects.md",
-}
+// ledgerGlob finds the defect ledgers. A ledger records what an audit found and
+// what happened to it; the guard exists because a ledger nobody re-checks
+// quietly becomes a list of claims, which is the failure it was created to
+// prevent one level down.
+//
+// Globbed rather than listed: a hardcoded list meant the next round's ledger was
+// unguarded until somebody remembered to edit Go source, and nothing would have
+// said so.
+const ledgerGlob = "docs/plans/dx-audit-*-doc-defects.md"
 
 // ledgerRow is one row of a defect table.
 type ledgerRow struct {
@@ -27,14 +29,24 @@ type ledgerRow struct {
 }
 
 // A row is `| id | claim | truth | `predicate` | status |`. The predicate is
-// matched inside backticks so a claim containing a pipe cannot be mistaken for
-// a column boundary — and because an unquoted predicate would be reformatted by
-// any Markdown tool that touches the file.
+// matched inside backticks because an unquoted one would be reformatted by any
+// Markdown tool that touches the file, and because a backtick is the one
+// character a predicate may then not contain — which keeps the capture
+// unambiguous. Pipes are a separate matter: the first two cells must be
+// pipe-free, and a row that breaks that is reported by ledgerRowStartRe rather
+// than skipped.
 // ledgerRowStartRe recognises the shape of a row without validating it, so a
-// malformed row can be reported rather than silently dropped.
-var ledgerRowStartRe = regexp.MustCompile(`^\|\s*[A-Z]+[0-9]+\s*\|`)
+// malformed row is reported rather than silently dropped.
+//
+// Deliberately permissive about the id: the first version required
+// `[A-Z]+[0-9]+` with no indent and no decoration, so `D19a`, `  | D19 |`,
+// `| **D19** |` and “ | `D19` | “ all slipped past both regexes and vanished
+// with no error and no change to the row count. Letter-suffixed ids are the
+// house convention -- expandIDs supports them, deferred.md uses `C4c` -- so the
+// shape this guard was least able to see was the one most likely to be written.
+var ledgerRowStartRe = regexp.MustCompile("^\\s*\\|\\s*[*`_]*[A-Za-z][A-Za-z0-9-]*[0-9][a-z]?[*`_]*\\s*\\|")
 
-var ledgerRowRe = regexp.MustCompile("^\\|\\s*([A-Z]+[0-9]+)\\s*\\|(?:[^|]*\\|){2}\\s*`([^`]+)`\\s*\\|\\s*([^|]+?)\\s*\\|\\s*$")
+var ledgerRowRe = regexp.MustCompile("^\\s*\\|\\s*[*`_]*([A-Za-z][A-Za-z0-9-]*[0-9][a-z]?)[*`_]*\\s*\\|(?:[^|]*\\|){2}\\s*`([^`]+)`\\s*\\|\\s*([^|]+?)\\s*\\|\\s*$")
 
 // runLedgerCheck evaluates every row's predicate and reports both directions of
 // drift: a row marked open whose defect is gone (stale-open), and a row marked
@@ -52,17 +64,20 @@ func runLedgerCheck() error {
 		return err
 	}
 
+	found, err := filepath.Glob(filepath.Join(root, ledgerGlob))
+	if err != nil {
+		return err
+	}
+	if len(found) == 0 {
+		return fmt.Errorf("no ledger matched %s; this check is not reading anything", ledgerGlob)
+	}
+	sort.Strings(found)
+
 	var rows []ledgerRow
-	for _, lf := range ledgerFiles {
-		path := filepath.Join(root, lf)
+	for _, path := range found {
+		lf, _ := filepath.Rel(root, path)
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// A ledger listed here but not yet written is a drift of its own:
-				// the list is edited when a ledger is created, so a missing file
-				// means one was deleted or never landed.
-				return fmt.Errorf("ledger %s is listed in ledgerFiles but does not exist", lf)
-			}
 			return err
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
@@ -98,15 +113,21 @@ func runLedgerCheck() error {
 			manual++
 			continue
 		}
-		open := r.status == "open"
-		switch {
-		case open && !defectPresent:
+		wantDefect, err := statusExpectsDefect(r.status)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s:%d %s: %v", r.file, r.line, r.id, err))
+			continue
+		}
+		if defectPresent == wantDefect {
+			continue
+		}
+		if wantDefect {
 			problems = append(problems, fmt.Sprintf(
-				"%s:%d %s is marked open but its predicate no longer holds — the defect is fixed and the row was not updated\n    predicate: %s",
-				r.file, r.line, r.id, r.predicate))
-		case !open && defectPresent && strings.HasPrefix(r.status, "fixed"):
+				"%s:%d %s is marked %q but its predicate no longer holds — the defect is gone and the row was not updated\n    predicate: %s",
+				r.file, r.line, r.id, r.status, r.predicate))
+		} else {
 			problems = append(problems, fmt.Sprintf(
-				"%s:%d %s is marked %q but its predicate holds again — the defect regressed\n    predicate: %s",
+				"%s:%d %s is marked %q but its predicate holds — the defect is present\n    predicate: %s",
 				r.file, r.line, r.id, r.status, r.predicate))
 		}
 	}
@@ -147,11 +168,24 @@ func evalPredicate(root, pred string) (defectPresent, checkable bool, err error)
 	if !ok || strings.TrimSpace(literal) == "" {
 		return false, false, fmt.Errorf("predicate %q needs <path>:<literal>", pred)
 	}
-	raw, err := os.ReadFile(filepath.Join(root, relPath))
+	// Confined to the repository, and never at a ledger. An unconfined path
+	// (`../../../go.mod`) resolved outside the tree and was permanently
+	// satisfied, and a predicate naming its own ledger is satisfied by the
+	// predicate cell's own text -- a row that can never go stale and never
+	// regress, which is a row that asserts nothing.
+	full := filepath.Join(root, filepath.Clean(relPath))
+	if !strings.HasPrefix(full, root+string(filepath.Separator)) {
+		return false, false, fmt.Errorf("predicate path %q escapes the repository", relPath)
+	}
+	if matched, _ := filepath.Match(filepath.Join(root, ledgerGlob), full); matched {
+		return false, false, fmt.Errorf("predicate names a defect ledger (%s); "+
+			"the predicate cell's own text would satisfy it", relPath)
+	}
+	raw, err := os.ReadFile(full)
 	if err != nil {
 		return false, false, fmt.Errorf("predicate names %s: %w", relPath, err)
 	}
-	found := strings.Contains(string(raw), literal)
+	found := strings.Contains(normalizeWrapping(string(raw)), normalizeWrapping(literal))
 
 	switch form {
 	case "absent":
@@ -172,18 +206,41 @@ const deferredPath = "docs/plans/deferred.md"
 
 // coverageClaimRe matches a plan's coverage sentence. The ids after it are what
 // that round claims it mechanically verified.
-var coverageClaimRe = regexp.MustCompile(`(?m)^Mechanically checked:\s*(.+?)\.\s*$`)
+//
+// (?s) and a non-greedy run to the first period, because the sentence wraps:
+// the anchored single-line version silently matched nothing the moment a claim
+// list grew past the file's ~78-column wrap, which turned the check off exactly
+// when the claim got long enough to be worth checking. The plan file this reads
+// wraps its Partially: line already.
+var coverageClaimRe = regexp.MustCompile(`(?s)(?m)^Mechanically checked:\s*(.+?)\.\s`)
+
+// coveragePrefixRe finds the sentence's opening independently, so a claim that
+// is present but unparseable is an error rather than a silent skip.
+var coveragePrefixRe = regexp.MustCompile(`(?m)^Mechanically checked:`)
 
 // partialClaimRe matches the escape hatch: an item done in part, which may
 // legitimately also appear in deferred.md.
-var partialClaimRe = regexp.MustCompile(`(?m)^Partially:\s*(.+?)\.\s*$`)
+var partialClaimRe = regexp.MustCompile(`(?s)(?m)^Partially:\s*(.+?)\.\s`)
+
+// partialEntryRe requires each Partially: entry to name its carve-out in
+// parentheses: `C4 (a and b; c deferred)`.
+//
+// Without it the line was a bare suppression list with no substantiation, so a
+// single line -- `Partially: C1-C7, G2, S6` -- turned every contradiction in a
+// plan green. Ranges are refused for the same reason: "partially" is a claim
+// about one item, and a range is a claim about seven.
+var partialEntryRe = regexp.MustCompile(`^([A-Za-z]{1,3}[0-9]+[a-z]?)\s*\([^)]+\)$`)
 
 // planAuditRe pulls the round number out of a plan filename, so a claim in
 // audit 3's plan is checked against deferred rows whose origin is audit 3.
 var planAuditRe = regexp.MustCompile(`dx-audit-(\d+)-fix-plan\.md$`)
 
 // deferredOriginRe reads the Origin column: `audit 3 / C5`, `audit 4 / S2`.
-var deferredOriginRe = regexp.MustCompile(`^\|\s*audit (\d+)\s*/\s*([A-Za-z0-9]+)\s*\|(.*)$`)
+var deferredOriginRe = regexp.MustCompile(`^\|\s*audit (\d+)\s*(?:/\s*([A-Za-z0-9, ]+?)\s*)?\|(.*)$`)
+
+// deferredRowStartRe recognises a deferred row without indexing it, so one this
+// check cannot read is reported rather than dropped.
+var deferredRowStartRe = regexp.MustCompile(`^\|\s*audit\s`)
 
 // idRangeRe expands `C1-C7` and `D1–D3` (both dash characters, because a
 // Markdown file written by a human contains both).
@@ -223,17 +280,41 @@ func runCoverageCheck(root string) error {
 		}
 		text := string(raw)
 
+		rel, _ := filepath.Rel(root, plan)
+
 		partial := map[string]bool{}
 		if pm := partialClaimRe.FindStringSubmatch(text); pm != nil {
-			for _, id := range expandIDs(pm[1]) {
+			for _, entry := range strings.Split(pm[1], ",") {
+				entry = strings.TrimSpace(strings.ReplaceAll(entry, "\n", " "))
+				entry = strings.Join(strings.Fields(entry), " ")
+				if entry == "" {
+					continue
+				}
+				em := partialEntryRe.FindStringSubmatch(entry)
+				if em == nil {
+					problems = append(problems, fmt.Sprintf(
+						"%s: Partially: entry %q must name one id and its carve-out, as `C4 (a and b; c deferred)`.\n"+
+							"    A bare id list here suppresses the coverage check for every id in it.", rel, entry))
+					continue
+				}
+				id := em[1]
+				if _, deferredHere := deferred[round+"/"+id]; !deferredHere {
+					problems = append(problems, fmt.Sprintf(
+						"%s: Partially: names %s, which deferred.md does not record for audit %s.\n"+
+							"    Nothing was carved out, so claim it outright or record the carve-out first.", rel, id, round))
+					continue
+				}
 				partial[id] = true
 			}
 		}
 		cm := coverageClaimRe.FindStringSubmatch(text)
 		if cm == nil {
+			if coveragePrefixRe.MatchString(text) {
+				return fmt.Errorf("%s has a `Mechanically checked:` line this check cannot parse; "+
+					"it must end in a period", rel)
+			}
 			continue // a plan need not make a coverage claim; it just may not lie in one
 		}
-		rel, _ := filepath.Rel(root, plan)
 		for _, id := range expandIDs(cm[1]) {
 			if partial[id] {
 				continue
@@ -263,15 +344,29 @@ func deferredByAudit(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("coverage-check: %w", err)
 	}
 	out := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for i, line := range strings.Split(string(raw), "\n") {
 		m := deferredOriginRe.FindStringSubmatch(line)
 		if m == nil {
+			// A row that opens `| audit N ...` and does not yield an origin is
+			// reported, not skipped. Seven of twenty-five real rows were being
+			// dropped in silence -- comma lists (`audit 3 / D7, D8`), a named
+			// group (`audit 3 / Track A`, five items), and the round-level rows
+			// with no id -- so a plan could claim any of them and stay green.
+			if deferredRowStartRe.MatchString(line) {
+				return nil, fmt.Errorf("%s:%d is a deferred row this check cannot index:\n    %s\n"+
+					"    Use `audit <n> / <id>` or `audit <n>` with no slash.",
+					deferredPath, i+1, strings.TrimSpace(line))
+			}
 			continue
 		}
 		if strings.Contains(m[3], "No longer deferred") {
 			continue
 		}
-		out[m[1]+"/"+m[2]] = m[3]
+		for _, id := range strings.Split(m[2], ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				out[m[1]+"/"+id] = m[3]
+			}
+		}
 	}
 	return out, nil
 }
@@ -316,3 +411,45 @@ func expandIDs(list string) []string {
 }
 
 var simpleIDRe = regexp.MustCompile(`^[A-Za-z]{1,3}[0-9]+[a-z]?$`)
+
+// statusExpectsDefect maps a row's status to what its predicate must say, and
+// rejects anything outside the vocabulary.
+//
+// The status used to be free text compared against the literal "open" and the
+// prefix "fixed", so every other value -- "Open", "deferred later",
+// "not reproduced", "FIXED abc123" -- asserted nothing while still being
+// counted in the "checked mechanically" total. Two of those are documented
+// statuses, so the guard was already reporting a larger number than it was
+// actually checking.
+func statusExpectsDefect(status string) (bool, error) {
+	switch {
+	case status == "open":
+		// Still broken: the predicate must hold.
+		return true, nil
+	case strings.HasPrefix(status, "deferred "):
+		// Decided against doing, so the defect is by definition still there.
+		return true, nil
+	case strings.HasPrefix(status, "fixed "):
+		return false, nil
+	case status == "not reproduced":
+		// The defect was never real; the predicate records what was found
+		// instead, and it must keep holding in the "gone" direction.
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown status %q (want `open`, `fixed <ref>`, "+
+			"`deferred <reason>` or `not reproduced`)", status)
+	}
+}
+
+// wrapped collapses line breaks -- including a Go comment continuation -- so a
+// literal that is one sentence in a document matches text the author wrapped
+// across lines.
+//
+// Without it a predicate could be permanently unsatisfiable: I1 quoted
+// "Both forms are live during the migration" while routes.go wrapped that
+// sentence between "Both" and "forms", so restoring the entire defect left the
+// check green. That is the same class of blind guard the ledger exists to
+// catch.
+var wrapped = regexp.MustCompile(`\s*\n\s*(?://+\s*|#\s*|\*\s*)?`)
+
+func normalizeWrapping(s string) string { return wrapped.ReplaceAllString(s, " ") }

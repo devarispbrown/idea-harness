@@ -123,7 +123,7 @@ rather than CI defaults — so it runs manually (workflow_dispatch), not on ever
 
 ## Security / trust tradeoff — read this before wiring an agent
 
-The coding-agent container is sandboxed for **filesystem and process** isolation:
+The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of all four executor kinds against what each one actually passes:
 
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
@@ -133,7 +133,8 @@ The coding-agent container is sandboxed for **filesystem and process** isolation
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 
 But it is **not network-isolated**. The agent needs egress to reach its model API, so
-`--network none` is deliberately omitted. Concretely, the agent container:
+`--network none` is deliberately omitted — see [`security-model.md`](security-model.md).
+Concretely, the agent container:
 
 - can reach the network,
 - receives **its own provider API key** (forwarded in via env-file), and
@@ -142,7 +143,8 @@ But it is **not network-isolated**. The agent needs egress to reach its model AP
 
 **A compromised or malicious agent image, or a prompt-injection attack through the task content,
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
-network egress, and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
+network egress ([`security-model.md`](security-model.md) records this under what the execution
+gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
 trust, and prefer a scoped, rotatable API key you can revoke.
 
 The canonical statement of what each executor kind isolates, and what none of them do, is

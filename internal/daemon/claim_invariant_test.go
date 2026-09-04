@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // asyncEntryPoints is the invariant table: every Runtime method that launches a
@@ -18,18 +19,33 @@ import (
 // `releases` records the mechanism, and is documentation with teeth — a method
 // listed as releasing must have a terminal-path test below or a deferred row
 // naming why not.
-var asyncEntryPoints = map[string]string{
-	"StartInitiativeWithDocs":   "sets InitiativeRunning at creation; the engine reaches a terminal status",
-	"AdvanceInitiative":         "workflow/advance.go sets a terminal status on success; failOperation on error",
-	"ExecuteInitiative":         "explicit release on both exits — the engine sets nothing (audit 4 P0)",
-	"ApplyChangeSetInitiative":  "claims from every non-running state; explicit release on both exits",
-	"RevertChangeSetInitiative": "claims from every non-running state; the engine sets plan_approved on success, explicit release on error",
-	"ReviseInitiative":          "the engine reaches a terminal status; failOperation on error",
-	"RetryInitiative":           "the engine reaches a terminal status; failOperation on error",
-	"ReopenPhaseInitiative":     "the engine reaches a terminal status; failOperation on error",
-	"RevisePlanInitiative":      "the engine reaches a terminal status; failOperation on error",
-	"ApprovePlanInitiative":     "the engine reaches a terminal status; failOperation on error",
-	"SuggestAnswersInitiative":  "claims and releases explicitly",
+type entryPoint struct {
+	// claims is checked against the AST, not trusted. The prose half of this
+	// table said SuggestAnswersInitiative "claims and releases explicitly" when
+	// it does neither -- the row nearest the reader was the wrong one, and
+	// membership-only checking could not see it.
+	claims   bool
+	releases string
+}
+
+var asyncEntryPoints = map[string]entryPoint{
+	"StartInitiativeWithDocs": {false,
+		"does not claim: the initiative is created running, so there is no prior state to take"},
+	"AdvanceInitiative": {true,
+		"workflow/advance.go sets a terminal status on success; failOperation on error"},
+	"ExecuteInitiative": {true,
+		"explicit release on both exits — the engine sets nothing (audit 4 P0)"},
+	"ApplyChangeSetInitiative": {true,
+		"claims from every non-running state; explicit release on both exits"},
+	"RevertChangeSetInitiative": {true,
+		"claims from every non-running state; releases to plan_approved on success (the engine's own transition, since the revert unverifies a requirement) and to the prior status on error"},
+	"ReviseInitiative":      {true, "the engine reaches a terminal status; failOperation on error"},
+	"RetryInitiative":       {true, "the engine reaches a terminal status; failOperation on error"},
+	"ReopenPhaseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
+	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"SuggestAnswersInitiative": {false,
+		"does not claim, and should: it is the one entry point that launches a background operation against an existing initiative without taking the claim, so it can run concurrently with an advance. Recorded in docs/plans/deferred.md as C5"},
 }
 
 // TestEveryAsyncEntryPointIsInTheClaimTable is C4a.
@@ -56,6 +72,7 @@ func TestEveryAsyncEntryPointIsInTheClaimTable(t *testing.T) {
 	}
 
 	found := map[string]bool{}
+	claims := map[string]bool{}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -66,8 +83,15 @@ func TestEveryAsyncEntryPointIsInTheClaimTable(t *testing.T) {
 			if !ok {
 				return true
 			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "launchOperation" {
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			switch sel.Sel.Name {
+			case "launchOperation":
 				found[fn.Name.Name] = true
+			case "ClaimInitiativeRunning":
+				claims[fn.Name.Name] = true
 			}
 			return true
 		})
@@ -82,6 +106,21 @@ func TestEveryAsyncEntryPointIsInTheClaimTable(t *testing.T) {
 				"Add it, and record how its initiative claim is released — a claim with no "+
 				"release strands the initiative permanently, which is how a successful "+
 				"`idea execute` shipped broken.", name)
+		}
+	}
+	// The load-bearing half of each row, checked rather than read. The table
+	// claimed SuggestAnswersInitiative "claims and releases explicitly" while
+	// its body contains neither call; membership-only checking let that stand
+	// through the round that added the table.
+	for name := range found {
+		row, listed := asyncEntryPoints[name]
+		if !listed {
+			continue // already reported above
+		}
+		if row.claims != claims[name] {
+			t.Errorf("asyncEntryPoints[%q].claims = %v, but runtime.go %s call ClaimInitiativeRunning.\n"+
+				"    row says: %s", name, row.claims,
+				map[bool]string{true: "does", false: "does not"}[claims[name]], row.releases)
 		}
 	}
 	for name := range asyncEntryPoints {
@@ -112,19 +151,30 @@ func TestEveryAsyncEntryPointIsInTheClaimTable(t *testing.T) {
 // Execute path. Recorded in docs/plans/deferred.md as C4c rather than faked.
 func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 	// The states each entry point legitimately claims from, mirroring runtime.go.
+	// failInitiative mirrors the literal each call site passes in runtime.go.
+	// It used to be hard-coded true for every row, so the six execute/apply/
+	// revert subtests drove a call the production code never makes: those paths
+	// pass false and rely on their own release() instead. They asserted nothing
+	// about the real code, which is why deleting the apply release left them
+	// green. They now drive what actually runs, and the release closure is
+	// exercised alongside.
 	claimants := []struct {
-		name string
-		from domain.InitiativeStatus
+		name           string
+		from           domain.InitiativeStatus
+		failInitiative bool
+		// releasesItself is true where the goroutine calls release() rather than
+		// relying on failOperation to move the initiative off running.
+		releasesItself bool
 	}{
-		{"advance", domain.InitiativeApproved},
-		{"execute", domain.InitiativePlanApproved},
-		{"revise", domain.InitiativePlanApproved},
-		{"retry", domain.InitiativeFailed},
-		{"reopen-phase", domain.InitiativePlanApproved},
-		{"revise-plan", domain.InitiativePlanApproved},
-		{"approve-plan", domain.InitiativeNeedsHumanJudgment},
-		{"apply", domain.InitiativePlanApproved},
-		{"revert", domain.InitiativePlanApproved},
+		{"advance", domain.InitiativeApproved, true, false},
+		{"execute", domain.InitiativePlanApproved, false, true},
+		{"revise", domain.InitiativePlanApproved, true, false},
+		{"retry", domain.InitiativeFailed, true, false},
+		{"reopen-phase", domain.InitiativePlanApproved, true, false},
+		{"revise-plan", domain.InitiativePlanApproved, true, false},
+		{"approve-plan", domain.InitiativeNeedsHumanJudgment, true, false},
+		{"apply", domain.InitiativePlanApproved, false, true},
+		{"revert", domain.InitiativePlanApproved, false, true},
 	}
 
 	for _, c := range claimants {
@@ -146,14 +196,32 @@ func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 					t.Fatal(err)
 				}
 
+				// The entry points that pass failInitiative=false release the
+				// claim themselves before calling failOperation, so the test
+				// must do the same to drive the real sequence.
+				releaseLikeTheGoroutineDoes := func() {
+					if !c.releasesItself {
+						return
+					}
+					if err := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), iniID,
+						c.from, store.ActorOrchestrator); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				switch path {
 				case "cancelled":
 					cancelled, cancel := context.WithCancel(ctx)
 					cancel()
-					rt.failOperation(opID, iniID, "cancelled", cancelled, pr, context.Canceled, true)
+					releaseLikeTheGoroutineDoes()
+					rt.failOperation(opID, iniID, "cancelled", cancelled, pr, context.Canceled, c.failInitiative)
 				case "failed":
-					rt.failOperation(opID, iniID, "failed", ctx, pr, errBoom, true)
+					releaseLikeTheGoroutineDoes()
+					rt.failOperation(opID, iniID, "failed", ctx, pr, errBoom, c.failInitiative)
 				case "panicked":
+					// No release: a panic unwinds before the goroutine's own
+					// release runs, which is exactly why failOperationAfterPanic
+					// has to move the initiative off running by itself.
 					rt.failOperationAfterPanic(opID, "boom")
 				}
 

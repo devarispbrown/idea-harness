@@ -94,7 +94,9 @@ so it is worth being exact:
   runs the deterministic checks plus the adversarial reviewer; if the pass is blocked and the cap is
   not yet reached, requirements are superseded and the PRD is regenerated before the next pass. At
   the cap the initiative becomes `needs_human_judgment` rather than failing. The cap applies **per
-  invocation of the loop**, so `idea revise` and `resume` each get a fresh count. The M2 plan review
+  invocation of the loop**, so each entry into it — a new `idea new`, or a revise driven through
+  `POST /initiatives/{id}/revise` — gets a fresh count. The CLI has no revise or resume verb
+  of its own; it reaches the loop through `idea new` and `idea next`. The M2 plan review
   is a single pass and does not consult this field.
 - **`review.max_tokens`** is checked against one response's output-token count. It never accumulates,
   and it does not limit input tokens.

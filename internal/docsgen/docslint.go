@@ -26,8 +26,33 @@ import (
 	"strings"
 )
 
-// docsLinted are the prose files whose commands a reader will copy.
-var docsLinted = []string{"README.md", filepath.Join("docs", "quickstart.md")}
+// lintedDocs returns every published document whose commands a reader will
+// copy: README plus docs/*.md.
+//
+// It used to be README and the quickstart alone, while the changelog entry
+// announcing this guard said "across every Markdown file". Nine of the eleven
+// published documents were unchecked, docs/cli.md and docs/api.md among them,
+// and a planted `idea trace task T-3` in either passed.
+//
+// docs/plans/ is deliberately excluded: those are historical records of what
+// was true at the time, and linting them would force the rewriting of history
+// to satisfy a checker.
+func lintedDocs(root string) ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	out := []string{"README.md"}
+	for _, m := range matches {
+		rel, err := filepath.Rel(root, m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	return out, nil
+}
 
 var (
 	// blockquoteRe strips a leading "> " so fenced blocks inside a blockquote are
@@ -35,7 +60,12 @@ var (
 	// reported clean on `idea trace task T-3` planted inside one -- the literal
 	// defect it exists to catch, invisible in the same round that built it.
 	blockquoteRe = regexp.MustCompile(`^\s*>\s?`)
-	fenceRe      = regexp.MustCompile("^\\s*```")
+	fenceRe      = regexp.MustCompile("^\\s*(?:```|~~~)")
+	// inlineCodeRe pulls `...` spans out of prose. A front-page command is
+	// usually written inline, not fenced -- README and the quickstart alone
+	// carried 66 inline invocations that this check could not see, against 55
+	// fenced ones that it could.
+	inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 	ideaCmdRe    = regexp.MustCompile(`(?:^|[;&|]\s*)(?:\$ )?idea\s+([a-z-]+)`)
 	// A reference like REQ-1 or TASK-12, as the docs write them.
 	//
@@ -58,8 +88,12 @@ func runDocsLint() error {
 	}
 	prefixes := domainCodePrefixes(root)
 
+	docs, err := lintedDocs(root)
+	if err != nil {
+		return err
+	}
 	var problems []string
-	for _, rel := range docsLinted {
+	for _, rel := range docs {
 		lines, err := readLines(filepath.Join(root, rel))
 		if err != nil {
 			return err
@@ -72,28 +106,27 @@ func runDocsLint() error {
 				continue
 			}
 			if !inFence {
+				// Outside a fence only the code spans are commands; ordinary
+				// prose saying "idea generates a plan" is not an invocation.
+				//
+				// Each span is scanned on its own. Concatenating them let a
+				// command run past its own closing backtick: "`idea` command ...
+				// `go install`" joined to "idea\ngo install", and \s in the
+				// invocation pattern crosses a newline, so the checker invented
+				// `idea go`.
+				var spans []string
+				for _, m := range inlineCodeRe.FindAllStringSubmatch(line, -1) {
+					spans = append(spans, m[1])
+				}
+				if len(spans) == 0 {
+					continue
+				}
+				checkLine(rel, i+1, spans, verbs, prefixes, &problems)
 				continue
 			}
 			// Every invocation on the line, not just the first: commands chained
 			// with && or ; would otherwise have their later verbs unchecked.
-			ms := ideaCmdRe.FindAllStringSubmatch(line, -1)
-			if ms == nil {
-				continue
-			}
-			where := fmt.Sprintf("%s:%d", rel, i+1)
-			for _, m := range ms {
-				if verb := m[1]; !verbs[verb] {
-					problems = append(problems, fmt.Sprintf(
-						"  %s: `idea %s` — no such command", where, verb))
-				}
-			}
-			for _, ref := range codeRefRe.FindAllStringSubmatch(line, -1) {
-				if prefix := ref[1]; len(prefixes) > 0 && !prefixes[prefix] {
-					problems = append(problems, fmt.Sprintf(
-						"  %s: reference %q uses prefix %q, which nothing emits (known: %s)",
-						where, ref[0], prefix, strings.Join(sortedSet(prefixes), ", ")))
-				}
-			}
+			checkLine(rel, i+1, []string{line}, verbs, prefixes, &problems)
 		}
 	}
 	if len(problems) == 0 {
@@ -176,4 +209,28 @@ func sortedSet(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// checkLine reports unknown verbs and unresolvable references in each fragment.
+// Fragments are scanned separately so a pattern cannot run from one inline code
+// span into the next.
+func checkLine(rel string, lineNo int, fragments []string, verbs, prefixes map[string]bool, problems *[]string) {
+	where := fmt.Sprintf("%s:%d", rel, lineNo)
+	for _, frag := range fragments {
+		// Every invocation in the fragment, not just the first: commands chained
+		// with && or ; would otherwise have their later verbs unchecked.
+		for _, m := range ideaCmdRe.FindAllStringSubmatch(frag, -1) {
+			if verb := m[1]; !verbs[verb] {
+				*problems = append(*problems, fmt.Sprintf(
+					"  %s: `idea %s` — no such command", where, verb))
+			}
+		}
+		for _, ref := range codeRefRe.FindAllStringSubmatch(frag, -1) {
+			if prefix := ref[1]; len(prefixes) > 0 && !prefixes[prefix] {
+				*problems = append(*problems, fmt.Sprintf(
+					"  %s: reference %q uses prefix %q, which nothing emits (known: %s)",
+					where, ref[0], prefix, strings.Join(sortedSet(prefixes), ", ")))
+			}
+		}
+	}
 }
