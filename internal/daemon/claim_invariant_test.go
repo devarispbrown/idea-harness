@@ -22,8 +22,8 @@ var asyncEntryPoints = map[string]string{
 	"StartInitiativeWithDocs":   "sets InitiativeRunning at creation; the engine reaches a terminal status",
 	"AdvanceInitiative":         "workflow/advance.go sets a terminal status on success; failOperation on error",
 	"ExecuteInitiative":         "explicit release on both exits — the engine sets nothing (audit 4 P0)",
-	"ApplyChangeSetInitiative":  "explicit release on both exits",
-	"RevertChangeSetInitiative": "workflow RevertChangeSet sets plan_approved; explicit release on error",
+	"ApplyChangeSetInitiative":  "claims from every non-running state; explicit release on both exits",
+	"RevertChangeSetInitiative": "claims from every non-running state; the engine sets plan_approved on success, explicit release on error",
 	"ReviseInitiative":          "the engine reaches a terminal status; failOperation on error",
 	"RetryInitiative":           "the engine reaches a terminal status; failOperation on error",
 	"ReopenPhaseInitiative":     "the engine reaches a terminal status; failOperation on error",
@@ -123,6 +123,8 @@ func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 		{"reopen-phase", domain.InitiativePlanApproved},
 		{"revise-plan", domain.InitiativePlanApproved},
 		{"approve-plan", domain.InitiativeNeedsHumanJudgment},
+		{"apply", domain.InitiativePlanApproved},
+		{"revert", domain.InitiativePlanApproved},
 	}
 
 	for _, c := range claimants {
@@ -215,5 +217,50 @@ func TestPanicAfterSuccessLeavesTheRecordAlone(t *testing.T) {
 	if ini.Status == domain.InitiativeFailed {
 		t.Error("a late panic failed an initiative whose operation succeeded; " +
 			"the user is sent to `idea retry` on a run that worked")
+	}
+}
+
+// TestApplyIsRefusedWhileTheInitiativeIsBusy pins what C1's claim is actually
+// for.
+//
+// apply, revert and execute already shared the engine mutex, so they were
+// mutually exclusive before this. The gap was Revise, which takes no mutex and
+// can supersede requirements while an apply lands. The claim closes it by making
+// "some operation holds this initiative" the thing apply checks.
+func TestApplyIsRefusedWhileTheInitiativeIsBusy(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+
+	// Something else holds it.
+	if err := pr.db.ClaimInitiativeRunning(t.Context(), iniID, domain.InitiativePlanApproved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ApplyChangeSetInitiative(t.Context(), projectID, iniID, "cs-1"); err == nil {
+		t.Error("apply started while another operation held the initiative")
+	}
+}
+
+// TestApplyIsAllowedFromEveryRestingState keeps the claim from becoming a
+// regression. apply had no guard at all, so it succeeded from every status; a
+// list narrower than "everything not running" would refuse flows that work.
+func TestApplyIsAllowedFromEveryRestingState(t *testing.T) {
+	for _, st := range []domain.InitiativeStatus{
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed,
+	} {
+		t.Run(string(st), func(t *testing.T) {
+			rt, ts, token := newTestServer(t)
+			projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+			setStatus(t, rt, projectID, iniID, st)
+			if _, err := rt.ApplyChangeSetInitiative(t.Context(), projectID, iniID, "cs-1"); err != nil {
+				t.Errorf("apply refused from %s: %v", st, err)
+			}
+		})
 	}
 }

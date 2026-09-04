@@ -655,15 +655,54 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 	if err != nil {
 		return "", err
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "apply_change_set")
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
 	}
+	// Claim from every non-running state.
+	//
+	// The list is deliberately permissive, and derived by probing rather than by
+	// inspection: apply and revert had no guard at all, so they succeeded from
+	// every status, and a narrower list would have refused flows that work
+	// today. What this excludes is the one case that matters -- starting an
+	// apply while another operation holds the initiative.
+	//
+	// The hazard is narrower than the other claims': apply, revert and execute
+	// already share the engine mutex, so they were mutually exclusive already.
+	// The gap is Revise, which takes no mutex and can supersede requirements
+	// while an apply lands -- a provenance race rather than a corrupted tree.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID,
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is busy; wait for the running operation to finish")
+		}
+		return "", err
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "apply_change_set")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after apply",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		if runErr := pr.engine.ApplyChangeSet(bg, initiativeID, changeSetID); runErr != nil {
+			release()
 			r.failOperation(opID, initiativeID, "apply failed", bg, pr, runErr, false)
 			return
 		}
+		release()
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("apply complete", "change_set", changeSetID)
 	})
@@ -677,15 +716,57 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	if err != nil {
 		return "", err
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revert_change_set")
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
 	}
+	// Claim from every non-running state.
+	//
+	// The list is deliberately permissive, and derived by probing rather than by
+	// inspection: apply and revert had no guard at all, so they succeeded from
+	// every status, and a narrower list would have refused flows that work
+	// today. What this excludes is the one case that matters -- starting an
+	// apply while another operation holds the initiative.
+	//
+	// The hazard is narrower than the other claims': apply, revert and execute
+	// already share the engine mutex, so they were mutually exclusive already.
+	// The gap is Revise, which takes no mutex and can supersede requirements
+	// while an apply lands -- a provenance race rather than a corrupted tree.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID,
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is busy; wait for the running operation to finish")
+		}
+		return "", err
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revert_change_set")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after revert",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		if runErr := pr.engine.RevertChangeSet(bg, initiativeID, changeSetID); runErr != nil {
+			release()
 			r.failOperation(opID, initiativeID, "revert failed", bg, pr, runErr, false)
 			return
 		}
+		// RevertChangeSet sets plan_approved itself, so this release is the
+		// error path only. Preserved rather than changed: whether reverting
+		// from `complete` should land on plan_approved is a separate question.
+		release()
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})
