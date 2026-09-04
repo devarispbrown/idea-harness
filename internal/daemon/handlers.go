@@ -461,13 +461,28 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// pr.cfg.Harness is copied by value but its maps are shared with the live
-	// runtime config, so writing into them before the request is accepted would
-	// mutate the running daemon even when the write is rejected below. Clone
-	// them and assemble a candidate.
-	cfg := pr.cfg.Harness
-	cfg.Providers = maps.Clone(pr.cfg.Harness.Providers)
-	cfg.Models = maps.Clone(pr.cfg.Harness.Models)
+	// Re-read from disk, not from pr.cfg — the daemon caches a project's config
+	// for its whole lifetime, so anything hand-edited since it started is
+	// invisible here and this handler writes the whole struct back. Editing
+	// harness.yaml and then running `idea model set` silently reverted
+	// max_cycles, research.urls and git_commit, and reported success at exit 0.
+	//
+	// handleUpdateExecutors has always done this correctly and says why in the
+	// same words. The two handlers sit 1800 lines apart and only one was fixed;
+	// that asymmetry shipped in v0.1.0 and survived four audits.
+	onDisk, err := config.Load(filepath.Join(pr.rootPath, config.Dir))
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// config.Load returns fresh maps, so these clones are no longer what keeps a
+	// rejected write from mutating the running daemon — the disk read already
+	// does. Kept as defence, and because the next person to change the source of
+	// `onDisk` back to a shared value would otherwise reintroduce that bug
+	// silently.
+	cfg := onDisk.Harness
+	cfg.Providers = maps.Clone(onDisk.Harness.Providers)
+	cfg.Models = maps.Clone(onDisk.Harness.Models)
 	if body.DefaultModel != "" {
 		cfg.DefaultModel = body.DefaultModel
 	}
