@@ -1,0 +1,24 @@
+{
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a product analyst.\nRespond with a single JSON object matching the requested schema. Do not wrap in markdown."
+      }
+    ]
+  },
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Build usage-based billing"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseMimeType": "application/json",
+    "maxOutputTokens": 8192
+  }
+}
+
