@@ -4,17 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-
-	"github.com/devarispbrown/idea-harness/internal/domain"
-	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // readError pulls the message out of an error response.
@@ -223,32 +224,52 @@ func TestReloadFailureNeverLeaksAStatePath(t *testing.T) {
 // told the user two different things depending on which config they edited, and
 // docs/api.md went on to claim a handler cannot get this wrong.
 //
-// Asserted through writeReloadErr itself rather than by inducing a filesystem
-// failure in each handler: the branch is what differs, and a permissions fixture
-// would be flaky on two platforms.
+// Parsed, not string-scanned. A first version searched from the function name to
+// the next "\n}\n", which truncates at the first nested closure -- so the body it
+// examined never contained ReloadProject, the check skipped itself, and the test
+// passed with the fix reverted. Vacuous in exactly the way this round keeps
+// finding elsewhere.
 func TestBothConfigEndpointsReportWrittenButNotApplied(t *testing.T) {
-	src, err := os.ReadFile("handlers.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "handlers.go", nil, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(src)
-	for _, handler := range []string{"handleUpdateProviders", "handleUpdateExecutors"} {
-		start := strings.Index(text, "func (s *Server) "+handler+"(")
-		if start < 0 {
-			t.Errorf("%s not found; this test is not reading handlers.go", handler)
+	checked := 0
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
 			continue
 		}
-		end := strings.Index(text[start:], "\n}\n")
-		if end < 0 {
-			end = len(text) - start
+		if fn.Name.Name != "handleUpdateProviders" && fn.Name.Name != "handleUpdateExecutors" {
+			continue
 		}
-		body := text[start : start+end]
-		if !strings.Contains(body, "ReloadProject") {
-			continue // no reload, nothing to report
+		var reloads, reportsHonestly bool
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "ReloadProject":
+					reloads = true
+				case "writeReloadErr":
+					reportsHonestly = true
+				}
+			}
+			return true
+		})
+		if !reloads {
+			continue
 		}
-		if !strings.Contains(body, "writeReloadErr") {
+		checked++
+		if !reportsHonestly {
 			t.Errorf("%s handles a ReloadProject failure without writeReloadErr, so a caller "+
-				"whose config was written but not applied gets a masked 500", handler)
+				"whose config was written but not applied gets a masked 500", fn.Name.Name)
 		}
+	}
+	if checked != 2 {
+		t.Fatalf("examined %d config endpoints, want 2; the test is not finding them", checked)
 	}
 }
