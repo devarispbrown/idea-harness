@@ -37,6 +37,17 @@ type SemanticDiff struct {
 // SemanticDiff computes the structured diff for an initiative.
 func (e *Engine) SemanticDiff(ctx context.Context, initiativeID string) (*SemanticDiff, error) {
 	var out SemanticDiff
+	// All five non-nil up front. Every one is `required` in openapi.yaml and
+	// typed as an array, and they filled independently — so a single response
+	// could carry `"added":[{...}],"removed":null`, mixing both shapes for the
+	// same client to handle. Audit 4's null sweep converted eight fields
+	// elsewhere and missed this endpoint and /doctor, which left the API less
+	// consistent than before it started.
+	out.Requirements.Added = []DiffRequirement{}
+	out.Requirements.Removed = []DiffRequirement{}
+	out.Decisions.Open = []DiffDecision{}
+	out.Decisions.Decided = []DiffDecision{}
+	out.Decisions.Superseded = []DiffDecision{}
 	reqs, err := e.db.ListRequirements(ctx, initiativeID)
 	if err != nil {
 		return nil, err
