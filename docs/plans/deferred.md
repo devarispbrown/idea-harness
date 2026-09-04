@@ -28,3 +28,10 @@ still unfixed a round later and had reappeared as new work.
 | audit 3 | `linux/arm64` untested in CI | Hosted arm64 Linux runners unavailable on this repo's plan; stated in README |
 | audit 3 | Cutting `0.2.0` | `v0.1.0` is still the only tag and contains every audit-2 defect; a decision after this lands |
 | audit 2 | README provider list omitted DeepSeek | **Was** deferred by omission; fixed in audit 3 as R13 |
+| audit 3 / S3 | `architecture.md`'s redaction half | **No longer deferred** — fixed in audit 4 (`9152317`). Recorded because audit 3 planned it, did not do it, and did not record it either, which is how it survived a round with no owner |
+| audit 3 / R15 | The stale `routes.go` comment claiming the flat routes are still live | **No longer deferred** — fixed in audit 4 (`5823d63`). Same story: planned, undone, unrecorded, and it then survived two rounds |
+| audit 3 | The trust-level code change | Still not attempted. Named in audit 3's plan, absent from its implementation and from this file until audit 4 |
+| audit 4 / C4c | The success-path terminal test | Needs Runtime-level fixtures; C4a's AST census and C4b's failure-path tests landed without it |
+| audit 4 / S2 | Enforcing a distinct reviewer actor | There is no actor identity to compare — every automated write shares one. `security.md` documents the gap instead |
+| audit 4 / R3 | Response-schema checking as a guard | The instances are fixed and pinned by tests; the axis itself stays unguarded. A live-response check against the smoke daemon is the same item audit 3 deferred under G2 |
+| audit 4 / D17 | `container`'s "placeholder" status | **Not reproduced.** `ContainerExecutor` is fully implemented and wired in two call sites; see [`dx-audit-4-doc-defects.md`](dx-audit-4-doc-defects.md) |

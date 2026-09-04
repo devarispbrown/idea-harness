@@ -297,8 +297,26 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 		if err != nil {
 			continue
 		}
+		// Both writes are gated on the operation still being live, and on the
+		// SAME outcome.
+		//
+		// A panic can happen after the goroutine's own terminal write -- in a
+		// trailing log line, say. Rewriting a succeeded operation to failed is
+		// bad; rewriting only the initiative is worse, because it leaves
+		// operation=succeeded with initiative=failed and sends a user to
+		// `idea retry` on a run that actually worked, re-running the whole
+		// pipeline and spending real model budget.
+		//
+		// So the initiative release happens only when this call is the one that
+		// actually moved the operation to failed.
+		if op.Status != domain.OperationPending && op.Status != domain.OperationRunning {
+			r.log.Warn("operation panicked after it had already finished; leaving the record alone",
+				"operation_id", opID, "status", op.Status, "panic", p)
+			return
+		}
 		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
+			return
 		}
 		if op.InitiativeID != "" {
 			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
@@ -444,7 +462,16 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	}
 
 	r.launchOperation(opID, func(bg context.Context) {
-		status, runErr := pr.engine.Run(bg, ini.ID, description)
+		// ini.Description, not the raw parameter: the redactor already swept it
+		// on the line that created the initiative, and the engine sends this
+		// value straight to the model provider.
+		//
+		// Passing the raw text scrubbed a pasted credential from local storage
+		// and then egressed it to a third party anyway -- strictly worse than
+		// keeping it locally, and invisible because every retry took the
+		// redacted path (workflow/retry.go passes ini.Description), so the leak
+		// only ever happened on a first run.
+		status, runErr := pr.engine.Run(bg, ini.ID, ini.Description)
 		if runErr != nil {
 			r.failOperation(opID, ini.ID, "initiative run failed", bg, pr, runErr, true)
 			return
@@ -583,12 +610,39 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 		}
 		return "", err
 	}
+	// The status to return to when the run ends, captured before the claim.
+	//
+	// Execute is the one claiming entry point whose engine call never sets the
+	// initiative status itself: Advance, Revise, Retry, RevisePlan, ReopenPhase
+	// and ApprovePlan all reach a terminal status inside internal/workflow, so
+	// the claim is released for them as a side effect. Execute's closure wrote
+	// only the operation status on success and passed failInitiative=false on
+	// error, so after the claim was introduced a *successful* execute left the
+	// initiative running forever -- `idea next` answered "workflow running"
+	// indefinitely and every later command answered "already running".
+	//
+	// scripts/smoke.sh and the audit journey both missed it because they revert
+	// the change set afterwards, and RevertChangeSet happens to set the status
+	// back. A real multi-task initiative that applies without reverting is stuck.
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after execute",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		cs, runErr := pr.engine.Execute(bg, initiativeID)
 		if runErr != nil {
+			// Released to where it started, not failed: an execute failure is
+			// recoverable by running execute again, which is what this command
+			// did before the claim existed.
+			release()
 			r.failOperation(opID, initiativeID, "execute failed", bg, pr, runErr, false)
 			return
 		}
+		release()
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, cs.ID)
 		r.log.Info("execute complete", "initiative", initiativeID, "change_set", cs.HumanID)
 	})
@@ -601,15 +655,54 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 	if err != nil {
 		return "", err
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "apply_change_set")
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
 	}
+	// Claim from every non-running state.
+	//
+	// The list is deliberately permissive, and derived by probing rather than by
+	// inspection: apply and revert had no guard at all, so they succeeded from
+	// every status, and a narrower list would have refused flows that work
+	// today. What this excludes is the one case that matters -- starting an
+	// apply while another operation holds the initiative.
+	//
+	// The hazard is narrower than the other claims': apply, revert and execute
+	// already share the engine mutex, so they were mutually exclusive already.
+	// The gap is Revise, which takes no mutex and can supersede requirements
+	// while an apply lands -- a provenance race rather than a corrupted tree.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID,
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is busy; wait for the running operation to finish")
+		}
+		return "", err
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "apply_change_set")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after apply",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		if runErr := pr.engine.ApplyChangeSet(bg, initiativeID, changeSetID); runErr != nil {
+			release()
 			r.failOperation(opID, initiativeID, "apply failed", bg, pr, runErr, false)
 			return
 		}
+		release()
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("apply complete", "change_set", changeSetID)
 	})
@@ -623,15 +716,65 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	if err != nil {
 		return "", err
 	}
-	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revert_change_set")
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
 	}
+	// Claim from every non-running state.
+	//
+	// The list is deliberately permissive, and derived by probing rather than by
+	// inspection: apply and revert had no guard at all, so they succeeded from
+	// every status, and a narrower list would have refused flows that work
+	// today. What this excludes is the one case that matters -- starting an
+	// apply while another operation holds the initiative.
+	//
+	// The hazard is narrower than the other claims': apply, revert and execute
+	// already share the engine mutex, so they were mutually exclusive already.
+	// The gap is Revise, which takes no mutex and can supersede requirements
+	// while an apply lands -- a provenance race rather than a corrupted tree.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID,
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is busy; wait for the running operation to finish")
+		}
+		return "", err
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revert_change_set")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
+	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		release := func(to domain.InitiativeStatus) {
+			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+				to, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after revert",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
 		if runErr := pr.engine.RevertChangeSet(bg, initiativeID, changeSetID); runErr != nil {
+			// Nothing landed, so the initiative goes back where it was.
+			release(priorStatus)
 			r.failOperation(opID, initiativeID, "revert failed", bg, pr, runErr, false)
 			return
 		}
+		// Not priorStatus. RevertChangeSet has just rolled the workspace back
+		// and unverified the requirement the change set implemented, and ends
+		// by setting plan_approved itself -- so the initiative is no longer
+		// wherever it was before the claim. Writing priorStatus back here
+		// reverted from `complete` to `complete`: files rolled back, change set
+		// `reverted`, requirement unverified, and `idea next` still reporting
+		// the initiative finished. Releasing to the status the engine chose is
+		// idempotent with what it just wrote, and still guarantees the claim is
+		// released even if the engine's own write failed (it discards its
+		// error).
+		release(domain.InitiativePlanApproved)
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})

@@ -125,8 +125,11 @@ func ComputeRiskProfile(initiativeID string, signals []domain.RiskSignal) domain
 		ID:           id.New(),
 		InitiativeID: initiativeID,
 		Tier:         tier,
-		Signals:      append([]domain.RiskSignal(nil), signals...),
-		CreatedAt:    time.Now().UTC(),
+		// append to an empty slice, not to nil: an initiative with no detected
+		// signals is the normal case, and `"signals":null` made every client
+		// null-check a field the spec types as an array.
+		Signals:   append([]domain.RiskSignal{}, signals...),
+		CreatedAt: time.Now().UTC(),
 	}
 	for _, s := range signals {
 		if s.Detected {

@@ -82,11 +82,12 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/revert", s.handleRevertChangeSet)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
 
-	// The initiative-scoped reads, on the nested path. These ten answered only
-	// at the flat `/projects/{projectId}/<resource>?initiative_id=` form, which
-	// is why the same question had two shapes depending on the resource. Both
-	// forms are live during the migration; the flat ones come out once the CLI
-	// and the web UI are moved over (docs/plans/api-consistency-and-ci-plan.md).
+	// The initiative-scoped reads, on the nested path. These ten once answered
+	// only at the flat `/projects/{projectId}/<resource>?initiative_id=` form,
+	// which is why the same question had two shapes depending on the resource.
+	// The flat forms are gone -- the CLI and the web UI moved over, and this
+	// comment claimed both were still live for two audit rounds after they were
+	// removed (docs/plans/api-consistency-and-ci-plan.md).
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/requirements", s.handleListRequirements)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/assertions", s.handleListAssertions)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/artifacts", s.handleListArtifacts)

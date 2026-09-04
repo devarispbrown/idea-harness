@@ -22,7 +22,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Web UI | React + TypeScript (Vite), built by `make build` and embedded into the binary |
 | Database | SQLite (pure-Go `modernc.org/sqlite`), WAL, single writer |
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
-| API | REST + SSE, described by [`openapi.yaml`](openapi.yaml), CI-checked against the routes — see [`api.md`](api.md) |
+| API | REST, described by [`openapi.yaml`](openapi.yaml), CI-checked against the routes — see [`api.md`](api.md). An SSE endpoint exists and nothing in-tree consumes it |
 | Config | YAML + JSON Schema |
 | Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (OpenRouter, Ollama, custom) + fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |
@@ -39,7 +39,7 @@ framing ──► research ──► product_definition ──► review ──�
 
 - Each stage produces a versioned Artifact + structured entities (Assertions, Requirements,
   Decisions, Questions), recorded via Run → RunManifest → ContextBundle.
-- Review is **mandatory**: deterministic checks run first, then an independent adversarial
+- Review is **mandatory**: deterministic checks run first, then an adversarial
   reviewer. The approval bar is "no open critical/high findings." Non-convergence pauses into
   `needs_human_judgment` (§11).
 - Recommended Next Move is generated from deterministic candidates; the orchestrator only ranks
@@ -50,7 +50,7 @@ framing ──► research ──► product_definition ──► review ──�
 ```text
 internal/domain      typed entities + controlled vocabularies (no I/O, no LLM)
 internal/store       SQLite + migrations + atomic state+event transaction
-internal/blob        content-addressed BlobStore (redaction before Put)
+internal/blob        content-addressed BlobStore (two: `blobs/` redacts on Put, `raw-blobs/` does not)
 internal/config      .idea-harness config load/validate (JSON Schema)
 internal/security    redaction, path guard, sanitization, token, trust
 internal/roles       Role Contracts (competencies/behaviors/rubrics/checks)
@@ -58,7 +58,7 @@ internal/context     deterministic Context Compiler (trust levels, no embeddings
 internal/model       provider registry (OpenAI/Anthropic/Gemini/OpenRouter/Ollama) + structured-output pipeline
 internal/review      deterministic checks + approval bar + findings
 internal/workflow    stage graph + state machine + orchestrator
-internal/daemon      token-authenticated, project-scoped REST + SSE
+internal/daemon      token-authenticated, project-scoped REST; an SSE endpoint exists, unused by the CLI and UI
 internal/projection  Current Understanding / Next Move / What Changed
 internal/cli         thin HTTP client + Charm-styled commands (Lip Gloss, Huh, Glamour, Bubble Tea)
 internal/web         embedded React UI
@@ -86,7 +86,9 @@ internal/web         embedded React UI
   token                per-install API token (0600)
   projects/<id>/
     state.db           per-project relational state
-    blobs/             content-addressed blobs
+    blobs/             content-addressed blobs, redacted on write
+    raw-blobs/         uploaded file content and image bytes, deliberately NOT redacted
+                       (see security-model.md#what-this-does-not-protect-against)
 ```
 
 Portable config lives in the user's project under `.idea-harness/` (project.yaml, harness.yaml,

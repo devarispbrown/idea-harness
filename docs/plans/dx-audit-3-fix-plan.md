@@ -611,7 +611,19 @@ version of this sentence claimed G1b and G2 were mechanically checked. **They
 were not**, and the review caught the plan asserting work that did not exist —
 the exact pattern this document exists to stop, in the document itself.
 
-Mechanically checked: C1-C7, D1-D3, G1a, G2, S1's isolation table, S6.
+Mechanically checked: C1, C2, C3, C7, D1-D3, G1a, S1's isolation table.
+
+Partially: C4 (a and b; c deferred), S6 (the isolation table landed; three
+sub-items deferred).
+
+Not done: C5, C6, G2, G1b, D4-D8 — every one recorded in `deferred.md`.
+
+**This list was wrong when it was written, and audit 4 found it.** It claimed
+C1-C7, G2 and S6 outright while `deferred.md` recorded C4's third part, C5, C6,
+G2 and three of S6's sub-items as not attempted — a plan asserting work that did
+not exist, in the paragraph immediately below one correcting the same mistake.
+`make ledger-check` now cross-references every id claimed here against
+`deferred.md` and fails on the contradiction, so it cannot recur by hand.
 
 **G1b was not implemented.** More importantly, it would not have worked as
 specified: `scripts/smoke.sh` never runs `idea model set`, so it never reaches

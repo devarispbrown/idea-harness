@@ -520,7 +520,15 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	candidate := config.Config{Project: pr.cfg.Project, Harness: cfg}
 	problems := candidate.ProblemsWithEnv(pr.dotEnv)
 	touched := touchedConfigFields(body.DefaultModel, body.Providers, body.Models)
+	// Warnings attributable to what this request changed are returned rather
+	// than dropped. Everything non-error used to be skipped here, so a catalog
+	// mismatch on `idea model set` reached nobody and the command reported plain
+	// success -- which is how nine dead model ids shipped in the docs.
+	var warnings []string
 	for _, p := range problems {
+		if p.Severity == config.SeverityWarn && problemIsAttributable(p, touched) {
+			warnings = append(warnings, p.Message)
+		}
 		if p.Severity != config.SeverityError {
 			continue
 		}
@@ -539,10 +547,19 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reload so the new registry/default model takes effect.
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
+		// writeReloadErr, not writeErr: the config file WAS written, and
+		// writeErr's storage branch masks that to "internal error (correlation
+		// id)". The executors endpoint has always used it; this one did not, so
+		// the same failure told the caller two different things depending on
+		// which config they were editing.
+		s.writeReloadErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	out := map[string]any{"status": "updated"}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ---------- live model listing ----------
@@ -563,6 +580,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		provider = "openai"
 	}
 	models, _ := pr.registry.ListModels(r.Context(), provider)
+	if models == nil {
+		// The documented behaviour for an unreachable provider is "200 with an
+		// empty models array" -- and the error is deliberately dropped above to
+		// get it. A nil slice marshals as null, which is not an empty array, so
+		// the one case the spec calls out was the one it did not produce.
+		models = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"provider": provider, "models": models})
 }
 
@@ -2269,7 +2293,22 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		s.writeReloadErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	out := map[string]any{"status": "updated"}
+	// The same catalog warning PUT /providers returns. This path was missed the
+	// first time and it is the one that matters most: `idea executors setup
+	// --model <dead id>` forwards that id into the agent container, where the
+	// 404 surfaces as an agent that produced nothing rather than as a config
+	// error.
+	if body.Model != nil && *body.Model != "" {
+		var warnings []string
+		for _, pb := range config.UnknownModelProblems("harness.executor.model", *body.Model) {
+			warnings = append(warnings, pb.Message)
+		}
+		if len(warnings) > 0 {
+			out["warnings"] = warnings
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // changeSet resolves the project runtime + a change set by its {id} path value.
