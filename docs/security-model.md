@@ -15,14 +15,18 @@ conditions. Everything else is ordinary policy that a human may override.
 |----------|----------------|-------------|
 | `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) | A known secret value or credential pattern appears in produced file content. The content is never written to the redaction-free store. |
 | `pii` | Execute | A blocking PII signal (e.g. SSN) appears in produced file content. |
-| `path_escape` | fsdiff Prepare/Commit/Restore | A diff path escapes the workspace (rejected before any write). |
+| `path_escape` | **declared, never produced** | Reserved for a diff path escaping the workspace. The path guard rejects that case, but it returns its own error rather than this code, so no `Finding` ever carries it. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
-| `trust_deny` | Execute | The engine-assigned trust tier does not authorize a required action. |
+| `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
 | `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
-`Finding.Code`) or a fail-closed error mapped to the same `DenyCode`.
+`Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
+two marked **declared, never produced**, which exist in the `DenyCode` enum and
+in `Valid()` but have no producer. They are listed rather than deleted because a
+client switching on `DenyCode` should know the full set it may one day see; do
+not treat either as evidence that the condition is enforced.
 
 ## Engine-assigned trust tiers
 

@@ -100,6 +100,15 @@ jobs:
       - name: security claims are single-sourced
         run: make claims-check
 
+      # The fifth axis: the defect ledgers themselves. Every audit round writes
+      # one, and the failure mode is that nobody re-checks it -- audit 3's had
+      # all 27 rows marked open while 24 were fixed, so the file read as a
+      # backlog and was ignored. Each row now carries a predicate that is true
+      # exactly when its defect is present, and this fails in both directions:
+      # an open row whose defect is gone, and a fixed row whose defect returned.
+      - name: defect ledgers agree with the tree
+        run: make ledger-check
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,

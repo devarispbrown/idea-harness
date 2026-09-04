@@ -211,7 +211,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects` | Register a project by `root_path`; returns `project_id`. |
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
-| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}`, the one list endpoint with an envelope: it is a cross-initiative rollup, so it has somewhere to put a cursor later. |
+| GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}` — the only *collection* endpoint with an envelope, because it is a cross-initiative rollup and so has somewhere to put a cursor later. (`/models` also wraps its list, but in a response whose other field names the provider consulted.) |
 
 ### Initiative lifecycle
 
@@ -229,7 +229,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan (re-runs its review). **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate; with `{"requirement","pass","note"}` records human evidence first. Returns status + coverage. |
+| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus exactly one of `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. |
 
 ### Understanding, guidance and analysis
 

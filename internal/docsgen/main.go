@@ -42,6 +42,7 @@ func main() {
 	docsLint := flag.Bool("docs-lint", false, "check that every `idea ...` command in README and the quickstart names a real verb and a resolvable reference")
 	apiDocs := flag.Bool("api-docs", false, "add a row to docs/api.md for every route that has none")
 	apiDocsCheck := flag.Bool("api-docs-check", false, "fail if docs/api.md is missing a row for any route, or has one for a route that does not exist")
+	ledgerCheck := flag.Bool("ledger-check", false, "evaluate every defect-ledger row's predicate and fail on a stale-open or a regression")
 	specJSON := flag.String("spec-json", "", "write docs/openapi.yaml to this path as JSON (used by `make api-docs-dist`)")
 	flag.Parse()
 
@@ -59,6 +60,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("claims-check: every load-bearing security claim is stated once and linked elsewhere")
+		return
+	}
+	if *ledgerCheck {
+		if err := runLedgerCheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger-check:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if *docsLint {
