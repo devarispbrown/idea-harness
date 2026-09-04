@@ -138,7 +138,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Response{}, fmt.Errorf("anthropic: status %d", resp.StatusCode)
+		return Response{}, httpError("anthropic", resp)
 	}
 	var parsed anthropicResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -156,6 +156,12 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	content := sb.String()
 	if strings.TrimSpace(content) == "" {
 		return Response{}, fmt.Errorf("anthropic: empty content (stop_reason=%s, output_tokens=%d, blocks=%d)", parsed.StopReason, parsed.Usage.OutputTokens, len(parsed.Content))
+	}
+	// StopReason was already parsed and used only inside the empty-content
+	// message above; it was never compared to max_tokens, so a truncated reply
+	// looked like a successful one.
+	if parsed.StopReason == "max_tokens" {
+		return Response{}, truncatedError("anthropic", req.MaxOutput)
 	}
 	actual := parsed.Model
 	if actual == "" {

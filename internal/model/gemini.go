@@ -89,6 +89,8 @@ type geminiResponse struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
+		// "MAX_TOKENS" means the budget was hit, not that the model finished.
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
@@ -138,9 +140,11 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		var e map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		return Response{}, fmt.Errorf("gemini: status %d: %v", resp.StatusCode, e)
+		// Gemini was already the only provider that kept its error body -- which
+		// is why its failures were diagnosable and the other two were not. It
+		// now shares the same helper so all three behave identically, including
+		// when the body is not JSON (the map decode used to drop it silently).
+		return Response{}, httpError("gemini", resp)
 	}
 	var parsed geminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -158,6 +162,9 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 	content := sb.String()
 	if strings.TrimSpace(content) == "" {
 		return Response{}, fmt.Errorf("gemini: empty content (output_tokens=%d)", parsed.UsageMetadata.CandidatesTokenCount)
+	}
+	if len(parsed.Candidates) > 0 && parsed.Candidates[0].FinishReason == "MAX_TOKENS" {
+		return Response{}, truncatedError("gemini", req.MaxOutput)
 	}
 	actual := parsed.ModelVersion
 	if actual == "" {
