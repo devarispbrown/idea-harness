@@ -125,3 +125,24 @@ func truncatedError(provider string, maxOutput int) error {
 		"so it is not safe to use -- raise the stage budget or use a model with a larger output ceiling",
 		provider, ErrTruncated, maxOutput)
 }
+
+// capOutput bounds a requested budget by what this provider declared it can
+// produce. A provider declaring 0 has stated no ceiling and is left alone.
+//
+// This is deliberately duplicated with workflow.effectiveMaxOutput rather than
+// replacing it. The workflow cap is what lets a stage ask for more than one
+// provider allows and still work across all of them; this one makes the
+// invariant true at the boundary that actually owns the number, so no caller --
+// including a future one that is not the workflow engine -- can emit a request
+// the provider will reject. The defect this closes shipped in v0.1.0 and took
+// four audits and a real API key to find, so both halves stay.
+//
+// Capping here is safe only because truncation is now detected from the
+// provider's finish reason: a reply cut short raises ErrTruncated instead of
+// being quietly accepted.
+func capOutput(want int, caps Capabilities) int {
+	if caps.MaxOutput > 0 && want > caps.MaxOutput {
+		return caps.MaxOutput
+	}
+	return want
+}

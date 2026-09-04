@@ -441,7 +441,9 @@ func (db *DB) ListSuggestedAnswers(ctx context.Context, initiativeID string) ([]
 // a `produced_by` edge, and cyclic task dependencies (DFS cycle check). It is
 // read-only and returns findings rather than persisting them.
 func (db *DB) AuditGraphEdges(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
-	var out []domain.Finding
+	// Non-nil: a graph with nothing wrong is the *good* outcome and the common
+	// one, and it answered `null` against a spec that types this as an array.
+	out := []domain.Finding{}
 
 	tasks, err := db.ListTasks(ctx, initiativeID)
 	if err != nil {

@@ -115,7 +115,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	}
 	body := anthropicRequest{
 		Model:     req.Model,
-		MaxTokens: req.MaxOutput,
+		MaxTokens: capOutput(req.MaxOutput, p.caps),
 		System:    system,
 		Messages:  anthropicMessages(req),
 	}

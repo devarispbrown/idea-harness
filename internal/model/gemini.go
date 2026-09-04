@@ -111,7 +111,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 
 	body := geminiRequest{
 		Contents:         []geminiContent{{Role: "user", Parts: geminiParts(req)}},
-		GenerationConfig: geminiGenConfig{MaxOutputTokens: req.MaxOutput},
+		GenerationConfig: geminiGenConfig{MaxOutputTokens: capOutput(req.MaxOutput, p.caps)},
 	}
 	if system != "" {
 		body.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
