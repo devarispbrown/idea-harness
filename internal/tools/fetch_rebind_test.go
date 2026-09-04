@@ -75,3 +75,37 @@ type staticResolver struct{ ip net.IP }
 func (s staticResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
 	return []net.IPAddr{{IP: s.ip}}, nil
 }
+
+// TestDialFallsBackToLaterValidatedAddresses guards the reliability half.
+//
+// Pinning to ips[0] closed the rebinding hole and silently removed the
+// multi-address fallback that dialing a hostname had given for free: a
+// round-robin or multi-region endpoint whose first address is down would fail
+// outright, with the reachable one never tried.
+func TestDialFallsBackToLaterValidatedAddresses(t *testing.T) {
+	res := staticResolver2{[]net.IP{net.ParseIP("203.0.113.10"), net.ParseIP("203.0.113.11")}}
+	var tried []string
+	dial := guardedDial(res, func(_ context.Context, _, addr string) (net.Conn, error) {
+		tried = append(tried, addr)
+		if addr == "203.0.113.11:80" {
+			return nil, nil // the second address answers
+		}
+		return nil, errStub
+	})
+	if _, err := dial(context.Background(), "tcp", "multi.example:80"); err != nil {
+		t.Fatalf("dial failed while a validated address was still reachable: %v", err)
+	}
+	if len(tried) != 2 {
+		t.Errorf("tried %v; both validated addresses must be attempted", tried)
+	}
+}
+
+type staticResolver2 struct{ ips []net.IP }
+
+func (s staticResolver2) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	out := make([]net.IPAddr, 0, len(s.ips))
+	for _, ip := range s.ips {
+		out = append(out, net.IPAddr{IP: ip})
+	}
+	return out, nil
+}

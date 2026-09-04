@@ -44,3 +44,25 @@ func TestShortSkStringIsNotACredential(t *testing.T) {
 		t.Error("widened sk- pattern now flags ordinary prose")
 	}
 }
+
+// TestOrdinaryProseIsNotACredential guards the other direction.
+//
+// The first widening of the sk- pattern admitted "-" anywhere, so any 20+
+// character hyphenated string beginning "sk-" matched. That redacted ordinary
+// URL slugs, and because ContainsCredential shares the pattern, it rejected an
+// entire context-doc upload that merely mentioned one.
+func TestOrdinaryProseIsNotACredential(t *testing.T) {
+	r := NewRedactor()
+	for _, s := range []string{
+		"see https://example.com/blog/sk-decomposition-of-matrices-and-linear-algebra",
+		"the sk-learn-cheatsheet-for-classifiers-and-regressors-2024 is popular",
+		"sk-means-clustering-explained-for-beginners-in-python",
+	} {
+		if r.ContainsCredential(s) {
+			t.Errorf("ordinary prose flagged as a credential: %s", s)
+		}
+		if got := r.RedactString(s); got != s {
+			t.Errorf("ordinary prose redacted:\n  in:  %s\n  out: %s", s, got)
+		}
+	}
+}

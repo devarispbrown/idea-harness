@@ -468,7 +468,14 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -533,7 +540,14 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -621,7 +635,14 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -669,7 +690,14 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -741,7 +769,14 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -789,7 +824,14 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {
@@ -836,7 +878,14 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
 	if err != nil {
-		pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator)
+		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			// Both failing usually means one shared cause (DB gone, disk full), and
+			// the initiative is then stuck running with no operation for
+			// reconcileStaleOperations to find. Nothing here can fix that, so it
+			// is logged loudly rather than swallowed.
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
 		return "", err
 	}
 	r.launchOperation(opID, func(bg context.Context) {

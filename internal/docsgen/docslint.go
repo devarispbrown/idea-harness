@@ -30,8 +30,13 @@ import (
 var docsLinted = []string{"README.md", filepath.Join("docs", "quickstart.md")}
 
 var (
-	fenceRe   = regexp.MustCompile("^\\s*```")
-	ideaCmdRe = regexp.MustCompile(`^\s*(?:\$ )?idea\s+([a-z-]+)((?:\s+\S+)*)`)
+	// blockquoteRe strips a leading "> " so fenced blocks inside a blockquote are
+	// seen. docs/quickstart.md has four of them, and without this the checker
+	// reported clean on `idea trace task T-3` planted inside one -- the literal
+	// defect it exists to catch, invisible in the same round that built it.
+	blockquoteRe = regexp.MustCompile(`^\s*>\s?`)
+	fenceRe      = regexp.MustCompile("^\\s*```")
+	ideaCmdRe    = regexp.MustCompile(`(?:^|[;&|]\s*)(?:\$ )?idea\s+([a-z-]+)`)
 	// A reference like REQ-1 or TASK-12, as the docs write them.
 	//
 	// One letter is enough: the defect this check exists for was `idea trace
@@ -60,7 +65,8 @@ func runDocsLint() error {
 			return err
 		}
 		inFence := false
-		for i, line := range lines {
+		for i, raw := range lines {
+			line := blockquoteRe.ReplaceAllString(raw, "")
 			if fenceRe.MatchString(line) {
 				inFence = !inFence
 				continue
@@ -68,16 +74,20 @@ func runDocsLint() error {
 			if !inFence {
 				continue
 			}
-			m := ideaCmdRe.FindStringSubmatch(line)
-			if m == nil {
+			// Every invocation on the line, not just the first: commands chained
+			// with && or ; would otherwise have their later verbs unchecked.
+			ms := ideaCmdRe.FindAllStringSubmatch(line, -1)
+			if ms == nil {
 				continue
 			}
 			where := fmt.Sprintf("%s:%d", rel, i+1)
-			if verb := m[1]; !verbs[verb] {
-				problems = append(problems, fmt.Sprintf(
-					"  %s: `idea %s` — no such command", where, verb))
+			for _, m := range ms {
+				if verb := m[1]; !verbs[verb] {
+					problems = append(problems, fmt.Sprintf(
+						"  %s: `idea %s` — no such command", where, verb))
+				}
 			}
-			for _, ref := range codeRefRe.FindAllStringSubmatch(m[2], -1) {
+			for _, ref := range codeRefRe.FindAllStringSubmatch(line, -1) {
 				if prefix := ref[1]; len(prefixes) > 0 && !prefixes[prefix] {
 					problems = append(problems, fmt.Sprintf(
 						"  %s: reference %q uses prefix %q, which nothing emits (known: %s)",

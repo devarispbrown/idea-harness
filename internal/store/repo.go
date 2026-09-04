@@ -109,7 +109,6 @@ func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) e
 	})
 }
 
-// SetInitiativeStatus updates the status and appends a transition event.
 // ClaimInitiativeRunning marks an initiative running, but only from one of the
 // states given. It reports ErrInitiativeNotClaimable when no row matched.
 //
