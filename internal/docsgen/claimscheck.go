@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -101,9 +100,17 @@ func runClaimsCheck() error {
 				claim.canonical, claim.anchor, anchor))
 			continue
 		}
-		// A link to the canonical file is enough: anchors are for humans, and
-		// requiring the fragment would fail on a heading rename.
-		linkRe := regexp.MustCompile(regexp.QuoteMeta(filepath.Base(claim.canonical)))
+		// A link to the canonical file is enough — anchors are for humans, and
+		// requiring the fragment would fail on a heading rename — but it has to
+		// be *near the claim*, not anywhere in the file.
+		//
+		// The first version matched the basename against the whole document, so
+		// one mention of security-model.md in an unrelated see-also line
+		// exempted that file from every claim anchored there, permanently. Three
+		// of the ten published docs were already in that state, including
+		// configuration.md — the file this guard was written for. Re-adding the
+		// audit-4 P0 sentence to it passed.
+		link := filepath.Base(claim.canonical)
 		for _, doc := range docs {
 			if doc == claim.canonical {
 				continue
@@ -112,20 +119,34 @@ func runClaimsCheck() error {
 			if err != nil {
 				return err
 			}
-			text := string(body)
-			var hit string
-			for _, kw := range claim.keywords {
-				if strings.Contains(strings.ToLower(text), strings.ToLower(kw)) {
-					hit = kw
-					break
+			blocks := paragraphs(string(body))
+			for bi, block := range blocks {
+				lower := strings.ToLower(block.text)
+				var hit string
+				for _, kw := range claim.keywords {
+					if strings.Contains(lower, strings.ToLower(kw)) {
+						hit = kw
+						break
+					}
 				}
+				if hit == "" {
+					continue
+				}
+				// A list or table is one statement with the sentence that
+				// introduces it, so the link may sit in either. Without this the
+				// guard demands a link inside a bullet, which authors would
+				// route around rather than obey.
+				scope := block.text
+				if bi > 0 && continuesPrevious(block.text) {
+					scope = blocks[bi-1].text + scope
+				}
+				if strings.Contains(scope, link) {
+					continue
+				}
+				problems = append(problems, fmt.Sprintf(
+					"  %s:%d states %q (%q) without linking to %s",
+					doc, block.line, claim.anchor, hit, claim.canonical))
 			}
-			if hit == "" || linkRe.MatchString(text) {
-				continue
-			}
-			problems = append(problems, fmt.Sprintf(
-				"  %s states %q (%q) without linking to %s",
-				doc, claim.anchor, hit, claim.canonical))
 		}
 	}
 	if len(problems) == 0 {
@@ -138,4 +159,52 @@ func runClaimsCheck() error {
 		"corrected and the copies do not. Link instead of restating.\n\n"+
 		"This proves a property is single-sourced. It cannot tell whether it is true.",
 		strings.Join(problems, "\n"))
+}
+
+// block is one paragraph of a Markdown file, with the line it starts on.
+type block struct {
+	line int
+	text string
+}
+
+// paragraphs splits on blank lines. The unit matters: the link that exempts a
+// restatement has to sit with the restatement, so that a reader who finds the
+// sentence also finds the pointer to the canonical wording. A whole-file test
+// exempts sentences nobody linked.
+func paragraphs(text string) []block {
+	var out []block
+	cur := block{line: 1}
+	var b strings.Builder
+	line := 1
+	flush := func() {
+		if strings.TrimSpace(b.String()) != "" {
+			cur.text = b.String()
+			out = append(out, cur)
+		}
+		b.Reset()
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if strings.TrimSpace(l) == "" {
+			flush()
+			cur = block{line: line + 1}
+		} else {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+		line++
+	}
+	flush()
+	return out
+}
+
+// continuesPrevious reports whether a block is a list or table that belongs to
+// the paragraph before it.
+func continuesPrevious(text string) bool {
+	first := text
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = first[:i]
+	}
+	first = strings.TrimSpace(first)
+	return strings.HasPrefix(first, "- ") || strings.HasPrefix(first, "* ") ||
+		strings.HasPrefix(first, "| ") || strings.HasPrefix(first, "1. ")
 }

@@ -38,7 +38,8 @@ Uploaded context docs — PRDs, design specs, tech docs, market analysis, and im
 untrusted input:
 
 - **Text formats** (`.md/.txt/.csv/.pdf/.docx/.xlsx`) are credential-swept (hard-reject on match)
-  and redacted at ingest; the redacted text is stored content-addressed and later injected under
+  and redacted at ingest (the choke points are listed in
+  [`security-model.md`](security-model.md)); the redacted text is stored content-addressed and later injected under
   the `context_docs` selector at `external_untrusted` trust (data-only framed, never instructions).
 - **Image formats** (`.jpg/.png/.gif/.webp`) are classified by magic bytes only and stored
   redaction-free, then egressed to a vision-capable model for a one-time description. The vision

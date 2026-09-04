@@ -102,12 +102,22 @@ jobs:
 
       # The fifth axis: the defect ledgers themselves. Every audit round writes
       # one, and the failure mode is that nobody re-checks it -- audit 3's had
-      # all 27 rows marked open while 24 were fixed, so the file read as a
-      # backlog and was ignored. Each row now carries a predicate that is true
-      # exactly when its defect is present, and this fails in both directions:
-      # an open row whose defect is gone, and a fixed row whose defect returned.
+      # all 27 rows marked open while 21 had already been fixed by earlier
+      # rounds, so the file read as a backlog and was ignored. Each row now
+      # carries a predicate that is true exactly when its defect is present, and
+      # this fails in both directions: a row marked open whose defect is gone,
+      # and a row marked fixed whose defect returned.
       - name: defect ledgers agree with the tree
         run: make ledger-check
+
+      # The sixth axis: controlled vocabularies. The three route-level guards
+      # compare paths and field *names*; none compares a value set. That is how
+      # RequirementStatus shipped listing four of the six statuses the domain
+      # emits, and how the review verdict enum came to document the CLI's words
+      # (`approve`) rather than the API's (`approved`) -- a client generated
+      # from the spec could not approve a change set at all.
+      - name: spec enums match the domain constants
+        run: make enum-check
 
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem

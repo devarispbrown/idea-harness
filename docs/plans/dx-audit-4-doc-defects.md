@@ -37,7 +37,7 @@ Status values: `open`, `fixed <commit>`, `deferred <reason>`, `not reproduced`.
 |---|---|---|---|---|
 | D10 | `Coverage` omits `status` | The handler has always returned it | `absent:docs/openapi.yaml:RequirementStatus" }` | fixed 5823d63 |
 | D11 | `RequirementStatus` enumerates four values | The domain emits six; `failed` and `waived` have been missing since human evidence landed, so a generated client rejects a valid response | `absent:docs/openapi.yaml:enum: [draft, approved, verified, failed, waived, removed]` | fixed 5823d63 |
-| D12 | `api.md`'s verify row names only `pass` | The handler accepts `fail` and `waived` too | `absent:docs/api.md:exactly one of` | fixed 5823d63 |
+| D12 | `api.md`'s verify row names only `pass` | The handler accepts `fail` and `waived` too | `absent:docs/api.md:exactly one of` | fixed 046b3f4 |
 | D13 | Six response fields marshal as `null`, not `[]` | A bare initiative is the normal first state; `type: array` in the spec makes a generated client reject it | `absent:internal/projection/projection.go:NeedsJudgment: []string{}` | fixed 5823d63 |
 
 Found by writing the test for D10 rather than by reading, which is why D11 is
@@ -51,9 +51,9 @@ and two of them are breaking.
 
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
-| D14 | `idea verify`'s exit code change unrecorded | Breaking: it reported the initiative's status, not the gate's, so a CI step that ran it and checked the exit code could never fail | `absent:CHANGELOG.md:exits non-zero when the gate is unmet` | fixed 5823d63 |
-| D15 | The finding-disposition `404` unrecorded | Breaking: the update matched no row, reported success, and wrote the provenance event anyway | `absent:CHANGELOG.md:finding that does not exist returns` | fixed 5823d63 |
-| D16 | `docs-lint` missing from the guards list | It ships and runs in CI | `absent:CHANGELOG.md:fails on a documented command that is not a real command` | fixed 5823d63 |
+| D14 | `idea verify`'s exit code change unrecorded | Breaking: it reported the initiative's status, not the gate's, so a CI step that ran it and checked the exit code could never fail | `absent:internal/cli/change.go:if failOnUnmet && len(unmet) > 0` | fixed 5823d63 |
+| D15 | The finding-disposition `404` unrecorded | Breaking: the update matched no row, reported success, and wrote the provenance event anyway | `absent:internal/store/repo.go:NotFoundError{Kind: "finding"` | fixed 5823d63 |
+| D16 | `docs-lint` missing from the guards list | It ships and runs in CI | `absent:Makefile:docsgen -docs-lint` | fixed 5823d63 |
 
 ## Not reproduced
 

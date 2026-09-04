@@ -36,7 +36,9 @@ correction regresses the moment somebody deletes that sentence, and the check
 catches it. `present:` can only catch a verbatim reintroduction.
 
 Every row in this file was re-verified against the tree on 2026-09-03 before its
-status was changed. The predicates are what make that re-verification repeatable
+status was changed. Twenty-one had been fixed by earlier rounds and never
+recorded; six survived into audit 4 (A2, A6, H1, H2, M1, I1) and were fixed
+there — H1/H2 with the security-claim work, the rest with this file. The predicates are what make that re-verification repeatable
 rather than a claim.
 
 Status values: `open`, `fixed <commit>`, `deferred <reason>`.
@@ -75,11 +77,11 @@ reason the file survived the round.
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
 | A1 | "Three cases" for `writeErr` | There are four | `present:docs/api.md:Three cases` | fixed 6b275f5 |
-| A2 | "the one list endpoint with an envelope" | `/models` wraps its list too | `absent:docs/api.md:the only *collection* endpoint with an envelope` | fixed 5823d63 |
+| A2 | "the one list endpoint with an envelope" | `/models` wraps its list too | `absent:docs/api.md:the only *collection* endpoint with an envelope` | fixed 046b3f4 |
 | A3 | doc-upload row omits `.gif`/`.webp` | `docparse` accepts them | `absent:docs/api.md:jpg/png/gif/webp` | fixed 0213fa3 |
 | A4 | `artifacts/diff` "Structured diff" | Unified line diff | `absent:docs/api.md:Unified line diff` | fixed 6b275f5 |
 | A5 | diff response schema omits the `files` key | Handler writes it | `absent:docs/openapi.yaml:is the same change set as a` | fixed 6b275f5 |
-| A6 | verify's `fail`/`waived` | In `openapi.yaml`; `api.md` named only `pass` | `absent:docs/api.md:exactly one of` | fixed 5823d63 |
+| A6 | verify's `fail`/`waived` | In `openapi.yaml`; `api.md` named only `pass` | `absent:docs/api.md:exactly one of` | fixed 046b3f4 |
 
 ## docs/architecture.md
 
@@ -92,7 +94,7 @@ reason the file survived the round.
 
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
-| M1 | `path_escape` / `trust_deny` documented as enforced | Declared in the enum, produced by nothing | `absent:docs/security-model.md:declared, never produced` | fixed 5823d63 |
+| M1 | `path_escape` / `trust_deny` documented as enforced | Declared in the enum, produced by nothing | `absent:docs/security-model.md:declared, never produced` | fixed 046b3f4 |
 
 ## docs/configuration.md / docs/agents.md
 
@@ -105,7 +107,7 @@ reason the file survived the round.
 
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
-| I1 | `routes.go` comment says the flat routes are still live | They were removed; `api.md` is right | `present:internal/daemon/routes.go:Both forms are live during the migration` | fixed 5823d63 |
+| I1 | `routes.go` comment says the flat routes are still live | They were removed; `api.md` is right | `present:internal/daemon/routes.go:Both forms are live during the migration` | fixed 046b3f4 |
 
 ## Not yet transcribed
 

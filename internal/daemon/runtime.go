@@ -751,22 +751,30 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	}
 	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
-		release := func() {
+		release := func(to domain.InitiativeStatus) {
 			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
-				priorStatus, store.ActorOrchestrator); err != nil {
+				to, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after revert",
 					"initiative", initiativeID, "op", opID, "error", err)
 			}
 		}
 		if runErr := pr.engine.RevertChangeSet(bg, initiativeID, changeSetID); runErr != nil {
-			release()
+			// Nothing landed, so the initiative goes back where it was.
+			release(priorStatus)
 			r.failOperation(opID, initiativeID, "revert failed", bg, pr, runErr, false)
 			return
 		}
-		// RevertChangeSet sets plan_approved itself, so this release is the
-		// error path only. Preserved rather than changed: whether reverting
-		// from `complete` should land on plan_approved is a separate question.
-		release()
+		// Not priorStatus. RevertChangeSet has just rolled the workspace back
+		// and unverified the requirement the change set implemented, and ends
+		// by setting plan_approved itself -- so the initiative is no longer
+		// wherever it was before the claim. Writing priorStatus back here
+		// reverted from `complete` to `complete`: files rolled back, change set
+		// `reverted`, requirement unverified, and `idea next` still reporting
+		// the initiative finished. Releasing to the status the engine chose is
+		// idempotent with what it just wrote, and still guarantees the claim is
+		// released even if the engine's own write failed (it discards its
+		// error).
+		release(domain.InitiativePlanApproved)
 		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})

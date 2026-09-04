@@ -2122,7 +2122,10 @@ paths:
               properties:
                 verdict:
                   type: string
-                  enum: [approve, reject, changes_requested]
+                  description: |
+                    The wire vocabulary, which is not the CLI's: `idea review <id> approve` sends
+                    `approved`. A client that posts `approve` or `reject` gets a 400.
+                  enum: [approved, rejected, changes_requested]
               required: [verdict]
       responses:
         "200":
