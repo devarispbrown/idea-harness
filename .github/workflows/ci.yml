@@ -92,6 +92,14 @@ jobs:
       - name: documented commands name real verbs and resolvable references
         run: make docs-lint
 
+      # The fourth axis, and the one aimed at the class that keeps producing P0s:
+      # a security property stated in several documents, corrected in some. Audit
+      # 3 fixed security.md and left configuration.md promising redaction that
+      # does not happen; audit 4 found one claim in six sentences across four
+      # files. This proves each is stated once — not that it is true.
+      - name: security claims are single-sourced
+        run: make claims-check
+
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
   # semantics — case-insensitivity, /var -> /private/var symlink resolution,

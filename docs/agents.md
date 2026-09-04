@@ -128,7 +128,8 @@ The coding-agent container is sandboxed for **filesystem and process** isolation
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- runs as a **non-root** user (`--user <uid>:<gid>`)
+- runs as the daemon's own UID/GID (`--user <uid>:<gid>`) — so if the daemon runs as root, the
+  container does too; nothing refuses to start or warns
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 
 But it is **not network-isolated**. The agent needs egress to reach its model API, so
@@ -143,6 +144,10 @@ But it is **not network-isolated**. The agent needs egress to reach its model AP
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
 network egress, and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
 trust, and prefer a scoped, rotatable API key you can revoke.
+
+The canonical statement of what each executor kind isolates, and what none of them do, is
+[`security-model.md`](security-model.md#what-this-does-not-protect-against). This page repeats the
+agent-specific part because it is where you decide whether to wire one.
 
 The deterministic `internal` executor has none of this exposure (no network, no key, no real code),
 which is why it remains the safe default until you deliberately opt into a real agent.

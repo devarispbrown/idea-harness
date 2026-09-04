@@ -19,7 +19,9 @@ M1 threats and mitigations:
 | Stored XSS via artifact bodies | artifact bodies sanitized before serving; UI renders markdown without raw HTML |
 | Credential/prompt exfiltration via provider `base_url` | `base_url` must be https, or http on loopback; a built-in preset's endpoint may not be overridden (it would inherit that preset's `api_key_env`). Enforced on the write path (`PUT /providers`, `idea model set`) **and again when the provider registry is built**, so a `harness.yaml` arriving by any other route — a cloned repo, a hand edit, a restored backup — is subject to the same rule. A refused entry is not registered: a preset name falls back to its built-in endpoint, a custom name becomes unresolvable at first use, the project still opens, and the reason is logged, reported by `idea config validate` / `idea doctor`, and shown against that provider in the UI (which displays the endpoint requests actually reach, not the refused one) |
 | SSRF via research web tool | public-address-only fetch (loopback/private/link-local/metadata blocked), 5-redirect cap, 2 MiB/30s limits, deterministic config-supplied URLs (§46) |
-| Agent self-approval (§14) | review runs require a distinct actor; `accepted_risk` disposition is human-only |
+<!-- claim:reviewer-separation -->
+| Agent self-approval (§14) | the approval verdict is human-only, and so is the `accepted_risk` disposition. **Nothing prevents the `implementer` and `adversarial_reviewer` roles resolving to the same model** — there is one actor identity for all automated writes, so the separation is a separate prompt and run, not a checked identity |
+<!-- /claim -->
 
 ## Secrets
 
@@ -75,10 +77,13 @@ The first half is weaker than the ladder suggests, and this page previously over
 
 ## Shipped since this list was written
 
-The sandbox abstraction, capability broker, executor isolation, ChangeSet apply journal and the
-threat model document were all deferred to M3 when this page was first written. All five shipped in
-0.1.0 — see [`security-model.md`](security-model.md) for the system-deny conditions, the
-engine-assigned trust tiers and the execution gateway.
+The sandbox abstraction, executor isolation, ChangeSet apply journal and the threat model document
+all shipped in 0.1.0 — see [`security-model.md`](security-model.md) for what each one covers.
+
+The **capability broker** did not. `CapabilityBroker` exists in `internal/executor` and has no
+non-test callers; the gate that actually runs is `TrustAllows`, which maps the engine-assigned trust
+tier to permitted actions and is fail-closed for unknown tiers. The broker is scaffolding for a
+finer-grained model that is not wired up.
 
 ## See also
 
