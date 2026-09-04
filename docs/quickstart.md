@@ -115,7 +115,10 @@ idea new "A recipe-sharing app"
 
 This starts the M1 pipeline: a team of experts frames your idea, does research, and drafts a PRD,
 which a reviewer role then challenges and revises. (A separate run and prompt — not necessarily a
-different model; see [`security.md`](security.md).) Follow it live from a second terminal:
+different model; see [`security.md`](security.md).) `idea new` waits for this run to finish
+before returning, so the next command in the sequence has something to work with; pass
+`--no-wait` to get the prompt straight back. Either way you can follow it live from a second
+terminal:
 
 ```bash
 idea watch

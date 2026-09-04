@@ -27,6 +27,23 @@ nothing executed the documented sequence as written.
 
 ---
 
+## What the plan review changed
+
+This plan was reviewed before implementation, and the review rejected or
+rewrote most of it. Recording that here rather than quietly editing, because
+the rejections are the useful part:
+
+| Item | Planned | What shipped |
+|---|---|---|
+| A1 | Teach `idea next --until-human` to poll a running operation | **Fixed the producer instead.** `idea new` already had the `operation_id` and discarded it; making it wait is smaller, needs no new client call, and also settles `idea new` followed by status/prd/advance/docs |
+| A2 | Require a change set before `complete` | **Rejected.** Breaks five tests and kills the documented all-waived flow; the predicate borrowed from `ui.md:101` is wrong (`rejected`/`superseded` are absorbing and minted on ordinary paths); and `VerifyInitiative` has no channel to report a refusal, so it would have relocated the false success rather than removed it. Recorded in `deferred.md` |
+| B1 | Clamp the stage budget | Shipped, then **corrected twice**: the guard was a tautology, and the clamp alone traded a loud 400 for silent truncation |
+| C2 | Reject a bare `default_model` outright | Narrowed: an error only when no default provider exists, a warning otherwise — a bare role model beside a qualified default is a legitimate, documented form |
+| F2 | smoke.sh runs the README block verbatim | **Rejected** as unsatisfiable; superseded by the A1 fix plus unit tests |
+| F3 | Run CI with keys unset | **Already true**; the real gap is local-vs-CI divergence |
+
+---
+
 ## Track A — the magic path (P0)
 
 ### A1. `idea next --until-human` does not wait for work already in flight

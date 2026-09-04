@@ -161,7 +161,9 @@ idea next                              # → "✓ initiative complete"
 `idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
 and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
 and findings (which is a web-UI action; the CLI only lists them) — printing exactly what to run
-next. `--until-human` keeps going through the automatable steps — waiting for each to finish —
+next. `idea new` waits for the run it starts (`--no-wait` returns immediately and
+`idea watch` follows it), and `--until-human` keeps going through the automatable steps —
+waiting for each to finish —
 instead of stopping after one, which is why the block above is eight commands rather than thirteen.
 The judgment points stay yours either way: `idea new` never drives itself past them.
 
