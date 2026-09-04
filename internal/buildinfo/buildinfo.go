@@ -13,7 +13,9 @@
 //     and a dirty tree is reported as such.
 //   - `go install <module>@<version>` from the proxy: the module version is
 //     known (debug.BuildInfo.Main.Version); there is no VCS data at all,
-//     because the proxy serves an extracted zip with no .git.
+//     because the proxy serves an extracted zip with no .git. That absence is
+//     what distinguishes this path — Main.Version is also set for a local build,
+//     to a pseudo-version naming a release that does not exist.
 //
 // An explicit -ldflags stamp wins over the toolchain's, and not only because it
 // is more specific: building inside a git worktree, the toolchain reports the
@@ -74,29 +76,53 @@ func Get() Info {
 	// nothing was stamped, i.e. someone built from their own working tree.
 	stamped := info.Version != ""
 
-	bi, ok := debug.ReadBuildInfo()
-	if ok {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		var revision, modified string
 		for _, s := range bi.Settings {
 			switch s.Key {
 			case "vcs.revision":
-				if info.Commit == "" {
-					info.Commit = s.Value
-				}
+				revision = s.Value
 			case "vcs.modified":
-				info.Modified = !stamped && s.Value == "true"
+				modified = s.Value
 			}
 		}
-		// The proxy path stamps a module version and nothing else. "(devel)" is
-		// what the toolchain reports for a local build, which is not a version.
-		if info.Version == "" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-			info.Version = bi.Main.Version
+		if info.Commit == "" {
+			info.Commit = revision
 		}
+		info.Modified = !stamped && modified == "true"
+		info.Version = resolveVersion(info.Version, bi.Main.Version, revision != "")
 	}
 
 	if info.Version == "" {
 		info.Version = "dev"
 	}
 	return info
+}
+
+// resolveVersion decides what a build calls itself, given the -ldflags stamp,
+// the module version the toolchain recorded, and whether the build had VCS data.
+//
+// It is a separate function because the interesting case cannot be reached from
+// a test binary: Go does not VCS-stamp those, so a test exercising Get() takes
+// the same branch whether or not the rule is right. A pre-merge check caught
+// exactly that — the first test for this fix passed with the fix reverted.
+//
+// The rule: an explicit stamp wins. Otherwise a module version is trustworthy
+// only when there is no VCS data, because the proxy — which serves an extracted
+// zip with no .git — is the only path that produces one meaningfully. A build
+// from a checkout also carries Main.Version, but it is a *pseudo-version*:
+// `go build ./cmd/idea` reported v0.1.1-0.20260904033502-3eff16082659, one patch
+// above the only release, a version that never existed and that outranks the
+// real one in a bug report. The documented "dev" form had become unreachable.
+// The older guard tested for "(devel)", which Go no longer reports here.
+func resolveVersion(stampedVersion, moduleVersion string, hasVCS bool) string {
+	if stampedVersion != "" {
+		return stampedVersion
+	}
+	if !hasVCS && moduleVersion != "" && moduleVersion != "(devel)" {
+		return moduleVersion
+	}
+	return ""
 }
 
 func shortCommit(c string) string {
