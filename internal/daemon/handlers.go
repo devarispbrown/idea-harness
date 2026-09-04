@@ -520,7 +520,15 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	candidate := config.Config{Project: pr.cfg.Project, Harness: cfg}
 	problems := candidate.ProblemsWithEnv(pr.dotEnv)
 	touched := touchedConfigFields(body.DefaultModel, body.Providers, body.Models)
+	// Warnings attributable to what this request changed are returned rather
+	// than dropped. Everything non-error used to be skipped here, so a catalog
+	// mismatch on `idea model set` reached nobody and the command reported plain
+	// success -- which is how nine dead model ids shipped in the docs.
+	var warnings []string
 	for _, p := range problems {
+		if p.Severity == config.SeverityWarn && problemIsAttributable(p, touched) {
+			warnings = append(warnings, p.Message)
+		}
 		if p.Severity != config.SeverityError {
 			continue
 		}
@@ -547,7 +555,11 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		s.writeReloadErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	out := map[string]any{"status": "updated"}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ---------- live model listing ----------

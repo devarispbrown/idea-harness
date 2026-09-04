@@ -2358,6 +2358,14 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: updated }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: |
+                      Non-blocking problems attributable to a field this request wrote — a model id
+                      absent from the bundled catalog, say. Same attribution rule as the 400: a
+                      pre-existing warning elsewhere in the config is logged, not returned. Omitted
+                      when empty. Clients should print these; the write still succeeded.
                 required: [status]
         "400":
           description: |
