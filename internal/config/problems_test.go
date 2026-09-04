@@ -102,11 +102,42 @@ func TestProblems(t *testing.T) {
 			wantWarns: 0,
 		},
 		{
-			// A bare model names no provider; it inherits the default.
-			name:      "bare model is not a provider reference",
+			// A bare model inherits the default provider -- but only if there is
+			// one. This case has no default_model and no providers entry, so
+			// "gpt-4o" resolves to the built-in demo provider and every artifact
+			// is synthetic. This case previously asserted 0 problems, which is
+			// what let `idea model set gpt-4o` report success while routing the
+			// whole workflow to a stub (audit 5, C2).
+			name:      "a bare model with no default provider is an error",
 			harness:   HarnessConfig{Models: map[string]string{"planner": "gpt-4o"}},
-			wantErrs:  0,
+			wantErrs:  1,
 			wantWarns: 0,
+		},
+		{
+			// The legitimate shape: a bare role model alongside a qualified
+			// default. It resolves to openai/gpt-4o, so it is a style warning
+			// rather than an error.
+			name: "a bare model with a qualified default is only a warning",
+			harness: HarnessConfig{
+				DefaultModel: "openai/gpt-4o-mini",
+				Models:       map[string]string{"planner": "gpt-4o"},
+			},
+			dotEnv:    map[string]string{"OPENAI_API_KEY": "sk-test"},
+			wantErrs:  0,
+			wantWarns: 1,
+		},
+		{
+			// And with a configured provider entry but no default_model.
+			name: "a bare model with a configured provider is only a warning",
+			harness: HarnessConfig{
+				Providers: map[string]ProviderConfig{
+					"groq": {Type: "openai", APIKeyEnv: "GROQ_API_KEY", BaseURL: "https://api.groq.com/openai/v1"},
+				},
+				Models: map[string]string{"planner": "gpt-4o"},
+			},
+			dotEnv:    map[string]string{"GROQ_API_KEY": "k"},
+			wantErrs:  0,
+			wantWarns: 1,
 		},
 	}
 

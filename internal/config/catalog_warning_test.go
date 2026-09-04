@@ -53,7 +53,7 @@ func TestKeyProblemDoesNotShadowTheCatalogWarning(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	probs := modelSpecProblems("harness.default_model", "anthropic/claude-3-7-sonnet",
-		map[string]bool{"anthropic": true}, map[string]ProviderConfig{}, map[string]string{})
+		map[string]bool{"anthropic": true}, map[string]ProviderConfig{}, map[string]string{}, true)
 
 	var sawKey, sawCatalog bool
 	for _, p := range probs {

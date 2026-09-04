@@ -1344,7 +1344,7 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 	if isDemo(cfg, dotEnv) {
 		log.Warn("no model provider configured; using deterministic demo provider")
 	}
-	reg.Add("idea-harness-default", model.NewFakeProvider())
+	reg.Add(demoProviderName, model.NewFakeProvider())
 	return reg
 }
 
@@ -1412,7 +1412,7 @@ func defaultProviderName(cfg config.Config) string {
 	if len(names) > 0 {
 		return names[0]
 	}
-	return "idea-harness-default"
+	return demoProviderName
 }
 
 // releaseOrphanedClaims fails any initiative sitting in "running" with no

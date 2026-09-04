@@ -60,11 +60,19 @@ func (c Config) ProblemsWithEnv(dotEnv map[string]string) []Problem {
 	}
 
 	known := knownProviders(h.Providers)
-	problems = append(problems, modelSpecProblems("harness.default_model", h.DefaultModel, known, h.Providers, dotEnv)...)
-	problems = append(problems, modelSpecProblems("harness.executor.model", h.Executor.Model, known, h.Providers, dotEnv)...)
+	// Whether a bare model spec has anywhere to resolve to. This mirrors the
+	// daemon's defaultProviderName: a provider named by a qualified
+	// default_model, or any configured provider entry. With neither, a bare spec
+	// resolves to the built-in demo provider.
+	hasDefaultProvider := len(h.Providers) > 0
+	if p, _ := ParseModelSpec(h.DefaultModel); p != "" {
+		hasDefaultProvider = true
+	}
+	problems = append(problems, modelSpecProblems("harness.default_model", h.DefaultModel, known, h.Providers, dotEnv, hasDefaultProvider)...)
+	problems = append(problems, modelSpecProblems("harness.executor.model", h.Executor.Model, known, h.Providers, dotEnv, hasDefaultProvider)...)
 	for _, role := range sortedKeys(h.Models) {
 		field := fmt.Sprintf("harness.models.%s", role)
-		problems = append(problems, modelSpecProblems(field, h.Models[role], known, h.Providers, dotEnv)...)
+		problems = append(problems, modelSpecProblems(field, h.Models[role], known, h.Providers, dotEnv, hasDefaultProvider)...)
 	}
 	return problems
 }
@@ -86,12 +94,39 @@ func knownProviders(providers map[string]ProviderConfig) map[string]bool {
 	return known
 }
 
-// modelSpecProblems checks one "provider/model" field. A bare model (no slash)
-// names no provider and inherits the default, so it is not checked here.
-func modelSpecProblems(field, spec string, known map[string]bool, providers map[string]ProviderConfig, dotEnv map[string]string) []Problem {
+// modelSpecProblems checks one "provider/model" field.
+//
+// A bare model with no slash used to return nil here — "it inherits the
+// default, so it is not checked". That is true only when a default provider
+// exists. With none, `idea model set gpt-4o` routed the entire workflow to the
+// built-in demo provider while this function, `idea config validate` and `idea
+// doctor` all reported success at exit 0, and the user believed gpt-4o had
+// written their PRD.
+func modelSpecProblems(field, spec string, known map[string]bool, providers map[string]ProviderConfig, dotEnv map[string]string, hasDefaultProvider bool) []Problem {
 	provider, _ := ParseModelSpec(spec)
 	if provider == "" {
-		return nil
+		if strings.TrimSpace(spec) == "" {
+			return nil // unset is the ordinary case
+		}
+		// A bare spec resolves against whatever provider is default. With one
+		// configured that is legitimate — `models.critic: gpt-4o` alongside
+		// `default_model: openai/gpt-4o-mini` means "the default provider's
+		// gpt-4o". With none it is silently synthetic, which is the defect.
+		if hasDefaultProvider {
+			return []Problem{{
+				Severity: SeverityWarn,
+				Field:    field,
+				Message: fmt.Sprintf("%q names no provider; it resolves against the default provider. "+
+					"Write it as <provider>/%s to be explicit.", spec, spec),
+			}}
+		}
+		return []Problem{{
+			Severity: SeverityError,
+			Field:    field,
+			Message: fmt.Sprintf("%q names no provider and none is configured, so it resolves to the "+
+				"built-in demo provider and every artifact will be synthetic. Write it as "+
+				"<provider>/%s — for example openai/%s.", spec, spec, spec),
+		}}
 	}
 	if !known[provider] {
 		return []Problem{{
