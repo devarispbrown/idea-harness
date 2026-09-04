@@ -539,7 +539,12 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reload so the new registry/default model takes effect.
 	if _, err := s.rt.ReloadProject(r.Context(), r.PathValue("projectId")); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
+		// writeReloadErr, not writeErr: the config file WAS written, and
+		// writeErr's storage branch masks that to "internal error (correlation
+		// id)". The executors endpoint has always used it; this one did not, so
+		// the same failure told the caller two different things depending on
+		// which config they were editing.
+		s.writeReloadErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
