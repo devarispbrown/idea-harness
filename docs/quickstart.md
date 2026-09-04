@@ -228,7 +228,7 @@ leaves the reasoning synthetic. **The real path needs both.**
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
-idea model set anthropic/claude-3-7-sonnet
+idea model set anthropic/claude-3-7-sonnet-latest
 idea doctor                              # names the key the configured provider needs, if it is missing
 ```
 
@@ -251,10 +251,10 @@ which is what step 1b spells out.
 
 ```bash
 # Hermes — downloads the pinned official image and prints its digest
-idea executors setup --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --model anthropic/claude-3-7-sonnet-latest --yes
 
 # OMP — bring your own image
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet-latest --yes
 ```
 
 This verifies the agent CLI exists in the image, prints the security tradeoff, and writes

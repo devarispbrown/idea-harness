@@ -25,13 +25,13 @@ diff.
 
 ```bash
 # Hermes (default) — auto-downloads the pinned official image
-idea executors setup --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --model anthropic/claude-3-7-sonnet-latest --yes
 
 # Hermes with a custom/self-built image
-idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --image ghcr.io/your-org/hermes:latest --model anthropic/claude-3-7-sonnet-latest --yes
 
 # OMP (bring your own image — there is no canonical OMP image)
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet-latest --yes
 ```
 
 `idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
@@ -46,7 +46,7 @@ produces a real file change — this verifies the agent CLI contract end-to-end,
 binary exists:
 
 ```bash
-idea executors setup --kind hermes --model anthropic/claude-sonnet-4 --smoke --yes
+idea executors setup --kind hermes --model anthropic/claude-sonnet-4-5 --smoke --yes
 ```
 
 ### Manual (equivalent)
@@ -58,7 +58,7 @@ Edit `.idea-harness/harness.yaml`:
 executor:
   kind: omp                                       # or hermes
   image: ghcr.io/your-org/omp:latest              # image with the `omp` CLI installed
-  model: anthropic/claude-3-7-sonnet              # coding model (provider/model)
+  model: anthropic/claude-3-7-sonnet-latest              # coding model (provider/model)
 ```
 
 For Hermes:
@@ -68,7 +68,7 @@ For Hermes:
 executor:
   kind: hermes
   image: ghcr.io/your-org/hermes:latest           # image with the `hermes` CLI installed
-  model: anthropic/claude-3-7-sonnet
+  model: anthropic/claude-3-7-sonnet-latest
 ```
 
 Then:
