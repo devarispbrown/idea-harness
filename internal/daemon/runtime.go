@@ -322,8 +322,29 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 		status = domain.OperationCancelled
 	}
 	_ = pr.db.SetOperationStatus(sctx, opID, status, "")
-	if failInitiative && status == domain.OperationFailed {
-		_ = pr.db.FailInitiative(sctx, initiativeID, runErr.Error())
+
+	// Release the initiative on cancellation too, not only on failure.
+	//
+	// The claim added this round marks the initiative running before the work
+	// starts, and only a terminal transition releases it. This branch used to
+	// require status == OperationFailed, so cancelling left the operation
+	// correctly cancelled and the initiative running forever: every later
+	// advance/execute/revise answered "already running", reconcileStaleOperations
+	// could not see it (a cancelled operation is terminal, and it only scans
+	// pending/running), and no CLI command could recover it. That is a worse bug
+	// than the double-click race the claim closes, introduced by closing it.
+	//
+	// `failed` is the right resting state for both: it is honest about the work
+	// not completing, and `idea retry` runs from exactly there.
+	if failInitiative && (status == domain.OperationFailed || status == domain.OperationCancelled) {
+		reason := runErr.Error()
+		if status == domain.OperationCancelled {
+			reason = "cancelled: " + reason
+		}
+		if err := pr.db.FailInitiative(sctx, initiativeID, reason); err != nil {
+			r.log.Error("could not release the initiative after a terminal operation",
+				"initiative", initiativeID, "op", opID, "error", err)
+		}
 	}
 }
 
@@ -468,7 +489,13 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "advance_initiative")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -540,7 +567,13 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "execute_initiative")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -635,7 +668,13 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_initiative")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -690,7 +729,13 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "retry_initiative")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -769,7 +814,13 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "reopen_phase")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -824,7 +875,13 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "revise_plan")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -878,7 +935,13 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	// permanently stuck, which is worse than the race the claim closes.
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "approve_plan")
 	if err != nil {
-		if relErr := pr.db.SetInitiativeStatus(ctx, initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+		// context.WithoutCancel: this is a compensating write, and ctx is the
+		// HTTP request's. If the client disconnected in the window between the
+		// claim and CreateOperation, the create fails on ctx.Err() and a release
+		// sharing that context fails too -- deterministically, not just on the
+		// "DB gone" case. That would strand the initiative with no operation row
+		// for the sweep to find.
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
 			// Both failing usually means one shared cause (DB gone, disk full), and
 			// the initiative is then stuck running with no operation for
 			// reconcileStaleOperations to find. Nothing here can fix that, so it
@@ -970,6 +1033,16 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 			}
 		}
 	}
+
+	// Sweep initiatives left claimed with nothing running.
+	//
+	// The loop above only sees operations that are pending or running, so it
+	// cannot release an initiative whose operation reached a terminal state
+	// without releasing it -- a cancellation, or a daemon killed between the two
+	// writes. Those initiatives answer "already running" to every later request
+	// with no way back, so this is the backstop for the claim mechanism rather
+	// than a nicety.
+	r.releaseOrphanedClaims(ctx, pr)
 
 	recoveries, err := pr.db.ReconcileChangeSets(ctx)
 	if err != nil {
@@ -1197,4 +1270,37 @@ func defaultProviderName(cfg config.Config) string {
 		return names[0]
 	}
 	return "idea-harness-default"
+}
+
+// releaseOrphanedClaims fails any initiative sitting in "running" with no
+// unfinished operation to explain it.
+//
+// `failed` rather than a guessed previous status: the work genuinely did not
+// finish, and `idea retry` runs from there, so the initiative is recoverable by
+// a documented command instead of a database edit.
+func (r *Runtime) releaseOrphanedClaims(ctx context.Context, pr *projectRuntime) {
+	inis, err := pr.db.ListInitiatives(ctx)
+	if err != nil {
+		return
+	}
+	live := map[string]bool{}
+	if ops, err := pr.db.ListUnfinishedOperations(ctx); err == nil {
+		for _, op := range ops {
+			if op.InitiativeID != "" {
+				live[op.InitiativeID] = true
+			}
+		}
+	}
+	for _, ini := range inis {
+		if ini.Status != domain.InitiativeRunning || live[ini.ID] {
+			continue
+		}
+		r.log.Warn("releasing an initiative left running with no live operation",
+			"initiative", ini.ID)
+		if err := pr.db.FailInitiative(ctx, ini.ID,
+			"the operation that claimed this initiative ended without releasing it"); err != nil {
+			r.log.Error("could not release an orphaned initiative claim",
+				"initiative", ini.ID, "error", err)
+		}
+	}
 }
