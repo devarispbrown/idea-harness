@@ -169,3 +169,51 @@ func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 }
 
 var errBoom = errors.New("boom")
+
+// TestPanicAfterSuccessLeavesTheRecordAlone is C2's other direction, and the one
+// the plan's first draft missed.
+//
+// A panic can happen after the goroutine's own terminal write — in a trailing
+// log line. The obvious patch (gate the operation write, leave the initiative
+// release alone) produces operation=succeeded with initiative=failed: a
+// self-contradictory record that sends a user to `idea retry` on a run that
+// actually worked, re-running the whole pipeline for nothing.
+//
+// Both writes are gated on the same outcome, so a late panic changes neither.
+func TestPanicAfterSuccessLeavesTheRecordAlone(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+
+	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+	opID, err := pr.db.CreateOperation(ctx, projectID, iniID, "advance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The work finished and recorded itself, as it does on the success path.
+	if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationSucceeded, "CHG-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	rt.failOperationAfterPanic(opID, "panic in a trailing log line")
+
+	op, err := pr.db.GetOperation(ctx, opID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Status != domain.OperationSucceeded {
+		t.Errorf("a late panic rewrote a succeeded operation to %q", op.Status)
+	}
+	ini, err := pr.db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status == domain.InitiativeFailed {
+		t.Error("a late panic failed an initiative whose operation succeeded; " +
+			"the user is sent to `idea retry` on a run that worked")
+	}
+}
