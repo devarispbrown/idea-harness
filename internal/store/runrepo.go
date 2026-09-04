@@ -60,8 +60,21 @@ func (db *DB) SetRunStatus(ctx context.Context, runID string, status domain.RunS
 		if status == domain.RunSucceeded || status == domain.RunFailed {
 			finished = sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
 		}
-		_, err := tx.Exec(`UPDATE runs SET status = ?, finished_at = ? WHERE id = ?`, status, finished, runID)
-		return err
+		// RowsAffected, for the same reason as the finding writes: db.Apply
+		// commits the event whenever the closure returns nil, so a bogus run id
+		// recorded a run.status_changed for a run that does not exist.
+		res, err := tx.Exec(`UPDATE runs SET status = ?, finished_at = ? WHERE id = ?`, status, finished, runID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return &NotFoundError{Kind: "run", Ref: runID}
+		}
+		return nil
 	})
 }
 

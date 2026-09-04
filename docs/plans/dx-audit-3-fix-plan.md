@@ -606,8 +606,23 @@ v1 omitted both it and the web build's role here.
 Then a full re-run of the audit journey, and direct re-probing of every
 acceptance test against a live daemon.
 
-**Coverage, stated honestly.** Mechanically checked: C1-C7, D1-D8, G1a, G1b, G2,
-S5's code half, S6 (landed with tests).
+**Coverage, stated honestly — corrected after the pre-merge review.** The first
+version of this sentence claimed G1b and G2 were mechanically checked. **They
+were not**, and the review caught the plan asserting work that did not exist —
+the exact pattern this document exists to stop, in the document itself.
+
+Mechanically checked: C1-C7, D1-D3, G1a, G2, S1's isolation table, S6.
+
+**G1b was not implemented.** More importantly, it would not have worked as
+specified: `scripts/smoke.sh` never runs `idea model set`, so it never reaches
+O1's shape — a configured model with no key — and a bare "did not fail"
+assertion on the synthetic path it already exercises would not have caught the
+finding it was justified by. Recorded in `deferred.md` with that reasoning
+rather than left as a claim.
+
+**D4-D8 were not implemented** (the pidfile clobber, the 413 double body, the
+`changed` scoping, the init-elsewhere hint, and trace-type validation). Recorded
+in `deferred.md`.
 
 **Not mechanically checkable:** the entire S track's prose, the O track's prose
 beyond the commands G1a lints, and all of R. Those get a reviewer pass against

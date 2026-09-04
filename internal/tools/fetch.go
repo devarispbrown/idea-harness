@@ -56,7 +56,7 @@ func guardedDial(res ipResolver, dial dialFunc) func(context.Context, string, st
 				return nil, fmt.Errorf("tools: refused non-public address %s", ip.IP)
 			}
 		}
-		// Dial the address that was just checked, not the hostname.
+		// Dial the addresses that were just checked, not the hostname.
 		//
 		// Passing addr here would hand the dialer the original host:port and let
 		// it resolve a second time, so the IP validated above need not be the IP
@@ -65,7 +65,21 @@ func guardedDial(res ipResolver, dial dialFunc) func(context.Context, string, st
 		// which is exactly the metadata endpoint this guard exists to block.
 		// URLs reach here from harness.yaml's research.urls, so a shared or
 		// cloned project can carry the hostile name.
-		return dial(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		//
+		// Every validated address is tried, not just the first. Dialing a
+		// hostname used to give multi-address fallback for free; pinning to
+		// ips[0] took that away, so a round-robin or multi-region endpoint whose
+		// first address happens to be down would fail outright. Validation and
+		// fallback are orthogonal and both are needed.
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
 	}
 }
 

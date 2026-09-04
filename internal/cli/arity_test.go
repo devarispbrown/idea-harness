@@ -36,6 +36,13 @@ func TestExtraPositionalsAreRejected(t *testing.T) {
 		{"revert", []string{"CHG-1", "CHG-2"}},
 		{"cancel", []string{"op-1", "op-2"}},
 		{"change", []string{"CHG-1", "CHG-2"}},
+		// The first pass at this bounded only the commands named in the finding;
+		// these four have the identical shape and were left dropping arguments.
+		{"advance", []string{"INI-1", "extra"}},
+		{"execute", []string{"INI-1", "extra"}},
+		{"watch", []string{"INI-1", "extra"}},
+		{"export", []string{"prd", "INI-1", "extra"}},
+		{"verify", []string{"REQ-1", "extra"}},
 	} {
 		_, err := parseFor(t, c.name, c.args)
 		if err == nil {

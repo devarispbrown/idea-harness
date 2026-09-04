@@ -14,7 +14,16 @@ still unfixed a round later and had reappeared as new work.
 | audit 3 / S6 | Container `--user` passes the daemon's UID, so a root daemon gives a root container | Needs a policy decision on refusing to run as root |
 | audit 3 / S6 | Hermes image pinned by tag, not digest; no signature verification | Supply-chain work, separate round |
 | audit 3 / S6 | Control-plane deny does not cover `.github/workflows/` and other auto-executing files | Needs a decision on scope vs. false positives |
-| audit 3 / G2 | Live-response schema check against the smoke daemon | The `api.md` ↔ `openapi.yaml` axis covers this round's findings more cheaply |
+| audit 3 / G2 | Live-response schema check against the smoke daemon | The `api.md` ↔ `openapi.yaml` axis (built this round) covers these findings more cheaply |
+| audit 3 / G1b | A terminal-state assertion in `scripts/smoke.sh` | Not done, and would not have worked as planned: smoke.sh never runs `idea model set`, so it never reaches O1's shape (a configured model with no key). Needs the script to exercise that path first — a separate piece of work, not ten lines |
+| audit 3 / C5 | Reload-safety: mutex-snapshot at the ~13 engine entry points, fresh `*projectRuntime` swap | Not attempted this round; the comments still overclaim. Highest-value remaining item |
+| audit 3 / C6 | Shrink the engine mutex around model calls; server timeouts; body-size middleware | Not attempted; depends on C5 landing first |
+| audit 3 / D4 | `idea dev` clobbers the live daemon's pidfile | Not attempted |
+| audit 3 / D5 | A 413 on doc upload writes two JSON bodies | Not attempted |
+| audit 3 / D6 | `changed` is project-wide and picks the oldest initiative | Not attempted |
+| audit 3 / D7, D8 | `idea init <elsewhere>` next-step hint; trace-type validation | Not attempted |
+| audit 3 / Track A | `GET /operations/{id}` reconciles every project as a side effect of a read; stranded `checks_running`; `PATCH /tasks` erases estimate; decision/question 400-vs-404; SSE write deadline | Not attempted |
+| audit 3 / C4 | `SuggestAnswersInitiative` has no existence check and no running guard — the only entry point with neither | Not attempted; named in the plan and missed in implementation |
 | audit 3 | No SDK | Deliberate; generating one from the spec is a milestone |
 | audit 3 | `linux/arm64` untested in CI | Hosted arm64 Linux runners unavailable on this repo's plan; stated in README |
 | audit 3 | Cutting `0.2.0` | `v0.1.0` is still the only tag and contains every audit-2 defect; a decision after this lands |
