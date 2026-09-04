@@ -13,6 +13,10 @@ mkdir recipes && cd recipes
 idea init
 ```
 
+`idea init` also starts the background daemon, which inherits your shell environment **at that
+moment** — so if you have a provider API key, export it before this step. (If you forget, Path B
+below shows the one-command fix.)
+
 `idea init` creates a `.idea-harness/` directory in the current folder (no Git repo required). All
 runtime state lives under `~/.local/share/idea-harness/`, never in your source tree.
 
@@ -36,17 +40,33 @@ machine, the review gates, the product graph, apply/revert — without spending 
 
 #### Path B — with a key: export it, then set a model
 
+**If you already exported the key before `idea init` above**, the daemon has it and you only need:
+
 ```bash
-export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
 idea model set openai/gpt-4o-mini
 idea doctor                                # names the key the configured provider needs, if it is missing
+```
+
+**If you are exporting it now**, the daemon is already running without it and must be restarted —
+it reads the environment once, at start:
+
+```bash
+export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
+idea daemon stop                           # the next command restarts it, with the key
+idea model set openai/gpt-4o-mini
+idea doctor
 ```
 
 Any supported provider works — Anthropic, Gemini, DeepSeek, OpenRouter, or local Ollama — and you
 can change it later from the web UI's Settings. API keys are read from environment variables, never
 stored inline.
 
-> **Do not run `idea model set` without the matching key.** Once `default_model` is set,
+> **The daemon reads your environment once, when it starts.** `idea init` starts it, so a key
+> exported *afterwards* is invisible to it — `idea model set` will report success and the first
+> model call still fails with `401`. Either export before `idea init`, or run `idea daemon stop`
+> after exporting so the next command restarts it. `idea model set` warns when it detects this.
+>
+> **And do not set a model without the matching key at all.** Once `default_model` is set,
 > `resolveModelSpec` returns it *before* it ever reaches the demo fallback, and the built-in presets
 > are always registered — with an empty key when the environment variable is unset
 > (`internal/daemon/runtime.go`, `buildRegistry`). The first model call then comes back

@@ -132,13 +132,14 @@ The complete loop, from idea to verified product:
 
 ```bash
 mkdir my-product && cd my-product
-idea init                              # creates .idea-harness/ (works with no Git)
 
-# With a provider key — export it first, then pick a model:
+# With a provider key — export it BEFORE idea init, which starts the daemon:
 export OPENAI_API_KEY=sk-…
-idea model set openai/gpt-4o-mini      # (or use the web UI Settings)
-# Without a key — skip both lines above. Everything below still runs, on the
-# built-in demo provider, and every artifact is synthetic and labeled as such.
+# Without a key — skip that line and the `idea model set` below. Everything runs
+# on the built-in demo provider; artifacts are synthetic and labeled as such.
+
+idea init                              # creates .idea-harness/ (works with no Git)
+idea model set openai/gpt-4o-mini      # only with a key; or use the web UI Settings
 
 idea new "Build usage-based billing"   # M1: idea → reviewed PRD
 idea next --until-human                # M2–M3: design → plan → change set, then stops for you
@@ -148,10 +149,14 @@ idea verify REQ-1 --pass               # record pass evidence; repeat per requir
 idea next                              # → "✓ initiative complete"
 ```
 
-> **Set a model only if you have its key.** `default_model` is resolved before the demo fallback, so
-> `idea model set` with the environment variable unset turns the first model call into a
-> non-retryable `401` and the initiative into `failed` — where doing nothing would have produced a
-> complete synthetic run. `idea doctor` reports a missing key.
+> **Export before `idea init`, and set a model only if you have its key.** The daemon reads your
+> environment once, when it starts — and `idea init` starts it — so a key exported afterwards is
+> invisible to it. If you forget, `idea daemon stop` makes the next command restart it with the key.
+>
+> Setting a model without its key is worse than setting none: `default_model` is resolved before the
+> demo fallback, so the first model call becomes a non-retryable `401` and the initiative goes to
+> `failed`, where doing nothing would have produced a complete synthetic run. `idea model set` warns
+> when it can tell, and `idea doctor` reports a missing key.
 
 `idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
 and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
