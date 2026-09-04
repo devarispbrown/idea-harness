@@ -2759,6 +2759,10 @@ components:
         failure is 500 with a correlation id and a generic message, and every other (domain) error
         keeps its own message and the status its handler chose. Handlers that validate their own
         request bodies write 400 directly.
+
+        This now holds at the routing layer too. A path under `/api/` that no route claims — a
+        wrong verb, a typo — answers this shape rather than the file server's `text/plain`
+        "404 page not found", which is what it used to do for every unmatched request.
       properties:
         error:
           type: string

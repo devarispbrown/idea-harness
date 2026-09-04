@@ -9,7 +9,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`idea <command> --help` works on every command.** `--help` and `-h` were rejected as unknown
+  flags on all 33 subcommands, so there was no way to learn what `idea verify --waive` does or what
+  kinds `idea export` takes without opening `docs/cli.md`. Rendered from the same command table
+  that drives `idea help` and the docs, so the three cannot disagree. Arguments after `--` are left
+  alone: `idea docs add -- --help` still adds a file named `--help`.
+- Recorded wire-format goldens for the three providers, plus an assertion that the token budget a
+  provider emits never exceeds the ceiling it declares. Four rounds of guards compared artifacts to
+  artifacts; nothing compared the request to what a provider accepts, which is how the token-budget
+  P0 survived until someone spent a real API key. The cap now also exists inside each provider, so
+  no caller can emit a request the provider will reject.
+
+### Fixed
+
+- Unmatched paths under `/api/` answer the documented `{"error": …}` envelope. `openapi.yaml` said
+  every error has that shape "and nothing else"; the web UI handler is registered for `/`, so a
+  wrong verb or a typo'd path fell through to `404 page not found` as `text/plain`. Ten API paths
+  answered that way, and the CLI surfaced it as `idea: 404 Not Found` — the only raw HTTP status it
+  prints.
+- `/doctor` and `/diff` no longer emit `null` for empty arrays. The previous sweep converted eight
+  fields and missed these two, so the API had become *mixed* rather than consistent — `/diff` could
+  return `"added":[{…}],"removed":null` in one response. `/doctor` was the worse case: an empty
+  finding list means the graph audit found nothing wrong, so the good outcome was the one returning
+  `null`.
 
 ## [0.2.0] - 2026-09-04
 

@@ -126,7 +126,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	body := openAIChatRequest{
 		Model:     req.Model,
 		Messages:  openAIMessages(req, system),
-		MaxTokens: req.MaxOutput,
+		MaxTokens: capOutput(req.MaxOutput, p.caps),
 	}
 	if len(req.JSONSchema) > 0 {
 		body.ResponseFormat = &openAIResponseFormat{Type: "json_object"}

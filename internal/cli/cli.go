@@ -168,6 +168,16 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			if name != cmd {
 				continue
 			}
+			// --help before parse, because parse rejects it as an unknown flag.
+			// Every one of the 33 subcommands did exactly that: `idea verify
+			// --help` answered `unknown flag "--help"; accepted flags: --fail,
+			// --json, --note, --pass, --waive`. Enumerating the flags is a
+			// genuinely good error, but there was no way to learn what --waive
+			// means, or what `export`'s kinds are, without opening docs/cli.md —
+			// and --help is the first thing anyone reaches for.
+			if wantsHelp(rest) {
+				return c.writeHelp(cmd, stdout)
+			}
 			a, err := c.parse(cmd, rest)
 			if err != nil {
 				return err
@@ -223,7 +233,7 @@ func (c command) parse(name string, rest []string) (cmdArgs, error) {
 	return cmdArgs{sub: sub, positional: positional, flags: flags}, nil
 }
 
-func sortedKeys(m map[string]flagSpec) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -796,4 +806,70 @@ func (c command) jsonDoc() string {
 	default:
 		return "no"
 	}
+}
+
+// wantsHelp reports whether the argv asks for this command's help.
+//
+// Only before "--": after the terminator the tokens are the command's own data,
+// and `idea docs add -- --help` must add a file called --help rather than print
+// usage. The parser learned that distinction the hard way one round ago.
+func wantsHelp(rest []string) bool {
+	for _, a := range rest {
+		if a == "--" {
+			return false
+		}
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeHelp renders one command's usage, summary, subcommands and flags from
+// the same table that drives `idea help` and docs/cli.md, so the three cannot
+// disagree.
+func (c command) writeHelp(name string, stdout io.Writer) error {
+	fmt.Fprintln(stdout, bold("idea "+c.usage))
+	if c.summary != "" {
+		fmt.Fprintln(stdout, "\n"+c.summary)
+	}
+
+	if len(c.subs) > 0 {
+		fmt.Fprintln(stdout, "\n"+muted("Subcommands:"))
+		for _, sub := range sortedKeys(c.subs) {
+			line := "  " + code(sub)
+			if flags := renderFlagList(c.subs[sub]); flags != "" {
+				line += "  " + muted(flags)
+			}
+			fmt.Fprintln(stdout, line)
+		}
+	}
+
+	if flags := renderFlagList(c.flags); flags != "" {
+		fmt.Fprintln(stdout, "\n"+muted("Flags:")+" "+flags)
+	} else if len(c.subs) == 0 {
+		fmt.Fprintln(stdout, "\n"+muted("No flags."))
+	}
+	fmt.Fprintln(stdout, "\n"+muted("Full reference: ")+code("docs/cli.md"))
+	return nil
+}
+
+// renderFlagList renders a spec as the flags a user types, with a placeholder
+// for the ones that take a value.
+func renderFlagList(spec flagSpec) string {
+	if len(spec) == 0 {
+		return ""
+	}
+	var out []string
+	for _, f := range sortedKeys(spec) {
+		switch spec[f] {
+		case flagValue:
+			out = append(out, f+" <value>")
+		case flagRepeated:
+			out = append(out, f+" <value> (repeatable)")
+		default:
+			out = append(out, f)
+		}
+	}
+	return strings.Join(out, ", ")
 }
