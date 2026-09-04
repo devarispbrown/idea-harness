@@ -658,10 +658,14 @@ paths:
                   description: Only `true` records evidence; `false` records nothing.
                 fail:
                   type: boolean
-                  description: Records the requirement as failing verification. Mutually exclusive with `pass` and `waived`.
+                  description: |
+                    Records the requirement as failing verification. Send one disposition: the
+                    handler takes the first of `fail`, `waived`, `pass` rather than rejecting a
+                    request that sets several, so "mutually exclusive" is the CLI's rule, enforced
+                    by `idea verify`, not this endpoint's.
                 waived:
                   type: boolean
-                  description: Records the requirement as waived. Mutually exclusive with `pass` and `fail`.
+                  description: Records the requirement as waived. Same one-disposition rule as `fail`.
                 note: { type: string }
       responses:
         "200":
@@ -2467,7 +2471,13 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: updated }
-                required: [status]
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: |
+                      Non-blocking problems with the fields this request wrote — a model id absent
+                      from the bundled catalog, say. Omitted when empty; the write still succeeded.
+                  required: [status]
         "400":
           description: "`invalid body`, `invalid executor kind \"...\"`, `invalid executor image`, or a rejected write."
           content:

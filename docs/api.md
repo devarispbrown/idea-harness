@@ -136,9 +136,9 @@ operation id and returns immediately:
 ```
 
 Poll `GET /api/v1/operations/{id}` for its status, or follow
-`GET /api/v1/projects/{projectId}/events` (SSE). Both shipped clients poll: `idea watch` polls the
-change set once a second (`internal/cli/watch.go`) and the UI polls on a `setInterval` timer
-(`web/src/App.tsx`). Nothing in-tree consumes the SSE endpoint, so it is offered for your clients,
+`GET /api/v1/projects/{projectId}/events` (SSE). Both shipped clients poll: `idea watch` re-fetches
+the initiative's `understanding` once a second (`internal/cli/watch.go`) and the UI polls on a
+`setInterval` timer (`web/src/App.tsx`). Nothing in-tree consumes the SSE endpoint, so it is offered for your clients,
 not exercised by ours. The `202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
 alongside `operation_id`.
 
@@ -229,7 +229,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan (re-runs its review). **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus exactly one of `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. |
+| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. |
 
 ### Understanding, guidance and analysis
 

@@ -345,9 +345,16 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if model != "" {
 		body["model"] = model
 	}
-	var out map[string]string
+	var out struct {
+		Warnings []string `json:"warnings"`
+	}
 	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/executors", body, &out); err != nil {
 		return err
+	}
+	// Printed before the checkmark: a dead model id here is forwarded into the
+	// agent container, where the 404 shows up as an agent that produced nothing.
+	for _, w := range out.Warnings {
+		fmt.Fprintln(stdout, warn("⚠ ")+w)
 	}
 	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code(kind)+" ("+code(image)+")")
 	if digest != "" {
@@ -376,9 +383,10 @@ type cliCoverage struct {
 // cmdVerify records human pass evidence for a requirement and/or runs the
 // verification gate (§70, review B4/B10). Usage: idea verify [<req>] [--pass] [--note <text>].
 func cmdVerify(a cmdArgs, stdout, stderr io.Writer) error {
-	// Invoked directly, an unmet gate is a failure: docs/quickstart.md tells
-	// readers to run this after apply, so `idea verify || exit 1` has to mean
-	// something.
+	// Invoked directly, an unmet gate is a failure, so that a script branching on
+	// this command's exit code learns something from it. (The quickstart shows
+	// the command but not that idiom -- an earlier version of this comment said
+	// it did.)
 	return runVerify(a, stdout, stderr, true)
 }
 
@@ -482,9 +490,9 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	//
 	// This printed "✓ verified" and returned nil for every state, including a
 	// recorded failure -- `idea verify REQ-1 --fail` reported success -- because
-	// out.Status is the *initiative's* status, not the gate's. docs/quickstart.md
-	// tells readers to run this after apply, so `idea verify || exit 1` in CI
-	// could never fail. The previous round fixed this command's recording half
+	// out.Status is the *initiative's* status, not the gate's. So the exit code
+	// was 0 whatever the gate said, and any script branching on it saw success
+	// unconditionally. The previous round fixed this command's recording half
 	// and never looked at its reporting half.
 	if failOnUnmet && len(unmet) > 0 {
 		return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))

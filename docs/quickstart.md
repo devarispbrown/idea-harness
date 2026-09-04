@@ -250,9 +250,16 @@ leaves the reasoning synthetic. **The real path needs both.**
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
+idea daemon stop                         # it started at `idea init`, without the key
 idea model set anthropic/claude-3-7-sonnet-latest
 idea doctor                              # names the key the configured provider needs, if it is missing
 ```
+
+The `idea daemon stop` is the same point Path A makes above, and it is easy to skip here because
+this section reads as self-contained: you are already past `idea init`, so the daemon is running
+and it read your environment before this key existed. `idea model set` warns when it can tell —
+it compares your shell against the daemon's own view — but stopping the daemon first is what makes
+the warning unnecessary. The next command restarts it.
 
 Keys are read from the environment (or the project `.env`), never stored in `harness.yaml`. The two
 commands belong together: **setting the model without exporting the key is worse than doing
