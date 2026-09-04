@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -211,4 +212,43 @@ func TestReloadFailureNeverLeaksAStatePath(t *testing.T) {
 			t.Errorf("a domain error must survive verbatim, got: %s", body)
 		}
 	})
+}
+
+// TestBothConfigEndpointsReportWrittenButNotApplied pins C3.
+//
+// writeReloadErr exists so the caller learns their config file WAS written and
+// the running daemon kept the old one. Only the executors endpoint used it; the
+// providers endpoint sent the identical failure to writeErr, whose storage
+// branch masks it to "internal error (correlation id)". So the same condition
+// told the user two different things depending on which config they edited, and
+// docs/api.md went on to claim a handler cannot get this wrong.
+//
+// Asserted through writeReloadErr itself rather than by inducing a filesystem
+// failure in each handler: the branch is what differs, and a permissions fixture
+// would be flaky on two platforms.
+func TestBothConfigEndpointsReportWrittenButNotApplied(t *testing.T) {
+	src, err := os.ReadFile("handlers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, handler := range []string{"handleUpdateProviders", "handleUpdateExecutors"} {
+		start := strings.Index(text, "func (s *Server) "+handler+"(")
+		if start < 0 {
+			t.Errorf("%s not found; this test is not reading handlers.go", handler)
+			continue
+		}
+		end := strings.Index(text[start:], "\n}\n")
+		if end < 0 {
+			end = len(text) - start
+		}
+		body := text[start : start+end]
+		if !strings.Contains(body, "ReloadProject") {
+			continue // no reload, nothing to report
+		}
+		if !strings.Contains(body, "writeReloadErr") {
+			t.Errorf("%s handles a ReloadProject failure without writeReloadErr, so a caller "+
+				"whose config was written but not applied gets a masked 500", handler)
+		}
+	}
 }
