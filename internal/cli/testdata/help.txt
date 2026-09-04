@@ -3,7 +3,7 @@ idea-harness — a local-first AI product-development control plane
 Usage: idea <command>
 Commands:
   init [<dir>]         initialize a project (defaults to the current directory)
-  new "<idea>"         create an initiative and start the workflow
+  new "<idea>" [--no-wait] create an initiative and start the workflow
   status               show initiative + current work
   changed              show What Changed since last look
   decisions            list open/blocked decisions

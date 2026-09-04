@@ -95,7 +95,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
-		{names: []string{"new"}, usage: `new "<idea>"`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated}, run: cmdNew, inHelp: true},
+		{names: []string{"new"}, usage: `new "<idea>" [--no-wait]`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated, "--no-wait": flagBool}, run: cmdNew, inHelp: true},
 		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
 		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
 		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, maxPositional: 1, run: cmdDecisions, inHelp: true},
@@ -458,7 +458,31 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 	if isDemoMode(c, projectID) {
 		fmt.Fprintln(stdout, warn("demo mode — synthetic output. Configure a model with:")+" "+bold("idea model set <provider/model>"))
 	}
-	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+
+	// Wait for the run this command just started, unless asked not to.
+	//
+	// It used to return here, discarding the operation_id it already had. That
+	// made the README's own eight-command quick start a race: the very next
+	// command saw the initiative still `running`, `idea next --until-human`
+	// fell through to "workflow running — try `idea watch`" without doing
+	// anything, and the block went on to report "✓ initiative complete" over an
+	// initiative with zero change sets. Measured before this fix: 5/5 runs
+	// passed with provider keys exported, 0/5 without, because ambient keys
+	// shifted the timing enough to win the race.
+	//
+	// Fixing the producer rather than teaching every consumer to poll: `idea
+	// new` is the only command that starts work and does not wait for it, and
+	// this also settles `idea new` followed by status, prd, advance or docs add.
+	opID := out["operation_id"]
+	if a.has("--no-wait") || opID == "" {
+		fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+		return nil
+	}
+	fmt.Fprintln(stdout, muted("working… (")+bold("--no-wait")+muted(" returns immediately; ")+bold("idea watch")+muted(" follows it)"))
+	if err := waitForOperation(c, opID, stdout); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ reviewed PRD ready")+" "+muted("— next: ")+bold("idea next --until-human"))
 	return nil
 }
 
