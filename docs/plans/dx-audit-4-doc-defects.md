@@ -81,18 +81,18 @@ are part of the process, not a formality after it.
 | D21 | `claims-check` proves each security claim is stated once | The link test was file-scoped: one mention of the canonical file's name anywhere exempted the whole document. Three of ten docs were already exempt, `configuration.md` among them — the file the guard was written for | `absent:internal/docsgen/claimscheck.go:it has to be *near the claim*` | fixed 089beca |
 | D22 | `docs-lint` covers every Markdown file | Two of eleven, fenced blocks only. A planted bad verb in `api.md`, `cli.md`, an inline span, or a `~~~` fence all passed | `absent:internal/docsgen/docslint.go:func lintedDocs` | fixed 089beca |
 | D23 | `ledger-check` refuses to skip a row it cannot parse | Nine holes, including the two it was built to close: one line in a plan's `Partially:` list laundered every contradiction, and a coverage sentence wrapping past column 78 turned the check off | `absent:internal/docsgen/ledgercheck.go:partialEntryRe` | fixed 089beca |
-| D24 | `api.md`: `idea watch` polls the change set | It re-fetches the initiative's `understanding`. Introduced by this round's own SSE correction | `absent:docs/api.md:re-fetches` | fixed pending |
-| D25 | `api.md`/`openapi.yaml`: verify takes "exactly one of" pass/fail/waived | That is the CLI's rule. The handler is a priority switch and takes the first of fail, waived, pass | `absent:docs/api.md:takes the first of` | fixed pending |
-| D26 | `quickstart.md`'s "real path" section | Reintroduced the O1 dead-end: export-then-`model set` with no daemon restart, after `idea init` has already started it | `absent:docs/quickstart.md:it started at` | fixed pending |
-| D27 | `security-model.md`: "Redaction happens at the read/display surface, never at write time" | True of `raw-blobs/` only. `blobs/` is constructed with the redactor as its write hook | `absent:docs/security-model.md:Two stores, two rules` | fixed pending |
-| D28 | Retracted claims survive in code comments | `advance.go` still said "independent plan review" and `sandbox.go` still said "non-root user" after both were corrected in the documents | `absent:internal/executor/sandbox.go:not the same as non-root` | fixed pending |
-| D29 | The null-array sweep was complete | It stopped at the top-level projection slices. A populated initiative still emitted null for `acceptance_criteria`, `options`, `dissents`, and `/risk` emitted `signals` | `absent:internal/projection/projection.go:func orEmpty` | fixed pending |
-| D30 | `idea executors setup --model` warns on a dead model id | It did not, and that path forwards the id into the agent container where the 404 looks like an agent that produced nothing | `absent:internal/daemon/handlers.go:UnknownModelProblems` | fixed pending |
-| D31 | CHANGELOG: "the quickstart tells readers to run it exactly that way" | The `exit 1` idiom appears in no published document. The fix was real; the justification was invented | `present:CHANGELOG.md:tells readers` | fixed pending |
-| D32 | configuration.md documented an `idea revise` and an `idea resume` verb | Neither exists; the CLI reaches the loop through `idea new` and `idea next`. Found by widening docs-lint's scope | `absent:docs/configuration.md:no revise or resume verb` | fixed pending |
+| D24 | `api.md`: `idea watch` polls the change set | It re-fetches the initiative's `understanding`. Introduced by this round's own SSE correction | `absent:docs/api.md:re-fetches` | fixed d295b04 |
+| D25 | `api.md`/`openapi.yaml`: verify takes "exactly one of" pass/fail/waived | That is the CLI's rule. The handler is a priority switch and takes the first of fail, waived, pass | `absent:docs/api.md:takes the first of` | fixed d295b04 |
+| D26 | `quickstart.md`'s "real path" section | Reintroduced the O1 dead-end: export-then-`model set` with no daemon restart, after `idea init` has already started it | `absent:docs/quickstart.md:it started at` | fixed d295b04 |
+| D27 | `security-model.md`: "Redaction happens at the read/display surface, never at write time" | True of `raw-blobs/` only. `blobs/` is constructed with the redactor as its write hook | `absent:docs/security-model.md:Two stores, two rules` | fixed d295b04 |
+| D28 | Retracted claims survive in code comments | `advance.go` still said "independent plan review" and `sandbox.go` still said "non-root user" after both were corrected in the documents | `absent:internal/executor/sandbox.go:not the same as non-root` | fixed d295b04 |
+| D29 | The null-array sweep was complete | It stopped at the top-level projection slices. A populated initiative still emitted null for `acceptance_criteria`, `options`, `dissents`, and `/risk` emitted `signals` | `absent:internal/projection/projection.go:func orEmpty` | fixed d295b04 |
+| D30 | `idea executors setup --model` warns on a dead model id | It did not, and that path forwards the id into the agent container where the 404 looks like an agent that produced nothing | `absent:internal/daemon/handlers.go:UnknownModelProblems` | fixed d295b04 |
+| D31 | CHANGELOG: "the quickstart tells readers to run it exactly that way" | The `exit 1` idiom appears in no published document. The fix was real; the justification was invented | `present:CHANGELOG.md:tells readers` | fixed d295b04 |
+| D32 | configuration.md documented an `idea revise` and an `idea resume` verb | Neither exists; the CLI reaches the loop through `idea new` and `idea next`. Found by widening docs-lint's scope | `absent:docs/configuration.md:no revise or resume verb` | fixed d295b04 |
 
-Rows marked `fixed pending` landed in the same commit as this table, so they
-carry the hash only after it exists; the follow-up commit fills them in.
+Rows D24–D32 landed in `d295b04`, the same commit that added this table, so the
+hash was filled in by the commit immediately after it.
 
 ## Appending to this file
 
