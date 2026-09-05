@@ -1951,7 +1951,28 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"action": action})
+	resp := map[string]string{"action": action}
+	if action == "failed" {
+		// The token alone is not actionable -- "it failed" without the reason
+		// sends the reader to `idea logs` for something the daemon is already
+		// holding. One extra read, only on this branch.
+		//
+		// A read error here is swallowed on purpose: NextAction read the same
+		// row microseconds ago, so a failure now is a storage fault, and
+		// turning a correct action token into a 500 would cost the caller the
+		// diagnosis to report a fault writeErr would mask behind a correlation
+		// id anyway.
+		if ini, err := pr.db.GetInitiative(r.Context(), initiativeID); err == nil {
+			resp["failure_reason"] = ini.FailureReason
+		} else {
+			// Logged rather than passed over in silence: the difference between
+			// "we reasoned this is unreachable" and "we could never tell whether
+			// it happened" is one line.
+			s.rt.log.Warn("could not read the failure reason for a failed initiative",
+				"initiative", initiativeID, "error", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleListChangeSets returns the change sets for an initiative.

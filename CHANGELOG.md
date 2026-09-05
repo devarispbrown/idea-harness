@@ -9,6 +9,42 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`GET /initiatives/{id}/next` distinguishes a failed initiative from a running
+  one, and `idea next` exits non-zero over one.** The token set gains `failed`,
+  and the 200 body carries an optional `failure_reason` alongside it. A client
+  with an exhaustive switch over the old eight tokens needs a `failed` arm; a
+  script that treated `idea next`'s exit code as "did the loop advance" now sees
+  a failure it previously could not.
+
+  It was worth breaking. `next` collapsed `running` and `failed` to `wait`, so a
+  failed initiative was told the workflow was still running — `idea next` printed
+  `workflow running — try \`idea watch\`` and exited **0**, forever. `idea execute`
+  correctly points at `idea next`; `idea next` pointed at `idea watch`; `idea
+  watch` needs a TTY and exits 1 without one. The recovery loop was closed and
+  every command in it reported success. Reachable from an ordinary provider 401
+  and from `idea cancel`.
+
+  Found by DX audit 5, planned as Track A / A3, **never implemented and never
+  recorded in `deferred.md`** — then found again by audit 6, which is the third
+  time this repo has shipped a round with a planned fix that had no owner.
+
+- **`idea new` names the provider error instead of pointing at the log.** Any
+  command that waits on an operation — `idea new` and `idea next --until-human` —
+  now renders the initiative's `failure_reason` when that operation fails, rather
+  than `run_initiative failed — run \`idea logs\` for details`. The daemon was
+  already holding the full 401; the CLI sent you to fetch it. Not breaking: the
+  exit code was already 1.
+
+- **`reconcileStaleOperations` records why it failed an initiative.** It used
+  `SetInitiativeStatus`, the one transition that deliberately leaves
+  `failure_reason` alone (`store/repo.go:195`), so an initiative failed by a
+  daemon restart mid-operation was `failed` with an empty reason and `idea
+  status` reported a failure it could not explain. `releaseOrphanedClaims`
+  fifty lines below already used `FailInitiative`. Not breaking on the wire; the
+  field goes from empty to populated.
+
 ### Added
 
 - **Two step-by-step demo guides, linked from the README.**
