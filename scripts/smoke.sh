@@ -159,3 +159,101 @@ echo "--- RISK ---"
 "$ROOT/bin/idea" risk
 echo "--- EXECUTORS ---"
 "$ROOT/bin/idea" executors
+
+# ---------------------------------------------------------------------------
+# Second pass: an EXISTING project.
+#
+# Everything above ran in an empty directory, which is what smoke.sh and
+# smoke-real.sh have always done and what the README quick start shows. Nothing
+# in the tree exercised `idea init` where files already exist, so the two claims
+# docs/demo-existing-project.md makes to a reader about their own repository
+# were untested:
+#
+#   1. applying a change set leaves pre-existing files byte-identical
+#   2. reverting leaves the working tree pristine
+#
+# Both are asserted here against real content rather than narrated. This is the
+# path where the product's headline properties actually matter: an empty
+# directory has no pre-image to restore.
+# ---------------------------------------------------------------------------
+echo
+echo "=== EXISTING-PROJECT PASS ==="
+
+EPROJ="$TMPROOT/existing"
+mkdir -p "$EPROJ/src"
+cat >"$EPROJ/src/billing.py" <<'PY'
+"""Usage billing for the API."""
+
+RATE_PER_CALL = 0.002
+
+
+def charge(calls: int) -> float:
+    return calls * RATE_PER_CALL
+PY
+printf '# acme-api\n\nBilling lives in `src/billing.py`.\n' >"$EPROJ/README.md"
+
+cd "$EPROJ"
+git init -q
+git config user.name "idea-harness-smoke"
+git config user.email "smoke@example.invalid"
+git add -A
+git commit -qm "initial"
+BEFORE_SUM=$(git hash-object src/billing.py)
+BEFORE_HEAD=$(git rev-parse HEAD)
+
+echo "--- INIT (into a repo that already has files) ---"
+"$ROOT/bin/idea" init
+for f in src/billing.py README.md; do
+  test -f "$f" || { echo "ERROR: idea init removed $f"; exit 1; }
+done
+[ "$(git hash-object src/billing.py)" = "$BEFORE_SUM" ] ||
+  { echo "ERROR: idea init modified src/billing.py"; exit 1; }
+echo "existing files intact after init"
+
+# Grounding goes through --doc: `idea docs add` needs an initiative to attach
+# to, so it cannot come first. The guide documents that ordering; this pins it.
+if "$ROOT/bin/idea" docs add src/billing.py >/dev/null 2>&1; then
+  echo "ERROR: idea docs add succeeded before any initiative existed"; exit 1
+fi
+echo "docs add correctly refused before `idea new`"
+
+echo "--- NEW (grounded on the existing source) ---"
+"$ROOT/bin/idea" new "Add tiered pricing for high-volume callers" --doc src/billing.py
+wait_for "the existing-project initiative to leave running" 30 initiative_left_running
+
+echo "--- DOCS (the source file is attached) ---"
+"$ROOT/bin/idea" docs
+"$ROOT/bin/idea" docs 2>/dev/null | grep -q "billing.py" ||
+  { echo "ERROR: --doc did not attach src/billing.py"; exit 1; }
+
+echo "--- NEXT --until-human ---"
+"$ROOT/bin/idea" next --until-human
+wait_for "a change set in the existing project" 30 chg1_in_changes
+
+echo "--- REVIEW + APPLY ---"
+"$ROOT/bin/idea" review CHG-1 approve
+"$ROOT/bin/idea" apply CHG-1
+wait_for "the placeholder to land" 30 test -f "$EPROJ/hello.txt"
+
+# The claim the guide asks a reader to confirm with md5. Asserted, not narrated:
+# the default executor writes a placeholder and does not edit existing source.
+[ "$(git hash-object src/billing.py)" = "$BEFORE_SUM" ] ||
+  { echo "ERROR: apply modified src/billing.py; the default executor must not"; exit 1; }
+echo "src/billing.py byte-identical after apply"
+
+echo "--- REVERT ---"
+"$ROOT/bin/idea" revert CHG-1
+wait_for "the existing-project change set to read reverted" 30 chg1_reverted
+test ! -f "$EPROJ/hello.txt" || { echo "ERROR: hello.txt survived revert"; exit 1; }
+[ "$(git hash-object src/billing.py)" = "$BEFORE_SUM" ] ||
+  { echo "ERROR: revert altered src/billing.py"; exit 1; }
+[ "$(git rev-parse HEAD)" = "$BEFORE_HEAD" ] ||
+  { echo "ERROR: the existing-project pass moved HEAD"; exit 1; }
+
+# Pristine means: nothing dirty, and the only untracked entry is the config
+# directory idea init added.
+DIRTY=$(git status --porcelain | grep -v '^?? \.idea-harness/$' || true)
+[ -z "$DIRTY" ] || { echo "ERROR: working tree not pristine after revert:"; echo "$DIRTY"; exit 1; }
+echo "working tree pristine after revert (only .idea-harness/ untracked)"
+
+echo "=== EXISTING-PROJECT PASS OK ==="
