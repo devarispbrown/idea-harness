@@ -65,3 +65,67 @@ func TestTheWebUIStillServes(t *testing.T) {
 		}()
 	}
 }
+
+// TestWrongVerbIs405WithAllow closes the other half of the envelope finding.
+//
+// Go synthesizes 405 only when no pattern matches at all, and the web UI
+// handler registered for "/" matches everything — so the 405 branch was dead
+// code and `grep -c '"405"' docs/openapi.yaml` returned 0. A wrong verb and a
+// typo'd path were indistinguishable, both answering 404.
+//
+// The mux is not restructured; it is asked which methods a path accepts.
+func TestWrongVerbIs405WithAllow(t *testing.T) {
+	_, ts, token := newTestServer(t)
+	projectID := newTestProject(t, ts.URL, token)
+
+	for _, c := range []struct {
+		name, method, path string
+		wantStatus         int
+		wantAllow          string
+	}{
+		{
+			name: "DELETE on a GET+POST collection", method: http.MethodDelete,
+			path: "/api/v1/projects", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET",
+		},
+		{
+			name: "POST on a read-only route", method: http.MethodPost,
+			path: "/api/v1/health", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET",
+		},
+		{
+			name: "PUT on an initiative-scoped read", method: http.MethodPut,
+			path: "/api/v1/projects/" + projectID + "/initiatives",
+			wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET",
+		},
+		{
+			// A path nothing serves stays a 404 — the distinction is the point.
+			name: "a path no route claims", method: http.MethodGet,
+			path: "/api/v1/nope", wantStatus: http.StatusNotFound,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resp := doReq(t, c.method, ts.URL+c.path, token, "", "")
+			defer resp.Body.Close()
+
+			if resp.StatusCode != c.wantStatus {
+				t.Fatalf("%s %s = %d, want %d", c.method, c.path, resp.StatusCode, c.wantStatus)
+			}
+			if c.wantStatus != http.StatusMethodNotAllowed {
+				return
+			}
+			allow := resp.Header.Get("Allow")
+			if !strings.Contains(allow, c.wantAllow) {
+				t.Errorf("Allow = %q, want it to include %q — a 405 without Allow tells the "+
+					"client nothing it did not already know", allow, c.wantAllow)
+			}
+			if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+				t.Errorf("405 Content-Type %q; every error is JSON", ct)
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Error == "" {
+				t.Errorf("405 is not the documented envelope: %v", err)
+			}
+		})
+	}
+}

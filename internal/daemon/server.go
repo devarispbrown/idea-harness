@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/security"
@@ -88,8 +90,47 @@ func (s *Server) apiAwareNotFound(ui http.Handler) http.Handler {
 		}
 		// nosniff matches what http.Error set on the responses this replaces.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// Distinguish "no such path" from "wrong verb". Go synthesizes 405 only
+		// when no pattern matches at all, and the UI catch-all registered for "/"
+		// matches everything — so the 405 branch was dead and a wrong verb was
+		// indistinguishable from a typo. Rather than restructure the mux, ask it
+		// which methods this path does accept.
+		if allowed := s.methodsFor(r.URL.Path); len(allowed) > 0 {
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeError(w, http.StatusMethodNotAllowed,
+				"method not allowed: "+r.Method+" "+r.URL.Path+"; allowed: "+strings.Join(allowed, ", "))
+			return
+		}
 		writeError(w, http.StatusNotFound, "no such endpoint: "+r.Method+" "+r.URL.Path)
 	})
+}
+
+// methodsFor returns the methods a path is routed for, by probing the mux.
+//
+// ServeMux.Handler reports the pattern it would use, so a probe per method says
+// whether that combination is registered. The catch-all's own pattern ("/") is
+// excluded, since it matches everything and would make every path look routed.
+//
+// The probe list is the set the API actually registers; a method outside it can
+// only ever be a 404, which is the right answer for it anyway.
+func (s *Server) methodsFor(path string) []string {
+	var allowed []string
+	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		probe := &http.Request{Method: m, URL: &url.URL{Path: path}}
+		if _, pattern := s.mux.Handler(probe); pattern != "" && pattern != "/" {
+			allowed = append(allowed, m)
+		}
+	}
+	// HEAD is served wherever GET is, by net/http.
+	for _, m := range allowed {
+		if m == http.MethodGet {
+			allowed = append(allowed, http.MethodHead)
+			break
+		}
+	}
+	sort.Strings(allowed)
+	return allowed
 }
 
 // Handler returns the authenticated, loopback-hardened handler.
