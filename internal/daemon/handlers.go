@@ -1136,6 +1136,16 @@ func (s *Server) handleTraceObject(w http.ResponseWriter, r *http.Request, mode 
 	}
 	objType := r.URL.Query().Get("type")
 	objID := r.URL.Query().Get("id")
+	if objType != "" && !workflow.ValidNodeType(objType) {
+		// An unknown type used to traverse nothing and answer 200 with an empty
+		// result, so `idea why requirements REQ-1` -- one character wrong --
+		// reported "No provenance edges found." and exited 0. A bad id was
+		// caught; a bad type turned a provenance question into a confident
+		// false negative.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown node type %q; use one of: %s",
+			objType, strings.Join(workflow.GraphNodeTypes, ", ")))
+		return
+	}
 	if objType == "" || objID == "" {
 		writeError(w, http.StatusBadRequest, "type and id query params are required")
 		return

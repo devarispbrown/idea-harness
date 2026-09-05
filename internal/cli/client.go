@@ -211,6 +211,24 @@ func healthy() bool {
 	return out["status"] == "ok"
 }
 
+// authAccepted reports whether a running daemon accepts this CLI's token.
+//
+// healthy() cannot answer that: /api/v1/health is the one unauthenticated
+// route, so it returns true for a daemon that rejects every other request. If
+// the state directory is removed while the daemon runs -- the natural "start
+// fresh" move, and the docs say all state lives there -- the daemon keeps
+// serving with the token it read at start, the CLI reads the new one, and every
+// command answers a bare `idea: unauthorized` while `idea doctor` reports
+// "all checks passed".
+func authAccepted() bool {
+	c, err := newClient()
+	if err != nil {
+		return false
+	}
+	var out map[string]any
+	return c.do(http.MethodGet, "/api/v1/version", nil, &out) == nil
+}
+
 // ensureDaemon starts a detached daemon if none is reachable.
 func ensureDaemon() error {
 	if healthy() {

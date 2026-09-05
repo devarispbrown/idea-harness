@@ -1126,6 +1126,22 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 	if err != nil {
 		return "", err
 	}
+	// The existence check every sibling entry point has and this one did not.
+	// Without it, POST on an initiative that does not exist answered 202 with a
+	// real operation id — a pollable handle for work that cannot succeed, and an
+	// operations row with a dangling initiative_id — while advance, execute,
+	// revise and retry all answered 404. It was the only 202 endpoint that lied
+	// about accepting work.
+	//
+	// Recorded as C4 in docs/plans/deferred.md since audit 3 and found again by
+	// audit 5, this time with the client-visible consequence attached.
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "", preconditionf("initiative is already running")
+	}
 	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "suggest_answers")
 	if err != nil {
 		return "", err
