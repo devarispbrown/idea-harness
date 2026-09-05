@@ -409,9 +409,18 @@ paths:
       summary: The next command to run, as a token
       description: |
         `action` is a machine-executable token from a closed set - `advance`, `execute`,
-        `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `wait` - which `idea next`
-        dispatches as the next CLI command. It walks the initiative's change sets, so it can name
-        the specific one to act on, and it collapses `running` and `failed` to `wait`.
+        `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `failed`, `wait` - which
+        `idea next` dispatches as the next CLI command. It walks the initiative's change sets, so
+        it can name the specific one to act on.
+
+        `failed` and `wait` are the two answers that are not steps. `wait` means an operation is
+        in flight. `failed` means the initiative failed, and it carries `failure_reason`. The two
+        were a single `wait` token in 0.1.0 through 0.3.0, which told a failed initiative the
+        workflow was still running.
+
+        `failure_reason` can be absent or empty even on `failed`: only an explicit failure records
+        one, so an initiative moved to `failed` by a status transition alone has none. Clients must
+        render the no-reason case rather than printing an empty string.
       responses:
         "200":
           description: The next action token.
@@ -421,6 +430,9 @@ paths:
                 type: object
                 properties:
                   action: { type: string }
+                  failure_reason:
+                    type: string
+                    description: Present only when `action` is `failed`, and may be empty even then.
                 required: [action]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }

@@ -45,14 +45,15 @@ func cmdNext(a cmdArgs, stdout, stderr io.Writer) error {
 
 	previous := ""
 	for step := 0; ; step++ {
-		action, err := nextAction(c, projectID, iniID)
+		next, err := nextAction(c, projectID, iniID)
 		if err != nil {
 			return err
 		}
+		action := next.Action
 
 		automatable := action == "advance" || action == "execute" || action == "verify"
 		if !flags.has("--until-human") || !automatable {
-			return reportNextAction(c, projectID, iniID, action, stdout, stderr)
+			return reportNextAction(c, projectID, iniID, next, stdout, stderr)
 		}
 
 		// The same action twice in a row means the step ran and changed
@@ -76,15 +77,22 @@ func cmdNext(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 }
 
+// nextStep is the daemon's answer: the action token, plus the failure reason
+// that only accompanies `failed`. The reason travels with the token rather than
+// being fetched again by whoever renders it -- a second GET would add a round
+// trip and a second way for this to fail.
+type nextStep struct {
+	Action        string `json:"action"`
+	FailureReason string `json:"failure_reason"`
+}
+
 // nextAction asks the daemon what the initiative needs next.
-func nextAction(c *client, projectID, iniID string) (string, error) {
-	var out struct {
-		Action string `json:"action"`
-	}
+func nextAction(c *client, projectID, iniID string) (nextStep, error) {
+	var out nextStep
 	if err := c.do("GET", initiativeResource(projectID, iniID, "next"), nil, &out); err != nil {
-		return "", err
+		return nextStep{}, err
 	}
-	return out.Action, nil
+	return out, nil
 }
 
 // runAutomaticStep performs one automatable step and, for the asynchronous ones,
@@ -112,7 +120,7 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 			// Nothing to wait on; let the next round decide.
 			return nil
 		}
-		return waitForOperation(c, opID, stdout)
+		return waitForOperation(c, projectID, iniID, opID, stdout)
 	default:
 		return fmt.Errorf("cannot run %q automatically", action)
 	}
@@ -121,7 +129,7 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 // waitForOperation polls one operation to a terminal state. A failed operation
 // is an error here rather than a silent continue: the loop must not carry on
 // past a step that did not do what it said.
-func waitForOperation(c *client, opID string, stdout io.Writer) error {
+func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer) error {
 	deadline := time.Now().Add(operationTimeout)
 	for {
 		var op struct {
@@ -135,6 +143,19 @@ func waitForOperation(c *client, opID string, stdout io.Writer) error {
 		case "succeeded":
 			return nil
 		case "failed":
+			// domain.Operation carries no error text, so the operation row
+			// cannot say why. The initiative can: ask /next once, and if it
+			// reports `failed` render the reason the daemon is already holding.
+			//
+			// Without this the fix does not fire on the path it was written
+			// for. A failure that happens *inside* the --until-human loop is
+			// caught here, before the loop re-asks /next, so the README's own
+			// documented 401 produced "advance_initiative failed — run `idea
+			// logs`" and the reason went unmentioned until a second, bare
+			// `idea next`.
+			if step, nerr := nextAction(c, projectID, iniID); nerr == nil && step.Action == "failed" {
+				return failedInitiativeError(step.FailureReason)
+			}
 			return fmt.Errorf("%s failed — run `idea logs` for details", op.Type)
 		case "cancelled":
 			return fmt.Errorf("%s was cancelled", op.Type)
@@ -184,7 +205,8 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 
 // reportNextAction prints the human-facing guidance for an action the loop will
 // not take on its own. This is the whole of `idea next` without --until-human.
-func reportNextAction(c *client, projectID, iniID, action string, stdout, stderr io.Writer) error {
+func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout, stderr io.Writer) error {
+	action := step.Action
 	switch {
 	case action == "advance":
 		return cmdAdvance(cmdArgs{}, stdout, stderr)
@@ -204,8 +226,39 @@ func reportNextAction(c *client, projectID, iniID, action string, stdout, stderr
 		fmt.Fprintln(stdout, bold("Next:")+" resolve open decisions/questions/findings — "+muted("idea decisions"))
 	case action == "done":
 		fmt.Fprintln(stdout, ok("✓ initiative complete"))
-	default:
-		fmt.Fprintln(stdout, muted("workflow running — try `idea watch`"))
+	case action == "failed":
+		// Returned, not printed: main.go turns a returned error into `idea:
+		// <err>` on stderr and exit 1, and a failed initiative is not a state a
+		// script should read as success.
+		return failedInitiativeError(step.FailureReason)
+	default: // running
+		// `idea watch` was the only pointer here and it needs a TTY
+		// (cmdWatch -> Bubble Tea -> /dev/tty), so from a script this branch
+		// named a command that cannot run. `idea status` leads because it works
+		// anywhere; watch is still offered. Other commands still point at watch
+		// on their own success paths -- advance.go:52 -- which is fine there and
+		// out of scope here.
+		fmt.Fprintln(stdout, muted("workflow running — `idea status` shows where it is, `idea watch` follows it live"))
 	}
 	return nil
+}
+
+// failedInitiativeError renders a failed initiative as an error naming both the
+// cause and the way out.
+//
+// The reason is not always there to name. SetInitiativeStatus deliberately does
+// not write failure_reason (store/repo.go:195), so anything that failed an
+// initiative through it -- rather than through FailInitiative -- leaves the
+// field empty. Rendering "failed: " in that case would replace one uninformative
+// message with another, so the empty case gets its own text and still names the
+// recovery.
+func failedInitiativeError(reason string) error {
+	// `idea status` leads, because retry is not always the right move: an
+	// initiative can be `failed` while a change set still waits on review, and
+	// re-running the pipeline is not what that needs.
+	const recovery = "`idea status` shows where it is; `idea retry` re-runs it, `idea logs` has the full text"
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("the initiative failed, and no reason was recorded — %s", recovery)
+	}
+	return fmt.Errorf("the initiative failed: %s — %s", reason, recovery)
 }

@@ -58,4 +58,19 @@ func TestNextAction(t *testing.T) {
 	if a, _ := eng.NextAction(ctx, iniID); a != "done" {
 		t.Errorf("complete -> %q, want done", a)
 	}
+
+	// failed and running were one token ("wait") until audit 6. That told a
+	// failed initiative the workflow was still running, so `idea next` printed
+	// "workflow running -- try `idea watch`" and exited 0 forever while
+	// `idea execute` pointed back at `idea next`. Both arms are asserted: the
+	// split is only correct if `running` still answers wait.
+	setStatus(domain.InitiativeFailed)
+	if a, _ := eng.NextAction(ctx, iniID); a != "failed" {
+		t.Errorf("failed -> %q, want failed", a)
+	}
+
+	setStatus(domain.InitiativeRunning)
+	if a, _ := eng.NextAction(ctx, iniID); a != "wait" {
+		t.Errorf("running -> %q, want wait", a)
+	}
 }

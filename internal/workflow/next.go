@@ -10,6 +10,9 @@ import (
 // NextAction returns the deterministic next step for an initiative (§52, Track
 // C). It stops at human judgment points (review / apply / resolve / done) and
 // otherwise names the next automatable step (advance / execute / verify).
+// `failed` and `wait` are terminal-for-now answers rather than steps: the first
+// is an error the caller must surface, the second means an operation is in
+// flight.
 func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, error) {
 	ini, err := e.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
@@ -62,7 +65,15 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 		return "resolve", nil
 	case domain.InitiativeComplete:
 		return "done", nil
-	default: // running / failed
+	case domain.InitiativeFailed:
+		// Split from `wait`. Collapsing the two told a failed initiative the
+		// workflow was still running: `idea next` printed "workflow running --
+		// try `idea watch`" and exited 0, forever, while `idea execute`
+		// correctly pointed back at `idea next` and `idea watch` needed a TTY.
+		// A closed recovery loop, reported as success. Found by audit 5, shipped
+		// unfixed, found again by audit 6.
+		return "failed", nil
+	default: // running
 		return "wait", nil
 	}
 }

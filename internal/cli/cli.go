@@ -504,7 +504,7 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 		return nil
 	}
 	fmt.Fprintln(stdout, muted("working… (")+bold("--no-wait")+muted(" returns immediately; ")+bold("idea watch")+muted(" follows it)"))
-	if err := waitForOperation(c, opID, stdout); err != nil {
+	if err := waitForOperation(c, projectID, out["initiative_id"], opID, stdout); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ reviewed PRD ready")+" "+muted("— next: ")+bold("idea next --until-human"))

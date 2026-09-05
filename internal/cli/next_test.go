@@ -14,6 +14,10 @@ type scriptedNext struct {
 	mu      sync.Mutex
 	actions []string
 	served  int
+	// reason accompanies the "failed" action. It lives here rather than in a
+	// second handler because net/http.ServeMux panics on a duplicate pattern,
+	// so /next can only be registered once per fake daemon.
+	reason string
 }
 
 func (s *scriptedNext) next() string {
@@ -35,7 +39,12 @@ func (f *fakeDaemon) seedNextSequence(script *scriptedNext, opStatus string) {
 	f.mux.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/next",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{"action": script.next()})
+			action := script.next()
+			body := map[string]string{"action": action}
+			if action == "failed" {
+				body["failure_reason"] = script.reason
+			}
+			_ = json.NewEncoder(w).Encode(body)
 		})
 	f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/advance", map[string]string{"operation_id": "op-1"})
 	f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", map[string]string{"operation_id": "op-2"})
@@ -100,8 +109,19 @@ func TestNextUntilHumanStopsOnAFailedStep(t *testing.T) {
 	if !strings.Contains(err.Error(), "advance failed") {
 		t.Fatalf("error should name the step that failed, got: %v", err)
 	}
-	if script.served != 1 {
-		t.Fatalf("loop continued past a failed step (consumed %d actions)", script.served)
+	// Counted as dispatches, not as /next reads. The invariant is that the loop
+	// does not run another step after one fails; how many times it *asks* what
+	// is next is an implementation detail, and waitForOperation now asks once
+	// more on the failure path to recover the initiative's failure_reason.
+	dispatched := 0
+	for _, req := range f.requests {
+		if strings.HasPrefix(req, "POST ") &&
+			(strings.HasSuffix(req, "/advance") || strings.HasSuffix(req, "/execute")) {
+			dispatched++
+		}
+	}
+	if dispatched != 1 {
+		t.Fatalf("loop continued past a failed step (dispatched %d steps, want 1): %v", dispatched, f.requests)
 	}
 }
 
@@ -147,5 +167,112 @@ func TestNextRejectsUnknownFlags(t *testing.T) {
 	}
 	if f.asked("/next") {
 		t.Fatalf("unknown flag still reached the daemon: %v", f.requests)
+	}
+}
+
+// TestNextOnAFailedInitiativeFails is the CLI half of the A3 defect: `idea next`
+// printed "workflow running — try `idea watch`" over a failed initiative and
+// returned nil, so it exited 0. `idea execute` points the user at `idea next`
+// and `idea watch` needs a TTY, so the recovery loop was closed and reported as
+// success.
+func TestNextOnAFailedInitiativeFails(t *testing.T) {
+	const reason = "framing: openai: status 401: invalid api key"
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	f.seedNextSequence(&scriptedNext{actions: []string{"failed"}, reason: reason}, "succeeded")
+
+	_, _, err := run(t, "next")
+	if err == nil {
+		t.Fatal("idea next on a failed initiative returned nil; it must exit non-zero")
+	}
+	// Both halves matter: the cause, so the reader does not have to go find it,
+	// and the way out, because naming a failure without a recovery is what
+	// `idea logs` was already doing.
+	if !strings.Contains(err.Error(), reason) {
+		t.Errorf("error %q does not name the failure reason", err)
+	}
+	if !strings.Contains(err.Error(), "idea retry") {
+		t.Errorf("error %q does not name the recovery command", err)
+	}
+}
+
+// A failed initiative reached through --until-human must break the loop with the
+// same error rather than spinning to the step budget.
+func TestUntilHumanStopsOnAFailedInitiative(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	script := &scriptedNext{actions: []string{"advance", "failed"}, reason: "boom"}
+	f.seedNextSequence(script, "succeeded")
+
+	_, _, err := run(t, "next", "--until-human")
+	if err == nil {
+		t.Fatal("next --until-human returned nil over a failed initiative")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error %q does not name the failure reason", err)
+	}
+	if script.served > 3 {
+		t.Errorf("loop asked for %d actions; it should stop at the failure", script.served)
+	}
+}
+
+// SetInitiativeStatus does not write failure_reason, so `failed` with no reason
+// is reachable. The message must still say something and still name the way out
+// rather than rendering "failed: ".
+func TestFailedWithNoReasonStillNamesTheRecovery(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	f.seedNextSequence(&scriptedNext{actions: []string{"failed"}, reason: ""}, "succeeded")
+
+	_, _, err := run(t, "next")
+	if err == nil {
+		t.Fatal("idea next returned nil over a failed initiative with no reason")
+	}
+	if !strings.Contains(err.Error(), "no reason was recorded") {
+		t.Errorf("error %q does not say the reason is missing", err)
+	}
+	if !strings.Contains(err.Error(), "idea retry") {
+		t.Errorf("error %q does not name the recovery command", err)
+	}
+}
+
+// The running branch is the only one `wait` still reaches. Its message used to
+// name `idea watch` alone, which needs a TTY (cmdWatch -> Bubble Tea ->
+// /dev/tty) and so named a command that cannot run from a script. Untested, this
+// was a mutation that survived the whole suite.
+func TestRunningNamesACommandThatWorksWithoutATTY(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	f.seedNextSequence(&scriptedNext{actions: []string{"wait"}}, "succeeded")
+
+	stdout, _, err := run(t, "next")
+	if err != nil {
+		t.Fatalf("idea next on a running initiative: %v", err)
+	}
+	if !strings.Contains(stdout, "idea status") {
+		t.Errorf("running message %q does not name a command that works without a TTY", stdout)
+	}
+}
+
+// A failure that happens INSIDE the --until-human loop is caught by
+// waitForOperation, which returns before the loop re-asks /next. Without a
+// deliberate re-ask there, the fix did not fire on the path it was written for:
+// the README's own documented 401 produced "advance_initiative failed — run
+// `idea logs` for details" and the reason the daemon was holding went unsaid
+// until a second, bare `idea next`.
+func TestFailureDuringTheLoopStillNamesTheReason(t *testing.T) {
+	const reason = "framing: openai: status 401: invalid api key"
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	// advance is dispatched, its operation reports failed, and only then does
+	// /next report the initiative as failed.
+	f.seedNextSequence(&scriptedNext{actions: []string{"advance", "failed"}, reason: reason}, "failed")
+
+	_, _, err := run(t, "next", "--until-human")
+	if err == nil {
+		t.Fatal("next --until-human returned nil after its operation failed")
+	}
+	if !strings.Contains(err.Error(), reason) {
+		t.Errorf("error %q does not name the failure reason; it fell back to the operation-level message", err)
 	}
 }

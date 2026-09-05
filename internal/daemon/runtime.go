@@ -1187,9 +1187,34 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 	if err == nil {
 		for _, op := range ops {
 			_ = pr.db.SetOperationStatus(ctx, op.ID, domain.OperationFailed, "")
-			if op.InitiativeID != "" {
-				_ = pr.db.SetInitiativeStatus(ctx, op.InitiativeID, domain.InitiativeFailed, store.ActorOrchestrator)
+			if op.InitiativeID == "" {
+				continue
 			}
+			// Only an initiative this operation actually claimed. Not every
+			// operation claims one -- suggest_answers creates a row and runs
+			// against a `failed` or `complete` initiative without claiming --
+			// so failing unconditionally reaches initiatives that were never
+			// running. releaseOrphanedClaims fifty lines below carries the same
+			// guard, for the same reason.
+			ini, err := pr.db.GetInitiative(ctx, op.InitiativeID)
+			if err != nil || ini.Status != domain.InitiativeRunning {
+				continue
+			}
+			// FailInitiative, not SetInitiativeStatus: the latter is the one
+			// transition that deliberately leaves failure_reason alone
+			// (store/repo.go:195), so an initiative failed by a daemon restart
+			// mid-operation ended up `failed` with an empty reason -- `idea
+			// status` reported a failure it could not explain, and `idea next`
+			// had nothing to name.
+			//
+			// The guard above is what makes writing the reason safe. Unguarded,
+			// this overwrites a *real* reason with this generic one: a failed
+			// initiative carrying "openai: status 401: ..." plus a stale
+			// suggest_answers row would come back from a restart blaming the
+			// restart, and `idea next` would report that as the cause and send
+			// the user to `idea retry` against a 401 it no longer mentioned.
+			_ = pr.db.FailInitiative(ctx, op.InitiativeID,
+				"the daemon restarted while this operation was running, so it could not finish")
 		}
 	}
 
