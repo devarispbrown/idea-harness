@@ -9,7 +9,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **A response-schema guard.** Three guards already compared routes to the spec, request-body field
+  names to handlers, and spec enums to domain constants; none looked at what a response actually
+  contains. That is why `Coverage.status` was returned for months and documented nowhere,
+  `RequirementStatus` listed four of six values, and `/doctor` and `/diff` answered `null` where the
+  spec says `array` — each found by a human reading, one at a time. A daemon test now parses
+  `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
+  fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
+
+### Fixed
+
+- **A wrong verb answers `405` with an `Allow` header, not `404`.** Go synthesizes `405` only when
+  no route pattern matches, and the web UI handler registered for `/` matched everything — so the
+  branch was dead and a mistyped path was indistinguishable from a mistyped method.
 
 ## [0.3.0] - 2026-09-04
 
