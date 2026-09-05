@@ -11,6 +11,20 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Two step-by-step demo guides, linked from the README.**
+  [`docs/demo-greenfield.md`](docs/demo-greenfield.md) walks an empty directory to a verified,
+  complete initiative; [`docs/demo-existing-project.md`](docs/demo-existing-project.md) points the
+  same loop at a repository that already has code. Neither needs an API key.
+
+  The existing-project path had never been exercised — no script, test or document ran `idea init`
+  inside a directory that already had files, and both the README quick start and the quickstart
+  begin with `mkdir`. Writing it turned up three things worth stating plainly, all verified by
+  running them: `idea docs add` fails before an initiative exists, so grounding on your own source
+  goes through `idea new --doc`; the default executor writes a placeholder and leaves existing
+  files byte-identical, which the guide has the reader confirm with `md5` rather than assert; and
+  `.idea-harness/` lands untracked, holding portable config worth committing while runtime state
+  stays outside the repo.
+
 - **A response-schema guard.** Three guards already compared routes to the spec, request-body field
   names to handlers, and spec enums to domain constants; none looked at what a response actually
   contains. That is why `Coverage.status` was returned for months and documented nowhere,
