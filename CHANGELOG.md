@@ -11,13 +11,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 Nothing yet.
 
-## [0.2.1] - 2026-09-04
+## [0.3.0] - 2026-09-04
 
 Guards and ergonomics. No P0s — 0.2.0 is safe to stay on; this exists so the published artifact
 does not drift behind `main` the way 0.1.0 did for four audit rounds.
 
-Two response shapes change, both the same class 0.2.0 listed under **Changed — BREAKING**: a client
-that null-checked keeps working, one generated from `openapi.yaml` now works where it did not.
+**A minor bump, not a patch.** Two response shapes change, and they are the same class 0.2.0 listed
+under **Changed — BREAKING (HTTP API)** — so by this project's own precedent they belong in a minor
+release. A client that null-checked keeps working, and one generated from `openapi.yaml` now works
+where it did not, but the convention is what decides the number rather than how compatible the
+change happens to be.
 
 ### Added
 
