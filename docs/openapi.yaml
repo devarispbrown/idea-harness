@@ -2760,9 +2760,15 @@ components:
         keeps its own message and the status its handler chose. Handlers that validate their own
         request bodies write 400 directly.
 
-        This now holds at the routing layer too. A path under `/api/` that no route claims — a
-        wrong verb, a typo — answers this shape rather than the file server's `text/plain`
-        "404 page not found", which is what it used to do for every unmatched request.
+        This now holds at the routing layer too, and it distinguishes the two cases it used to
+        conflate. A path under `/api/` that no route claims answers `404` in this shape, rather
+        than the file server's `text/plain` "404 page not found". A path that exists but was
+        called with the wrong method answers `405` with an `Allow` header naming the methods it
+        does accept — previously indistinguishable from a typo, because the catch-all registered
+        for `/` matched everything and Go synthesizes `405` only when nothing matches.
+
+        Neither is declared per operation below: they apply uniformly to every path under
+        `/api/`, and repeating them 84 times would say less than saying it once here.
       properties:
         error:
           type: string
