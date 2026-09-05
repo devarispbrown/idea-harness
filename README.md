@@ -158,6 +158,10 @@ idea next                              # → "✓ initiative complete"
 > `failed`, where doing nothing would have produced a complete synthetic run. `idea model set` warns
 > when it can tell, and `idea doctor` reports a missing key.
 
+Two guided walkthroughs of that block, with the output at each step and what to look at
+before approving anything: [a new project](docs/demo-greenfield.md), and
+[an existing codebase](docs/demo-existing-project.md).
+
 `idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
 and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
 and findings (which is a web-UI action; the CLI only lists them) — printing exactly what to run
@@ -263,6 +267,14 @@ repository is public, the canonical install stays `git clone` + `go install ./cm
 path to be publicly fetchable.
 
 ## Documentation
+
+**Start here — step-by-step walkthroughs of the whole loop, no API key required:**
+
+- [`docs/demo-greenfield.md`](docs/demo-greenfield.md) — a new project, empty directory to
+  verified and complete, in about two minutes.
+- [`docs/demo-existing-project.md`](docs/demo-existing-project.md) — the same loop pointed at a
+  repository that already has code, including what `apply` does and does not touch, and how to
+  confirm a revert left the tree pristine.
 
 - [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
 - [`docs/quickstart.md`](docs/quickstart.md) — annotated end-to-end walkthrough (recipe-sharing app).
