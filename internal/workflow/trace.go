@@ -252,6 +252,28 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 	return c
 }
 
+// GraphNodeTypes is the closed set of node types the product graph addresses.
+// Exported so the daemon can reject an unknown one at the edge rather than
+// answering an empty traversal.
+var GraphNodeTypes = []string{
+	"task", "requirement", "decision", "question", "artifact", "context_doc", "run",
+}
+
+// ValidNodeType reports whether typ names a node the graph can hold.
+//
+// Nothing validated it, so `idea why requirements REQ-1` -- a plural typo --
+// answered "No provenance edges found." and exited 0. A bad *id* was caught and
+// a bad *type* was not, which turns a provenance question into a confident
+// false negative on the product's headline claim.
+func ValidNodeType(typ string) bool {
+	for _, t := range GraphNodeTypes {
+		if t == typ {
+			return true
+		}
+	}
+	return false
+}
+
 func (c labelCache) label(typ, id string) string {
 	switch typ {
 	case "task":

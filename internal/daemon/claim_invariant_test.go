@@ -45,7 +45,7 @@ var asyncEntryPoints = map[string]entryPoint{
 	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
 	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
 	"SuggestAnswersInitiative": {false,
-		"does not claim, and should: it is the one entry point that launches a background operation against an existing initiative without taking the claim, so it can run concurrently with an advance. Recorded in docs/plans/deferred.md as C5"},
+		"checks existence and refuses while running, but does not take the claim — it only reads open questions and writes suggestions, so a concurrent advance is a provenance race rather than a corrupted tree. The existence check landed after audit 5; the claim itself is still recorded in docs/plans/deferred.md as C4"},
 }
 
 // TestEveryAsyncEntryPointIsInTheClaimTable is C4a.

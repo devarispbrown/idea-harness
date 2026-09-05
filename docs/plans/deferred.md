@@ -23,7 +23,7 @@ still unfixed a round later and had reappeared as new work.
 | audit 3 / D6 | `changed` is project-wide and picks the oldest initiative | Not attempted |
 | audit 3 / D7, D8 | `idea init <elsewhere>` next-step hint; trace-type validation | Not attempted |
 | audit 3 / Track A | `GET /operations/{id}` reconciles every project as a side effect of a read; stranded `checks_running`; `PATCH /tasks` erases estimate; decision/question 400-vs-404; SSE write deadline | Not attempted |
-| audit 3 / C4 | `SuggestAnswersInitiative` has no existence check and no running guard — the only entry point with neither | Not attempted; named in the plan and missed in implementation |
+| audit 3 / C4 | **Existence check done** — `suggest-answers` now 404s for an initiative that does not exist and refuses while one is running, matching its siblings. The claim itself is still not taken; it only reads open questions and writes suggestions, so a concurrent advance is a provenance race rather than a corrupted tree. |
 | audit 3 | No SDK | Deliberate; generating one from the spec is a milestone |
 | audit 3 | `linux/arm64` untested in CI | Hosted arm64 Linux runners unavailable on this repo's plan; stated in README |
 | audit 3 | Cutting `0.2.0` | **No longer deferred** — cut as `v0.2.0` on 2026-09-04, after audit 5. It had been parked since audit 3 as "a decision after this lands", through three more rounds |

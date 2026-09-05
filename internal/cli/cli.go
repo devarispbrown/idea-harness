@@ -351,7 +351,22 @@ func removePID() { _ = os.Remove(pidPath()) }
 func stopDaemon() error {
 	data, err := os.ReadFile(pidPath())
 	if err != nil {
-		return fmt.Errorf("no daemon pidfile; is the daemon running?")
+		// The pidfile lives in the state directory, so removing that directory
+		// takes the only handle on the daemon with it. The old message --
+		// "is the daemon running?" -- was then actively wrong: it usually was,
+		// and it was the reason every other command was failing.
+		//
+		// There is no shutdown endpoint, and adding an unauthenticated one to
+		// solve a token problem would be a worse trade than this message. So
+		// say precisely what is true and what will work.
+		if healthy() {
+			return fmt.Errorf("a daemon is answering on %s but its pidfile is gone, "+
+				"so it cannot be stopped from here -- this is what happens when the state "+
+				"directory is removed while it runs. Stop it with: pkill -f 'idea daemon'",
+				daemonAddr())
+		}
+		return fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
+			daemonAddr())
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
@@ -619,9 +634,22 @@ func cmdDoctor(stdout io.Writer) error {
 	fmt.Fprintln(stdout, muted("idea ")+buildinfo.Get().String())
 	daemonUp := healthy()
 	configValid := true
-	if daemonUp {
+	// Reachable is not the same as usable. /api/v1/health is unauthenticated, so
+	// a daemon holding a token this CLI no longer has answers it happily while
+	// refusing everything else -- and doctor reported "all checks passed" while
+	// every other command returned a bare `idea: unauthorized`. A diagnostic
+	// that says healthy during a hard failure is worse than no diagnostic.
+	tokenRejected := daemonUp && !authAccepted()
+	switch {
+	case tokenRejected:
+		fmt.Fprintln(stdout, warn("✗ daemon")+" "+muted("running, but it is rejecting this CLI's token"))
+		fmt.Fprintln(stdout, muted("  It is serving with a token from before the state directory changed."))
+		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
+			muted(" — or, if its pidfile went with the state directory, ")+bold("pkill -f 'idea daemon'")+muted("."))
+		fmt.Fprintln(stdout, muted("  The next command starts a fresh one."))
+	case daemonUp:
 		fmt.Fprintln(stdout, ok("✓ daemon")+" "+muted("running"))
-	} else {
+	default:
 		fmt.Fprintln(stdout, muted("• daemon: not running (auto-starts on first command)"))
 	}
 	cwd, _ := os.Getwd()
@@ -706,7 +734,7 @@ func cmdDoctor(stdout io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout)
-	if daemonUp && configValid && graphOK {
+	if daemonUp && !tokenRejected && configValid && graphOK {
 		fmt.Fprintln(stdout, ok("all checks passed"))
 		return nil
 	}
@@ -714,6 +742,11 @@ func cmdDoctor(stdout io.Writer) error {
 	// the post-install verification step, and a script that runs it needs the
 	// exit code, not the prose. A daemon that has not started yet is not a
 	// failure -- it auto-starts on first use.
+	// A rejected token is checked first: it makes every other command fail, so
+	// reporting a config problem underneath it would name the wrong cause.
+	if tokenRejected {
+		return fmt.Errorf("the daemon is rejecting this CLI's token; stop it and let the next command restart it")
+	}
 	if !configValid {
 		return fmt.Errorf("config problems above must be fixed")
 	}
