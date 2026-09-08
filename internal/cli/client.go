@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/daemon"
 )
 
@@ -221,12 +222,33 @@ func healthy() bool {
 // command answers a bare `idea: unauthorized` while `idea doctor` reports
 // "all checks passed".
 func authAccepted() bool {
+	_, ok := daemonBuild()
+	return ok
+}
+
+// daemonBuild asks the running daemon what build it is.
+//
+// Same request authAccepted already made; it threw the body away. /api/v1/version
+// rather than /api/v1/health because health reports only the version string, and
+// a daemon left running across an upgrade usually answers `dev` on both sides --
+// the commit is the only thing that separates them. Using the authenticated
+// route also means this is correctly unreachable when the token is wrong, where
+// tokenRejected fires first and prescribes the same fix.
+//
+// The timeout is deliberately not newClient's 60 seconds. This runs from
+// `idea version`, which has never touched the network and must not hang on a
+// wedged daemon.
+func daemonBuild() (buildinfo.Info, bool) {
 	c, err := newClient()
 	if err != nil {
-		return false
+		return buildinfo.Info{}, false
 	}
-	var out map[string]any
-	return c.do(http.MethodGet, "/api/v1/version", nil, &out) == nil
+	c.http = &http.Client{Timeout: 2 * time.Second}
+	var out buildinfo.Info
+	if err := c.do(http.MethodGet, "/api/v1/version", nil, &out); err != nil {
+		return buildinfo.Info{}, false
+	}
+	return out, true
 }
 
 // ensureDaemon starts a detached daemon if none is reachable.

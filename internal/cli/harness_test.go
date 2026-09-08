@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 )
 
 // A CLI command reaches the daemon through connect() -> ensureDaemon(), which
@@ -30,6 +32,10 @@ type fakeDaemon struct {
 	// requests records every path the CLI asked for, so a test can assert what
 	// a command sent (or did not send) to the daemon.
 	requests []string
+
+	// daemonBuild is what GET /api/v1/version reports, so a test can make the
+	// fake daemon a different build from the CLI under test.
+	daemonBuild buildinfo.Info
 
 	// verifyCoverage is what POST /verify reports. Tests that need the
 	// "gate ran, nothing changed" state set it before running a command;
@@ -67,6 +73,17 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	t.Chdir(root)
 
 	f.json("GET /api/v1/health", map[string]string{"status": "ok"})
+	// Registered because authAccepted() asks for it. Without this the fake 404s
+	// the request, authAccepted is false, and `tokenRejected` was silently true
+	// in every test using this harness -- a whole diagnostic branch firing under
+	// tests that were green. ServeMux panics on a duplicate pattern, so the
+	// build is a field read at request time rather than something a test
+	// re-registers; it defaults to this binary's, i.e. no mismatch.
+	f.daemonBuild = buildinfo.Get()
+	f.mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(f.daemonBuild)
+	})
 	f.json("GET /api/v1/projects", []map[string]string{
 		{"project_id": f.projectID, "root_path": root},
 	})

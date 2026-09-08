@@ -131,3 +131,38 @@ func TestLocalBuildDoesNotClaimAVersion(t *testing.T) {
 	// here and asserting on it would be a test that depends on how it was built
 	// rather than on the fix.
 }
+
+// TestSameBuild pins the comparison a stale daemon is detected by.
+//
+// The naive version — comparing Version — misses the case this exists for
+// entirely: a daemon left running across an upgrade answers `dev` and so does
+// the new CLI, and only the commit separates them.
+func TestSameBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b Info
+		want bool
+	}{
+		{"same commit", Info{Version: "dev", Commit: "abc1234"}, Info{Version: "dev", Commit: "abc1234"}, true},
+		// The defect. A version-only comparison calls both "dev" and sees nothing.
+		{"different commit, both dev", Info{Version: "dev", Commit: "abc1234"}, Info{Version: "dev", Commit: "def5678"}, false},
+		// `make build` off a tag leaves Version empty where `go install` says
+		// dev, from identical source. Commit-first is what avoids that false
+		// positive.
+		{"same commit, different version", Info{Version: "v0.3.0", Commit: "deadbee"}, Info{Version: "dev", Commit: "deadbee"}, true},
+		// make build stamps `git rev-parse --short`; the toolchain records 40.
+		{"short vs full commit", Info{Commit: "098f878"}, Info{Commit: "098f87847c9e1a2b3c4d5e6f708192a3b4c5d6e7"}, true},
+		{"no commit either side, same version", Info{Version: "v0.3.0"}, Info{Version: "v0.3.0"}, true},
+		{"no commit either side, different version", Info{Version: "v0.3.0"}, Info{Version: "v0.2.0"}, false},
+		{"one side has no commit", Info{Version: "v0.3.0"}, Info{Version: "dev", Commit: "abc1234"}, false},
+		// Two builds from one commit with different edits are indistinguishable
+		// on purpose: warning on dirty would warn on every build in development.
+		{"dirty flag differs", Info{Commit: "abc1234", Modified: true}, Info{Commit: "abc1234"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameBuild(tc.a, tc.b); got != tc.want {
+				t.Errorf("SameBuild(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}

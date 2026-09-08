@@ -310,7 +310,19 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 		// means what it reads as, and writes to the injected writer so the
 		// output is testable through Run.
 		if healthy() {
-			fmt.Fprintln(stdout, ok("daemon: running"))
+			line := ok("daemon: running")
+			// Best-effort: naming the build is useful, and a missing or rejected
+			// token must not turn "is it running" into a failure. Exit stays 0
+			// on a mismatch too -- scripts/smoke.sh pipes this under `set -o
+			// pipefail`, and `daemon status` answers whether it is running, not
+			// whether it is the right one. `idea doctor` answers that.
+			if info, aok := daemonBuild(); aok {
+				line += " " + muted(info.String())
+				if !buildinfo.SameBuild(buildinfo.Get(), info) {
+					line += " " + warn("— this CLI is "+buildinfo.Get().String()+"; `idea daemon stop` restarts it")
+				}
+			}
+			fmt.Fprintln(stdout, line)
 			return nil
 		}
 		return fmt.Errorf("daemon is not running (it auto-starts on the first command that needs it)")
@@ -631,6 +643,13 @@ func followLogs(stdout io.Writer) error {
 // is most of a bug report missing, and every install used to answer "0.1.0".
 func cmdVersion(a cmdArgs, stdout, _ io.Writer) error {
 	fmt.Fprintln(stdout, buildinfo.Get())
+	// Only on a mismatch, and only if a daemon is already up -- this must not
+	// start one, which it never has, and the one-line output a script may parse
+	// stays one line in the ordinary case.
+	if info, ok := daemonBuild(); ok && !buildinfo.SameBuild(buildinfo.Get(), info) {
+		fmt.Fprintln(stdout, muted("daemon: ")+info.String()+
+			muted("  — it outlives the binary that started it; `idea daemon stop` restarts it on this build"))
+	}
 	return nil
 }
 
@@ -643,7 +662,20 @@ func cmdDoctor(stdout io.Writer) error {
 	// refusing everything else -- and doctor reported "all checks passed" while
 	// every other command returned a bare `idea: unauthorized`. A diagnostic
 	// that says healthy during a hard failure is worse than no diagnostic.
-	tokenRejected := daemonUp && !authAccepted()
+	// One fetch, two questions: whether the token is accepted at all, and what
+	// build answered.
+	var daemonInfo buildinfo.Info
+	authOK := false
+	if daemonUp {
+		daemonInfo, authOK = daemonBuild()
+	}
+	tokenRejected := daemonUp && !authOK
+	// The daemon is detached and outlives the binary that started it, so
+	// replacing that binary leaves the previous version serving every command
+	// while `idea version` reports the new one. doctor said "✓ daemon running"
+	// and "all checks passed" through it, in both directions.
+	staleDaemon := daemonUp && authOK && !buildinfo.SameBuild(buildinfo.Get(), daemonInfo)
+	var daemonProblem error
 	switch {
 	case tokenRejected:
 		fmt.Fprintln(stdout, warn("✗ daemon")+" "+muted("running, but it is rejecting this CLI's token"))
@@ -651,6 +683,15 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
 			muted(" — or, if its pidfile went with the state directory, ")+bold("pkill -f 'idea daemon'")+muted("."))
 		fmt.Fprintln(stdout, muted("  The next command starts a fresh one."))
+		daemonProblem = fmt.Errorf("the daemon is rejecting this CLI's token; stop it and let the next command restart it")
+	case staleDaemon:
+		fmt.Fprintln(stdout, errText("✗ daemon")+" "+muted("running ")+code(daemonInfo.String())+
+			muted(", but this CLI is ")+code(buildinfo.Get().String()))
+		fmt.Fprintln(stdout, muted("  The daemon is detached and survives replacing the binary, so an upgrade"))
+		fmt.Fprintln(stdout, muted("  leaves the previous version serving every command."))
+		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+muted(" — the next command starts one from this binary."))
+		daemonProblem = fmt.Errorf("the daemon is running %s but this CLI is %s; run `idea daemon stop` and the next command starts a fresh one",
+			daemonInfo, buildinfo.Get())
 	case daemonUp:
 		fmt.Fprintln(stdout, ok("✓ daemon")+" "+muted("running"))
 	default:
@@ -680,7 +721,13 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, ok("install looks good")+" "+muted("— no idea-harness project in this directory"))
 		fmt.Fprintln(stdout, muted("  ")+bold("idea init")+muted(" creates one, then `idea doctor` checks it"))
-		return nil
+		// Not `nil`. A daemon problem is an install problem, and this is exactly
+		// where the README puts `idea doctor` -- straight after the install
+		// block, which is where someone verifies an upgrade. Returning nil here
+		// meant a rejected token or a stale daemon exited 0 outside a project,
+		// which is the same false green this branch's own comment is about, one
+		// directory over.
+		return daemonProblem
 	}
 
 	// doctor is what the README names as the post-install check, so it has to
@@ -738,7 +785,7 @@ func cmdDoctor(stdout io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout)
-	if daemonUp && !tokenRejected && configValid && graphOK {
+	if daemonUp && !tokenRejected && !staleDaemon && configValid && graphOK {
 		fmt.Fprintln(stdout, ok("all checks passed"))
 		return nil
 	}
@@ -748,8 +795,11 @@ func cmdDoctor(stdout io.Writer) error {
 	// failure -- it auto-starts on first use.
 	// A rejected token is checked first: it makes every other command fail, so
 	// reporting a config problem underneath it would name the wrong cause.
-	if tokenRejected {
-		return fmt.Errorf("the daemon is rejecting this CLI's token; stop it and let the next command restart it")
+	// Both daemon problems come first, and for the same reason: a stale daemon
+	// is running another commit's code for every command, so a config finding
+	// underneath it names the wrong cause too.
+	if daemonProblem != nil {
+		return daemonProblem
 	}
 	if !configValid {
 		return fmt.Errorf("config problems above must be fixed")

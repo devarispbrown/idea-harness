@@ -38,6 +38,7 @@ Status values: `open`, `fixed <ref>`, `deferred <reason>`, `not reproduced`.
 | G2 | `idea retry` is never explained | Both places describing an initiative going to `failed` omit the recovery command | `absent:README.md:idea retry` | open |
 | G3 | Which initiative a bare command acts on | `resolveInitiative` silently targets the newest; no document says so | `absent:docs/cli.md:most recent initiative` | open |
 | G4 | `--json` response shapes | `cli.md:78` implies parity with the human form; `idea status --json` drops four fields | `absent:docs/cli.md:--json shape` | open |
+| G7 | Nothing said to restart the daemon after upgrading | It is detached and outlives the binary, so the old version keeps serving while `idea version` reports the new one — and `idea doctor` affirmed health through it in both directions | `absent:README.md:outlives the binary` | fixed audit-6 |
 
 ## The guard gap itself
 
