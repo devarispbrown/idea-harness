@@ -32,10 +32,29 @@ exists now; later milestones extend it without rearchitecting the foundations.
 The workflow is a deterministic stage graph, not a waterfall (§1):
 
 ```text
-framing ──► research ──► product_definition ──► review ──► approved
-                ▲                                    │
-                └──────────── revise (≤3) ───────────┘
+M1  framing ──► research ──► product_definition ──► review ──► approved
+                    ▲                                   │
+                    └─────────── revise (≤ max_cycles) ──┘
+                                        │ did not converge
+                                        ▼
+                              needs_human_judgment
+                        (idea approve · idea revise)
+
+M2  architecture ──► product_design ──► verification_design ──► convergence
+      ──► execution_plan ──► execution_plan_review ──► plan_approved
+                                        │ blocked
+                                        ▼
+                              needs_human_judgment
+                   (idea revise-plan · idea approve-plan)
+
+M3  implementation_brief ──► change set ──► review ──► apply
+M4  verify ──► complete
 ```
+
+The eleven stage keys are the constants in `internal/workflow/engine.go`.
+`needs_human_judgment` is one status with four recorded reasons
+(`domain.JudgmentReason`), which is what lets `idea next` name a command rather
+than guess from which artifacts exist.
 
 - Each stage produces a versioned Artifact + structured entities (Assertions, Requirements,
   Decisions, Questions), recorded via Run → RunManifest → ContextBundle.
