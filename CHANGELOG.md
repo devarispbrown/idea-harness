@@ -199,6 +199,28 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Eight output blocks in the two demo guides showed something the binary does
+  not print.** `idea status` showed two of six lines; `idea apply` and `idea
+  revert` omitted their cancel hints; `idea verify` omitted its first line;
+  `idea revert` had no block at all in one guide and only its `git status` half
+  in the other; `idea new` omitted the demo banner one guide shows for the same
+  command; `idea docs` showed a three-line excerpt where the binary dumps 200
+  characters of the file; the executor warning was hand-wrapped over two lines
+  in both guides; and `idea next --until-human` was shown running one step when
+  it runs two.
+
+  These are the guides the README tells everyone to start with. I wrote them
+  last round, verified their *behavioural* claims by running them, and typed the
+  output blocks by hand. Every one above was found by running the documented
+  sequence and diffing.
+
+  Guarded from both sides now, without new machinery: `absent:` rows in the
+  audit-6 ledger catch a re-edit that drops these lines, and `scripts/smoke.sh`
+  — which already runs both sequences — checks that lines the binary prints
+  still appear in the guides, which is the direction a ledger predicate cannot
+  see. A general block-diffing guard was designed, reviewed twice and rejected
+  on cost; the reasoning is in `deferred.md` as `audit 6 / G5b`.
+
 - **`idea doctor` exited 0 outside a project even when the daemon was
   unreachable to it.** The no-project branch returned success unconditionally,
   so a rejected token — or now a stale daemon — was reported and then exited 0.

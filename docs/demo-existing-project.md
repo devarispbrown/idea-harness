@@ -59,7 +59,8 @@ idea new "Add tiered pricing: volume discounts above 10k calls" --doc src/billin
 ```
 
 ```text
-✓ initiative started 4c1a…
+✓ initiative started ac69c678bf0e67f36491ba0400a02f3e
+demo mode — synthetic output. Configure a model with: idea model set <provider/model>
 working… (--no-wait returns immediately; idea watch follows it)
 ✓ reviewed PRD ready — next: idea next --until-human
 ```
@@ -88,7 +89,17 @@ idea docs
 Context docs
   other billing.py
       """Usage billing for the API."""
+
+RATE_PER_CALL = 0.002
+
+
+def charge(calls: int) -> float:
+    return calls * RATE_PER_CALL
 ```
+
+The preview is the first 200 characters of the file with one leading indent, so
+anything past the first line sits flush left. That is the preview, not the stored
+doc.
 
 Text formats are credential-swept and redacted at ingest. Images are stored verbatim and
 described by a vision model — see [`security.md`](security.md) before uploading a screenshot
@@ -101,9 +112,9 @@ idea next --until-human
 ```
 
 ```text
+→ advance …
 → execute …
-⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes
-  in .idea-harness/harness.yaml to generate real code.
+⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code.
 Next: review CHG-1 — idea review CHG-1 approve
 ```
 
@@ -151,6 +162,14 @@ here.
 
 ```bash
 idea revert CHG-1
+```
+
+```text
+✓ revert started CHG-1
+cancel with: idea cancel dba7535cfa0eb1e30000800a12073913
+```
+
+```bash
 git status --short
 ```
 
