@@ -180,7 +180,7 @@ of the other:
 |---|---|---|
 | Computed by | `workflow.Engine.NextAction` (`internal/workflow/next.go`) | `projection.BuildGuidance` (`internal/projection/projection.go`) |
 | Response | `{"action": "review CHG-1"}` | `{"action": "Resolve open decisions", "why": "2 decision(s) need your judgment before proceeding.", "affected": ["Product Definition"]}` |
-| `action` is | a **command token** from a closed set: `advance`, `execute`, `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `failed`, `wait` | an **English sentence** for a human to read |
+| `action` is | a **command token** from a closed set: `advance`, `execute`, `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve <reason>`, `done`, `failed`, `wait` | an **English sentence** for a human to read |
 | Inputs | initiative status **and the initiative's change sets** — it walks them for `review_required`, then `approved`, then `applied`, and names the specific change set to act on | initiative status **and the Understanding projection** — counts of open decisions and open questions. It never loads change sets and can never name one |
 | Blocked/failed | distinguishes them: `wait` for running, `failed` for failed, with the initiative's `failure_reason` alongside the token | distinguishes them, and surfaces the initiative's `failure_reason` in `why` |
 | Consumed by | `idea next` — the token is dispatched as the next CLI command | the web UI's Next Move card |

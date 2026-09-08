@@ -483,6 +483,14 @@ CREATE TABLE IF NOT EXISTS doc_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_doc_comments_artifact ON doc_comments(artifact_version_id);
 `,
+	// 18: record WHY an initiative needs human judgment. Six code paths set
+	// `needs_human_judgment` and the status alone cannot tell them apart, so
+	// every client guessed -- the web UI from artifact presence, which is
+	// accurate enough to light a phase pill and not accurate enough to name a
+	// command.
+	`
+ALTER TABLE initiatives ADD COLUMN judgment_reason TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

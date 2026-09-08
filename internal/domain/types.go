@@ -198,6 +198,11 @@ type Initiative struct {
 	Description   string           `json:"description"`
 	Status        InitiativeStatus `json:"status"`
 	FailureReason string           `json:"failure_reason,omitempty"`
+	// JudgmentReason is set only while Status is needs_human_judgment. It is
+	// not cleared when the status moves on -- nothing reads it in any other
+	// status, and clearing it on every transition would mean touching the claim
+	// path, which failure_reason already showed to be the wrong place.
+	JudgmentReason JudgmentReason `json:"judgment_reason,omitempty"`
 	CreatedAt     time.Time        `json:"created_at"`
 	UpdatedAt     time.Time        `json:"updated_at"`
 }

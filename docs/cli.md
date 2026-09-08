@@ -29,6 +29,10 @@ if this file has drifted.
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |
 | `idea advance` | run Design → Execution Plan (M2) | none | takes no flags |
+| `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
+| `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
+| `idea approve-plan` | re-run the plan review (it can block again) | none | takes no flags |
+| `idea revise-plan` | regenerate the execution plan | none | takes no flags |
 | `idea plan` | render the execution plan | `--json` | rejected — use `idea tasks --json` |
 | `idea tasks` | list the ordered plan tasks | `--json` | yes |
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |

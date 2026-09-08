@@ -62,6 +62,27 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 		}
 		return "execute", nil
 	case domain.InitiativeNeedsHumanJudgment:
+		// The reason is the whole token. Six code paths produce this status and
+		// they want different things: a stalled PRD review is approved or
+		// revised, a plan whose dependencies never resolved can only be
+		// regenerated, and a requirement failed after completion is re-verified.
+		// Before the reason was recorded, every client guessed from the presence
+		// of the execution-plan artifact -- which runExecutionPlan writes
+		// *before* the dependency check, so the guess said "approve the plan"
+		// for a plan already known to be incomplete.
+		switch ini.JudgmentReason {
+		case domain.JudgmentPRDReview:
+			return "resolve prd", nil
+		case domain.JudgmentPlanDependencies:
+			return "resolve plan-dependencies", nil
+		case domain.JudgmentPlanReview:
+			return "resolve plan", nil
+		case domain.JudgmentVerification:
+			return "resolve verification", nil
+		}
+		// Recorded before this was introduced, so the reason is empty. The bare
+		// token is what the CLI rendered for every case until now; keep it
+		// rather than inventing a specific instruction we cannot support.
 		return "resolve", nil
 	case domain.InitiativeComplete:
 		return "done", nil

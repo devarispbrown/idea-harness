@@ -13,6 +13,10 @@ Commands:
   explain              show the Current Understanding
   export [kind]        export an artifact as markdown
   advance              run Design → Execution Plan (M2)
+  approve              accept the reviewed PRD as it stands
+  revise               regenerate the PRD from the review findings
+  approve-plan         re-run the plan review (it can block again)
+  revise-plan          regenerate the execution plan
   plan                 render the execution plan
   tasks                list the ordered plan tasks
   why <type> <id>      show the provenance chain

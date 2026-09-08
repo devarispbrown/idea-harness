@@ -222,8 +222,12 @@ func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout,
 	case strings.HasPrefix(action, "apply "):
 		id := strings.TrimPrefix(action, "apply ")
 		fmt.Fprintln(stdout, bold("Next:")+" apply "+code(id)+" — "+muted("idea apply "+id))
-	case action == "resolve":
-		fmt.Fprintln(stdout, bold("Next:")+" resolve open decisions/questions/findings — "+muted("idea decisions"))
+	case strings.HasPrefix(action, "resolve"):
+		// Prefix, not equality. The token gained an argument naming *why* the
+		// initiative is parked, and an exact-match arm would have gone dead and
+		// dropped every one of these states into the default branch -- which
+		// says the workflow is running. That is worse than the bug being fixed.
+		reportJudgment(strings.TrimSpace(strings.TrimPrefix(action, "resolve")), stdout)
 	case action == "done":
 		fmt.Fprintln(stdout, ok("✓ initiative complete"))
 	case action == "failed":
@@ -241,6 +245,58 @@ func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout,
 		fmt.Fprintln(stdout, muted("workflow running — `idea status` shows where it is, `idea watch` follows it live"))
 	}
 	return nil
+}
+
+// reportJudgment names the command that actually moves an initiative parked on a
+// human. It used to name `idea decisions` for every case, which prints "No
+// decisions yet." in the one that matters -- the findings live under
+// `idea reviews`, and no CLI command could act on any of it.
+//
+// The advice differs per reason, and getting it wrong is not cosmetic:
+// approve-plan on a plan whose dependencies never resolved would set
+// plan_approved over a graph known to be incomplete and leave the blocking
+// finding undisposed, wedging the completion gate later.
+func reportJudgment(reason string, stdout io.Writer) {
+	line := func(cmd, what string) {
+		fmt.Fprintln(stdout, "  "+bold(cmd)+"  "+muted(what))
+	}
+	switch reason {
+	case "prd":
+		fmt.Fprintln(stdout, bold("Next:")+" the PRD review did not converge — "+muted("idea reviews")+muted(" lists the findings"))
+		line("idea approve", "accept the PRD as it stands and move to design")
+		line("idea revise ", "regenerate it from the findings (may not converge either)")
+	case "plan-dependencies":
+		fmt.Fprintln(stdout, bold("Next:")+" the execution plan has unresolved task dependencies — "+muted("idea tasks")+muted(" shows the order"))
+		// Deliberately only one option. approve-plan is accepted from this
+		// state by the API and is the wrong move.
+		line("idea revise-plan", "regenerate the plan")
+	case "plan":
+		fmt.Fprintln(stdout, bold("Next:")+" the plan review raised blocking findings — "+muted("idea reviews")+muted(" lists them"))
+		line("idea revise-plan ", "regenerate the plan from the findings")
+		// Named second and described honestly. `ApprovePlan` does not approve
+		// anything -- it re-runs the adversarial review (advance.go:58), and
+		// EvaluateApproval only sees the findings from that fresh run, so
+		// whether it escapes depends on the model not raising a blocking
+		// finding this time. Observed blocking twice in a row on a real
+		// provider. Calling it "accept the plan as it stands" would be a lie
+		// with a coin flip behind it.
+		//
+		// `idea execute` is deliberately NOT offered, though it works from this
+		// state. It is a one-way door: the blocking findings stay undisposed,
+		// only revise-plan and reopen-phase disposition them, and both refuse
+		// once a change set exists (advance.go:132, :74). So one execute here
+		// permanently wedges the completion gate, which requires no open
+		// blocking findings (verify.go:231). Offering it as "the reliable
+		// escape" would have traded this dead end for a worse one.
+		line("idea approve-plan", "re-run the plan review (it can block again)")
+	case "verification":
+		fmt.Fprintln(stdout, bold("Next:")+" a requirement was failed after this initiative completed")
+		line("idea verify <REQ-n> --pass|--fail --note \"<how you checked>\"", "record the evidence")
+	default:
+		// A daemon older than the recorded reason, or an initiative parked
+		// before it existed. Name where to look rather than a wrong command.
+		fmt.Fprintln(stdout, bold("Next:")+" this initiative is waiting on your judgment — "+muted("idea status")+muted(" says why, ")+muted("idea reviews")+muted(" lists any findings"))
+	}
 }
 
 // failedInitiativeError renders a failed initiative as an error naming both the

@@ -118,6 +118,46 @@ func (c Confidence) Valid() bool {
 	return false
 }
 
+// JudgmentReason says why an initiative is in `needs_human_judgment`.
+//
+// The status has six producers and they need different answers from the user:
+// a stalled PRD review is approved or revised, a plan whose dependency graph
+// did not resolve can only be regenerated, and a requirement failed after
+// completion is re-verified. Recording the reason is what lets `idea next` name
+// a command instead of guessing. It was guessed before, from the presence of
+// the execution-plan artifact, which is written *before* the unresolved-
+// dependency check that produces two of the six -- so the guess named
+// `approve-plan` for a plan known to be incomplete.
+type JudgmentReason string
+
+const (
+	// JudgmentPRDReview: the adversarial PRD review did not converge within
+	// max_cycles. Resolve by accepting the PRD or regenerating it.
+	JudgmentPRDReview JudgmentReason = "prd_review"
+	// JudgmentPlanDependencies: the execution plan has tasks whose dependencies
+	// were never satisfied. Only regenerating the plan resolves this -- approving
+	// it would set plan_approved over a known-incomplete graph and leave an
+	// undisposed blocking finding that wedges completion.
+	JudgmentPlanDependencies JudgmentReason = "plan_dependencies"
+	// JudgmentPlanReview: the adversarial plan review raised blocking findings.
+	JudgmentPlanReview JudgmentReason = "plan_review"
+	// JudgmentVerification: a requirement was failed after the initiative had
+	// already completed, so it dropped back out of `complete`. Resolve by
+	// recording verification evidence, not by touching the plan.
+	JudgmentVerification JudgmentReason = "verification"
+)
+
+// Valid reports whether r is a known judgment reason. The empty string is valid
+// and means "not recorded": initiatives written before this was introduced, and
+// any producer that has not been taught to set it.
+func (r JudgmentReason) Valid() bool {
+	switch r {
+	case "", JudgmentPRDReview, JudgmentPlanDependencies, JudgmentPlanReview, JudgmentVerification:
+		return true
+	}
+	return false
+}
+
 // Disposition is the review-finding disposition (§15 seven-value enum).
 type Disposition string
 

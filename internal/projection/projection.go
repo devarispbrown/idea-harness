@@ -296,7 +296,27 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 
 	switch ini.Status {
 	case domain.InitiativeNeedsHumanJudgment:
-		return Guidance{Action: "Resolve blocking review findings", Why: "Adversarial review did not converge; the PRD is paused for your judgment.", Affected: []string{"Product Definition", "Review"}}
+		// One message for six causes said "the PRD" for four of them. `idea
+		// status` is the first thing anyone runs on a stuck initiative, so it
+		// naming the wrong artifact -- and no command at all -- is half the
+		// dead end. The reason is recorded now; use it.
+		switch ini.JudgmentReason {
+		case domain.JudgmentPlanDependencies:
+			return Guidance{Action: "Regenerate the execution plan",
+				Why:      "The plan has tasks whose dependencies were never satisfied; approving it would lock in an incomplete graph. Run `idea revise-plan`.",
+				Affected: []string{"Execution Plan"}}
+		case domain.JudgmentPlanReview:
+			return Guidance{Action: "Resolve blocking plan-review findings",
+				Why:      "The plan review did not converge. `idea reviews` lists the findings; `idea revise-plan` regenerates the plan. `idea approve-plan` re-runs the review, which can block again.",
+				Affected: []string{"Execution Plan", "Review"}}
+		case domain.JudgmentVerification:
+			return Guidance{Action: "Re-record verification evidence",
+				Why:      "A requirement was failed after this initiative completed, so it is no longer complete. Run `idea verify`.",
+				Affected: []string{"Verify"}}
+		}
+		return Guidance{Action: "Resolve blocking review findings",
+			Why:      "Adversarial review did not converge; the PRD is paused for your judgment. `idea reviews` lists the findings; `idea approve` accepts the PRD, `idea revise` regenerates it.",
+			Affected: []string{"Product Definition", "Review"}}
 	case domain.InitiativeApproved:
 		return Guidance{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
 	case domain.InitiativePlanApproved:

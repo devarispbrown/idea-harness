@@ -6,6 +6,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -110,5 +112,48 @@ func TestFindingsDispositionConstraint(t *testing.T) {
 			'x', 'x', 'x', 'x', 'fix', 'human', 1)`)
 	if err == nil {
 		t.Fatal("expected CHECK constraint to reject non-enum disposition 'fix'")
+	}
+}
+
+// TestParkedReasonSurvivesAClaimRelease pins the carve-out in
+// SetInitiativeStatus.
+//
+// execute releases its claim by writing back the status it found, which is often
+// needs_human_judgment. Without the carve-out that release cleared
+// judgment_reason, so the reason survived exactly one command: `idea next` and
+// `idea status` fell back to generic wording immediately after recording it.
+// failure_reason has had the same carve-out, for the same reason, all along.
+func TestParkedReasonSurvivesAClaimRelease(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.NeedsHumanJudgment(ctx, ini.ID, domain.JudgmentPlanReview, "test"); err != nil {
+		t.Fatal(err)
+	}
+	// The claim/release cycle execute performs.
+	if err := db.ClaimInitiativeRunning(ctx, ini.ID, domain.InitiativeNeedsHumanJudgment); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativeNeedsHumanJudgment, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.JudgmentReason != domain.JudgmentPlanReview {
+		t.Errorf("judgment_reason = %q after a claim/release, want it preserved", got.JudgmentReason)
+	}
+
+	// A genuine resolution still clears it.
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativePlanApproved, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetInitiative(ctx, ini.ID)
+	if got.JudgmentReason != "" {
+		t.Errorf("judgment_reason = %q after moving to plan_approved, want cleared", got.JudgmentReason)
 	}
 }

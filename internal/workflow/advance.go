@@ -41,7 +41,11 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 	}
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {
-			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			// plan_dependencies, not plan_review: only regenerating the plan
+			// resolves this. Approving it would set plan_approved over a graph
+			// that is known to be incomplete and leave the `plan_dependency`
+			// finding undisposed, which then wedges the completion gate.
+			_ = e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanDependencies, RoleOrchestrator)
 			return domain.InitiativeNeedsHumanJudgment, nil
 		}
 		return domain.InitiativeFailed, err
@@ -102,7 +106,11 @@ func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (d
 	_ = e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator)
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {
-			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			// plan_dependencies, not plan_review: only regenerating the plan
+			// resolves this. Approving it would set plan_approved over a graph
+			// that is known to be incomplete and leave the `plan_dependency`
+			// finding undisposed, which then wedges the completion gate.
+			_ = e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanDependencies, RoleOrchestrator)
 			return domain.InitiativeNeedsHumanJudgment, nil
 		}
 		return domain.InitiativeFailed, err
@@ -134,7 +142,11 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {
-			_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator)
+			// plan_dependencies, not plan_review: only regenerating the plan
+			// resolves this. Approving it would set plan_approved over a graph
+			// that is known to be incomplete and leave the `plan_dependency`
+			// finding undisposed, which then wedges the completion gate.
+			_ = e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanDependencies, RoleOrchestrator)
 			return domain.InitiativeNeedsHumanJudgment, nil
 		}
 		return domain.InitiativeFailed, err
@@ -368,7 +380,7 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	blocked, reason := review.EvaluateApproval(all)
 	if blocked {
 		e.log.Warn("plan review blocked", "initiative", initiativeID, "reason", reason)
-		if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleAdversarialReviewer); err != nil {
+		if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanReview, RoleAdversarialReviewer); err != nil {
 			return domain.InitiativeFailed, err
 		}
 		return domain.InitiativeNeedsHumanJudgment, nil
