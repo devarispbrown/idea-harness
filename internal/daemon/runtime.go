@@ -372,40 +372,71 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 // immediately. Returns an error when no live handle exists (already settled or
 // orphaned after a daemon restart).
 func (r *Runtime) CancelOperation(ctx context.Context, opID string) error {
+	// The map first, and the interrupt immediately. A live handle implies the
+	// row exists -- the operation is created before launchOperation registers
+	// the handle -- so nothing on this branch needs a lookup, and cancel is the
+	// one endpoint whose contract is promptness. Looking up first would make a
+	// cancel in the newest project wait while EnsureProject cold-starts and
+	// reconciles every older one, which can include restoring a workspace.
 	r.cancelMu.Lock()
 	cancel, ok := r.cancels[opID]
 	r.cancelMu.Unlock()
+
 	if !ok {
-		return fmt.Errorf("operation %q is not running (no live cancellation handle)", opID)
+		// No handle: now the two causes have to be told apart. This probe used
+		// to be the whole function, so an id that matched nothing answered 409
+		// "is not running" -- a claim about an operation that does not exist --
+		// and the registry search below was unreachable for that case.
+		//
+		// preconditionf stays here and not in findOperation: docsgen's conflict
+		// axis marks any daemon function containing preconditionf and then
+		// demands a 409 on every operation whose handler calls a method of that
+		// name, so putting it in the shared lookup would make
+		// `GET /operations/{id}` declare a conflict it cannot answer.
+		if _, _, err := r.findOperation(ctx, opID); err != nil {
+			return err
+		}
+		return preconditionf("operation %q is not running (no live cancellation handle)", opID)
 	}
 	cancel()
 
-	// Find the owning project DB to persist the terminal status. Search the
-	// registry (same strategy as handleGetOperation) because the cancel route
-	// is addressed by operation id alone.
-	projects, err := r.ListProjects(ctx)
+	pr, _, err := r.findOperation(ctx, opID)
 	if err != nil {
 		return err
+	}
+
+	// Guarded: a cancel that arrives after the operation finished is a no-op
+	// rather than overwriting the real outcome. The goroutine's own terminal
+	// write stays unconditional, because it knows what actually happened -- an
+	// apply can complete after cancellation, and the log has to say so.
+	if err := pr.db.CancelOperationStatus(ctx, opID); err != nil {
+		if errors.Is(err, store.ErrOperationNotLive) {
+			return preconditionf("operation %q has already finished and cannot be cancelled", opID)
+		}
+		return err
+	}
+	return nil
+}
+
+// findOperation locates the project owning an operation. The cancel and read
+// routes are addressed by operation id alone, so both have to search the
+// registry; they each did it inline, and each invented its own "not found"
+// text.
+func (r *Runtime) findOperation(ctx context.Context, opID string) (*projectRuntime, domain.Operation, error) {
+	projects, err := r.ListProjects(ctx)
+	if err != nil {
+		return nil, domain.Operation{}, err
 	}
 	for _, p := range projects {
 		pr, err := r.EnsureProject(ctx, p.ProjectID)
 		if err != nil {
 			continue
 		}
-		if _, err := pr.db.GetOperation(ctx, opID); err == nil {
-			// Guarded: a cancel that arrives after the operation finished is a
-			// no-op rather than overwriting the real outcome. The goroutine's own
-			// terminal write stays unconditional, because it knows what actually
-			// happened -- an apply can complete after cancellation, and the log
-			// has to say so.
-			err := pr.db.CancelOperationStatus(ctx, opID)
-			if errors.Is(err, store.ErrOperationNotLive) {
-				return preconditionf("operation %q has already finished and cannot be cancelled", opID)
-			}
-			return err
+		if op, err := pr.db.GetOperation(ctx, opID); err == nil {
+			return pr, op, nil
 		}
 	}
-	return fmt.Errorf("operation %q not found in any project", opID)
+	return nil, domain.Operation{}, &store.NotFoundError{Kind: "operation", Ref: opID}
 }
 
 // InitiativeDocInput is one context doc supplied atomically at initiative

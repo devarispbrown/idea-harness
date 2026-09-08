@@ -613,30 +613,33 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 	// Operation lives in whichever project's DB; we do not know it from the
-	// path, so search the registry (M1: single project common case).
-	projects, err := s.rt.ListProjects(r.Context())
+	// path, so search the registry (M1: single project common case). Shared with
+	// the cancel route, which had the same search inline and its own wording for
+	// a miss.
+	_, op, err := s.rt.findOperation(r.Context(), r.PathValue("id"))
 	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
+		// Only a genuine miss is a 404. findOperation also surfaces
+		// ListProjects failures, and a cancelled request context is neither a
+		// driver error nor sql.ErrNoRows, so it would have rendered as
+		// `404 context canceled`.
+		status := http.StatusInternalServerError
+		var nf *store.NotFoundError
+		if errors.As(err, &nf) {
+			status = http.StatusNotFound
+		}
+		s.writeErr(w, status, err)
 		return
 	}
-	for _, p := range projects {
-		pr, err := s.rt.EnsureProject(r.Context(), p.ProjectID)
-		if err != nil {
-			continue
-		}
-		op, err := pr.db.GetOperation(r.Context(), r.PathValue("id"))
-		if err == nil {
-			writeJSON(w, http.StatusOK, op)
-			return
-		}
-	}
-	writeError(w, http.StatusNotFound, "operation not found")
+	writeJSON(w, http.StatusOK, op)
 }
 
 // handleCancelOperation interrupts a running operation (M3, §16).
 func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	opID := r.PathValue("id")
 	if err := s.rt.CancelOperation(r.Context(), opID); err != nil {
+		// 409 is the fallback for a state refusal; writeErr upgrades a
+		// *store.NotFoundError to 404 on its own, which is what an unknown id
+		// now returns.
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
@@ -735,6 +738,14 @@ func (s *Server) handleDecisionDiscuss(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDecisionDiscussion(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// ListDecisionDiscussions is a plain SELECT over child rows, so an unknown
+	// parent is indistinguishable from an empty thread: this answered `200 []`
+	// for a decision that does not exist, and the spec has declared a 404 it
+	// could never produce. Every other id-taking read 404s.
+	if _, err := pr.db.GetDecision(r.Context(), r.PathValue("id")); err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
@@ -1895,6 +1906,14 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	pr, err := s.rt.EnsureProject(r.Context(), projectID)
 	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// The initiative, not just the project. Without this, a bogus initiative id
+	// with a plausible requirement name answered `no requirement matching
+	// "REQ-1"` -- a 404 about a requirement of an initiative that does not
+	// exist. Every sibling route resolves the initiative first.
+	if _, err := pr.db.GetInitiative(r.Context(), initiativeID); err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}

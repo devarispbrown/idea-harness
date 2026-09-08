@@ -40,6 +40,34 @@ func (e *NotFoundError) Unwrap() error { return sql.ErrNoRows }
 // notFound builds a NotFoundError for kind/ref.
 func notFound(kind, ref string) error { return &NotFoundError{Kind: kind, Ref: ref} }
 
+// notFoundOrState decides what a conditional UPDATE that changed nothing means.
+//
+// `UPDATE … WHERE id = ? AND status = 'open'` affecting zero rows has two
+// causes and these call sites reported only one of them: the row was missing,
+// or its state was wrong. So a nonexistent decision answered
+// `decision <id> is not decided` -- a claim about a decision that does not
+// exist -- with a 400, while every sibling endpoint answered 404. Worse, on a
+// *real* question that was already answered the message was byte-identical, so
+// a client could not tell "no such question" from "already answered" at all.
+//
+// One extra SELECT, on the failure path only, inside the transaction that
+// already exists. The table name is a compile-time constant at every call site
+// and is never user input.
+//
+// SetFindingDisposition and SetFindingNote are the pattern this generalises:
+// they already return a NotFoundError on zero rows, and get away without the
+// count because their UPDATE carries no state predicate.
+func notFoundOrState(tx *sql.Tx, table, id, kind string, stateErr error) error {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE id = ?`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return notFound(kind, id)
+	}
+	return stateErr
+}
+
 // notFoundIfNoRows maps sql.ErrNoRows to a NotFoundError and passes anything
 // else through unchanged, so a real database failure is never disguised as a
 // missing row.

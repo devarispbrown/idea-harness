@@ -28,6 +28,7 @@ Status values: `open`, `fixed <ref>`, `deferred <reason>`, `not reproduced`.
 | D7 | `ui.md:261`: demo mode is "no `providers:` entry and none of the known key vars set" | `defaultProviderName(cfg) == demoProviderName`; env keys are never consulted, and the code comment says the env definition was wrong in both directions | `present:docs/ui.md:key variables set in the environment` | open |
 | D8 | `README:159`, `quickstart:47`, `quickstart:258`: `idea doctor` "reports a missing key" | doctor reads the **CLI's** environment, not the daemon's, so it prints `all checks passed` in exactly the state those lines describe. `idea model set` is the detector that works | `manual:three sites, and the fix is a product change not a wording change` | open |
 | D9 | `quickstart.md:273`: an `idea doctor` output block showing a `warn` line and the demo-mode line together | They are mutually exclusive — one needs `default_model` set, the other needs it unset | `present:docs/quickstart.md:demo mode — no model configured` | open |
+| A13 | `openapi.yaml`: cancel is "the only path where a missing operation reads as 409 rather than 404" | Five endpoints did it, and cancel no longer does — an unknown id is 404 on all of them | `present:docs/openapi.yaml:only path where a missing operation` | fixed audit-6 |
 | D10 | `api-reference-hosting.md:141`: "`make api-check` compares paths only" | It also checks request-body fields and 409 declarations | `present:docs/api-reference-hosting.md:compares paths` | open |
 
 ## Gaps

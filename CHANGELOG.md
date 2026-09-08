@@ -52,6 +52,45 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **Six endpoints answer `404` for an id that matches nothing, where they used
+  to answer 400, 409 or `200 []`.**
+
+  | Endpoint, unknown id | Was | Now |
+  |---|---|---|
+  | `POST /operations/{id}/cancel` | `409` *is not running* | **`404`** |
+  | `GET …/decisions/{id}/discussion` | `200 []` | **`404`** |
+  | `POST …/decisions/{id}/reopen` | `400` *is not decided* | **`404`** |
+  | `POST …/decisions/{id}/resolve` | `400` *is not open* | **`404`** |
+  | `POST …/questions/{id}/answer` | `400` *is not open* | **`404`** |
+  | `POST …/initiatives/{id}/verify`, unknown `requirement` | `400` | **`404`** |
+
+  A client that read 400/409 as "wrong state" must now also handle 404 for "no
+  such id" — which is strictly more information, because those codes previously
+  meant either. On `POST …/questions/{id}/answer` the two were indistinguishable
+  for any given id: an already-answered question and one that does not exist both
+  returned `400 store: question <id> is not open`, and a client does not know
+  which of the two it is holding.
+
+  The 400 text changed too, not just the status: these four state errors dropped
+  the `store:` prefix they were leaking to clients.
+
+  Four of the six said something actively false. `decision <id> is not decided`
+  is a claim about a decision that does not exist, and `200 []` is the one shape
+  a caller cannot distinguish from a real empty result.
+
+  `POST …/initiatives/{id}/verify` also gained the initiative-existence check its
+  siblings have: a bogus initiative with a plausible requirement name answered
+  about a requirement of an initiative that does not exist.
+
+  Fixed in the store rather than the handlers: a conditional `UPDATE` affecting
+  zero rows has two causes and these call sites reported only one, so they now
+  ask which. `writeErr` already upgraded a `*store.NotFoundError` to 404
+  everywhere — that branch was simply never reached.
+
+  `docs/api.md` and `docs/openapi.yaml` claimed cancel was "the only path where
+  a missing operation reads as 409 rather than 404". It no longer is, and both
+  said so in prose no guard reads.
+
 - **`idea doctor` fails when the daemon is running a different build.** It is
   detached and outlives the binary that started it, so replacing that binary —
   `go install`, `make build`, a new release — leaves the *previous* version
