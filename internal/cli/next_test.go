@@ -294,7 +294,9 @@ func TestResolveNamesTheCommandThatMovesIt(t *testing.T) {
 		// Only regenerate. approve-plan is accepted from this state by the API
 		// and would lock in a dependency graph known to be incomplete.
 		{"resolve plan-dependencies", []string{"idea revise-plan"}, []string{"idea approve-plan", "idea decisions"}},
-		// revise-plan is the only route that dispositions the blocking findings.
+		// revise-plan is the only route out of THIS state that dispositions the
+		// blocking findings -- `idea approve` dispositions but refuses any
+		// judgment reason but prd_review.
 		// `idea execute` works from this state and must not be offered: it
 		// leaves them open and disables the two commands that would clear them,
 		// wedging the completion gate for good.

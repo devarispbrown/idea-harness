@@ -114,6 +114,34 @@ type HarnessConfig struct {
 	// each applied change set (§M7). Off by default: a hook runs arbitrary code
 	// under the daemon's privileged environment, so this must never be implied.
 	GitCommit bool `json:"git_commit" yaml:"git_commit"`
+	// Demo configures the built-in deterministic provider. It does nothing when
+	// a real provider is configured.
+	Demo DemoConfig `json:"demo,omitempty" yaml:"demo,omitempty"`
+}
+
+// DemoConfig steers the built-in demo provider.
+//
+// It exists because the demo reviewer returned zero findings unconditionally, so
+// the review loop always converged and `needs_human_judgment` was structurally
+// unreachable on the only path CI, scripts/smoke.sh and six DX audits ever ran.
+// A P0 that fails 4/4 on the README's own quick start survived six rounds in
+// that blind spot.
+//
+// Declared config rather than a magic string in the idea text: the marker would
+// have ridden into the PRD, the task title, the placeholder file and the
+// change-set patch -- and from there into the *change-set* reviewer, which
+// shares the schema name `review`, where a blocking finding is unrecoverable.
+type DemoConfig struct {
+	// BlockReviewCycles makes the demo provider's adversarial reviewer emit a
+	// blocking finding for this many review calls before reverting to its usual
+	// empty list. Set it to `review.max_cycles` to make the PRD review park the
+	// initiative on a human.
+	//
+	// A count consumed from a queue, not a flag, because all three adversarial
+	// reviews share the schema name `review` and a flag would block the plan and
+	// change-set reviews too. M1's review cycles are the first calls a run makes,
+	// so the queue drains on exactly them.
+	BlockReviewCycles int `json:"block_review_cycles,omitempty" yaml:"block_review_cycles,omitempty"`
 }
 
 // Config is the fully-loaded portable configuration for one project.

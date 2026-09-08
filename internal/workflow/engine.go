@@ -896,8 +896,51 @@ func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.Initia
 // `plan_approved` and `complete` because approving there walks the state machine
 // backwards, and `failed` because the recovery for that is `idea retry`.
 func (e *Engine) Approve(ctx context.Context, initiativeID string) error {
+	// The reason, not just the status. All four JudgmentReasons share
+	// needs_human_judgment, so a status-only gate let `idea approve` -- whose
+	// help says "accept the reviewed PRD" and which `idea next` only ever offers
+	// for a stalled PRD review -- act on an initiative parked for the plan or
+	// for verification. With the disposition below that is not a no-op: it signs
+	// off findings the human was never shown, including the `plan_dependency`
+	// finding whose wedge advance.go relies on three separate times ("approving
+	// it would set plan_approved over a graph that is known to be incomplete").
+	//
+	// Read-then-CAS is safe here, unlike the claim this function used to skip:
+	// the reason can only be rewritten by a producer, every producer runs from
+	// `running`, and the CAS below refuses anything that is not still
+	// needs_human_judgment or approved. The reason cannot move under us without
+	// the status moving first.
+	ini, err := e.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	// The empty reason is accepted: initiatives parked before it was recorded
+	// have none, and refusing would strand them with no CLI route at all.
+	switch ini.JudgmentReason {
+	case "", domain.JudgmentPRDReview:
+	default:
+		return fmt.Errorf("approve accepts a PRD waiting on your judgment; this initiative is waiting on %s", ini.JudgmentReason)
+	}
 	if err := e.db.TransitionInitiative(ctx, initiativeID, domain.InitiativeApproved, store.HumanActor,
 		domain.InitiativeNeedsHumanJudgment, domain.InitiativeApproved); err != nil {
+		return err
+	}
+	// "Findings and all" has to mean something. Without this the comment above
+	// was the only place it was true: approve moved the status and left every
+	// blocking finding undisposed, and hasOpenBlockingFindings (verify.go:263)
+	// refuses `complete` while any undisposed critical/high exists. So the one
+	// command offered as the way out of a non-converged PRD review handed back
+	// an initiative that could reach a change set and never finish -- the
+	// README's last step, `idea next` printing "✓ initiative complete", was
+	// still unreachable. Nothing in the CLI can disposition a finding, so there
+	// was no way to undo it from the CLI either; the disposition endpoint exists
+	// but has no client outside the web UI.
+	//
+	// accepted_risk, not fixed: nothing was fixed. It is also the one
+	// disposition the reviewer is forbidden to set ("Never set accepted_risk",
+	// engine.go's review policy input), which keeps it unambiguously a human's
+	// signature on the risk.
+	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionAcceptedRisk, store.HumanActor); err != nil {
 		return err
 	}
 	return e.db.ApproveRequirements(ctx, initiativeID, store.HumanActor)

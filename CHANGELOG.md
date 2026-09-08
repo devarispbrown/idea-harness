@@ -9,6 +9,45 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`idea approve` produced an initiative that could never complete.** It moved
+  the status and approved the requirements, and left every blocking finding
+  undisposed — while `hasOpenBlockingFindings` refuses `complete` while any
+  undisposed critical/high exists, and no CLI command can disposition one. So
+  the command shipped as the way out of a non-converged PRD review moved the
+  failure from `idea review CHG-1` to `idea verify`, one step further along.
+  Its own doc comment said "accepted as it stands, findings and all"; that is
+  true now. They are recorded as `accepted_risk`, the one disposition the
+  reviewer is forbidden to set, so it reads as a human's signature rather than
+  a claim that anything was fixed.
+
+  `approve` also now refuses an initiative parked for any reason but a stalled
+  PRD review, answering **409**. All four reasons share one status, so a
+  status-only gate would have let it sign off findings the human was never
+  shown — worst of all the `plan_dependency` finding, whose *undisposed* state
+  is the guard that keeps a dependency graph known to be incomplete out of
+  `complete`.
+
+### Added
+
+- **The demo provider can be told to block a review, and `scripts/smoke.sh`
+  now drives the human-judgment branch on every push.** `demo.block_review_cycles`
+  in `.idea-harness/harness.yaml` makes the built-in provider's adversarial
+  reviewer emit a blocking finding for that many calls.
+
+  The reviewer returned `{"findings":[]}` unconditionally, so the review loop
+  always converged and `needs_human_judgment` was **structurally unreachable**
+  on the only path CI, the smoke script and six DX audits ever ran. That is how
+  a P0 failing 4/4 runs of the README's own quick start survived six rounds, and
+  why nothing would have caught the `idea approve` defect above — the new smoke
+  pass reproduces it exactly (`initiative has open blocking findings; cannot
+  complete`) when the fix is reverted.
+
+  A count consumed from a queue, not a flag: all three adversarial reviews share
+  one schema name, and a blocking finding on a *change set* cannot be cleared by
+  anything the CLI can do.
+
 ### Changed — BREAKING
 
 - **`GET /initiatives/{id}/next` says *why* an initiative is waiting on you, and

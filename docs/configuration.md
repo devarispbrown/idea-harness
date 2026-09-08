@@ -79,6 +79,37 @@ Top-level fields:
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — the check is recorded `not_applicable` |
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
+| `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
+
+`demo.block_review_cycles` exists because the demo provider was a happy-path
+oracle. Its reviewer returned zero findings unconditionally, so the review loop
+always converged and `needs_human_judgment` was **structurally unreachable** on
+the only path CI, `scripts/smoke.sh` and six DX audits ever ran — which is how a
+defect that failed 4/4 runs of this project's own quick start, on the model the
+README names, survived six rounds.
+
+Set it to `review.max_cycles` (3 by default) and the PRD review will not
+converge, so the initiative parks on a human and `idea approve` / `idea revise`
+become reachable without a provider key:
+
+```yaml
+demo:
+  block_review_cycles: 3
+```
+
+It is a count rather than a flag on purpose. All three adversarial reviews — the
+PRD's, the plan's and each change set's — use the same structured-output schema,
+so a standing response would block all three, and a blocking finding on a change
+set cannot be cleared by anything the CLI can do. The count is consumed from a
+queue by the first review calls a run makes, which are M1's, and it is clamped to
+`review.max_cycles` so a surplus cannot outlive them.
+
+**The queue is primed per project open, not per initiative.** It fills when the
+daemon first opens the project and refills on every config reload, so the *first*
+initiative after each of those blocks and a second one in the same project
+converges normally. That is fine for a scripted run — `scripts/smoke.sh` restarts
+the daemon and then creates exactly one initiative — and it is the thing to know
+if you set this by hand and wonder why the second `idea new` behaved differently.
 
 `git_commit` is off by default on purpose: a repository hook would run arbitrary code in the
 daemon's environment, so committing is never implied. Applied change sets are always revertible from
