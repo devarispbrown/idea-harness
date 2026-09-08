@@ -302,7 +302,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
 | POST | `/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task` | Add a plan task whose purpose is verifying that requirement, wired with a `verifies` edge. |
-| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` (accepted, not applicable, …). |
+| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` — one of `fixed`, `accepted_risk`, `not_applicable`, `duplicate`, `deferred`, `rejected`, `mitigate`. Anything else is a 400. |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
 
 ### Change sets
@@ -313,7 +313,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The patch in two forms: `patch`, the whole rendered diff as one string, and `files`, a per-file list (`path`, `change_type`, `size`, `content`). Content is redacted **at this display surface, not at write time** — the raw blob store is deliberately redaction-free so apply and revert round-trip byte-for-byte ([`security-model.md`](security-model.md#what-this-does-not-protect-against)). |
-| POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approve"\|"reject"\|"changes_requested"}`. |
+| POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approved"\|"rejected"\|"changes_requested"}`. The wire vocabulary is not the CLI's — `idea review CHG-1 approve` sends `approved`; a client that posts `approve` or `reject` gets a 400. |
 | POST | `/projects/{projectId}/change-sets/{id}/apply` | Apply an approved change set to the workspace. **202** |
 | POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202** |
 | POST | `/projects/{projectId}/change-sets/{id}/resolve-conflict` | Resolve a conflicted change set: `{"resolution": "retry"}` (**202**) or `"reject"` (synchronous). |

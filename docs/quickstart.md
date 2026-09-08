@@ -337,7 +337,8 @@ So rather than a number this document cannot support, here is how to get your ow
 - **Read the real figures.** Every model response is logged with its cost: `idea logs | grep
   cost_usd` shows `stage`, `actual` model, `duration` and `cost_usd` per call. Run the loop once on
   a throwaway initiative and you have your project's actual number.
-- **Cap it before you start.** In `.idea-harness/harness.yaml` (`0` disables each):
+- **Cap it before you start.** In `.idea-harness/harness.yaml` (`0` removes the ceiling on the
+  first two — **not** on `max_cycles`, where the engine coerces any value `<= 0` to 3):
   `review.max_cost_usd` is a **cumulative** ceiling — the engine adds up every model call's cost and
   fails the call that crosses it, so the run stops; the total is per project and resets when the
   daemon restarts. `review.max_tokens` is a **per-call** cap on a single response's output tokens,
