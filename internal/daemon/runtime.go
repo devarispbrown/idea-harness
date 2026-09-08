@@ -1429,8 +1429,35 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 	if isDemo(cfg, dotEnv) {
 		log.Warn("no model provider configured; using deterministic demo provider")
 	}
-	reg.Add(demoProviderName, model.NewFakeProvider())
+	reg.Add(demoProviderName, demoProvider(cfg.Harness))
 	return reg
+}
+
+// demoProvider builds the built-in deterministic provider, optionally primed to
+// make the PRD review not converge.
+//
+// The queue is the mechanism, not a flag on the provider: all three adversarial
+// reviews (`engine.go` for the PRD, `advance.go` for the plan, `execute.go` for
+// a change set) use the schema name `review`, so a flag would block all three --
+// and a blocking finding on a change set cannot be cleared by anything the CLI
+// can do. M1's review cycles are the first `review` calls a run makes, so a
+// queue of exactly max_cycles entries drains on them and nothing else.
+func demoProvider(h config.HarnessConfig) *model.FakeProvider {
+	fp := model.NewFakeProvider()
+	// Clamped to max_cycles. The queue is safe only while it drains on M1's
+	// review calls; a surplus entry outlives them and lands on the plan review,
+	// or -- via `idea execute`, which the API accepts from a plan-blocked
+	// initiative -- on the change-set review, where a blocking finding cannot be
+	// cleared by anything the CLI can do. That is the exact state this design
+	// chose a queue over a flag to avoid, so it is enforced rather than trusted.
+	n := h.Demo.BlockReviewCycles
+	if max := h.Review.MaxCycles; max > 0 && n > max {
+		n = max
+	}
+	for i := 0; i < n; i++ {
+		fp.EnqueueResponse("review", model.DemoBlockingReviewJSON)
+	}
+	return fp
 }
 
 // resolvedProvider is one configured provider entry that passed validation,

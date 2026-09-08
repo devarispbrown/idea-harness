@@ -69,6 +69,7 @@ chg1_in_changes() { "$ROOT/bin/idea" changes 2>/dev/null | grep -q "CHG-1"; }
 hello_txt_present() { test -f "$PROJ/hello.txt"; }
 chg1_committed() { git -C "$PROJ" log --oneline 2>/dev/null | grep -q "CHG-1:"; }
 chg1_reverted() { "$ROOT/bin/idea" change CHG-1 2>/dev/null | grep -q reverted; }
+chg1_applied() { "$ROOT/bin/idea" change CHG-1 2>/dev/null | grep -q applied; }
 
 # wait for health
 wait_for "daemon to report running" 5 daemon_running
@@ -257,3 +258,97 @@ DIRTY=$(git status --porcelain | grep -v '^?? \.idea-harness/$' || true)
 echo "working tree pristine after revert (only .idea-harness/ untracked)"
 
 echo "=== EXISTING-PROJECT PASS OK ==="
+
+# ---------------------------------------------------------------------------
+# PASS 3 — the human-judgment branch.
+#
+# The demo reviewer returned `{"findings":[]}` unconditionally, so the review
+# loop always converged and `needs_human_judgment` was STRUCTURALLY UNREACHABLE
+# on the only path this script, CI and six DX audits ever ran. A P0 that failed
+# 4/4 on the README's own quick start survived six rounds in that blind spot.
+#
+# `demo.block_review_cycles` makes the PRD review not converge, so the branch is
+# exercised on every push, with no secrets and no network.
+# ---------------------------------------------------------------------------
+echo "=== HUMAN-JUDGMENT PASS ==="
+JPROJ="$TMPROOT/judgment"
+mkdir -p "$JPROJ"
+cd "$JPROJ"
+"$ROOT/bin/idea" init
+# max_cycles is 3 by default, so three blocking reviews exhaust the loop.
+#
+# The queue is primed when the daemon opens the project and is refilled on every
+# reload, so this restart must stay the LAST config write before `idea new`.
+# Another `idea model set` or executor write between here and there would refill
+# it, and the surplus would spill past M1's review cycles.
+printf '\ndemo:\n  block_review_cycles: 3\n' >>.idea-harness/harness.yaml
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+"$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
+DAEMON_PID=$!
+wait_for "daemon to report running (judgment pass)" 5 daemon_running
+
+"$ROOT/bin/idea" new "A recipe sharing app for home cooks"
+wait_for "the blocked initiative to leave the running state" 60 initiative_left_running
+
+# The pointer. `idea next` named `idea decisions` for every cause, and in this
+# one `idea decisions` prints "No decisions yet." while the findings sit under
+# `idea reviews` — which nothing named.
+NEXT_OUT=$("$ROOT/bin/idea" next)
+printf '%s\n' "$NEXT_OUT"
+printf '%s' "$NEXT_OUT" | grep -q 'did not converge' ||
+  { echo "ERROR: idea next did not report a non-converged PRD review"; exit 1; }
+printf '%s' "$NEXT_OUT" | grep -q 'idea approve' ||
+  { echo "ERROR: idea next did not name idea approve"; exit 1; }
+printf '%s' "$NEXT_OUT" | grep -q 'idea reviews' ||
+  { echo "ERROR: idea next did not name idea reviews, where the findings are"; exit 1; }
+if printf '%s' "$NEXT_OUT" | grep -q 'idea decisions'; then
+  echo "ERROR: idea next still points at idea decisions, which is empty here"; exit 1
+fi
+echo "idea next names the commands that move it"
+
+# `grep -q .` would match "No open findings." -- cmdReviews prints that and
+# returns nil -- so this greps for the heading it only prints when there are some.
+"$ROOT/bin/idea" reviews | grep -q 'Review findings' ||
+  { echo "ERROR: idea reviews shows no findings on a blocked review"; exit 1; }
+"$ROOT/bin/idea" decisions | grep -q 'No decisions yet' ||
+  { echo "ERROR: idea decisions is not empty; the pointer test below is meaningless"; exit 1; }
+echo "the findings are under idea reviews, and idea decisions is empty — as the defect described"
+
+echo "--- APPROVE ---"
+"$ROOT/bin/idea" approve
+"$ROOT/bin/idea" next --until-human
+wait_for "the approved initiative to reach a change set" 60 chg1_in_changes
+
+# Completion is the assertion that matters. `idea approve` used to leave every
+# blocking finding undisposed, and the completion gate refuses while any exists —
+# so the initiative reached exactly here and could never finish, with no CLI
+# command able to disposition anything.
+"$ROOT/bin/idea" review CHG-1 approve
+"$ROOT/bin/idea" apply CHG-1
+wait_for "the judgment-pass change set to read applied" 30 chg1_applied
+# Three review cycles supersede REQ-1 and REQ-2, so the active code is not REQ-1.
+#
+# `|| true` because `idea verify` with no requirement exits non-zero when the
+# gate is unmet, which is exactly the state here -- and under `set -e` with
+# `pipefail` a failing command substitution kills the script with no message,
+# because the error text went into the variable.
+JREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
+[ -n "$JREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
+echo "active requirement after 3 revise cycles: $JREQ"
+"$ROOT/bin/idea" verify "$JREQ" --pass
+"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
+  { echo "ERROR: an approved-with-findings initiative did not reach complete"; exit 1; }
+echo "a PRD approved with its findings accepted reaches complete"
+
+# And the fourth judgment reason, which needs no provider change: failing a
+# requirement after completion drops the initiative back out of complete.
+"$ROOT/bin/idea" verify "$JREQ" --fail --note "re-evaluated after release" || true
+VOUT=$("$ROOT/bin/idea" next)
+printf '%s' "$VOUT" | grep -q 'failed after this initiative completed' ||
+  { echo "ERROR: idea next did not report the post-completion downgrade: $VOUT"; exit 1; }
+printf '%s' "$VOUT" | grep -q 'idea verify' ||
+  { echo "ERROR: idea next did not name idea verify for a verification block"; exit 1; }
+echo "a requirement failed after completion reports the verification reason"
+
+echo "=== HUMAN-JUDGMENT PASS OK ==="

@@ -283,10 +283,12 @@ func reportJudgment(reason string, stdout io.Writer) {
 		//
 		// `idea execute` is deliberately NOT offered, though it works from this
 		// state. It is a one-way door: the blocking findings stay undisposed,
-		// only revise-plan and reopen-phase disposition them, and both refuse
-		// once a change set exists (advance.go:132, :74). So one execute here
-		// permanently wedges the completion gate, which requires no open
-		// blocking findings (verify.go:231). Offering it as "the reliable
+		// and the only routes that disposition them -- revise-plan and
+		// reopen-phase -- both refuse once a change set exists (advance.go:132,
+		// :74). `idea approve` dispositions too, but refuses any reason but
+		// prd_review, so it is not a way out of this one. One execute here
+		// therefore wedges the completion gate, which requires no open blocking
+		// findings (verify.go:231). Offering it as "the reliable
 		// escape" would have traded this dead end for a worse one.
 		line("idea approve-plan", "re-run the plan review (it can block again)")
 	case "verification":

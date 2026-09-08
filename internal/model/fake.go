@@ -19,6 +19,28 @@ type FakeProvider struct {
 	calls     []Request
 }
 
+// DemoBlockingReviewJSON is one blocking adversarial-review finding, in the
+// exact shape schema.Review requires.
+//
+// All five of severity, confidence, category, finding and recommendation are
+// required; a response missing any of them fails DecodeStructured, and runModel
+// retries three times and then fails the initiative -- so a "blocking" finding
+// with a field missing would fail the run rather than block the review, which
+// looks the same from a distance and is not the same thing at all.
+//
+// `high` is what makes it block: EvaluateApproval blocks on Severity.Blocking()
+// with no disposition, and Blocking() is critical-or-high. The model cannot set
+// a disposition -- ParseFindings does not read one -- so an empty disposition is
+// the only possible state here.
+const DemoBlockingReviewJSON = `{"findings":[{` +
+	`"severity":"high",` +
+	`"confidence":"high",` +
+	`"category":"vague acceptance criteria",` +
+	`"finding":"The requirement states an outcome with no measurable acceptance criterion, ` +
+	`so nothing can verify it. This is synthetic demo output.",` +
+	`"recommendation":"State a metric, a target and the condition it is measured under."` +
+	`}]}`
+
 // NewFakeProvider returns a fake provider with full capabilities.
 func NewFakeProvider() *FakeProvider {
 	return &FakeProvider{

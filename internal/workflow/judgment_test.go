@@ -155,3 +155,107 @@ func TestResumeReleasesItsClaimOnError(t *testing.T) {
 		t.Errorf("judgment_reason = %q, want it restored to %q", got.JudgmentReason, domain.JudgmentPRDReview)
 	}
 }
+
+// TestApproveDispositionsWhatItAccepts pins the defect that made `idea approve`
+// a dead end one step further along than the one it fixed.
+//
+// Approve moved the status and left every blocking finding undisposed.
+// hasOpenBlockingFindings refuses `complete` while any undisposed critical/high
+// exists, and nothing in the CLI can disposition one -- so the command offered
+// as the way out of a non-converged PRD review handed back an initiative that
+// reached a change set and could never finish. The README's last step,
+// `idea next` printing "✓ initiative complete", stayed unreachable.
+func TestApproveDispositionsWhatItAccepts(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	for _, sev := range []domain.Severity{domain.SeverityCritical, domain.SeverityHigh, domain.SeverityMedium} {
+		if err := db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID: iniID, TargetType: "prd", TargetID: iniID,
+			Severity: sev, Confidence: domain.ConfidenceHigh,
+			Category: "c", Finding: "f", Recommendation: "r",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.NeedsHumanJudgment(ctx, iniID, domain.JudgmentPRDReview, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.Approve(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocking {
+		t.Fatal("approve left blocking findings undisposed; the initiative can reach a change set and never complete")
+	}
+
+	// accepted_risk specifically: it is the disposition the reviewer is
+	// forbidden to set, so it reads unambiguously as a human's signature rather
+	// than a claim that anything was fixed.
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Disposition != domain.DispositionAcceptedRisk {
+			t.Errorf("finding %s disposition = %q, want accepted_risk", f.Severity, f.Disposition)
+		}
+	}
+}
+
+// TestApproveRefusesJudgmentReasonsItDoesNotOwn is the other half of the
+// disposition above, and the reason it is safe.
+//
+// All four JudgmentReasons share one status, so a status-only gate let
+// `idea approve` -- help text "accept the reviewed PRD", and offered by
+// `idea next` only for a stalled PRD review -- fire on an initiative parked for
+// the plan or for verification, signing off findings the human never saw with
+// `accepted_risk` in their name. The worst case is `plan_dependencies`, where
+// the undisposed finding IS the guard: advance.go says three times that
+// approving there locks in a dependency graph known to be incomplete.
+func TestApproveRefusesJudgmentReasonsItDoesNotOwn(t *testing.T) {
+	for _, reason := range []domain.JudgmentReason{
+		domain.JudgmentPlanDependencies, domain.JudgmentPlanReview, domain.JudgmentVerification,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			eng, db, iniID := newVerifyFixture(t)
+			ctx := context.Background()
+			if err := db.CreateFinding(ctx, &domain.Finding{
+				InitiativeID: iniID, TargetType: "initiative", TargetID: iniID,
+				Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+				Category: "plan_dependency", Finding: "f", Recommendation: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.NeedsHumanJudgment(ctx, iniID, reason, "test"); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := eng.Approve(ctx, iniID); err == nil {
+				t.Fatalf("approve accepted an initiative parked on %s", reason)
+			}
+
+			got, err := db.GetInitiative(ctx, iniID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != domain.InitiativeNeedsHumanJudgment {
+				t.Errorf("a refused approve moved the status to %q", got.Status)
+			}
+			findings, err := db.ListFindingsByInitiative(ctx, iniID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range findings {
+				if f.Disposition != "" {
+					t.Errorf("a refused approve dispositioned a %s finding as %q", reason, f.Disposition)
+				}
+			}
+		})
+	}
+}
