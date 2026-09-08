@@ -41,7 +41,7 @@ idea new "A recipe sharing app for home cooks"
 ```
 
 ```text
-✓ initiative started 8f3c…
+✓ initiative started 6539d3c05b99aebe9ffbd84bcc1d147e
 demo mode — synthetic output. Configure a model with: idea model set <provider/model>
 working… (--no-wait returns immediately; idea watch follows it)
 ✓ reviewed PRD ready — next: idea next --until-human
@@ -59,8 +59,12 @@ idea status
 ```
 
 ```text
+demo mode — synthetic output. Configure a model with: idea model set <provider/model>
+
 A recipe sharing app for home cooks  ● approved
   requirements: 1 · decisions: 0 · questions: 2
+  → Proceed to design & execution plan
+    The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.
 ```
 
 `approved` means the PRD passed adversarial review. Two questions are open — the reviewer
@@ -77,8 +81,7 @@ idea next --until-human
 ```text
 → advance …
 → execute …
-⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes
-  in .idea-harness/harness.yaml to generate real code.
+⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code.
 Next: review CHG-1 — idea review CHG-1 approve
 ```
 
@@ -120,6 +123,7 @@ idea apply CHG-1
 ```text
 ✓ review recorded CHG-1 → approved
 ✓ apply started CHG-1
+cancel with: idea cancel ccb4341805f1af543d4e0d4ffbdd885c
 ```
 
 `apply` writes the reviewed patch into your working directory and records its pre-image
@@ -133,6 +137,7 @@ idea next
 ```
 
 ```text
+✓ evidence recorded for REQ-1
 ✓ verified status: complete
   REQ-1  1/1 verified
 ✓ initiative complete
@@ -163,6 +168,11 @@ Then start a fresh initiative with `idea new`. Expect 4–8 model calls for M1 a
 
 ```bash
 idea revert CHG-1
+```
+
+```text
+✓ revert started CHG-1
+cancel with: idea cancel 98b6df69d4b9d9f8e90d30aef4238b70
 ```
 
 Every applied change set is stored as a content-addressed patch alongside its pre-image, so

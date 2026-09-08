@@ -351,4 +351,47 @@ printf '%s' "$VOUT" | grep -q 'idea verify' ||
   { echo "ERROR: idea next did not name idea verify for a verification block"; exit 1; }
 echo "a requirement failed after completion reports the verification reason"
 
+# ---------------------------------------------------------------------------
+# The demo guides are executable, and nothing executed them. Every one of their
+# fenced output blocks was hand-written, and eight were wrong -- in the two
+# documents the README tells everyone to start with.
+#
+# The ledger's `absent:` predicates catch a re-edit that drops these lines from
+# the docs. They cannot catch the other direction: the binary changing while the
+# docs stand still. This does, for the lines that carry a command the reader is
+# told to run -- and it costs nothing, because this script has already produced
+# exactly this output three passes above.
+#
+# Deliberately a handful of lines, not a full diff of every block. A full
+# comparison needs an annotation language, a normaliser and a fixture corpus,
+# for two documents whose blocks a person can re-derive in an afternoon; that
+# was designed, reviewed, and judged not worth its surface.
+# ---------------------------------------------------------------------------
+echo "=== DEMO-GUIDE DRIFT ==="
+doc_has() {
+  local doc="$1" line="$2"
+  grep -qF -- "$line" "$ROOT/docs/$doc" ||
+    { echo "ERROR: the binary prints a line docs/$doc does not show:"; echo "  $line"; exit 1; }
+}
+
+# Captured from this pass, not retyped: these are the lines whose absence was
+# the defect.
+doc_has demo-greenfield.md "cancel with: idea cancel"
+doc_has demo-greenfield.md "✓ evidence recorded for"
+doc_has demo-greenfield.md "✓ revert started"
+doc_has demo-greenfield.md "→ Proceed to design & execution plan"
+doc_has demo-existing-project.md "→ advance …"
+doc_has demo-existing-project.md "✓ revert started"
+doc_has demo-existing-project.md "demo mode — synthetic output."
+
+# The executor warning is one line in the binary and was hand-wrapped into two
+# in both guides. ledger-check cannot see this -- it collapses a newline plus
+# indent to a single space, which is exactly the difference -- so it is checked
+# here, where the raw bytes are available.
+for d in demo-greenfield.md demo-existing-project.md; do
+  grep -qF -- "set executor.kind = omp|hermes in .idea-harness/harness.yaml" "$ROOT/docs/$d" ||
+    { echo "ERROR: docs/$d wraps the executor warning; the binary prints it on one line"; exit 1; }
+done
+echo "the demo guides show the lines the binary actually prints"
+
 echo "=== HUMAN-JUDGMENT PASS OK ==="
