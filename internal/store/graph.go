@@ -226,7 +226,12 @@ func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) 
 	var t domain.Task
 	var created int64
 	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &created); err != nil {
-		return nil, err
+		// Currently unreachable through HTTP: all three task handlers do their
+		// own existence check first and answer "task not found" before this
+		// error can surface, which is why no test pins it. Wrapped anyway, so
+		// the next caller does not inherit a raw sql.ErrNoRows the way the
+		// decision path did.
+		return nil, notFoundIfNoRows(err, "task", taskID)
 	}
 	t.CreatedAt = time.UnixMilli(created)
 	return &t, nil

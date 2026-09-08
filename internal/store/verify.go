@@ -234,5 +234,10 @@ func (db *DB) GetRequirementByRef(ctx context.Context, initiativeID, ref string)
 			return &reqs[i], nil
 		}
 	}
-	return nil, fmt.Errorf("store: requirement %q not found", ref)
+	// notFound, not a plain error: writeErr upgrades a *NotFoundError to 404
+	// wherever it surfaces. Both callers reached here with the same text and the
+	// handlers guessed different statuses -- /verify said 400, verification-task
+	// said 404, byte-identical message. The store is the thing that knows a row
+	// is missing, so it says so once.
+	return nil, notFound("requirement", ref)
 }

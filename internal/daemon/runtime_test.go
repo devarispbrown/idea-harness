@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/project"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 func TestLaunchOperationCancellation(t *testing.T) {
@@ -44,15 +46,51 @@ func TestLaunchOperationCancellation(t *testing.T) {
 	}
 }
 
-func TestCancelOperationNoLiveHandle(t *testing.T) {
+// Split from a single test that asserted only `err != nil`. Once an unknown id
+// started returning a *store.NotFoundError instead of the live-handle refusal,
+// that test kept passing while no longer testing what its name said — the two
+// conditions it conflates are exactly the ones the API could not tell apart.
+func TestCancelOperationUnknownIDIsNotFound(t *testing.T) {
 	rt, err := NewRuntime(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { rt.Close() })
 
-	if err := rt.CancelOperation(context.Background(), "op-never-started"); err == nil {
-		t.Fatal("expected an error for an operation with no live cancellation handle")
+	err = rt.CancelOperation(context.Background(), "op-never-started")
+	if err == nil {
+		t.Fatal("cancelling an operation that does not exist returned no error")
+	}
+	var nf *store.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("unknown operation id returned %T (%v); want *store.NotFoundError so writeErr answers 404", err, err)
+	}
+}
+
+func TestCancelOperationNoLiveHandleIsAPrecondition(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real operation row that was never launched, so no cancel handle exists.
+	opID, err := pr.db.CreateOperation(t.Context(), projectID, iniID, "advance_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = rt.CancelOperation(t.Context(), opID)
+	if err == nil {
+		t.Fatal("cancelling an operation with no live handle returned no error")
+	}
+	var nf *store.NotFoundError
+	if errors.As(err, &nf) {
+		t.Fatalf("an operation that exists was reported as missing: %v", err)
+	}
+	var pe *PreconditionError
+	if !errors.As(err, &pe) {
+		t.Fatalf("no-live-handle returned %T (%v); want *PreconditionError so writeErr answers 409", err, err)
 	}
 }
 
@@ -150,8 +188,8 @@ func TestCollectSecretsIncludesDotEnvSecrets(t *testing.T) {
 	dotEnv := map[string]string{
 		"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		"DATABASE_URL":          "postgres://user:superSecretPass123@host:5432/db",
-		"NODE_ENV":             "development",
-		"PORT":                 "8080",
+		"NODE_ENV":              "development",
+		"PORT":                  "8080",
 	}
 	secrets := collectSecrets(config.Config{}, dotEnv)
 	joined := strings.Join(secrets, "\n")

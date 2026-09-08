@@ -111,8 +111,10 @@ gone stale once:
   PRD, and anything at all while the initiative is running. These are checked synchronously and on
   purpose: the operation is asynchronous, so launching it and failing in the background would answer
   `202` and report success for work that never happened.
-- **A cancellation that cannot apply.** `POST /operations/{id}/cancel` when the operation has
-  already finished.
+- **A cancellation that cannot apply.** `POST /operations/{id}/cancel` when the operation exists
+  and has already finished. An id matching no operation is a `404`, like every other id-addressed
+  route — it read as `409 is not running` until the next release, because the in-memory cancellation handle
+  was consulted before the row was looked up.
 - **A mutation blocked by something that depends on it**, such as deleting a task another task
   depends on.
 - **Configuration written but not applied**, when the daemon could not reload the project. The
@@ -323,7 +325,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/operations/{id}` | Status of one async operation. Not project-scoped: the daemon searches every registered project for the id. |
-| POST | `/operations/{id}/cancel` | Interrupt a running operation. `409` when it is not cancellable. |
+| POST | `/operations/{id}/cancel` | Interrupt a running operation. `404` when no operation matches the id; `409` when it exists and is not cancellable. |
 
 ### Configuration
 

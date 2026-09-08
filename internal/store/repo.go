@@ -592,7 +592,9 @@ func (db *DB) GetDecision(ctx context.Context, decisionID string) (*domain.Decis
 	var created int64
 	if err := row.Scan(&d.ID, &d.InitiativeID, &d.Code, &d.Type, &d.Question, &opts, &d.Recommendation,
 		&d.Status, &d.Resolution, &d.ResolvedBy, &prov, &d.SupersededBy, &created); err != nil {
-		return nil, err
+		// Unwrapped, this reached writeErr as a raw sql.ErrNoRows and rendered as
+		// a bare "not found" -- the least informative message in the API.
+		return nil, notFoundIfNoRows(err, "decision", decisionID)
 	}
 	d.CreatedAt = time.UnixMilli(created)
 	json.Unmarshal([]byte(opts), &d.Options)
@@ -660,7 +662,8 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("store: decision %s is not open", decisionID)
+			return notFoundOrState(tx, "decisions", decisionID, "decision",
+				fmt.Errorf("decision %s is not open", decisionID))
 		}
 		return nil
 	})
@@ -681,7 +684,8 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("store: decision %s is not decided", decisionID)
+			return notFoundOrState(tx, "decisions", decisionID, "decision",
+				fmt.Errorf("decision %s is not decided", decisionID))
 		}
 		return nil
 	})
@@ -706,7 +710,8 @@ func (db *DB) SetDecisionRecommendation(ctx context.Context, decisionID, rec, co
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("store: decision %s is not open", decisionID)
+			return notFoundOrState(tx, "decisions", decisionID, "decision",
+				fmt.Errorf("decision %s is not open", decisionID))
 		}
 		return nil
 	})
@@ -835,7 +840,8 @@ func (db *DB) AnswerQuestion(ctx context.Context, questionID, answerDigest, acto
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("store: question %s is not open", questionID)
+			return notFoundOrState(tx, "questions", questionID, "question",
+				fmt.Errorf("question %s is not open", questionID))
 		}
 		return nil
 	})

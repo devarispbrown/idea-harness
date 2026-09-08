@@ -1767,7 +1767,10 @@ paths:
                   status: { type: string, const: decided }
                 required: [status]
         "400":
-          description: "`resolution is required`, or the store's own rejection (already resolved, superseded)."
+          description: |
+            `resolution is required`, or the decision exists and is not open (already resolved,
+            superseded). A decision id matching nothing answers `404`; until the next release both cases
+            shared this response and the same message.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1794,7 +1797,9 @@ paths:
                   status: { type: string, const: open }
                 required: [status]
         "400":
-          description: The store's rejection (the decision was not resolved).
+          description: |
+            The decision exists and was not resolved, so there is nothing to reopen. A decision id
+            matching nothing answers `404`; until the next release both cases shared this response.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1891,7 +1896,10 @@ paths:
                   status: { type: string, const: resolved }
                 required: [status]
         "400":
-          description: "`answer is required`, or the store's rejection."
+          description: |
+            `answer is required`, or the question exists and is not open. A question id matching
+            nothing answers `404`; until the next release the two were byte-identical, so a client could not
+            tell an already-answered question from one that does not exist.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2326,10 +2334,13 @@ paths:
                   status: { $ref: "#/components/schemas/OperationStatus" }
                 required: [operation_id, status]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            The operation is not cancellable - unknown, already finished, or not interruptible. This
-            is the only path where a missing operation reads as 409 rather than 404.
+            The operation exists but is not cancellable - already finished, or not interruptible.
+            An operation id matching nothing answers `404`, like every other id-addressed route;
+            until the next release the live-handle probe ran before the lookup, so an unknown id read as
+            `409 is not running` - a claim about an operation that does not exist.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
