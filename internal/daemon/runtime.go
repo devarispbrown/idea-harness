@@ -483,6 +483,50 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	return ini.ID, opID, nil
 }
 
+// ApproveInitiative records human approval of the reviewed PRD.
+//
+// A Runtime wrapper rather than a direct engine call from the handler, and that
+// is deliberate: preconditionf is what writeErr turns into a 409, and it is also
+// what `make api-check`'s conflict axis scans for. Calling the engine straight
+// from the handler and mapping the error to 409 there would have produced the
+// right status code and a spec that silently never declared it -- the checker
+// only sees preconditionf inside Runtime methods.
+func (r *Runtime) ApproveInitiative(ctx context.Context, projectID, initiativeID string) (domain.InitiativeStatus, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	if err := pr.engine.Approve(ctx, initiativeID); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			ini, gerr := pr.db.GetInitiative(ctx, initiativeID)
+			if gerr == nil {
+				return "", preconditionf(
+					"approve accepts a PRD that is waiting on your judgment (status=%s); `idea next` names the step this initiative is actually ready for",
+					ini.Status)
+			}
+			return "", preconditionf("initiative is not in a state that can be approved")
+		}
+		return "", err
+	}
+	return domain.InitiativeApproved, nil
+}
+
+// ResumeInitiative re-runs the review loop for an initiative parked on a human.
+func (r *Runtime) ResumeInitiative(ctx context.Context, projectID, initiativeID string) (domain.InitiativeStatus, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	status, err := pr.engine.Resume(ctx, initiativeID)
+	if err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("resume re-runs the review for an initiative waiting on your judgment; this one is not")
+		}
+		return "", err
+	}
+	return status, nil
+}
+
 // AdvanceInitiative runs the M2 slice (Design → Execution Plan → plan review)
 // asynchronously. Returns the operation id.
 func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {

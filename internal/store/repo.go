@@ -60,9 +60,9 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 	var ini domain.Initiative
 	var created, updated int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, title, description, status, failure_reason, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, created_at, updated_at
 		FROM initiatives WHERE id = ?`, initiativeID).
-		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &created, &updated)
+		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &created, &updated)
 	if err != nil {
 		return ini, notFoundIfNoRows(err, "initiative", initiativeID)
 	}
@@ -74,7 +74,7 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 // ListInitiatives returns all initiatives ordered by creation.
 func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, title, description, status, failure_reason, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, created_at, updated_at
 		FROM initiatives ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) 
 	for rows.Next() {
 		var ini domain.Initiative
 		var created, updated int64
-		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &created, &updated); err != nil {
+		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &created, &updated); err != nil {
 			return nil, err
 		}
 		ini.CreatedAt = time.UnixMilli(created)
@@ -164,6 +164,85 @@ func (db *DB) ClaimInitiativeRunning(ctx context.Context, initiativeID string, f
 	})
 }
 
+// NeedsHumanJudgment parks an initiative for a human and records why, in one
+// statement. The two must move together: a status without a reason is what left
+// `idea next` guessing from artifact presence, and a reason without the status
+// would be read by nothing.
+func (db *DB) NeedsHumanJudgment(ctx context.Context, initiativeID string, reason domain.JudgmentReason, actor string) error {
+	if !reason.Valid() {
+		return fmt.Errorf("store: invalid judgment reason %q", reason)
+	}
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.status_changed",
+		Operation:     string(domain.InitiativeNeedsHumanJudgment) + ":" + string(reason),
+	}, func(tx *sql.Tx) error {
+		// failure_reason is cleared: parking for a human is not failing, and the
+		// path SetInitiativeStatus took here used to clear it. A retry that
+		// succeeds into a parked state would otherwise carry the reason of the
+		// failure it just recovered from.
+		_, err := tx.Exec(
+			`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = ?, updated_at = ? WHERE id = ?`,
+			domain.InitiativeNeedsHumanJudgment, reason, time.Now().UTC().UnixMilli(), initiativeID)
+		return err
+	})
+}
+
+// TransitionInitiative is the compare-and-swap for a status change that is not
+// a claim.
+//
+// SetInitiativeStatus is an unconditional UPDATE, so guarding it with a
+// GetInitiative first is the check-then-act this package already rejected for
+// ClaimInitiativeRunning: the read and the write are not atomic with each other.
+// `Approve` did exactly that -- it had no check at all and simply overwrote the
+// status, releasing a claim a running advance was holding, so two advances ran
+// concurrently on one initiative. A guard that reads first would have narrowed
+// that window without closing it.
+func (db *DB) TransitionInitiative(ctx context.Context, initiativeID string, to domain.InitiativeStatus, actor string, from ...domain.InitiativeStatus) error {
+	if len(from) == 0 {
+		return fmt.Errorf("store: TransitionInitiative needs at least one source status")
+	}
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(from)), ",")
+	args := []any{to, time.Now().UTC().UnixMilli(), initiativeID}
+	for _, f := range from {
+		args = append(args, f)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.status_changed",
+		Operation:     string(to),
+	}, func(tx *sql.Tx) error {
+		// judgment_reason is cleared: every target of this call is a status that
+		// is not needs_human_judgment, and a stale reason left behind would be
+		// read the next time the initiative parks. failure_reason follows the
+		// same rule SetInitiativeStatus uses.
+		res, err := tx.Exec(
+			`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ?
+			 WHERE id = ? AND status IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrInitiativeNotClaimable
+		}
+		return nil
+	})
+}
+
 // ErrInitiativeNotClaimable reports that an initiative could not be claimed:
 // another request holds it, or it is not in a state the operation runs from.
 var ErrInitiativeNotClaimable = errors.New("store: initiative is not in a claimable state")
@@ -192,12 +271,21 @@ func (db *DB) SetInitiativeStatus(ctx context.Context, initiativeID string, stat
 		// failure with no explanation. `running` is excluded for the same
 		// reason: it is the claim's own status, and the release that follows it
 		// is what decides whether the reason still applies.
-		if status == domain.InitiativeFailed || status == domain.InitiativeRunning {
+		// needs_human_judgment joins them, for exactly the same reason one step
+		// removed: execute releases its claim with SetInitiativeStatus back to
+		// the status it found (runtime.go, priorStatus), and that status is
+		// often needs_human_judgment. Clearing the reason there wiped it on the
+		// first claim/release cycle, so `idea next` and `idea status` fell back
+		// to the generic wording one command after the reason was recorded.
+		// A real resolution goes through TransitionInitiative, which clears it
+		// explicitly.
+		if status == domain.InitiativeFailed || status == domain.InitiativeRunning ||
+			status == domain.InitiativeNeedsHumanJudgment {
 			_, err := tx.Exec(`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ?`,
 				status, time.Now().UTC().UnixMilli(), initiativeID)
 			return err
 		}
-		_, err := tx.Exec(`UPDATE initiatives SET status = ?, failure_reason = '', updated_at = ? WHERE id = ?`,
+		_, err := tx.Exec(`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ? WHERE id = ?`,
 			status, time.Now().UTC().UnixMilli(), initiativeID)
 		return err
 	})

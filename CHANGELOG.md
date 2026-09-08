@@ -11,6 +11,46 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **`GET /initiatives/{id}/next` says *why* an initiative is waiting on you, and
+  the CLI can now act on it.** The `resolve` token gains a reason —
+  `resolve prd`, `resolve plan-dependencies`, `resolve plan`,
+  `resolve verification` — and four commands land alongside it: `idea approve`,
+  `idea revise`, `idea approve-plan`, `idea revise-plan`. A client switching on
+  the old bare `resolve` needs a prefix match; an initiative parked before this
+  release still reports bare `resolve`.
+
+  The README's own quick start, on the model the README names, failed 4/4 runs
+  before this. The adversarial PRD review does not converge with a real model,
+  the initiative parks in `needs_human_judgment`, and **no CLI command could
+  move it**: `idea next` pointed at `idea decisions`, which prints "No decisions
+  yet."; the findings were under `idea reviews`, which nothing named;
+  `idea advance` refused; and dispositioning every finding through the API
+  changed nothing, because the gate is the status, not the findings. The escape
+  was `POST …/approve`, which had no caller anywhere — not the CLI, not the web
+  UI (whose Define page calls `/revise`), not a test. Reaching it meant curl and
+  the per-install token.
+
+  The reason is now recorded (migration 18) rather than inferred. The web UI
+  inferred it from the presence of the execution-plan artifact, which is
+  accurate enough to light a phase pill and not accurate enough to name a
+  command: `runExecutionPlan` writes that artifact *before* the dependency check
+  that produces two of the six causes, so the inference says "approve the plan"
+  for a plan already known to be incomplete — which would set `plan_approved`
+  over a broken graph and leave a blocking finding that wedges completion later.
+
+- **`POST /approve` and `POST /resume` refuse states they used to overwrite,
+  answering 409.** `Engine.Approve` was an unconditional status write with no
+  check of any kind: it released the claim a running `advance` held, after which
+  a second advance was accepted and two ran concurrently on one initiative. It
+  is a compare-and-swap now — a read-then-write would only have narrowed that
+  window, which is what `ClaimInitiativeRunning` already exists to say. `resume`
+  took no claim either and re-ran the review loop from any state, silently
+  discarding an approved plan. Both are declared in the spec.
+
+  Neither endpoint had a caller anywhere — no CLI, no web UI, no test — so
+  nothing observable breaks.
+
+
 - **`GET /initiatives/{id}/next` distinguishes a failed initiative from a running
   one, and `idea next` exits non-zero over one.** The token set gains `failed`,
   and the 200 body carries an optional `failure_reason` alongside it. A client

@@ -219,7 +219,11 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 			return err
 		}
 		if ini.Status == domain.InitiativeComplete {
-			return e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, store.ActorOrchestrator)
+			// The plan is not the problem here and must not be offered as the
+			// fix: revise-plan refuses outright once change sets exist, and
+			// approve-plan burns an adversarial review to arrive back at the
+			// same missing evidence. What this needs is `idea verify`.
+			return e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentVerification, store.ActorOrchestrator)
 		}
 		return nil // not done yet; no error
 	}

@@ -276,3 +276,138 @@ func TestFailureDuringTheLoopStillNamesTheReason(t *testing.T) {
 		t.Errorf("error %q does not name the failure reason; it fell back to the operation-level message", err)
 	}
 }
+
+// The dead end this whole change is about: `idea next` named `idea decisions`
+// for every needs_human_judgment cause, and in the one that happens on the
+// README's own quick start that command prints "No decisions yet."
+func TestResolveNamesTheCommandThatMovesIt(t *testing.T) {
+	for _, tc := range []struct {
+		action   string
+		wants    []string
+		notWants []string
+	}{
+		// notWants carries the -plan pair deliberately: "idea approve" is a
+		// substring of "idea approve-plan", so without these the prd arm passes
+		// while printing the plan commands, which are wrong for this state.
+		{"resolve prd", []string{"idea approve", "idea revise", "idea reviews"},
+			[]string{"idea decisions", "idea approve-plan", "idea revise-plan"}},
+		// Only regenerate. approve-plan is accepted from this state by the API
+		// and would lock in a dependency graph known to be incomplete.
+		{"resolve plan-dependencies", []string{"idea revise-plan"}, []string{"idea approve-plan", "idea decisions"}},
+		// revise-plan is the only route that dispositions the blocking findings.
+		// `idea execute` works from this state and must not be offered: it
+		// leaves them open and disables the two commands that would clear them,
+		// wedging the completion gate for good.
+		{"resolve plan", []string{"idea revise-plan"}, []string{"idea decisions", "accept the plan as it stands", "idea execute"}},
+		{"resolve verification", []string{"idea verify"}, []string{"idea approve-plan", "idea decisions"}},
+		// A daemon older than the recorded reason. Point at where to look, do
+		// not guess a command.
+		{"resolve", []string{"idea status"}, []string{"idea decisions"}},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			f := newFakeDaemon(t)
+			f.seedInitiative()
+			f.seedNextSequence(&scriptedNext{actions: []string{tc.action}}, "succeeded")
+
+			stdout, _, err := run(t, "next")
+			if err != nil {
+				t.Fatalf("idea next: %v", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("%q does not name %q", stdout, want)
+				}
+			}
+			for _, no := range tc.notWants {
+				if strings.Contains(stdout, no) {
+					t.Errorf("%q names %q, which is wrong for this state", stdout, no)
+				}
+			}
+		})
+	}
+}
+
+// Each of the four verbs must reach its own endpoint. They are one letter apart
+// in places (revise / revise-plan) and a mis-wired row would send the user's
+// judgment to the wrong milestone.
+func TestJudgmentVerbsPostTheRightPath(t *testing.T) {
+	for _, tc := range []struct{ cmd, path string }{
+		{"approve", "/approve"},
+		{"revise", "/revise"},
+		{"approve-plan", "/approve-plan"},
+		{"revise-plan", "/revise-plan"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			f := newFakeDaemon(t)
+			f.seedInitiative()
+			f.json("POST /api/v1/projects/{projectId}/initiatives/{id}"+tc.path, map[string]string{"status": "approved"})
+
+			if _, _, err := run(t, tc.cmd); err != nil {
+				t.Fatalf("idea %s: %v", tc.cmd, err)
+			}
+			found := false
+			for _, req := range f.requests {
+				if strings.HasPrefix(req, "POST ") && strings.HasSuffix(req, tc.path) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("idea %s did not POST %s; sent %v", tc.cmd, tc.path, f.requests)
+			}
+		})
+	}
+}
+
+// `idea revise` regenerates the PRD, and ReviseInitiative claims from
+// plan_approved and complete too -- so on the CLI, where `idea help` offers it
+// unconditionally, a typo silently discards an approved plan. The web UI only
+// ever offered it from the Define page.
+func TestReviseRefusesToDiscardWorkBelowThePRD(t *testing.T) {
+	for _, status := range []string{"plan_approved", "complete"} {
+		t.Run(status, func(t *testing.T) {
+			f := newFakeDaemon(t)
+			f.seedInitiative()
+			f.json("GET /api/v1/projects/{projectId}/initiatives/{id}", map[string]string{
+				"id": "ini-1", "status": status,
+			})
+			f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/revise",
+				map[string]string{"operation_id": "op-1"})
+
+			_, _, err := run(t, "revise")
+			if err == nil {
+				t.Fatalf("idea revise on a %s initiative returned nil; it discards the plan", status)
+			}
+			for _, req := range f.requests {
+				if strings.HasPrefix(req, "POST ") && strings.HasSuffix(req, "/revise") {
+					t.Fatal("idea revise sent the request despite refusing")
+				}
+			}
+		})
+	}
+}
+
+// judgmentOperation must WAIT for the operation it starts, so the next command
+// has something to act on -- the defect `idea new` was fixed for. The other
+// verb tests stub a response with no operation_id and so never reach the wait.
+func TestJudgmentVerbsWaitForTheirOperation(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedInitiative()
+	f.json("POST /api/v1/projects/{projectId}/initiatives/{id}/approve-plan",
+		map[string]string{"operation_id": "op-7"})
+	f.json("GET /api/v1/operations/{id}", map[string]string{"status": "failed", "type": "approve_plan"})
+
+	// A failed operation must surface as an error. If the command returned
+	// without polling, this would exit 0.
+	if _, _, err := run(t, "approve-plan"); err == nil {
+		t.Fatal("idea approve-plan returned nil over a failed operation; it did not wait")
+	}
+	polled := false
+	for _, req := range f.requests {
+		if strings.Contains(req, "/operations/op-7") {
+			polled = true
+		}
+	}
+	if !polled {
+		t.Errorf("idea approve-plan never polled its operation; sent %v", f.requests)
+	}
+}

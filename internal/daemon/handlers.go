@@ -246,30 +246,34 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiative(r)
+	_, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	status, err := pr.engine.Resume(r.Context(), ini.ID)
+	status, err := s.rt.ResumeInitiative(r.Context(), r.PathValue("projectId"), ini.ID)
 	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
 }
 
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
-	pr, ini, err := s.initiative(r)
+	_, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if err := pr.engine.Approve(r.Context(), ini.ID); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
+	status, err := s.rt.ApproveInitiative(r.Context(), r.PathValue("projectId"), ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.InitiativeApproved)})
+	// Still a literal, one frame up in ApproveInitiative -- approve has exactly
+	// one success status. What changed is that a refusal is now a 409 instead of
+	// this line reporting "approved" over an engine error mapped to 500.
+	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
 }
 
 // handleRevise applies the human's decisions/answers and regenerates the PRD.

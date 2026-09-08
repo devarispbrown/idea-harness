@@ -158,6 +158,12 @@ idea next                              # → "✓ initiative complete"
 > `failed`, where doing nothing would have produced a complete synthetic run. `idea model set` warns
 > when it can tell, and `idea doctor` reports a missing key.
 
+> **With a real model, expect a stop the demo provider never produces.** The adversarial
+> reviewer is doing its job when it does not converge, so `idea next` parks the initiative and
+> names what to do: `idea reviews` lists the findings, `idea approve` accepts the PRD as it
+> stands, `idea revise` regenerates it. The same happens at the plan (`idea approve-plan`,
+> `idea revise-plan`). `idea status` says which one you are in.
+
 Two guided walkthroughs of that block, with the output at each step and what to look at
 before approving anything: [a new project](docs/demo-greenfield.md), and
 [an existing codebase](docs/demo-existing-project.md).

@@ -409,9 +409,19 @@ paths:
       summary: The next command to run, as a token
       description: |
         `action` is a machine-executable token from a closed set - `advance`, `execute`,
-        `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve`, `done`, `failed`, `wait` - which
-        `idea next` dispatches as the next CLI command. It walks the initiative's change sets, so
-        it can name the specific one to act on.
+        `review <CHG-n>`, `apply <CHG-n>`, `verify`, `resolve <reason>`, `done`, `failed`, `wait` -
+        which `idea next` dispatches as the next CLI command. It walks the initiative's change
+        sets, so it can name the specific one to act on.
+
+        `resolve` carries the reason the initiative is parked, because the four are not
+        interchangeable: `resolve prd` (the PRD review did not converge - approve or revise),
+        `resolve plan-dependencies` (the plan has unsatisfied task dependencies - **only**
+        regenerate; approving locks in an incomplete graph and leaves a blocking finding that
+        wedges completion), `resolve plan` (the plan review raised blocking findings - approve or
+        regenerate) and `resolve verification` (a requirement was failed after completion -
+        re-verify). A bare `resolve`, with no reason, is what an initiative parked before the reason was
+        recorded reports - every initiative parked in 0.3.0 or earlier included; clients should
+        render it as "see `idea status`" rather than guessing.
 
         `failed` and `wait` are the two answers that are not steps. `wait` means an operation is
         in flight. `failed` means the initiative failed, and it carries `failure_reason`. The two
@@ -524,6 +534,7 @@ paths:
                 properties:
                   status: { $ref: "#/components/schemas/InitiativeStatus" }
                 required: [status]
+        "409": { $ref: "#/components/responses/Conflict" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -536,7 +547,13 @@ paths:
       tags: [initiatives]
       operationId: approveInitiative
       summary: Human approval of the reviewed PRD
-      description: Synchronous. On success the response always carries `approved`.
+      description: |
+        Synchronous. Accepts the reviewed PRD as it stands and moves the initiative to `approved`.
+
+        Legal only from `needs_human_judgment` (and from `approved`, where it is a no-op); every
+        other status answers **409**. This is a compare-and-swap: it used to be an unconditional
+        write with no check at all, which released the claim a running `advance` held and let two
+        advances run concurrently on one initiative.
       responses:
         "200":
           description: Approved.
@@ -547,6 +564,7 @@ paths:
                 properties:
                   status: { $ref: "#/components/schemas/InitiativeStatus" }
                 required: [status]
+        "409": { $ref: "#/components/responses/Conflict" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500":
@@ -2848,9 +2866,27 @@ components:
         failure_reason:
           type: string
           description: Present only on a failed initiative.
+        judgment_reason:
+          allOf:
+            - $ref: "#/components/schemas/JudgmentReason"
+          description: |
+            Why the initiative is waiting on a human. Set only while `status` is
+            `needs_human_judgment`, and absent or empty on a row parked before this field
+            existed.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [id, title, description, status, created_at, updated_at]
+
+    JudgmentReason:
+      type: string
+      title: JudgmentReason
+      description: |
+        Why an initiative is in `needs_human_judgment`. The four are not interchangeable:
+        `prd_review` and `plan_review` are resolved by accepting or regenerating the artifact,
+        `plan_dependencies` **only** by regenerating - approving there locks in a dependency
+        graph already known to be incomplete and leaves a blocking finding that wedges
+        completion - and `verification` by recording evidence, not by touching the plan.
+      enum: [prd_review, plan_dependencies, plan_review, verification]
 
     TrustLevel:
       type: string

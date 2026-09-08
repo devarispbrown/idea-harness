@@ -798,7 +798,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		e.log.Warn("review blocked", "cycle", cycle, "findings", len(all), "reason", reason)
 		if cycle >= maxCycles {
 			e.log.Warn("review non-convergence", "cycles", cycle)
-			if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, RoleOrchestrator); err != nil {
+			if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPRDReview, RoleOrchestrator); err != nil {
 				return domain.InitiativeFailed, err
 			}
 			return domain.InitiativeNeedsHumanJudgment, nil
@@ -817,7 +817,43 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 
 // Resume re-runs the review loop after a human has resolved decisions/findings
 // in needs_human_judgment (§11).
-func (e *Engine) Resume(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+//
+// The claim is what makes that comment true. Resume took no claim and checked no
+// status, so it re-ran the review loop from any state and wrote the result over
+// it: called on a `plan_approved` initiative it discarded the approved plan and
+// left `approved`, silently undoing M2. Claiming from needs_human_judgment is
+// both the guard and the exclusion -- runReviewLoop's terminal transition
+// releases it.
+func (e *Engine) Resume(ctx context.Context, initiativeID string) (status domain.InitiativeStatus, err error) {
+	// The reason is captured before the claim so the compensating release can
+	// put it back exactly as it was.
+	ini, err := e.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	reason := ini.JudgmentReason
+	if err := e.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment); err != nil {
+		return "", err
+	}
+	// runReviewLoop returns (failed, err) on every error path without writing
+	// the status -- a provider 401 or timeout included, which is the likeliest
+	// thing to happen on the endpoint you reach for after a model misbehaved.
+	// Resume is the only claiming entry point with no operation row, so a
+	// stranded claim here is invisible to reconcileStaleOperations and the
+	// initiative answers "already running" to everything until a daemon
+	// restart, which then sweeps it to `failed` -- past the point `idea approve`
+	// can take it. This is the compensating release that keeps the claim honest.
+	//
+	// context.WithoutCancel: the caller's context is the HTTP request's, and a
+	// client that disconnected is exactly when the release matters most.
+	defer func() {
+		if err != nil {
+			if rerr := e.db.NeedsHumanJudgment(context.WithoutCancel(ctx), initiativeID, reason, RoleOrchestrator); rerr != nil {
+				e.log.Error("could not release the claim resume took",
+					"initiative", initiativeID, "error", rerr)
+			}
+		}
+	}()
 	return e.runReviewLoop(ctx, initiativeID)
 }
 
@@ -843,9 +879,25 @@ func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.Initia
 	return e.runReviewLoop(ctx, initiativeID)
 }
 
-// Approve records explicit human approval of the initiative (§11).
+// Approve records explicit human approval of the initiative (§11): the reviewed
+// PRD is accepted as it stands, findings and all, and the initiative moves on to
+// design.
+//
+// Compare-and-swap, not a read-then-write. This was an unconditional
+// SetInitiativeStatus with no check whatsoever, so it overwrote whatever the
+// initiative was doing -- including releasing the claim a running `advance` was
+// holding, after which a second advance was accepted and two ran concurrently on
+// one initiative. Reading the status first would have narrowed that window
+// without closing it, which is the same check-then-act ClaimInitiativeRunning
+// exists to avoid.
+//
+// `approved` is a legal source so a repeated approve is a no-op rather than an
+// error. Every other status is refused: `running` because work is in flight,
+// `plan_approved` and `complete` because approving there walks the state machine
+// backwards, and `failed` because the recovery for that is `idea retry`.
 func (e *Engine) Approve(ctx context.Context, initiativeID string) error {
-	if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, store.HumanActor); err != nil {
+	if err := e.db.TransitionInitiative(ctx, initiativeID, domain.InitiativeApproved, store.HumanActor,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeApproved); err != nil {
 		return err
 	}
 	return e.db.ApproveRequirements(ctx, initiativeID, store.HumanActor)
