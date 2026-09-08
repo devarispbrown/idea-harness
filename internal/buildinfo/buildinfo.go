@@ -125,6 +125,33 @@ func resolveVersion(stampedVersion, moduleVersion string, hasVCS bool) string {
 	return ""
 }
 
+// SameBuild reports whether two stamps name the same binary.
+//
+// The commit decides whenever both know one, because the version strings do not
+// survive the build paths above: `make build` off a tag leaves Version empty
+// while `go install` reports `dev`, so identical source produces two different
+// version strings. Commit is also the only thing that separates one `dev` from
+// another, which is the case this exists for -- a daemon left running across an
+// upgrade is executing a different commit under the same word.
+//
+// Both are normalised to seven characters first: `make build` stamps
+// `git rev-parse --short` and the toolchain records the full 40-character
+// revision, so a raw comparison would report a mismatch on every
+// make-build-then-go-build pair.
+//
+// Version is the fallback for proxy installs, which carry no VCS data at all.
+//
+// Modified is deliberately ignored. Two builds from the same commit with
+// different uncommitted edits are indistinguishable here, so "I edited it,
+// rebuilt, and forgot to restart the daemon" is not caught -- catching it would
+// mean warning on every dirty build, which is every build during development.
+func SameBuild(a, b Info) bool {
+	if a.Commit != "" && b.Commit != "" {
+		return shortCommit(a.Commit) == shortCommit(b.Commit)
+	}
+	return a.Version == b.Version
+}
+
 func shortCommit(c string) string {
 	if len(c) > 7 {
 		return c[:7]

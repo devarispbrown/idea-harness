@@ -115,6 +115,18 @@ Release binaries ship with the UI already embedded, so a downloaded release need
 this step. Generated bundles are deliberately not committed: the UI changes daily, and a 240 KB
 minified blob in git is a merge conflict on every change and a diff no reviewer can read.
 
+### Upgrading
+
+**Stop the daemon after replacing the binary.** It is detached and outlives the binary that
+started it, so after `go install`, `make build`, or downloading a new release, the *previous*
+version keeps serving every command while `idea version` reports the new one:
+
+```bash
+idea daemon stop      # the next command starts one from the new binary
+```
+
+`idea doctor` fails if you forget, naming both builds.
+
 Verify:
 
 ```bash

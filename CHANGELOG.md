@@ -9,26 +9,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`idea approve` produced an initiative that could never complete.** It moved
-  the status and approved the requirements, and left every blocking finding
-  undisposed — while `hasOpenBlockingFindings` refuses `complete` while any
-  undisposed critical/high exists, and no CLI command can disposition one. So
-  the command shipped as the way out of a non-converged PRD review moved the
-  failure from `idea review CHG-1` to `idea verify`, one step further along.
-  Its own doc comment said "accepted as it stands, findings and all"; that is
-  true now. They are recorded as `accepted_risk`, the one disposition the
-  reviewer is forbidden to set, so it reads as a human's signature rather than
-  a claim that anything was fixed.
-
-  `approve` also now refuses an initiative parked for any reason but a stalled
-  PRD review, answering **409**. All four reasons share one status, so a
-  status-only gate would have let it sign off findings the human was never
-  shown — worst of all the `plan_dependency` finding, whose *undisposed* state
-  is the guard that keeps a dependency graph known to be incomplete out of
-  `complete`.
-
 ### Added
 
 - **The demo provider can be told to block a review, and `scripts/smoke.sh`
@@ -48,7 +28,47 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   one schema name, and a blocking finding on a *change set* cannot be cleared by
   anything the CLI can do.
 
+- **Two step-by-step demo guides, linked from the README.**
+  [`docs/demo-greenfield.md`](docs/demo-greenfield.md) walks an empty directory to a verified,
+  complete initiative; [`docs/demo-existing-project.md`](docs/demo-existing-project.md) points the
+  same loop at a repository that already has code. Neither needs an API key.
+
+  The existing-project path had never been exercised — no script, test or document ran `idea init`
+  inside a directory that already had files, and both the README quick start and the quickstart
+  begin with `mkdir`. Writing it turned up three things worth stating plainly, all verified by
+  running them: `idea docs add` fails before an initiative exists, so grounding on your own source
+  goes through `idea new --doc`; the default executor writes a placeholder and leaves existing
+  files byte-identical, which the guide has the reader confirm with `md5` rather than assert; and
+  `.idea-harness/` lands untracked, holding portable config worth committing while runtime state
+  stays outside the repo.
+
+- **A response-schema guard.** Three guards already compared routes to the spec, request-body field
+  names to handlers, and spec enums to domain constants; none looked at what a response actually
+  contains. That is why `Coverage.status` was returned for months and documented nowhere,
+  `RequirementStatus` listed four of six values, and `/doctor` and `/diff` answered `null` where the
+  spec says `array` — each found by a human reading, one at a time. A daemon test now parses
+  `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
+  fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
+
 ### Changed — BREAKING
+
+- **`idea doctor` fails when the daemon is running a different build.** It is
+  detached and outlives the binary that started it, so replacing that binary —
+  `go install`, `make build`, a new release — leaves the *previous* version
+  serving every command while `idea version` reports the new one. doctor printed
+  `✓ daemon running` and `all checks passed` straight through that, in both
+  directions, and no document anywhere said to restart it: the eleven existing
+  mentions of `idea daemon stop` are all about a late-exported API key.
+
+  A CI script gating on `idea doctor` will now stop after an upgrade until the
+  daemon is restarted, which is the point of it. `idea daemon status` keeps exit
+  0 — it answers whether the daemon is running, and it is — but names the build
+  and the mismatch. `idea version` gains a second line only when they differ.
+
+  Compared by commit, not version: a stale daemon usually answers `dev` and so
+  does the new CLI, so comparing version strings would have missed the case
+  entirely. Commits normalise to seven characters, because `make build` stamps
+  `git rev-parse --short` while the toolchain records all forty.
 
 - **`GET /initiatives/{id}/next` says *why* an initiative is waiting on you, and
   the CLI can now act on it.** The `resolve` token gains a reason —
@@ -124,31 +144,50 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   fifty lines below already used `FailInitiative`. Not breaking on the wire; the
   field goes from empty to populated.
 
-### Added
+- **Four refusals that used to be silent successes.** All four shipped in the
+  commits above and are listed here because they are the classes 0.2.0 labelled
+  BREAKING, and a client cannot discover them from the code:
 
-- **Two step-by-step demo guides, linked from the README.**
-  [`docs/demo-greenfield.md`](docs/demo-greenfield.md) walks an empty directory to a verified,
-  complete initiative; [`docs/demo-existing-project.md`](docs/demo-existing-project.md) points the
-  same loop at a repository that already has code. Neither needs an API key.
+  | Change | Before | After |
+  |---|---|---|
+  | `GET …/why`, `…/impact`, `…/trace` with an unknown `type` | `200` and an empty result | **`400`** naming the valid types |
+  | `POST …/suggest-answers` on an initiative that does not exist | `202` and an operation id for work that cannot succeed | **`404`**; **`409`** while one is running |
+  | `idea doctor` when the daemon rejects the CLI's token | `✓ all checks passed`, exit `0` | a failing check naming the recovery, exit **non-zero** |
+  | `idea daemon stop` with no pidfile but a live daemon | one message, and the daemon left running | names `pkill -f 'idea daemon'` and exits non-zero |
 
-  The existing-project path had never been exercised — no script, test or document ran `idea init`
-  inside a directory that already had files, and both the README quick start and the quickstart
-  begin with `mkdir`. Writing it turned up three things worth stating plainly, all verified by
-  running them: `idea docs add` fails before an initiative exists, so grounding on your own source
-  goes through `idea new --doc`; the default executor writes a placeholder and leaves existing
-  files byte-identical, which the guide has the reader confirm with `md5` rather than assert; and
-  `.idea-harness/` lands untracked, holding portable config worth committing while runtime state
-  stays outside the repo.
-
-- **A response-schema guard.** Three guards already compared routes to the spec, request-body field
-  names to handlers, and spec enums to domain constants; none looked at what a response actually
-  contains. That is why `Coverage.status` was returned for months and documented nowhere,
-  `RequirementStatus` listed four of six values, and `/doctor` and `/diff` answered `null` where the
-  spec says `array` — each found by a human reading, one at a time. A daemon test now parses
-  `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
-  fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
+  A script treating `idea doctor`'s exit code as "is this install healthy" now
+  sees a failure it previously could not, which is the point of it.
 
 ### Fixed
+
+- **`idea doctor` exited 0 outside a project even when the daemon was
+  unreachable to it.** The no-project branch returned success unconditionally,
+  so a rejected token — or now a stale daemon — was reported and then exited 0.
+  That branch is where the README puts `idea doctor`, immediately after the
+  install block, which is exactly where an upgrade is verified.
+
+- **Every test using the CLI's fake daemon ran with `tokenRejected` silently
+  true.** The fake served `/api/v1/health` but not `/api/v1/version`, which is
+  what `authAccepted()` asks for, so the check failed in every test and a whole
+  diagnostic branch fired underneath a green suite.
+
+- **`idea approve` produced an initiative that could never complete.** It moved
+  the status and approved the requirements, and left every blocking finding
+  undisposed — while `hasOpenBlockingFindings` refuses `complete` while any
+  undisposed critical/high exists, and no CLI command can disposition one. So
+  the command shipped as the way out of a non-converged PRD review moved the
+  failure from `idea review CHG-1` to `idea verify`, one step further along.
+  Its own doc comment said "accepted as it stands, findings and all"; that is
+  true now. They are recorded as `accepted_risk`, the one disposition the
+  reviewer is forbidden to set, so it reads as a human's signature rather than
+  a claim that anything was fixed.
+
+  `approve` also now refuses an initiative parked for any reason but a stalled
+  PRD review, answering **409**. All four reasons share one status, so a
+  status-only gate would have let it sign off findings the human was never
+  shown — worst of all the `plan_dependency` finding, whose *undisposed* state
+  is the guard that keeps a dependency graph known to be incomplete out of
+  `complete`.
 
 - **A wrong verb answers `405` with an `Allow` header, not `404`.** Go synthesizes `405` only when
   no route pattern matches, and the web UI handler registered for `/` matched everything — so the
