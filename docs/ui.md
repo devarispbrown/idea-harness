@@ -273,16 +273,22 @@ that will fail with a 401, which is why `idea doctor` reports that case separate
 
 ### Model
 
-Pick a **Provider** from the configured list (each labelled "key missing" or "not configured" when
-it is not ready); the model list for that provider loads live. Filter it, click a chip, or type any
+Pick a **Provider** from the configured list (each labelled "key missing", "refused" or "not
+configured" when it is not ready); the model list for that provider loads live. Filter it, click a chip, or type any
 `provider/model` into **Selected model**, then **Save model** — which sets `default_model` and
 confirms "Saved — will apply to the next initiative." **Reload models** re-fetches the list. Leaving
 it blank auto-selects.
 
 ### Providers
 
-Each provider's readiness — **ready**, **missing key**, or **not configured** — with its type, base
-URL and the environment variable its key is read from.
+Each provider's readiness — **ready**, **missing key**, **refused**, or **not configured** — with
+its type, base URL and the environment variable its key is read from.
+
+**refused** is its own state, not a kind of missing key. The daemon rejects an entry that would
+send a preset's `api_key_env` somewhere else — an overridden `base_url` on a built-in preset — and
+the reason is printed under the provider. The key may well be set; setting it again fixes nothing,
+and the file is what needs editing. These were all rendered as "missing key" until the daemon began
+reporting `key_set` separately from `ready`.
 
 ### Add provider
 

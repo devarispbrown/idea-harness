@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, put } from "./api";
+import {
+  providerDetail,
+  providerOptionSuffix,
+  providerState,
+  providerStatusLabel,
+} from "./providerStatus";
 
 interface Provider {
   name: string;
@@ -8,6 +14,10 @@ interface Provider {
   base_url: string;
   key_env: string;
   ready: boolean;
+  // Narrower than ready, which also folds in whether the entry was refused.
+  key_set: boolean;
+  // The daemon's reason for refusing this entry, when it did.
+  problem?: string;
   configured: boolean;
   is_default: boolean;
   models: string[];
@@ -263,7 +273,7 @@ export default function Settings({ projectId }: { projectId: string }) {
           {(view?.providers ?? []).map((p) => (
             <option key={p.name} value={p.name}>
               {p.label}
-              {p.ready ? "" : p.configured ? " (key missing)" : " (not configured)"}
+              {providerOptionSuffix(p)}
             </option>
           ))}
         </select>
@@ -334,14 +344,18 @@ export default function Settings({ projectId }: { projectId: string }) {
               <div>
                 <strong>{p.label}</strong>{" "}
                 {p.is_default && <span className="badge ok">default</span>}
-                <span className={`dot ${p.ready ? "ready" : ""}`} />
+                <span className={`dot ${providerState(p) === "ready" ? "ready" : ""}`} />
                 <div className="muted">
                   {p.type} · {p.base_url || "default endpoint"}
                   {p.key_env ? ` · key: ${p.key_env}` : " · no key (local)"}
-                  {!p.ready && p.configured && " · key not set"}
                 </div>
+                {providerDetail(p) && (
+                  <div className={providerState(p) === "refused" ? "error" : "muted"}>
+                    {providerDetail(p)}
+                  </div>
+                )}
               </div>
-              <span className="muted">{p.ready ? "ready" : p.configured ? "missing key" : "not configured"}</span>
+              <span className="muted">{providerStatusLabel(p)}</span>
             </li>
           ))}
         </ul>
