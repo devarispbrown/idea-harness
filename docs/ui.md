@@ -11,10 +11,14 @@ The UI and the CLI drive the **same state** — anything you click here is immed
 
 Two things to know before reading the rest:
 
-- **There is no live event stream.** Every screen refreshes by re-fetching on a **2.5-second
-  timer** (`setInterval(load, 2500)` in `App.tsx` and in each phase page). There is no SSE or
-  WebSocket client anywhere in `web/src`, so a change made elsewhere shows up within a few seconds,
-  not instantly.
+- **There is no live event stream, and not every screen even polls.** The shell and the five phase
+  pages re-fetch on a **2.5-second timer** (`setInterval(load, 2500)` in each phase page;
+  `App.tsx:154` uses the same interval with an inline closure). There is no SSE or WebSocket client
+  anywhere in `web/src` — the daemon does serve `GET /projects/{id}/events`, but nothing in the UI
+  opens it — so a change made elsewhere shows up within a few seconds, not instantly.
+
+  **Five screens do not poll at all** and go stale until you reload: Health, Decision, the doc
+  reader, the artifact diff, and Settings. Each loads once on mount.
 - **The project is not selectable.** The app loads `GET /api/v1/projects` and uses the **first**
   entry (`App.tsx`). There is no project switcher. With no projects registered it renders "Run
   `idea init` in a project directory to get started"; when the daemon is unreachable it renders
@@ -259,8 +263,13 @@ initiative plus **All initiatives** and **Settings**. `↑`/`↓` move, Enter ru
 
 Settings writes the same `.idea-harness/harness.yaml` the CLI edits. A **Demo mode** banner —
 "synthetic output. Configure a model provider to run real agents" — appears at the top of *this
-page only* when the daemon reports demo mode: no `providers:` entry in `harness.yaml` and none of
-the known provider key variables set in the environment.
+page only* when the daemon reports demo mode, which means one thing and not the two this used to
+describe: the configured `default_model` does not resolve to a registered provider, so requests
+fall through to the built-in one (`internal/daemon/providers.go`, `isDemo`).
+
+Environment variables are not consulted. A key exported with no `default_model` set is still demo
+mode; a `default_model` naming a provider you have no key for is **not** demo mode — it is a run
+that will fail with a 401, which is why `idea doctor` reports that case separately.
 
 ### Model
 
