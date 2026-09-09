@@ -293,3 +293,49 @@ func TestModelSetStillWarnsWhenTheDaemonMissedTheKey(t *testing.T) {
 		t.Errorf("model set stopped catching a stale daemon:\n%s", stdout)
 	}
 }
+
+// `idea model ls` had the same conflation doctor and `idea model set` were
+// fixed for, and it reaches every user — including a `go install` one, who has
+// no web UI at all. It reported a key as `unset` when the key was set and the
+// entry was refused, which is a false statement about the operator's own
+// environment at the one moment they most need to look at `base_url`.
+func TestModelListSeparatesAMissingKeyFromARefusedEntry(t *testing.T) {
+	const reason = `provider "openai" is a built-in preset; its base_url may not be overridden`
+	f := newFakeDaemon(t)
+	f.providers = cliProvidersView{Providers: []cliProvider{{
+		Name: "openai", Label: "OpenAI", Type: "openai", KeyEnv: "OPENAI_API_KEY",
+		Configured: true, KeySet: true, Ready: false, Problem: reason,
+	}}}
+
+	stdout, _, err := run(t, "model", "ls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "OPENAI_API_KEY (unset)") {
+		t.Errorf("model ls called a key that is set `unset`:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "OPENAI_API_KEY (set)") {
+		t.Errorf("model ls did not report the key as set:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "base_url may not be overridden") {
+		t.Errorf("model ls showed no reason for the refusal, so `!` says something is wrong "+
+			"and not what:\n%s", stdout)
+	}
+}
+
+// The genuinely-keyless case must still read `unset`.
+func TestModelListStillReportsAMissingKey(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers = cliProvidersView{Providers: []cliProvider{{
+		Name: "anthropic", Label: "Anthropic", Type: "anthropic", KeyEnv: "ANTHROPIC_API_KEY",
+		Configured: true, KeySet: false, Ready: false,
+	}}}
+
+	stdout, _, err := run(t, "model", "ls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "ANTHROPIC_API_KEY (unset)") {
+		t.Errorf("model ls stopped reporting a genuinely missing key:\n%s", stdout)
+	}
+}

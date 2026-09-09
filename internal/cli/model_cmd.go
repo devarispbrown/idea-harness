@@ -141,13 +141,23 @@ func listModels(stdout io.Writer) error {
 			fmt.Fprintf(stdout, "      %s  %s\n", muted("base:"), p.BaseURL)
 		}
 		if p.KeyEnv != "" {
+			// KeySet, not Ready. Ready also folds in whether the entry was
+			// refused, so a preset with an overridden base_url and the key
+			// present read as `unset` -- a plain false statement about the
+			// operator's environment, at the one moment they most need to look
+			// at base_url instead.
 			keyState := muted("unset")
-			if p.Ready {
+			if p.KeySet {
 				keyState = ok("set")
 			}
 			fmt.Fprintf(stdout, "      %s  %s (%s)\n", muted("key:"), code(p.KeyEnv), keyState)
 		} else {
 			fmt.Fprintf(stdout, "      %s  %s\n", muted("key:"), muted("not required (local)"))
+		}
+		// The reason the entry was refused. docs/security.md promises this is
+		// reported; the `!` marker alone says something is wrong and not what.
+		if p.Problem != "" {
+			fmt.Fprintf(stdout, "      %s  %s\n", warn("problem:"), p.Problem)
 		}
 		if len(p.Models) > 0 {
 			fmt.Fprintf(stdout, "      %s  %s\n", muted("models:"), strings.Join(p.Models, ", "))
