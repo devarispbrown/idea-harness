@@ -733,10 +733,12 @@ func cmdDoctor(stdout io.Writer) error {
 	// doctor is what the README names as the post-install check, so it has to
 	// catch a config that parses but cannot work -- a default_model whose
 	// provider does not exist used to pass here and fail at the first run.
-	if cfg, err := config.Load(filepath.Join(cwd, config.Dir)); err != nil {
+	dotEnv := config.LoadDotEnv(cwd)
+	cfg, cfgErr := config.Load(filepath.Join(cwd, config.Dir))
+	if err := cfgErr; err != nil {
 		configValid = false
 		fmt.Fprintf(stdout, "%s %v\n", errText("✗ config:"), err)
-	} else if problems := cfg.ProblemsWithEnv(config.LoadDotEnv(cwd)); config.HasErrors(problems) {
+	} else if problems := doctorConfigProblems(cfg, dotEnv, daemonUp); config.HasErrors(problems) {
 		configValid = false
 		fmt.Fprintln(stdout, errText("✗ config:"))
 		renderConfigProblems(problems, stdout)
@@ -746,22 +748,67 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, ok("✓ config")+" "+muted("valid"))
 	}
 
-	// Demo mode: no model configured means synthetic output.
+	// One client and one project id for everything below. doctor built two of
+	// each and fetched /providers twice.
+	var (
+		doctorClient *client
+		doctorProj   string
+	)
 	if daemonUp {
 		if c, err := newClient(); err == nil {
 			if projectID, perr := c.projectIDForCwd(); perr == nil {
-				if isDemoMode(c, projectID) {
-					fmt.Fprintln(stdout, warn("demo mode — no model configured; run `idea model set <provider>/<model>` for real output."))
-				}
+				doctorClient, doctorProj = c, projectID
 			}
+		}
+	}
+
+	// The API keys the configured models need, answered by the daemon.
+	//
+	// This is the finding: keyProblems resolves the key with os.Getenv, so
+	// asking it from the CLI reports the CLI's environment. The daemon reads
+	// its own once, at start, so a key exported afterwards is invisible to it
+	// -- and doctor said "all checks passed" in exactly the state four
+	// documents credit it with catching.
+	// One source of truth for the key verdict: keyErr is both what fails the
+	// command and what excludes "all checks passed".
+	var keyErr error
+	switch {
+	case !daemonUp:
+		// Nothing to ask. Said out loud rather than skipped in silence, which
+		// is how every false green in this command shipped.
+		// The CLI-side check above already answered, and correctly: with no
+		// daemon running, this shell is the environment the next command will
+		// start one from.
+		fmt.Fprintln(stdout, muted("• keys: checked against this shell — no daemon is running, so it is the one the next command starts"))
+	case doctorClient == nil:
+		fmt.Fprintln(stdout, muted("• keys: not checked — no project registered for this directory"))
+	default:
+		var view cliProvidersView
+		switch err := doctorClient.do("GET", "/api/v1/projects/"+doctorProj+"/providers", nil, &view); {
+		case err != nil:
+			fmt.Fprintln(stdout, muted("• keys: could not ask the daemon ")+muted("("+err.Error()+")"))
+		case cfgErr != nil:
+			// Said, not skipped: without the config there is nothing to say
+			// which providers this project routes to.
+			fmt.Fprintln(stdout, muted("• keys: not checked — the config above could not be read"))
+		default:
+			stale, missing := keyFindings(view, referencedProviders(cfg.Harness), dotEnv)
+			keyErr = renderKeyFindings(stale, missing, stdout)
+		}
+		// Outside the config branch: an unreadable config does not stop the
+		// daemon reporting demo mode, and hoisting the fetch had silently made
+		// this banner conditional on the config loading.
+		if view.Demo {
+			fmt.Fprintln(stdout, warn("demo mode — no model configured; run `idea model set <provider>/<model>` for real output."))
 		}
 	}
 
 	// Product-graph edge audit (§M2 tail): untraced tasks/objects + cycles.
 	graphOK := true
-	if daemonUp {
-		if c, err := newClient(); err == nil {
-			if projectID, perr := c.projectIDForCwd(); perr == nil {
+	{
+		{
+			c, projectID := doctorClient, doctorProj
+			if c != nil {
 				// The graph audit is one of doctor's checks, not its purpose:
 				// in a project with no initiative there is no graph to audit,
 				// and doctor still has to report daemon and config health. So a
@@ -785,7 +832,7 @@ func cmdDoctor(stdout io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout)
-	if daemonUp && !tokenRejected && !staleDaemon && configValid && graphOK {
+	if daemonUp && !tokenRejected && !staleDaemon && configValid && keyErr == nil && graphOK {
 		fmt.Fprintln(stdout, ok("all checks passed"))
 		return nil
 	}
@@ -803,6 +850,9 @@ func cmdDoctor(stdout io.Writer) error {
 	}
 	if !configValid {
 		return fmt.Errorf("config problems above must be fixed")
+	}
+	if keyErr != nil {
+		return keyErr
 	}
 	if !graphOK {
 		return fmt.Errorf("graph audit findings above must be resolved")
