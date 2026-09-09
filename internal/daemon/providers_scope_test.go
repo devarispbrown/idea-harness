@@ -156,3 +156,43 @@ func TestProblemAttribution(t *testing.T) {
 		}
 	}
 }
+
+// TestKeySetIsIndependentOfReady pins the distinction `idea doctor` needs.
+//
+// `ready` folds three facts together — the entry was refused, the provider needs
+// no key, the key is missing — so a caller cannot tell "no key" from "this entry
+// was rejected". Those have different fixes: one is `idea daemon stop`, the
+// other is editing harness.yaml, and telling someone to restart the daemon over
+// a bad base_url names a fix that changes nothing.
+func TestKeySetIsIndependentOfReady(t *testing.T) {
+	cfg := config.Config{Harness: config.HarnessConfig{
+		DefaultModel: "openai/gpt-4o-mini",
+		Providers: map[string]config.ProviderConfig{
+			// A preset whose base_url may not be overridden: refused, but the
+			// key is right there.
+			"openai": {BaseURL: "https://proxy.example.invalid/v1"},
+		},
+	}}
+	dotEnv := map[string]string{"OPENAI_API_KEY": "sk-present"}
+
+	view := buildProvidersView(t.Context(), cfg, dotEnv, nil)
+	var openai *providerSummary
+	for i := range view.Providers {
+		if view.Providers[i].Name == "openai" {
+			openai = &view.Providers[i]
+		}
+	}
+	if openai == nil {
+		t.Fatal("openai missing from the view")
+	}
+	if openai.Problem == "" {
+		t.Fatal("expected the overridden base_url to be refused; the fixture no longer reproduces")
+	}
+	if openai.Ready {
+		t.Error("a refused entry reported ready")
+	}
+	if !openai.KeySet {
+		t.Error("key_set was false though the key is present; doctor cannot then tell " +
+			"a missing key from a refused entry, and would name the wrong fix")
+	}
+}

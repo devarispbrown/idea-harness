@@ -3621,6 +3621,13 @@ components:
         ready:
           type: boolean
           description: The key is present (or none is needed) and the entry has no problem.
+        key_set:
+          type: boolean
+          description: |
+            Whether the **daemon** can see this provider's key, in its own environment or the
+            project `.env` it loaded. Narrower than `ready`, which also folds in whether the
+            entry was refused — a caller that must tell "no key" from "this entry was rejected"
+            cannot use `ready`, and the two have different fixes.
         configured:
           type: boolean
           description: False for an unconfigured preset that is offered so the UI can add it.

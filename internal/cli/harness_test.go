@@ -37,6 +37,12 @@ type fakeDaemon struct {
 	// fake daemon a different build from the CLI under test.
 	daemonBuild buildinfo.Info
 
+	// providers is what GET /providers reports. Registered once here rather
+	// than per-test: net/http.ServeMux panics on a duplicate pattern, and
+	// three tests used to register their own under {id} while this one uses
+	// {projectId} -- the two patterns match the same requests.
+	providers cliProvidersView
+
 	// verifyCoverage is what POST /verify reports. Tests that need the
 	// "gate ran, nothing changed" state set it before running a command;
 	// net/http.ServeMux panics on a duplicate pattern, so it is a field rather
@@ -80,6 +86,10 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	// build is a field read at request time rather than something a test
 	// re-registers; it defaults to this binary's, i.e. no mismatch.
 	f.daemonBuild = buildinfo.Get()
+	f.mux.HandleFunc("GET /api/v1/projects/{projectId}/providers", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(f.providers)
+	})
 	f.mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(f.daemonBuild)

@@ -25,7 +25,6 @@ func TestNewWaitsForItsOwnOperation(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.json("POST /api/v1/projects/{id}/initiatives",
 		map[string]string{"initiative_id": "ini-1", "operation_id": "op-1"})
-	f.json("GET /api/v1/projects/{id}/providers", map[string]any{"demo": false, "providers": []any{}})
 	f.json("GET /api/v1/operations/op-1", map[string]string{"status": "succeeded", "type": "run_initiative"})
 
 	stdout, _, err := run(t, "new", "Build usage-based billing")
@@ -48,7 +47,6 @@ func TestNewNoWaitReturnsImmediately(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.json("POST /api/v1/projects/{id}/initiatives",
 		map[string]string{"initiative_id": "ini-1", "operation_id": "op-1"})
-	f.json("GET /api/v1/projects/{id}/providers", map[string]any{"demo": false, "providers": []any{}})
 	f.json("GET /api/v1/operations/op-1", map[string]string{"status": "running", "type": "run_initiative"})
 
 	stdout, _, err := run(t, "new", "Build usage-based billing", "--no-wait")
@@ -70,7 +68,6 @@ func TestNewSurfacesAFailedRun(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.json("POST /api/v1/projects/{id}/initiatives",
 		map[string]string{"initiative_id": "ini-1", "operation_id": "op-1"})
-	f.json("GET /api/v1/projects/{id}/providers", map[string]any{"demo": false, "providers": []any{}})
 	f.json("GET /api/v1/operations/op-1", map[string]string{"status": "failed", "type": "run_initiative"})
 
 	if _, _, err := run(t, "new", "Build usage-based billing"); err == nil {

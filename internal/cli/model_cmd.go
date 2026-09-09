@@ -16,9 +16,14 @@ type cliProvider struct {
 	BaseURL    string   `json:"base_url"`
 	KeyEnv     string   `json:"key_env"`
 	Ready      bool     `json:"ready"`
+	KeySet     bool     `json:"key_set"`
 	Configured bool     `json:"configured"`
 	IsDefault  bool     `json:"is_default"`
 	Models     []string `json:"models"`
+	// Problem is non-empty when the daemon refused this entry (a preset whose
+	// base_url was overridden, say). The key is then not why it is unusable,
+	// and `idea daemon stop` would change nothing.
+	Problem string `json:"problem,omitempty"`
 }
 
 type cliProvidersView struct {
@@ -205,7 +210,12 @@ func warnIfDaemonMissedTheKey(c *client, projectID, spec string, stdout io.Write
 		return // advisory only; never fail the command the user asked for
 	}
 	for _, p := range view.Providers {
-		if p.Name != provider || p.KeyEnv == "" || p.Ready {
+		// KeySet, not Ready. Ready also folds in whether the entry was refused,
+		// so a preset with an overridden base_url and the key present read as
+		// "not ready" and this told the user to restart the daemon -- a fix that
+		// changes nothing about a bad base_url. That is the whole reason the
+		// daemon reports key_set separately.
+		if p.Name != provider || p.KeyEnv == "" || p.KeySet || p.Problem != "" {
 			continue
 		}
 		if os.Getenv(p.KeyEnv) == "" {

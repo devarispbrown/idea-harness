@@ -168,7 +168,9 @@ idea next                              # → "✓ initiative complete"
 > Setting a model without its key is worse than setting none: `default_model` is resolved before the
 > demo fallback, so the first model call becomes a non-retryable `401` and the initiative goes to
 > `failed`, where doing nothing would have produced a complete synthetic run. `idea model set` warns
-> when it can tell, and `idea doctor` reports a missing key.
+> when it can tell, and `idea doctor` asks the **daemon** whether it has the key — which is the
+> process that makes the call, and the one that read your environment once at start. It fails,
+> naming the variable and whether the daemon or only your shell is missing it.
 
 > **With a real model, expect a stop the demo provider never produces.** The adversarial
 > reviewer is doing its job when it does not converge, so `idea next` parks the initiative and

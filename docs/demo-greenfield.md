@@ -158,8 +158,10 @@ idea model set openai/gpt-4o-mini
 idea doctor
 ```
 
-The `idea daemon stop` matters — see the note in step 1. `idea doctor` will tell you if the
-key is still missing.
+The `idea daemon stop` matters — see the note in step 1. If you skip it, `idea doctor` says so
+and exits non-zero: it asks the daemon whether it has the key, not the shell you are typing in,
+so it can tell "you exported it after the daemon started" from "there is no key anywhere".
+`idea model set` flags the same thing at the moment you configure the model, which is earlier.
 
 Then start a fresh initiative with `idea new`. Expect 4–8 model calls for M1 and 5 for M2;
 `docs/quickstart.md` has the per-stage cost table.

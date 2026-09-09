@@ -44,7 +44,7 @@ machine, the review gates, the product graph, apply/revert — without spending 
 
 ```bash
 idea model set openai/gpt-4o-mini
-idea doctor                                # names the key the configured provider needs, if it is missing
+idea doctor                                # asks the DAEMON whether it has the key; non-zero if not
 ```
 
 **If you are exporting it now**, the daemon is already running without it and must be restarted —
@@ -71,9 +71,8 @@ stored inline.
 > are always registered — with an empty key when the environment variable is unset
 > (`internal/daemon/runtime.go`, `buildRegistry`). The first model call then comes back
 > `openai: status 401`, which is not in the engine's transient-error list, so the run is not retried
-> and the initiative goes to **failed**. `idea doctor` warns about the missing key, but its wording
-> ("the harness will produce demo output") understates it: with a model set, the run fails instead.
-> If you have no key, take Path A.
+> and the initiative goes to **failed**. `idea doctor` reports it as a failing check and exits
+> non-zero, naming the variable and whether the daemon or only your shell is missing it.
 
 ## 2. Turn the idea into a reviewed PRD (M1)
 
@@ -255,7 +254,7 @@ leaves the reasoning synthetic. **The real path needs both.**
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
 idea daemon stop                         # it started at `idea init`, without the key
 idea model set anthropic/claude-3-7-sonnet-latest
-idea doctor                              # names the key the configured provider needs, if it is missing
+idea doctor                              # asks the DAEMON whether it has the key; non-zero if not
 ```
 
 The `idea daemon stop` is the same point Path A makes above, and it is easy to skip here because
@@ -271,13 +270,19 @@ with a non-retryable `401`, sending the initiative to `failed`. `idea doctor` is
 before you spend time on it:
 
 ```text
-warn  provider "anthropic" needs ANTHROPIC_API_KEY, which is not set; the harness will produce demo output
-demo mode — no model configured; run `idea model set <provider>/<model>` for real output.
+✗ key no ANTHROPIC_API_KEY (anthropic, from default_model) anywhere
+  A model is configured, so this is not demo mode: the first call fails with a
+  401 the run cannot retry. Export the key and run idea daemon stop, or clear the model with idea model set.
 ```
 
-Run it after `idea model set` and before `idea new`. Read both lines as "the key is missing" and
-nothing more: with a `default_model` set, the run fails rather than falling back to demo output,
-which is what step 1b spells out.
+Run it after `idea model set` and before `idea new`. It **exits non-zero**, because with a
+`default_model` set this is not demo mode — the run fails rather than falling back to synthetic
+output, which is what step 1b spells out.
+
+The key question is answered by the **daemon**, not by the shell you are typing in. That matters
+because the daemon reads its environment once, at start: export a key afterwards and it is visible
+to you and invisible to the process that makes the call. `idea doctor` names that case separately
+and tells you to run `idea daemon stop`.
 
 ### 2. A real executor
 

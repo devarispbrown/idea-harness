@@ -11,12 +11,21 @@ import (
 
 // providerSummary is the API/UI view of one provider (§40).
 type providerSummary struct {
-	Name       string   `json:"name"`
-	Label      string   `json:"label"`
-	Type       string   `json:"type"`
-	BaseURL    string   `json:"base_url"`
-	KeyEnv     string   `json:"key_env"`
-	Ready      bool     `json:"ready"`
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url"`
+	KeyEnv  string `json:"key_env"`
+	Ready   bool   `json:"ready"`
+	// KeySet reports only whether the daemon can see this provider's key, in
+	// its own environment or the project .env it loaded. Ready folds three
+	// separate facts together -- a refused entry, a keyless provider, and a
+	// missing key -- and a caller that needs to tell "no key" from "this entry
+	// was rejected" cannot. `idea doctor` needs exactly that distinction: the
+	// fix for one is `idea daemon stop` and the fix for the other is editing
+	// harness.yaml, and telling a user to restart the daemon over a bad
+	// base_url names a fix that changes nothing.
+	KeySet     bool     `json:"key_set"`
 	Configured bool     `json:"configured"`
 	IsDefault  bool     `json:"is_default"`
 	Models     []string `json:"models"`
@@ -67,7 +76,8 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 				baseURL = ""
 			}
 		}
-		ready := problem == "" && (keyEnv == "" || lookupEnv(keyEnv, dotEnv) != "")
+		keySet := keyEnv == "" || lookupEnv(keyEnv, dotEnv) != ""
+		ready := problem == "" && keySet
 		out = append(out, providerSummary{
 			Problem:    problem,
 			Name:       name,
@@ -76,6 +86,7 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 			BaseURL:    baseURL,
 			KeyEnv:     keyEnv,
 			Ready:      ready,
+			KeySet:     keySet,
 			Configured: true,
 			IsDefault:  name == defaultProv,
 			Models:     providerModels(ctx, reg, name, model.DefaultModels[name], pc.Models, ready),
@@ -88,7 +99,8 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 		if seen[p.Key] {
 			continue
 		}
-		ready := p.DefaultKeyEnv == "" || lookupEnv(p.DefaultKeyEnv, dotEnv) != ""
+		keySet := p.DefaultKeyEnv == "" || lookupEnv(p.DefaultKeyEnv, dotEnv) != ""
+		ready := keySet
 		out = append(out, providerSummary{
 			Name:       p.Key,
 			Label:      p.Label,
@@ -96,6 +108,7 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 			BaseURL:    p.BaseURL,
 			KeyEnv:     p.DefaultKeyEnv,
 			Ready:      ready,
+			KeySet:     keySet,
 			Configured: false,
 			IsDefault:  p.Key == defaultProv,
 			Models:     providerModels(ctx, reg, p.Key, model.DefaultModels[p.Key], nil, ready),

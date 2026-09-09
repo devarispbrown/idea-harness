@@ -52,6 +52,32 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **`idea doctor` asks the daemon whether it has the API key, and fails when it
+  does not.** It asked itself, which is the wrong process: `keyProblems`
+  resolves the variable with `os.Getenv`, so doctor reported the shell you typed
+  in while the run is made by the daemon, which reads its environment once at
+  start. Export a key after `idea init` and doctor printed `all checks passed`
+  over a daemon that will 401 every call — the exact state six documents credit
+  it with catching. The reverse setup warned about a key the daemon had.
+
+  Now a failing check with a non-zero exit, naming the variable and whether the
+  daemon or only your shell is missing it. A configured model with no key
+  anywhere fails too: with `default_model` set that is not demo mode, it is a
+  non-retryable 401, which `README.md` already said and doctor did not act on.
+
+  `GET /providers` gained `key_set`, because `ready` folds a missing key together
+  with a refused entry and the two have different fixes — telling someone to
+  restart the daemon over an overridden `base_url` names a fix that changes
+  nothing. `idea model set` had that exact defect and is fixed with it.
+
+  With **no** daemon running the CLI keeps answering, because then this shell is
+  the environment the next command starts one from — and that is precisely the
+  state doctor's own remedy creates, so losing the answer there would have made
+  `idea daemon stop` lead into a verdict-less pass.
+
+  A script gating on `idea doctor` will stop where it previously passed. That is
+  the point: it stops before the run fails instead of after.
+
 - **Six endpoints answer `404` for an id that matches nothing, where they used
   to answer 400, 409 or `200 []`.**
 

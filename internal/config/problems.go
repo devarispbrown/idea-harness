@@ -27,6 +27,15 @@ type Problem struct {
 	Severity Severity `json:"severity"`
 	Field    string   `json:"field"`
 	Message  string   `json:"message"`
+	// EnvDependent marks a problem whose answer depends on which process asked.
+	// Only the missing-key check is: it resolves the variable with os.Getenv, so
+	// the CLI sees the shell you typed in while the run is made by the daemon,
+	// which read its own environment once at start. `idea doctor` drops these
+	// and asks the daemon instead.
+	//
+	// A field rather than matching the message text: the first version of this
+	// matched a substring, and rewording the message silently un-marked it.
+	EnvDependent bool `json:"-"`
 }
 
 // HasErrors reports whether any problem is error-severity.
@@ -229,9 +238,16 @@ func keyProblems(field, provider, keyEnv string, needsKey bool, dotEnv map[strin
 		return nil
 	}
 	return []Problem{{
-		Severity: SeverityWarn,
-		Field:    field,
-		Message:  fmt.Sprintf("provider %q needs %s, which is not set; the harness will produce demo output", provider, keyEnv),
+		Severity:     SeverityWarn,
+		Field:        field,
+		EnvDependent: true,
+		// Deliberately process-neutral. This same text is returned by the daemon
+		// through PUT /providers and printed by `idea model set`, so wording it
+		// as "not set in this shell" made the daemon claim something about the
+		// caller's shell that it cannot know -- and contradicted the very next
+		// line `idea model set` prints. Which environment was read is the
+		// caller's to say; EnvDependent is how a caller knows to say it.
+		Message: fmt.Sprintf("provider %q needs %s, which is not set; the harness will produce demo output", provider, keyEnv),
 	}}
 }
 
