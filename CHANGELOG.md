@@ -11,6 +11,19 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **The other two judgment reasons are exercised end to end.**
+  `demo.block_plan_review_cycles` and `demo.dangle_plan_dependency` make the
+  demo provider produce a blocked plan review and a plan with a dependency no
+  task provides, so `scripts/smoke.sh` now drives all four `needs_human_judgment`
+  reasons — in one initiative that still reaches `✓ initiative complete`.
+
+  The plan review also got its own fake-provider queue key. All three adversarial
+  reviews shared one, so a queued response could outlive the review it was meant
+  for and land on the **change-set** review, where a blocking finding cannot be
+  cleared by anything the CLI can do. The name is a demo discriminator only —
+  real providers send the schema body — so separating them costs nothing and
+  retires that hazard.
+
 - **The demo provider can be told to block a review, and `scripts/smoke.sh`
   now drives the human-judgment branch on every push.** `demo.block_review_cycles`
   in `.idea-harness/harness.yaml` makes the built-in provider's adversarial
@@ -224,6 +237,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   sees a failure it previously could not, which is the point of it.
 
 ### Fixed
+
+- **`idea approve-plan` succeeded and left the initiative unable to finish.**
+  A plan review that blocked once and passed on a later run kept its blocking
+  findings open — `runExecutionPlanReview` set the status and dispositioned
+  nothing — so the completion gate refused forever, and no CLI command could
+  clear them: `revise-plan` and `reopen-phase` both refuse once a change set
+  exists, and `approve` refuses any reason but `prd_review`.
+
+  The identical omission was fixed twice on the PRD path already. One rule,
+  third instance: whatever clears a review owns the findings it cleared.
+
+  It was invisible to the census test that pins which *reason* gets written,
+  because that test cannot see what happens after. `scripts/smoke.sh` now drives
+  the plan-review escape through `approve-plan` specifically and reproduces the
+  defect verbatim when the fix is reverted — `initiative has open blocking
+  findings; cannot complete`.
+
+  `approve-plan` is also gated now, on the judgment reason and on change sets.
+  All four reasons share one status, so accepting on status alone let it approve
+  a plan parked on `plan_dependencies` — where the *undisposed* finding **is**
+  the guard that keeps a dependency graph known to be incomplete out of
+  `complete`. The first version of this fix did exactly that, and swept an
+  already-building initiative's change-set findings besides. The gates are
+  synchronous, in the Runtime: raised inside the launched operation they failed
+  the initiative rather than declining the request.
 
 - **Six documentation claims that were false against the code.** All verified by
   reading the source they describe, not by rereading the prose:

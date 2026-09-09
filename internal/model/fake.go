@@ -41,6 +41,28 @@ const DemoBlockingReviewJSON = `{"findings":[{` +
 	`"recommendation":"State a metric, a target and the condition it is measured under."` +
 	`}]}`
 
+// DemoDanglingPlanJSON is an execution plan whose one task depends on a title no
+// task has, which is what produces errUnresolvedDependencies and parks the
+// initiative on JudgmentPlanDependencies.
+//
+// Every field schema.ExecutionPlan requires is present. A plan missing one fails
+// DecodeStructured, and runModel retries three times and then fails the
+// initiative -- which from the outside looks like the block this is meant to
+// produce and is not the same thing at all.
+//
+// The depends_on entry must not normalise-match the task title, or the
+// dependency resolves and the plan is simply approved.
+const DemoDanglingPlanJSON = `{` +
+	`"summary":"Synthetic demo execution plan with a dependency that was never planned.",` +
+	`"tasks":[{` +
+	`"title":"Implement the core",` +
+	`"statement":"Build the core of the idea.",` +
+	`"requirement":"REQ-1",` +
+	`"priority":"must",` +
+	`"estimate":"M",` +
+	`"depends_on":["A prerequisite that was never planned"]` +
+	`}]}`
+
 // NewFakeProvider returns a fake provider with full capabilities.
 func NewFakeProvider() *FakeProvider {
 	return &FakeProvider{
@@ -203,7 +225,7 @@ func demoResponse(schemaName, idea string) string {
 			"open_questions": []string{"Who is the primary user?", "What is the core value?"},
 			"risks":          []string{"This is synthetic demo output, not a real PRD."},
 		}
-	case "review":
+	case "review", "plan_review":
 		m = map[string]any{"findings": []any{}}
 	case "architecture":
 		m = map[string]any{

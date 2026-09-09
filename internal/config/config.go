@@ -142,6 +142,19 @@ type DemoConfig struct {
 	// change-set reviews too. M1's review cycles are the first calls a run makes,
 	// so the queue drains on exactly them.
 	BlockReviewCycles int `json:"block_review_cycles,omitempty" yaml:"block_review_cycles,omitempty"`
+	// BlockPlanReviewCycles does the same for the M2 execution-plan review.
+	// A separate queue from the PRD review's, because they are separate reviews
+	// with separate escapes -- and because one shared queue could spill a
+	// leftover blocker onto the change-set review, which nothing can clear.
+	//
+	// Unclamped, unlike BlockReviewCycles: `idea revise-plan` clears a plan
+	// review however many times it blocks, so a surplus is survivable here.
+	BlockPlanReviewCycles int `json:"block_plan_review_cycles,omitempty" yaml:"block_plan_review_cycles,omitempty"`
+	// DanglePlanDependency makes the first execution plan name a dependency no
+	// task provides, which parks the initiative on `plan_dependencies` -- the
+	// one judgment reason whose fix is regenerating the plan and never
+	// approving it.
+	DanglePlanDependency bool `json:"dangle_plan_dependency,omitempty" yaml:"dangle_plan_dependency,omitempty"`
 }
 
 // Config is the fully-loaded portable configuration for one project.
