@@ -165,3 +165,80 @@ func TestReconcileLeavesANonRunningInitiativeAlone(t *testing.T) {
 		t.Fatalf("a complete initiative was moved to %q by a stale operation row", ini.Status)
 	}
 }
+
+// TestApprovePlanRefusesReasonsItDoesNotOwn is the plan-path twin of the
+// Approve gate, and the defect was the same one door over.
+//
+// All four JudgmentReasons share `needs_human_judgment`, so a status-only gate
+// let approve-plan accept a plan parked on `plan_dependencies` — where the
+// undisposed `plan_dependency` finding IS the guard keeping a dependency graph
+// known to be incomplete out of `complete`. `idea next` already refuses to offer
+// it there; this is the API refusing to accept it.
+//
+// Synchronous, in the Runtime: raised inside the launched operation it would
+// fail the initiative instead of declining the request, which is what the first
+// version of this fix did.
+func TestApprovePlanRefusesReasonsItDoesNotOwn(t *testing.T) {
+	for _, reason := range []domain.JudgmentReason{
+		domain.JudgmentPlanDependencies, domain.JudgmentPRDReview, domain.JudgmentVerification,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			rt, ts, token := newTestServer(t)
+			projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+			pr, err := rt.EnsureProject(t.Context(), projectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := pr.db.CreateFinding(t.Context(), &domain.Finding{
+				InitiativeID: iniID, TargetType: "initiative", TargetID: iniID,
+				Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+				Category: "plan_dependency", Finding: "f", Recommendation: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := pr.db.NeedsHumanJudgment(t.Context(), iniID, reason, "test"); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := rt.ApprovePlanInitiative(t.Context(), projectID, iniID); err == nil {
+				t.Fatalf("approve-plan accepted a plan parked on %s", reason)
+			}
+
+			got, err := pr.db.GetInitiative(t.Context(), iniID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != domain.InitiativeNeedsHumanJudgment {
+				t.Errorf("a refused approve-plan moved the status to %q; a precondition must "+
+					"decline the request, not fail the initiative", got.Status)
+			}
+			findings, err := pr.db.ListFindingsByInitiative(t.Context(), iniID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range findings {
+				if f.Disposition != "" {
+					t.Errorf("a refused approve-plan dispositioned the guard finding as %q", f.Disposition)
+				}
+			}
+		})
+	}
+}
+
+// Matching RevisePlan and ReopenPhase: once a change set exists, a plan-level
+// command must not sweep that change set's findings.
+func TestApprovePlanRefusesOnceAChangeSetExists(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID, _ := appliedChangeSet(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.NeedsHumanJudgment(t.Context(), iniID, domain.JudgmentPlanReview, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := rt.ApprovePlanInitiative(t.Context(), projectID, iniID); err == nil {
+		t.Fatal("approve-plan ran on an initiative that already has a change set")
+	}
+}

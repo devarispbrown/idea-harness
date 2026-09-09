@@ -351,6 +351,7 @@ printf '%s' "$VOUT" | grep -q 'idea verify' ||
   { echo "ERROR: idea next did not name idea verify for a verification block"; exit 1; }
 echo "a requirement failed after completion reports the verification reason"
 
+
 # ---------------------------------------------------------------------------
 # The demo guides are executable, and nothing executed them. Every one of their
 # fenced output blocks was hand-written, and eight were wrong -- in the two
@@ -395,3 +396,85 @@ done
 echo "the demo guides show the lines the binary actually prints"
 
 echo "=== HUMAN-JUDGMENT PASS OK ==="
+
+# ---------------------------------------------------------------------------
+# PASS 4 — the other two judgment reasons.
+#
+# `needs_human_judgment` has four recorded reasons and `idea next` gives each a
+# different instruction, because the escapes differ. Pass 3 covers prd_review and
+# verification. These two were reachable only in production: an AST census pinned
+# which reason gets WRITTEN, and a CLI test pinned the rendered advice, but
+# nothing drove the states.
+#
+# That gap hid a live P1. A plan review that blocked once and passed on a later
+# run left its blocking findings open, so `idea approve-plan` succeeded and made
+# the initiative unfinishable — the same omission already fixed twice on the PRD
+# path. Only a behavioural pass finds that class.
+# ---------------------------------------------------------------------------
+echo "=== PLAN-JUDGMENT PASS ==="
+PPROJ="$TMPROOT/planjudgment"
+mkdir -p "$PPROJ"
+cd "$PPROJ"
+"$ROOT/bin/idea" init
+# Same trap as pass 3: the queues are primed when the daemon opens the project
+# and refilled on every config reload, so this restart must stay the LAST config
+# write before `idea new`.
+printf '\ndemo:\n  dangle_plan_dependency: true\n  block_plan_review_cycles: 1\n' >>.idea-harness/harness.yaml
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+"$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
+DAEMON_PID=$!
+wait_for "daemon to report running (plan-judgment pass)" 5 daemon_running
+
+"$ROOT/bin/idea" new "A meal planner for shared households"
+wait_for "the PRD to converge" 60 initiative_left_running
+"$ROOT/bin/idea" advance
+wait_for "the plan-dependency block" 60 initiative_left_running
+
+# Reason 3 of 4. approve-plan must NOT be offered: the dependency graph is known
+# to be incomplete, and approving locks it in.
+DEP_OUT=$("$ROOT/bin/idea" next)
+printf '%s\n' "$DEP_OUT"
+printf '%s' "$DEP_OUT" | grep -q 'unresolved task dependencies' ||
+  { echo "ERROR: idea next did not report the dependency reason"; exit 1; }
+printf '%s' "$DEP_OUT" | grep -q 'idea revise-plan' ||
+  { echo "ERROR: idea next did not name revise-plan"; exit 1; }
+if printf '%s' "$DEP_OUT" | grep -q 'idea approve-plan'; then
+  echo "ERROR: idea next offered approve-plan for a plan whose graph is known incomplete"; exit 1
+fi
+
+"$ROOT/bin/idea" revise-plan
+wait_for "the plan-review block" 60 initiative_left_running
+
+# Reason 4 of 4.
+PR_OUT=$("$ROOT/bin/idea" next)
+printf '%s\n' "$PR_OUT"
+printf '%s' "$PR_OUT" | grep -q 'plan review raised blocking findings' ||
+  { echo "ERROR: idea next did not report the plan-review reason"; exit 1; }
+printf '%s' "$PR_OUT" | grep -q 'idea reviews' ||
+  { echo "ERROR: idea next did not name where the findings are"; exit 1; }
+"$ROOT/bin/idea" reviews | grep -q 'Review findings' ||
+  { echo "ERROR: idea reviews shows nothing on a blocked plan review"; exit 1; }
+echo "both remaining judgment reasons reported, each with its own instruction"
+
+# And it finishes — escaping the plan review with approve-plan specifically.
+#
+# This is the assertion that catches the wedge. approve-plan re-runs the review;
+# on the demo provider the queue is drained by now so it converges and sets
+# plan_approved. If it does not also disposition the findings that earlier block
+# left open, the completion gate refuses forever and no CLI command can clear
+# them. revise-plan would hide that, because it dispositions on its own way past.
+"$ROOT/bin/idea" approve-plan
+"$ROOT/bin/idea" next --until-human
+wait_for "a change set in the plan-judgment project" 60 chg1_in_changes
+"$ROOT/bin/idea" review CHG-1 approve
+"$ROOT/bin/idea" apply CHG-1
+wait_for "the plan-judgment change set to read applied" 30 chg1_applied
+PREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
+[ -n "$PREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
+"$ROOT/bin/idea" verify "$PREQ" --pass
+"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
+  { echo "ERROR: a plan revised out of both judgment states did not reach complete"; exit 1; }
+echo "a plan revised out of both judgment states reaches complete"
+
+echo "=== PLAN-JUDGMENT PASS OK ==="

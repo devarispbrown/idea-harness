@@ -1137,6 +1137,28 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	if ini.Status != domain.InitiativeNeedsHumanJudgment && ini.Status != domain.InitiativePlanApproved {
 		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
 	}
+	// The reason, not just the status. All four JudgmentReasons share one, so a
+	// status-only gate let this accept a plan parked on `plan_dependencies` --
+	// where the undisposed `plan_dependency` finding IS the guard keeping a
+	// dependency graph known to be incomplete out of `complete`. Approving there
+	// dispositioned the guard and shipped the incomplete graph. `idea next`
+	// already refuses to offer approve-plan in that state; this is the API
+	// refusing to accept it. Empty is allowed for initiatives parked before the
+	// reason was recorded.
+	switch ini.JudgmentReason {
+	case "", domain.JudgmentPlanReview:
+	default:
+		return "", preconditionf("approve-plan accepts a plan whose review raised findings; "+
+			"this initiative is waiting on %s, which only `idea revise-plan` resolves", ini.JudgmentReason)
+	}
+	// Matching RevisePlan and ReopenPhase. Without it a plan-level command swept
+	// the findings of an initiative that was already building, including a
+	// blocking change-set finding -- the one nothing else can clear.
+	if cses, err := pr.db.ListChangeSets(ctx, initiativeID); err != nil {
+		return "", err
+	} else if len(cses) > 0 {
+		return "", preconditionf("cannot approve a plan that already has change sets")
+	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
 	// four of these entry points asked "is it running?" and never set it, so
@@ -1487,6 +1509,15 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	}
 	for i := 0; i < n; i++ {
 		fp.EnqueueResponse("review", model.DemoBlockingReviewJSON)
+	}
+	// Separate queues, so a surplus in one cannot reach the other -- and neither
+	// can reach the change-set review, which still answers on "review" only
+	// after M1's queue is drained.
+	for i := 0; i < h.Demo.BlockPlanReviewCycles; i++ {
+		fp.EnqueueResponse("plan_review", model.DemoBlockingReviewJSON)
+	}
+	if h.Demo.DanglePlanDependency {
+		fp.EnqueueResponse("execution_plan", model.DemoDanglingPlanJSON)
 	}
 	return fp
 }

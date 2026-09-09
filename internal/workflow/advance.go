@@ -53,10 +53,39 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
-// ApprovePlan re-runs the execution-plan review only (it does not regenerate
-// tasks). After the human resolves the plan-review blockers, this re-evaluates
-// the plan and transitions it to plan_approved (or back to needs_human_judgment).
+// ApprovePlan accepts a plan whose review raised findings: it records the human's
+// acceptance of them and re-evaluates the plan, which then transitions to
+// plan_approved (or back to needs_human_judgment if the fresh run raises new
+// ones). It does not regenerate tasks.
+//
+// Gated on the reason, exactly as Approve is, and for the same defect. All four
+// JudgmentReasons share one status, so a status-only gate let this accept a plan
+// parked on `plan_dependencies` -- where the undisposed `plan_dependency` finding
+// IS the guard that keeps a dependency graph known to be incomplete out of
+// `complete`, something advance.go relies on in three places and the CHANGELOG
+// states outright. Approving there shipped the incomplete graph.
+//
+// The change-set guard matches RevisePlan and ReopenPhase. Without it, an
+// initiative already building could have its change set's findings swept by a
+// plan-level command -- and a blocking change-set finding is the one this
+// repository repeatedly calls unclearable by any CLI command.
+//
+// The disposition lives here and not in runExecutionPlanReview, which Advance,
+// RevisePlan and ReopenPhase also call: on those paths the plan was regenerated
+// and nobody accepted anything, so attributing an acceptance to a human would be
+// a lie. accepted_risk by HumanActor, the same pair Approve records, because
+// that is what happened -- nothing was fixed.
 func (e *Engine) ApprovePlan(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	// The reason and change-set gates are in Runtime.ApprovePlanInitiative, not
+	// here: this runs inside the launched operation, so a refusal raised at this
+	// point fails the initiative rather than declining the request. A
+	// precondition has to be answered before the work starts.
+	//
+	// Before the re-run, so it closes what the human was shown and the fresh run
+	// is judged on its own findings alone.
+	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionAcceptedRisk, store.HumanActor); err != nil {
+		return "", err
+	}
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
@@ -437,7 +466,15 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 
 func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
 	tasks, _ := e.db.ListTasks(ctx, initiativeID)
-	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "review", schema.Review,
+	// "plan_review", not "review". The name is a demo/test discriminator only:
+	// JSONSchemaName is read by nothing but the fake provider. Real providers
+	// never see it at all -- runModel inlines the schema text into the system
+	// prompt and sets the provider's own JSON mode. All three adversarial
+	// reviews sharing one key
+	// meant a queued demo response could outlive the review it was meant for and
+	// land on the change-set review, where a blocking finding cannot be cleared
+	// by anything the CLI can do. Separate keys make a surplus harmless.
+	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
 			{Selector: "tasks", Content: renderTasks(tasks)},

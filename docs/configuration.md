@@ -80,6 +80,8 @@ Top-level fields:
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
+| `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
+| `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
 
 `demo.block_review_cycles` exists because the demo provider was a happy-path
 oracle. Its reviewer returned zero findings unconditionally, so the review loop
@@ -97,12 +99,21 @@ demo:
   block_review_cycles: 3
 ```
 
-It is a count rather than a flag on purpose. All three adversarial reviews — the
-PRD's, the plan's and each change set's — use the same structured-output schema,
-so a standing response would block all three, and a blocking finding on a change
-set cannot be cleared by anything the CLI can do. The count is consumed from a
-queue by the first review calls a run makes, which are M1's, and it is clamped to
-`review.max_cycles` so a surplus cannot outlive them.
+The three demo knobs write to **separate queues** — `review`, `plan_review` and
+`execution_plan` — so a leftover response cannot outlive the call it was meant
+for. (`dangle_plan_dependency` queues a *plan*, not a review.) That matters because all
+three adversarial reviews used to share one key: a surplus could land on the
+**change-set** review, and a blocking finding there cannot be cleared by anything
+the CLI can do. `block_review_cycles` is still capped at `review.max_cycles`
+because M1's call count is position-dependent; the other two are not, because
+`idea revise-plan` clears whatever they produce.
+
+It is a count rather than a flag on purpose. A standing response would answer
+every call on its queue, and the count is consumed by the first calls a run
+makes. `block_review_cycles` is clamped to `review.max_cycles` because M1's call
+count is position-dependent and a surplus on the `review` queue reaches the
+**change-set** review, where a blocking finding cannot be cleared by anything the
+CLI can do.
 
 **The queue is primed per project open, not per initiative.** It fills when the
 daemon first opens the project and refills on every config reload, so the *first*

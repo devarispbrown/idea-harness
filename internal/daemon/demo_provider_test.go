@@ -38,9 +38,10 @@ func TestDemoProviderQueuesExactlyWhatIsAsked(t *testing.T) {
 		{"off by default", 0, 3, 0},
 		{"one", 1, 3, 1},
 		{"exactly max_cycles", 3, 3, 3},
-		// Clamped: a surplus outlives M1's review calls and lands on the plan
-		// review, or via `idea execute` on the change-set review — the state
-		// this design chose a queue to avoid.
+		// Clamped: a surplus outlives M1's review calls. The plan review has
+		// its own queue key now, so what a surplus on `review` reaches is the
+		// change-set review — where a blocking finding cannot be cleared by
+		// anything the CLI can do, which is the state this design avoids.
 		{"clamped to max_cycles", 5, 3, 3},
 		// max_cycles unset means the engine's own default of 3 applies later;
 		// nothing to clamp against here, so the value stands.

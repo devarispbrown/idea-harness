@@ -259,3 +259,66 @@ func TestApproveRefusesJudgmentReasonsItDoesNotOwn(t *testing.T) {
 		})
 	}
 }
+
+// TestApprovePlanDispositionsWhatItApproves is the plan-path twin of
+// TestApproveDispositionsWhatItAccepts, and the defect was identical.
+//
+// runExecutionPlanReview's success path set the status and left every blocking
+// finding open, so a plan review that blocked once and passed on a later run
+// produced a `plan_approved` initiative that could never reach `complete`.
+// Nothing in the CLI could clear them: revise-plan and reopen-phase both refuse
+// once a change set exists, and `approve` refuses any reason but prd_review.
+// `idea approve-plan` therefore succeeded and quietly made the initiative
+// unfinishable.
+func TestApprovePlanDispositionsWhatItApproves(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	// A blocking finding from an earlier, blocked plan review.
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID, TargetType: "execution_plan", TargetID: iniID,
+		Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+		Category: "vague acceptance criteria", Finding: "f", Recommendation: "r",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.NeedsHumanJudgment(ctx, iniID, domain.JudgmentPlanReview, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The demo reviewer returns no findings, so this run converges.
+	if _, err := eng.ApprovePlan(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativePlanApproved {
+		t.Fatalf("status = %q, want plan_approved", ini.Status)
+	}
+	blocking, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocking {
+		t.Fatal("approve-plan succeeded and left blocking findings open; the initiative " +
+			"can reach a change set and never complete, and no CLI command can clear them")
+	}
+
+	// The value and the actor, not just "some disposition". hasOpenBlockingFindings
+	// only checks for a non-empty one, so every enum value clears the gate equally
+	// and any of them would satisfy the assertion above.
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Disposition != domain.DispositionAcceptedRisk {
+			t.Errorf("disposition = %q, want accepted_risk: nothing was fixed and the plan was "+
+				"not regenerated — a human accepted findings they were shown", f.Disposition)
+		}
+	}
+}
+
