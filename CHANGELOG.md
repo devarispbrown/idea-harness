@@ -225,6 +225,35 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Six documentation claims that were false against the code.** All verified by
+  reading the source they describe, not by rereading the prose:
+
+  - `ui.md` said "every screen refreshes on a 2.5-second timer". Five do not
+    poll at all — Health, Decision, the doc reader, the artifact diff and
+    Settings load once and go stale until reload. The cited literal was also
+    wrong for `App.tsx`, which uses an inline closure.
+  - `ui.md` defined demo mode as "no `providers:` entry and none of the known
+    key variables set". `isDemo` consults neither: it is
+    `defaultProviderName(cfg) == demoProviderName`. The old wording was wrong in
+    both directions — a key with no `default_model` is still demo mode, and a
+    `default_model` you have no key for is not.
+  - `api-reference-hosting.md` said `make api-check` "compares paths only". It
+    has three axes now. The sentence's actual point — that nothing reads
+    `info.version` — is true and is now what it says.
+  - `idea retry` was explained nowhere outside the generated command table,
+    including in the two places that describe an initiative reaching `failed`.
+  - Nothing said which initiative a bare command acts on. It is the most
+    recently *created* one — not the last touched, and not one you selected.
+  - `--json` was described as the command's response "and nothing else", which
+    reads as parity with the rendered form. It is the wire response:
+    `idea status --json` carries three fields while the rendered form composes
+    counts and guidance from other endpoints.
+
+  Each has a ledger row with a predicate, and each predicate was mutation-checked
+  in the direction that row watches — three of them are `present:` rows that fire
+  when the old text returns, and my first pass tested the wrong direction and
+  read as passing.
+
 - **Eight output blocks in the two demo guides showed something the binary does
   not print.** `idea status` showed two of six lines; `idea apply` and `idea
   revert` omitted their cancel hints; `idea verify` omitted its first line;

@@ -79,7 +79,8 @@ does not accept `idea model add`'s flags.
 
 The **`--json`** column is the contract:
 
-- **`yes`** — the command prints its response as JSON on stdout and nothing else.
+- **`yes`** — the command prints the daemon's response for that endpoint as JSON on stdout and
+  nothing else.
 - **`no`** — the command takes flags, but none of them is `--json`. Its output is human-readable:
   a rendered artifact, or a confirmation line.
 - **`takes no flags`** — the command itself accepts no flags. Its subcommands still may; the Flags
@@ -87,6 +88,24 @@ The **`--json`** column is the contract:
 - **`rejected`** — `plan` renders a markdown artifact, so there is no JSON form of it. It fails with
   a message pointing at `idea tasks --json` rather than ignoring the flag.
 - **`—`** — a documentation row describing a subcommand, listed under its parent.
+
+**`--json` is the wire response, not the rendered view.** The two are not the same shape, and the
+human form is usually the richer one: `idea status --json` emits the initiative list —
+`[{"id","title","status"}]` — while the rendered form additionally composes requirement, decision
+and question counts and the next-move guidance, each from a different endpoint. So a script cannot
+assume every number it can see is in the JSON. The shapes themselves are
+[`docs/openapi.yaml`](openapi.yaml)'s response schemas, by the endpoint each command calls
+([`api.md`](api.md) maps command to route).
+
+**Which initiative a bare command acts on.** Every initiative-scoped command takes an optional
+initiative reference as its first positional argument. With none, it acts on the **most recently
+created** initiative in the project — not the one you last touched, and not one you selected. With
+several in flight, pass the reference explicitly:
+
+```bash
+idea status                      # the newest initiative
+idea status 4c1629f3382af9cd     # a specific one
+```
 
 **Unknown flags are an error on every command.** So are unknown subcommands of `model`,
 `executors`, `config` and `daemon`. Ten commands used to ignore what they did not recognise — 

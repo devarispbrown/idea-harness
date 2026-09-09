@@ -31,21 +31,21 @@ Status values: `open`, `fixed <ref>`, `deferred <reason>`, `not reproduced`.
 | D13 | `demo-existing-project.md:61`: the `idea new` block omits the demo banner | The greenfield guide shows it for the same command | `absent:docs/demo-existing-project.md:demo mode — synthetic output` | fixed audit-6 |
 | D14 | `demo-existing-project.md:87`: the `idea docs` preview shows three lines | The preview is 200 runes of the file with one leading indent, so everything past line 1 sits flush left | `absent:docs/demo-existing-project.md:def charge(calls: int) -> float:` | fixed audit-6 |
 | D15 | `demo-existing-project.md:152`: the revert block shows only its `git status` half | `idea revert` prints two lines of its own first | `absent:docs/demo-existing-project.md:✓ revert started` | fixed audit-6 |
-| D6 | `ui.md:14`: "every screen polls" | Five pages never poll — `HealthPage`, `DecisionPage`, `DocReader`, `ArtifactDiffPage`, `Settings` | `present:docs/ui.md:Every screen refreshes` | open |
-| D7 | `ui.md:261`: demo mode is "no `providers:` entry and none of the known key vars set" | `defaultProviderName(cfg) == demoProviderName`; env keys are never consulted, and the code comment says the env definition was wrong in both directions | `present:docs/ui.md:key variables set in the environment` | open |
+| D6 | `ui.md:14`: "every screen polls" | Five screens never poll — Health, Decision, the doc reader, the artifact diff and Settings load once and go stale until reload. The cited literal was also wrong for `App.tsx`, which uses an inline closure | `present:docs/ui.md:Every screen refreshes` | fixed audit-6 |
+| D7 | `ui.md:261`: demo mode is "no `providers:` entry and none of the known key vars set" | `isDemo` is `defaultProviderName(cfg) == demoProviderName`; environment variables are never consulted, and the old wording was wrong in both directions | `present:docs/ui.md:key variables set in the environment` | fixed audit-6 |
 | D8 | `README:171`, `quickstart:47`, `:74`, `:258`, `demo-greenfield:157`, `security.md:20`: `idea doctor` "reports a missing key" | doctor read the **CLI's** environment, not the daemon's, so it printed `all checks passed` in exactly the state those lines describe — and warned spuriously in the reverse setup. Six sites, not three; the daemon now answers, via a `key_set` field that does not conflate a missing key with a refused entry | `absent:README.md:asks the **daemon** whether it has the key` | fixed audit-6 |
 | D9 | `quickstart.md:273`: an `idea doctor` output block showing a `warn` line and the demo-mode line together | They are mutually exclusive — one needs `default_model` set, the other needs it unset. Replaced with the real failing-check output, since D8 rewrote it | `present:docs/quickstart.md:demo mode — no model configured; run` | fixed audit-6 |
 | A13 | `openapi.yaml`: cancel is "the only path where a missing operation reads as 409 rather than 404" | Five endpoints did it, and cancel no longer does — an unknown id is 404 on all of them | `present:docs/openapi.yaml:only path where a missing operation` | fixed audit-6 |
-| D10 | `api-reference-hosting.md:141`: "`make api-check` compares paths only" | It also checks request-body fields and 409 declarations | `present:docs/api-reference-hosting.md:compares paths` | open |
+| D10 | `api-reference-hosting.md:141`: "`make api-check` compares paths only" | Three axes — routes to paths, request-body fields to handlers, 409s to the preconditions that answer them. None of them reads `info.version`, which is the point the sentence was making | `present:docs/api-reference-hosting.md:compares paths only` | fixed audit-6 |
 
 ## Gaps
 
 | # | Gap | What is missing | Predicate | Status |
 |---|---|---|---|---|
 | G1 | Leaving `needs_human_judgment` from the CLI | Nothing documented it because nothing could do it | `absent:README.md:idea approve` | fixed 38329d5 |
-| G2 | `idea retry` is never explained | Both places describing an initiative going to `failed` omit the recovery command | `absent:README.md:idea retry` | open |
-| G3 | Which initiative a bare command acts on | `resolveInitiative` silently targets the newest; no document says so | `absent:docs/cli.md:most recent initiative` | open |
-| G4 | `--json` response shapes | `cli.md:78` implies parity with the human form; `idea status --json` drops four fields | `absent:docs/cli.md:--json shape` | open |
+| G2 | `idea retry` is never explained | Both places describing an initiative going to `failed` omitted the recovery command; it appeared only in the generated command table | `absent:README.md:idea retry` | fixed audit-6 |
+| G3 | Which initiative a bare command acts on | `resolveInitiative` silently targets the most recently created one — not the last touched, not one you selected | `absent:docs/cli.md:most recently` | fixed audit-6 |
+| G4 | `--json` response shapes | `cli.md` implied parity with the human form. `idea status --json` is the wire response — three fields — while the rendered form composes counts and guidance from other endpoints | `absent:docs/cli.md:the wire response, not the rendered view` | fixed audit-6 |
 | G7 | Nothing said to restart the daemon after upgrading | It is detached and outlives the binary, so the old version keeps serving while `idea version` reports the new one — and `idea doctor` affirmed health through it in both directions | `absent:README.md:outlives the binary` | fixed audit-6 |
 
 ## The guard gap itself

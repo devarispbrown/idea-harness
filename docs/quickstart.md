@@ -73,6 +73,9 @@ stored inline.
 > `openai: status 401`, which is not in the engine's transient-error list, so the run is not retried
 > and the initiative goes to **failed**. `idea doctor` reports it as a failing check and exits
 > non-zero, naming the variable and whether the daemon or only your shell is missing it.
+>
+> Once an initiative is `failed`, `idea retry` re-runs the phase that failed — not the whole
+> initiative — and takes `--model <provider/model>` to retry somewhere else. Fix the cause first.
 
 ## 2. Turn the idea into a reviewed PRD (M1)
 

@@ -171,6 +171,10 @@ idea next                              # → "✓ initiative complete"
 > when it can tell, and `idea doctor` asks the **daemon** whether it has the key — which is the
 > process that makes the call, and the one that read your environment once at start. It fails,
 > naming the variable and whether the daemon or only your shell is missing it.
+>
+> An initiative already in `failed` is recovered with **`idea retry`**, which re-runs the phase that
+> failed rather than starting over — `idea next` names it, and `--model <provider/model>` retries on
+> a different one. Fix the cause first: retrying into the same missing key just fails again.
 
 > **With a real model, expect a stop the demo provider never produces.** The adversarial
 > reviewer is doing its job when it does not converge, so `idea next` parks the initiative and

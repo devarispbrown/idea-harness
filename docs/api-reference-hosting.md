@@ -137,8 +137,9 @@ rather than guessing.
 **Nothing keeps a hosted reference in step with an installed binary, and no check will tell you.**
 
 `docs/openapi.yaml`'s `info.version` is a hand-typed literal. `internal/buildinfo` takes its version
-from `git describe` through `-ldflags`. The two are unconnected, and `make api-check` compares paths
-only — it will not notice a version that never moved.
+from `git describe` through `-ldflags`. The two are unconnected, and no guard reads `info.version`
+at all: `make api-check` compares routes to paths, request-body fields to handlers, and 409s to the
+preconditions that can answer them — three axes, none of them the version.
 
 So: publishing is a manual release step. Bump `info.version` when you tag, republish after you
 release, and treat a hosted page as describing whatever was last pushed to it rather than whatever
