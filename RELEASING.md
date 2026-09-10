@@ -11,7 +11,7 @@ machine check it.
 
 Pushing a `v*` tag runs `.github/workflows/ci.yml`. The `release` job declares
 `needs: [compile-no-node, macos, backend, web]`, so a tag publishes nothing
-unless all four are green: the eight guards, the Go suite on Linux and both
+unless all four are green: the nine guards, the Go suite on Linux and both
 macOS architectures, `scripts/smoke.sh`, and the web build and unit tests.
 
 It lives in `ci.yml` rather than a workflow of its own because `needs:` resolves

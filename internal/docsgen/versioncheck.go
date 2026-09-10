@@ -39,12 +39,19 @@ const changelogPath = "CHANGELOG.md"
 // specVersionRe reads `version:` from the spec's info block. Anchored to a
 // two-space indent so it cannot match a `version:` nested deeper in the
 // document (the spec has several, in schema examples).
-var specVersionRe = regexp.MustCompile(`(?m)^  version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?\s*$`)
+// The trailing `.*` tolerates a comment after the value. `\s*$` reported
+// `version: 0.4.0  # bumped per RELEASING.md` as "no version line at all",
+// which fails closed but diagnoses the wrong thing.
+var specVersionRe = regexp.MustCompile(`(?m)^  version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?\s*(?:#.*)?$`)
 
 // releasedHeadingRe matches a released CHANGELOG heading. `## [Unreleased]`
 // deliberately does not match: it carries no version, and skipping it is what
 // keeps the staleness check from demanding a number nobody has chosen yet.
-var releasedHeadingRe = regexp.MustCompile(`(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)\]`)
+// The `v?` matters: with a bare-number pattern, renaming one heading to
+// `## [v0.5.0]` made the check silently fall back to the previous release and
+// pass, and prefixing every heading turned the check into a complete no-op that
+// still printed a green line. parseSemver strips the prefix either way.
+var releasedHeadingRe = regexp.MustCompile(`(?m)^## \[v?([0-9]+\.[0-9]+\.[0-9]+)\]`)
 
 // semver is a parsed major.minor.patch, comparable.
 type semver struct{ major, minor, patch int }
@@ -131,7 +138,18 @@ func runVersionCheck(want string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", changelogPath, err)
 	}
-	if ok && have.less(released) {
+	if !ok {
+		// Not a pass. Every release this project has cut has a heading, so no
+		// heading means the file moved or the format changed -- and the check
+		// would otherwise print a green line reporting `>= released 0.0.0`,
+		// which is the shape of a guard that has quietly stopped guarding.
+		return fmt.Errorf(
+			"%s has no released `## [X.Y.Z]` heading, so info.version cannot be checked against it.\n"+
+				"    If the heading format changed, releasedHeadingRe in internal/docsgen/versioncheck.go\n"+
+				"    has to change with it -- silently skipping the check is what this error exists to prevent.",
+			changelogPath)
+	}
+	if have.less(released) {
 		return fmt.Errorf(
 			"docs/openapi.yaml says version %s, but %s has already released %s.\n"+
 				"    The spec describes a release that has been superseded. Bump info.version to the\n"+
@@ -146,6 +164,13 @@ func runVersionCheck(want string) error {
 
 	target, err := parseSemver(want)
 	if err != nil {
+		if strings.ContainsAny(strings.TrimPrefix(want, "v"), "-+") {
+			return fmt.Errorf(
+				"tag %s is a pre-release, and this guard compares major.minor.patch only.\n"+
+					"    docs/openapi.yaml's info.version has no pre-release form to match it against, and\n"+
+					"    RELEASING.md documents no pre-release flow. Add one to both before tagging an rc.",
+				want)
+		}
 		return fmt.Errorf("VERSION=%q: %w", want, err)
 	}
 	if target != have {

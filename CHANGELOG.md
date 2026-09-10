@@ -60,9 +60,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
   Every failing shape emits a package-scoped `fail` with no `Test`, and the
   script already discriminated on exactly that shape for the *pass* case and had
-  no `fail` counterpart. It has one now, plus `build-fail`, plus an optional
-  `go test` exit status for the case no event can describe — a truncated or
-  unwritten output file. Five fixtures captured from real runs pin all of it.
+  no `fail` counterpart. It has one now, plus `build-fail`, plus the `go test`
+  exit status for the case no event can describe: an empty file, a non-JSON
+  file, or a stream cut mid-run, each of which the script answered `All tests
+  passed (0 package(s) with tests)`. Five fixtures captured from real runs pin
+  the event shapes, and `ci.yml` passes the status through `|| status=$?` rather
+  than `continue-on-error`, which would swallow it.
 
   This mattered before the release gated on that job: a gate that can be green
   on a panic is weaker than it looks.
@@ -72,7 +75,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   daemon showed a version three releases old as though it were the running build
   — `info.version`'s defect, user-visible. It shows an em dash now, which is
   what is true.
-
 
 - **The other two judgment reasons are exercised end to end.**
   `demo.block_plan_review_cycles` and `demo.dangle_plan_dependency` make the
@@ -190,7 +192,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   requirement before regenerating, so a model failure there leaves an initiative
   with N removed requirements and nothing active.
 
-
 - **`idea approve-plan` accepts the plan instead of re-reviewing it.** It was a
   retry wearing an accept's name: `Engine.ApprovePlan` dispositioned the open
   findings and then re-ran the adversarial review, and a model reviewer is not a
@@ -234,7 +235,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   proves the park is reachable; it can never prove the escape exists. There is
   now a smoke pass with a reviewer that does not converge, and it fails on the
   unfixed tree.
-
 
 - **`idea doctor` asks the daemon whether it has the API key, and fails when it
   does not.** It asked itself, which is the wrong process: `keyProblems`
@@ -357,7 +357,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
   Neither endpoint had a caller anywhere — no CLI, no web UI, no test — so
   nothing observable breaks.
-
 
 - **`GET /initiatives/{id}/next` distinguishes a failed initiative from a running
   one, and `idea next` exits non-zero over one.** The token set gains `failed`,
@@ -930,7 +929,6 @@ instead of a change that cost nothing.
   fails when a route exists that the spec does not document or the reverse.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
   `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.
-
 
 - CI builds, vets, tests and smoke-tests on macOS as well as Linux. Nothing in the codebase branches
   on the operating system, so the differences that matter are filesystem semantics — case
