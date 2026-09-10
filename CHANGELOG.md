@@ -11,6 +11,69 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **A tag now gates on everything CI runs, and the spec's version is checked by
+  a machine.** Audit 7 recorded these as the two longest-lived open findings in
+  the project, the two cheapest to fix, and one shared fix.
+
+  `.github/workflows/release.yml` gated a tag on `go vet` and `go test` on
+  `ubuntu-latest`: **none** of the eight guards, no `scripts/smoke.sh`, no macOS
+  job, no web build or unit tests, and no `needs:` on anything. A red
+  `enum-check` or `check-embed` shipped.
+
+  The audit's own suggested fix — *"two lines: `needs: [compile-no-node,
+  backend, macos, web]`"* — does not work: `needs:` resolves job ids **within one
+  workflow file** and cannot reference a job in another. So the release job moves
+  into `ci.yml`, whose unfiltered `on: push:` already ran every guard on a tag
+  push; they simply did not gate. Copying the guard steps into a separate
+  workflow was the alternative and was rejected — a ninth guard added later
+  would not reach the copy, and that divergence *is* the finding.
+
+  `internal/ciguard` asserts a **completeness** rule: every job in `ci.yml`
+  either gates the release, is the release, or is on an explicit exemption list
+  carrying a reason. A test pinning today's four job names would let the next
+  job diverge exactly as this one did.
+
+  `docs/openapi.yaml`'s `info.version` had said `0.1.0` since the file was
+  created — unchanged across v0.1.0, v0.2.0 and v0.3.0, while the spec gained
+  four response codes, a schema, two properties and an enum in this round alone.
+  `make version-check` reads it on two axes: **every push**, it must not be older
+  than the newest released `CHANGELOG.md` heading (this never predicts the next
+  version, and would have fired the first push after v0.2.0); **at tag time**, it
+  must equal the tag, run before goreleaser so a mismatch costs a deleted tag
+  rather than a published release. `info.version` is now `0.4.0`.
+
+  `RELEASING.md` is new. There was no release checklist anywhere — `CONTRIBUTING.md`
+  contained no occurrence of "release" — and the one instruction that existed
+  (*"Bump `info.version` when you tag"*) lived in a hosting document nobody opens
+  at tag time. `CONTRIBUTING.md` also now names the nine targets CI gates on
+  beyond its four; following it exactly produced a red PR.
+
+### Fixed
+
+- **`scripts/ci-test-summary.py` reported success over a run that never
+  finished.** It failed only on an `action == "fail"` event carrying a `Test`.
+  Measured on go1.25.5, three of the four ways a run dies emit no such event: a
+  compile error, a panic in `TestMain`, and a panic in a background goroutine
+  that takes the binary down mid-test. Only a panic *inside* a test was caught.
+  So the macOS job could go green while printing `All tests passed (0 package(s)
+  with tests).`
+
+  Every failing shape emits a package-scoped `fail` with no `Test`, and the
+  script already discriminated on exactly that shape for the *pass* case and had
+  no `fail` counterpart. It has one now, plus `build-fail`, plus an optional
+  `go test` exit status for the case no event can describe — a truncated or
+  unwritten output file. Five fixtures captured from real runs pin all of it.
+
+  This mattered before the release gated on that job: a gate that can be green
+  on a panic is weaker than it looks.
+
+- **The web UI rendered a frozen `v0.1.0`.** `HealthPage` fell back to that
+  literal whenever `/health` had not resolved, so a page loading against a v0.3.0
+  daemon showed a version three releases old as though it were the running build
+  — `info.version`'s defect, user-visible. It shows an em dash now, which is
+  what is true.
+
+
 - **The other two judgment reasons are exercised end to end.**
   `demo.block_plan_review_cycles` and `demo.dangle_plan_dependency` make the
   demo provider produce a blocked plan review and a plan with a dependency no

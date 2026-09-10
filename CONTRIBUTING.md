@@ -29,8 +29,19 @@ make vet       # go vet ./...
 make embed-web # rebuild web/dist and copy into internal/web/dist
 ```
 
-Go toolchain requires a workspace-local module cache in the sandboxed environment; the Makefile
-and scripts honor `GOPATH`/`GOCACHE`/`GOMODCACHE` relative to the repo.
+Go toolchain requires a workspace-local module cache in the sandboxed environment; the scripts
+honor `GOPATH`/`GOCACHE`/`GOMODCACHE` relative to the repo (the Makefile does not set them).
+
+**CI gates on nine more targets than those four**, and following the list above alone produces a
+red PR. Run them before pushing:
+
+```bash
+make check-embed docs-check api-check api-docs-check docs-lint      claims-check ledger-check enum-check version-check
+bash scripts/smoke.sh   # the end-to-end pass; ~1 minute
+```
+
+Each exists because a specific defect shipped past the ones before it; the comments in
+`.github/workflows/ci.yml` say which. Releasing is `RELEASING.md`.
 
 ## Conventions
 

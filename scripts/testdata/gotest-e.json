@@ -1,0 +1,13 @@
+{"Time":"2026-09-10T09:02:21.687507-07:00","Action":"start","Package":"fx/e"}
+{"Time":"2026-09-10T09:02:21.911497-07:00","Action":"run","Package":"fx/e","Test":"TestE"}
+{"Time":"2026-09-10T09:02:21.911544-07:00","Action":"output","Package":"fx/e","Test":"TestE","Output":"=== RUN   TestE\n"}
+{"Time":"2026-09-10T09:02:21.911561-07:00","Action":"output","Package":"fx/e","Test":"TestE","Output":"--- PASS: TestE (0.00s)\n"}
+{"Time":"2026-09-10T09:02:21.911568-07:00","Action":"pass","Package":"fx/e","Test":"TestE","Elapsed":0}
+{"Time":"2026-09-10T09:02:21.911573-07:00","Action":"run","Package":"fx/e","Test":"TestSkipped"}
+{"Time":"2026-09-10T09:02:21.91158-07:00","Action":"output","Package":"fx/e","Test":"TestSkipped","Output":"=== RUN   TestSkipped\n"}
+{"Time":"2026-09-10T09:02:21.911585-07:00","Action":"output","Package":"fx/e","Test":"TestSkipped","Output":"    e_test.go:4: no docker\n"}
+{"Time":"2026-09-10T09:02:21.911678-07:00","Action":"output","Package":"fx/e","Test":"TestSkipped","Output":"--- SKIP: TestSkipped (0.00s)\n"}
+{"Time":"2026-09-10T09:02:21.911689-07:00","Action":"skip","Package":"fx/e","Test":"TestSkipped","Elapsed":0}
+{"Time":"2026-09-10T09:02:21.911696-07:00","Action":"output","Package":"fx/e","Output":"PASS\n"}
+{"Time":"2026-09-10T09:02:21.912505-07:00","Action":"output","Package":"fx/e","Output":"ok  \tfx/e\t0.225s\n"}
+{"Time":"2026-09-10T09:02:21.913866-07:00","Action":"pass","Package":"fx/e","Elapsed":0.226}

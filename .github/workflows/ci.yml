@@ -5,9 +5,12 @@ on:
   pull_request:
   workflow_dispatch: # manual trigger (used for the opt-in agent tier)
 
-# Least privilege: no job here writes to the repository. The agent tier below
-# runs a real coding agent with network egress, so it must not inherit a
-# writable token.
+# Least privilege by default. Every job here is read-only except `release`,
+# which declares `contents: write` for itself in order to create the GitHub
+# release. Job-level `permissions` REPLACES this default rather than merging
+# with it, and any scope a job block omits is set to `none` -- so the agent tier,
+# which runs a real coding agent with network egress, declares `contents: read`
+# explicitly and cannot inherit the release job's write token.
 permissions:
   contents: read
 
@@ -118,6 +121,15 @@ jobs:
       # from the spec could not approve a change set at all.
       - name: spec enums match the domain constants
         run: make enum-check
+
+      # The seventh axis: the spec's own version. It said 0.1.0 from the file's
+      # creation through three tags, while gaining response codes, schemas,
+      # properties and an enum -- because the only thing asking for a bump was a
+      # sentence in docs/api-reference-hosting.md. This half needs no tag: it
+      # refuses a spec describing a release CHANGELOG.md has already superseded,
+      # and would have fired the first push after v0.2.0 shipped.
+      - name: the spec's version is not older than the last release
+        run: make version-check
 
   # macOS is a supported platform and nothing in this repo branches on
   # runtime.GOOS, so the darwin/linux differences that matter are filesystem
@@ -247,6 +259,88 @@ jobs:
       - name: Unit test
         working-directory: web
         run: pnpm test
+
+  # The release. It lives HERE, and not in a workflow of its own, because
+  # `needs:` resolves job ids within a single workflow file and cannot reference
+  # a job in another one. DX audit 7 found .github/workflows/release.yml gating a
+  # tag on `go vet` and `go test` on one OS -- none of the eight guards, no
+  # smoke, no macOS, no web tests -- and the report's own suggested fix ("two
+  # lines: needs: [...]") would not have worked for exactly that reason. The
+  # jobs above already ran on every tag push, since `on: push:` is unfiltered;
+  # they simply did not gate. Now they do.
+  #
+  # Copying the guard steps into a separate release workflow was the alternative
+  # and was rejected: a ninth guard added above would not reach the copy, and
+  # nothing would say so. That divergence IS the finding. `needs` cannot drift.
+  #
+  # internal/ciguard asserts that every job in this file either gates the
+  # release or is listed as an explicit exemption, so the next job added has to
+  # make that choice rather than have it made by omission.
+  release:
+    name: Publish release binaries
+    needs: [compile-no-node, macos, backend, web]
+    # `github.event_name == 'push'` is load-bearing, not decoration: this
+    # workflow accepts workflow_dispatch, a dispatch can select a tag ref, and a
+    # ref test alone would open a publishing path release.yml never had.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload archives
+    # No cancel-in-progress, deliberately. Nothing races today, but this
+    # workflow now runs on every push, which makes a workflow-level
+    # `concurrency: { cancel-in-progress: true }` a tempting future addition --
+    # and it would cancel a running release. Do not add one.
+    concurrency:
+      group: release-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # goreleaser derives Tag, FullCommit and Version from history
+          # goreleaser is handed GITHUB_TOKEN explicitly below, so a persisted
+          # credential buys nothing and only widens the blast radius.
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # The committed internal/web/dist/index.html is a placeholder, so the real
+      # UI has to be built before the binaries are.
+      - uses: pnpm/action-setup@v5
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # Before goreleaser, so a mismatch costs a deleted tag rather than a
+      # published release with a spec claiming a different version. docs/
+      # openapi.yaml's info.version sat at 0.1.0 across three tags because the
+      # only thing asking for a bump was a sentence in a hosting document.
+      - name: The spec's version matches the tag
+        run: make version-check VERSION=${{ github.ref_name }}
+
+      # Deliberately NOT `make embed-web` here: it overwrites the tracked
+      # internal/web/dist/index.html placeholder, and goreleaser refuses to run
+      # on a dirty tree, so a real tag push would abort at the release step.
+      # That was caught once as a pre-merge P0 (see git show 04442b7) and this
+      # job now sits directly below `backend`, whose second step is exactly that
+      # command -- so the warning stays with the job it warns about.
+      #
+      # `make check-embed` is not needed here either: goreleaser's before-hook
+      # dirties the tree only AFTER goreleaser's own git validation, and nothing
+      # runs afterward. compile-no-node checks the placeholder, and this job
+      # needs it.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   agent:
     name: Agent integration (opt-in — real Hermes + model)
