@@ -137,10 +137,21 @@ rather than guessing.
 **Nothing keeps a hosted reference in step with an installed binary, and no check will tell you.**
 
 `docs/openapi.yaml`'s `info.version` is a hand-typed literal. `internal/buildinfo` takes its version
-from `git describe` through `-ldflags`. The two are unconnected, and no guard reads `info.version`
-at all: `make api-check` compares routes to paths, request-body fields to handlers, and 409s to the
-preconditions that can answer them — three axes, none of them the version.
+from `git describe` through `-ldflags`. The two are still unconnected, but `info.version` is no
+longer unguarded — that sentence used to say *"no guard reads `info.version` at all"*, and it was
+true for three releases, during which the literal never moved off `0.1.0`.
 
-So: publishing is a manual release step. Bump `info.version` when you tag, republish after you
-release, and treat a hosted page as describing whatever was last pushed to it rather than whatever
-your users are running.
+`make version-check` now reads it, on two axes:
+
+- **Every push**, in CI: `info.version` must not be older than the newest released heading in
+  `CHANGELOG.md`. This never predicts the next version; it refuses a spec that describes a release
+  already superseded.
+- **At tag time**, as the release job's first step: `info.version` must equal the tag. It runs
+  before goreleaser, so a mismatch costs a deleted tag rather than a published release.
+
+**The bump moves at merge, not at tag.** The old instruction here was *"Bump `info.version` when you
+tag"*, and three consecutive tags missed it. Bumping in the commit that opens a version's work is
+what makes the every-push check passable, and `RELEASING.md` carries the sequence.
+
+Publishing the hosted page is still a manual step. Republish after you release, and treat a hosted
+page as describing whatever was last pushed to it rather than whatever your users are running.

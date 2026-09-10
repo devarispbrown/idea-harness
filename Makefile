@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check
+.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check version-check
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -85,6 +85,16 @@ claims-check:
 
 ledger-check:
 	go run ./internal/docsgen -ledger-check
+
+# Two checks in one target. Without VERSION it runs the staleness half only --
+# info.version must not be older than the newest released CHANGELOG heading --
+# which is cheap enough for every push. With VERSION (the release job passes the
+# tag) it additionally requires an exact match.
+#
+# VERSION is already defined above from `git describe --exact-match`, which is
+# empty off a tag; that is the staleness-only case and is not an error.
+version-check:
+	go run ./internal/docsgen -version-check $(if $(VERSION),-version=$(VERSION))
 
 enum-check:
 	go run ./internal/docsgen -enum-check

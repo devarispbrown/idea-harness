@@ -1,0 +1,10 @@
+{"Time":"2026-09-10T09:02:20.474038-07:00","Action":"start","Package":"fx/b"}
+{"Time":"2026-09-10T09:02:20.75429-07:00","Action":"output","Package":"fx/b","Output":"panic: TestMain boom\n"}
+{"Time":"2026-09-10T09:02:20.754411-07:00","Action":"output","Package":"fx/b","Output":"\n"}
+{"Time":"2026-09-10T09:02:20.754429-07:00","Action":"output","Package":"fx/b","Output":"goroutine 1 [running]:\n"}
+{"Time":"2026-09-10T09:02:20.754452-07:00","Action":"output","Package":"fx/b","Output":"fx/b.TestMain(...)\n"}
+{"Time":"2026-09-10T09:02:20.754463-07:00","Action":"output","Package":"fx/b","Output":"\t/private/tmp/claude-501/-Users-devarisbrown-Code-projects-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/b/b_test.go:3\n"}
+{"Time":"2026-09-10T09:02:20.754479-07:00","Action":"output","Package":"fx/b","Output":"main.main()\n"}
+{"Time":"2026-09-10T09:02:20.754488-07:00","Action":"output","Package":"fx/b","Output":"\t_testmain.go:47 +0x94\n"}
+{"Time":"2026-09-10T09:02:20.755089-07:00","Action":"output","Package":"fx/b","Output":"FAIL\tfx/b\t0.281s\n"}
+{"Time":"2026-09-10T09:02:20.755113-07:00","Action":"fail","Package":"fx/b","Elapsed":0.281}

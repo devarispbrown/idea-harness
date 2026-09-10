@@ -45,7 +45,17 @@ func main() {
 	enumCheck := flag.Bool("enum-check", false, "compare docs/openapi.yaml's named string enums against internal/domain/enums.go")
 	ledgerCheck := flag.Bool("ledger-check", false, "evaluate every defect-ledger row's predicate and fail on a stale-open or a regression")
 	specJSON := flag.String("spec-json", "", "write docs/openapi.yaml to this path as JSON (used by `make api-docs-dist`)")
+	versionCheck := flag.Bool("version-check", false, "fail when docs/openapi.yaml's info.version is older than the newest released CHANGELOG heading, or (with -version) does not equal the tag being built")
+	version := flag.String("version", "", "the tag being built, for -version-check; empty runs the staleness half only")
 	flag.Parse()
+
+	if *versionCheck {
+		if err := runVersionCheck(*version); err != nil {
+			fmt.Fprintln(os.Stderr, "version-check:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *specJSON != "" {
 		if err := writeSpecJSON(*specJSON); err != nil {

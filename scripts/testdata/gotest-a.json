@@ -1,0 +1,6 @@
+{"ImportPath":"fx/a.test","Action":"build-output","Output":"# fx/a\n"}
+{"ImportPath":"fx/a.test","Action":"build-output","Output":"a/a_test.go:3:33: expected ';', found is\n"}
+{"ImportPath":"fx/a.test","Action":"build-fail"}
+{"Time":"2026-09-10T09:02:20.333766-07:00","Action":"start","Package":"fx/a"}
+{"Time":"2026-09-10T09:02:20.333784-07:00","Action":"output","Package":"fx/a","Output":"FAIL\tfx/a [setup failed]\n"}
+{"Time":"2026-09-10T09:02:20.333792-07:00","Action":"fail","Package":"fx/a","Elapsed":0,"FailedBuild":"fx/a.test"}

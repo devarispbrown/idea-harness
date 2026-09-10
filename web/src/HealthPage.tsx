@@ -88,7 +88,12 @@ export default function HealthPage({
       <section className="health-daemon">
         <span className={`health-dot ${health?.status === "ok" ? "" : "down"}`} />
         <span className="health-addr">
-          127.0.0.1:8787 · {health?.version ?? "v0.1.0"} · state in ~/.local/share/idea-harness
+          {/* No hardcoded version fallback. This read "v0.1.0", frozen since the
+              file was written, so a daemon that had not answered yet rendered a
+              version three releases old as though it were the running build --
+              the same defect as docs/openapi.yaml's info.version, in the UI. An
+              em dash says "not known yet", which is what is true. */}
+          127.0.0.1:8787 · {health?.version ?? "—"} · state in ~/.local/share/idea-harness
         </span>
       </section>
     </div>

@@ -1,0 +1,22 @@
+{"Time":"2026-09-10T09:02:20.909979-07:00","Action":"start","Package":"fx/c"}
+{"Time":"2026-09-10T09:02:21.144979-07:00","Action":"run","Package":"fx/c","Test":"TestPanics"}
+{"Time":"2026-09-10T09:02:21.145072-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"=== RUN   TestPanics\n"}
+{"Time":"2026-09-10T09:02:21.145101-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"--- FAIL: TestPanics (0.00s)\n"}
+{"Time":"2026-09-10T09:02:21.148076-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"panic: boom [recovered, repanicked]\n"}
+{"Time":"2026-09-10T09:02:21.149587-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\n"}
+{"Time":"2026-09-10T09:02:21.149601-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"goroutine 35 [running]:\n"}
+{"Time":"2026-09-10T09:02:21.14972-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"testing.tRunner.func1.2({0x100a4cd20, 0x100a7d710})\n"}
+{"Time":"2026-09-10T09:02:21.149739-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/opt/homebrew/Cellar/go/1.25.5/libexec/src/testing/testing.go:1872 +0x190\n"}
+{"Time":"2026-09-10T09:02:21.149751-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"testing.tRunner.func1()\n"}
+{"Time":"2026-09-10T09:02:21.149756-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/opt/homebrew/Cellar/go/1.25.5/libexec/src/testing/testing.go:1875 +0x31c\n"}
+{"Time":"2026-09-10T09:02:21.149761-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"panic({0x100a4cd20?, 0x100a7d710?})\n"}
+{"Time":"2026-09-10T09:02:21.149766-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/opt/homebrew/Cellar/go/1.25.5/libexec/src/runtime/panic.go:783 +0x120\n"}
+{"Time":"2026-09-10T09:02:21.149771-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"fx/c.TestPanics(0x14000180540?)\n"}
+{"Time":"2026-09-10T09:02:21.149776-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/private/tmp/claude-501/-Users-devarisbrown-Code-projects-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/c/c_test.go:3 +0x2c\n"}
+{"Time":"2026-09-10T09:02:21.14979-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"testing.tRunner(0x14000180540, 0x100a7cc00)\n"}
+{"Time":"2026-09-10T09:02:21.149796-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/opt/homebrew/Cellar/go/1.25.5/libexec/src/testing/testing.go:1934 +0xc8\n"}
+{"Time":"2026-09-10T09:02:21.149804-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-09-10T09:02:21.149812-07:00","Action":"output","Package":"fx/c","Test":"TestPanics","Output":"\t/opt/homebrew/Cellar/go/1.25.5/libexec/src/testing/testing.go:1997 +0x364\n"}
+{"Time":"2026-09-10T09:02:21.149843-07:00","Action":"fail","Package":"fx/c","Test":"TestPanics","Elapsed":0}
+{"Time":"2026-09-10T09:02:21.149853-07:00","Action":"output","Package":"fx/c","Output":"FAIL\tfx/c\t0.239s\n"}
+{"Time":"2026-09-10T09:02:21.149867-07:00","Action":"fail","Package":"fx/c","Elapsed":0.24}
