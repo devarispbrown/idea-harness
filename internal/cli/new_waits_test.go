@@ -74,3 +74,85 @@ func TestNewSurfacesAFailedRun(t *testing.T) {
 		t.Fatal("a failed run reported success")
 	}
 }
+
+// TestNewReportsTheTerminalState pins audit 7's P1-1.
+//
+// `idea new` printed `✓ reviewed PRD ready` unconditionally on operation
+// success and never read the terminal status, so a PRD parked for human
+// judgment was reported as ready while `idea status` said "needs your judgment"
+// one command later. That is the same class audit 6 fixed one command over, on
+// the path README:179 tells you to expect with a real model.
+//
+// Both rows also assert exit 0. `idea new` succeeded in both: it created the
+// initiative and its run finished. A parked review is the workflow working, and
+// a non-zero exit here would be a new defect in a command that previously
+// always succeeded.
+func TestNewReportsTheTerminalState(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		next    map[string]string
+		want    string
+		notWant string
+	}{
+		{
+			name:    "review converged",
+			next:    map[string]string{"action": "advance"},
+			want:    "reviewed PRD ready",
+			notWant: "did not converge",
+		},
+		{
+			name: "review parked on a human",
+			next: map[string]string{"action": "resolve prd"},
+			// The judgment text has one source: reportJudgment, which `idea
+			// next` uses too, so the two cannot drift.
+			want:    "did not converge",
+			notWant: "reviewed PRD ready",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDaemon(t)
+			f.json("POST /api/v1/projects/{id}/initiatives",
+				map[string]string{"initiative_id": "ini-1", "operation_id": "op-1"})
+			f.json("GET /api/v1/operations/op-1", map[string]string{"status": "succeeded", "type": "run_initiative"})
+			f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/next", tc.next)
+
+			stdout, _, err := run(t, "new", "Build usage-based billing")
+			if err != nil {
+				t.Fatalf("idea new exited non-zero (%v); the initiative was created and its "+
+					"run finished, so this command succeeded", err)
+			}
+			if !strings.Contains(stdout, tc.want) {
+				t.Errorf("stdout does not contain %q:\n%s", tc.want, stdout)
+			}
+			if strings.Contains(stdout, tc.notWant) {
+				t.Errorf("stdout still contains %q, which is not what happened:\n%s", tc.notWant, stdout)
+			}
+		})
+	}
+}
+
+// The tail must never drive. Routing it through reportNextAction would have
+// made a successful `idea new` POST /advance and start M2 -- spending model
+// budget through design before anyone read the PRD, which internal/cli/next.go
+// says the CLI deliberately does not do.
+func TestNewDoesNotDriveTheWorkflow(t *testing.T) {
+	f := newFakeDaemon(t)
+	// Seeded so cmdAdvance would actually reach its POST. Without it
+	// resolveInitiative fails first with "no initiatives yet" and this test
+	// cannot tell driving from not driving -- it passed against a deliberately
+	// broken build until the seed was added.
+	f.seedInitiative()
+	f.json("POST /api/v1/projects/{id}/initiatives",
+		map[string]string{"initiative_id": "ini-1", "operation_id": "op-1"})
+	f.json("GET /api/v1/operations/op-1", map[string]string{"status": "succeeded", "type": "run_initiative"})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/next", map[string]string{"action": "advance"})
+
+	if _, _, err := run(t, "new", "Build usage-based billing"); err != nil {
+		t.Fatalf("idea new: %v", err)
+	}
+	for _, r := range f.requests {
+		if strings.Contains(r, "/advance") {
+			t.Fatalf("idea new started the M2 pipeline on its own: %v", f.requests)
+		}
+	}
+}

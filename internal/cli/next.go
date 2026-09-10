@@ -203,19 +203,34 @@ func reportStalledAction(c *client, projectID, iniID, action string, stdout io.W
 	return nil
 }
 
-// reportNextAction prints the human-facing guidance for an action the loop will
-// not take on its own. This is the whole of `idea next` without --until-human.
+// reportNextAction takes the next step. Despite the name it is not a renderer:
+// the first three arms RUN the thing they name, which is what makes `idea next`
+// a driver. Everything it does not run is delegated to renderNextAction.
+//
+// The split exists because `idea new` needs the reporting half and must not
+// have the running half: routing its tail through this function would have made
+// a successful `idea new` POST /advance and start the M2 pipeline, spending
+// model budget through design before anyone read the PRD -- the thing the
+// comment at the top of this file says the CLI deliberately does not do.
 func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout, stderr io.Writer) error {
-	action := step.Action
-	switch {
-	case action == "advance":
+	switch step.Action {
+	case "advance":
 		return cmdAdvance(cmdArgs{}, stdout, stderr)
-	case action == "execute":
+	case "execute":
 		return cmdExecute(cmdArgs{}, stdout, stderr)
-	case action == "verify":
+	case "verify":
 		// Not a failure here: an unmet gate is exactly the human judgment
 		// point this loop exists to stop at.
 		return runVerify(cmdArgs{}, stdout, stderr, false)
+	}
+	return renderNextAction(step, stdout)
+}
+
+// renderNextAction prints the guidance for a step nothing will take on its own.
+// It writes and returns; it never changes state.
+func renderNextAction(step nextStep, stdout io.Writer) error {
+	action := step.Action
+	switch {
 	case strings.HasPrefix(action, "review "):
 		id := strings.TrimPrefix(action, "review ")
 		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id)+" — "+muted("idea review "+id+" approve"))

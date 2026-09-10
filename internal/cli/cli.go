@@ -523,7 +523,39 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := waitForOperation(c, projectID, out["initiative_id"], opID, stdout); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, ok("✓ reviewed PRD ready")+" "+muted("— next: ")+bold("idea next --until-human"))
+	// The line has to reflect what actually happened. It used to be printed
+	// unconditionally on operation success, so a PRD parked for human judgment
+	// -- `demo.block_review_cycles: 3`, or any real model whose review does not
+	// converge -- was reported as ready while `idea status` said "needs your
+	// judgment" one command later. That is the defect audit 6 fixed one command
+	// over, on the path README tells you to expect with a real model.
+	//
+	// Asked rather than derived: the property that was violated is agreement
+	// between this line and what `idea next` will say, so the answer comes from
+	// the same endpoint `idea next` reads. Only two states are reachable here --
+	// engine.Run ends in runReviewLoop, which returns approved or
+	// needs_human_judgment/prd_review -- but the default arm renders whatever a
+	// third would be rather than guessing.
+	//
+	// renderNextAction, NOT reportNextAction: the latter RUNS `advance`, and
+	// `idea new` driving into M2 on its own would spend model budget through
+	// design before anyone has read the PRD.
+	step, nerr := nextAction(c, projectID, out["initiative_id"])
+	switch {
+	case nerr != nil:
+		// The initiative exists and its run succeeded; a failure to ask what is
+		// next is not a reason to report failure. Fall back to the line that was
+		// unconditional before, which is right for the converging case.
+		fmt.Fprintln(stdout, ok("✓ reviewed PRD ready")+" "+muted("— next: ")+bold("idea next --until-human"))
+	case step.Action == "advance":
+		fmt.Fprintln(stdout, ok("✓ reviewed PRD ready")+" "+muted("— next: ")+bold("idea next --until-human"))
+	default:
+		// Errors are swallowed on purpose. `idea new` succeeded: it created the
+		// initiative and its run finished. A parked review is the workflow
+		// working, and `renderNextAction` returns an error only for `failed`,
+		// which `idea new` reports through its own error path already.
+		_ = renderNextAction(step, stdout)
+	}
 	return nil
 }
 

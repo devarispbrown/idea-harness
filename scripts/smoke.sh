@@ -288,7 +288,17 @@ wait "$DAEMON_PID" 2>/dev/null || true
 DAEMON_PID=$!
 wait_for "daemon to report running (judgment pass)" 5 daemon_running
 
-"$ROOT/bin/idea" new "A recipe sharing app for home cooks"
+# `idea new`'s OWN output, which this pass produced and never checked. It
+# printed `✓ reviewed PRD ready` unconditionally on operation success, so a PRD
+# parked for human judgment -- exactly what this pass sets up -- was reported as
+# ready while `idea status` said "needs your judgment" one command later.
+NEW_OUT=$("$ROOT/bin/idea" new "A recipe sharing app for home cooks")
+printf '%s\n' "$NEW_OUT"
+printf '%s' "$NEW_OUT" | grep -q 'reviewed PRD ready' &&
+  { echo "ERROR: idea new reported a reviewed PRD over a review parked on a human"; exit 1; }
+printf '%s' "$NEW_OUT" | grep -q 'did not converge' ||
+  { echo "ERROR: idea new did not name the parked review"; exit 1; }
+echo "idea new reports the parked review rather than a ready PRD"
 wait_for "the blocked initiative to leave the running state" 60 initiative_left_running
 
 # The pointer. `idea next` named `idea decisions` for every cause, and in this
