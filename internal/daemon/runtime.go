@@ -1121,7 +1121,30 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	return opID, nil
 }
 
-// ApprovePlanInitiative re-runs the execution-plan review asynchronously.
+// hasOpenStructuralPlanFinding reports whether the initiative carries an
+// undisposed `critical` finding from the deterministic plan checks -- today,
+// exactly a task-dependency cycle.
+//
+// ReviewRunID is the discriminator because runExecutionPlanReview stamps
+// "deterministic-plan-check" on every finding the checks produced and leaves the
+// adversarial reviewer's own run id on the rest. The PRD loop uses a different
+// literal ("deterministic-check"), so the two cannot collide.
+func hasOpenStructuralPlanFinding(ctx context.Context, pr *projectRuntime, initiativeID string) (bool, error) {
+	findings, err := pr.db.ListFindingsByInitiative(ctx, initiativeID)
+	if err != nil {
+		return false, err
+	}
+	for _, f := range findings {
+		if f.Disposition == "" &&
+			f.ReviewRunID == workflow.DeterministicPlanCheckRun &&
+			f.Severity == domain.SeverityCritical {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ApprovePlanInitiative accepts the execution plan, findings and all.
 func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
@@ -1134,7 +1157,18 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	if ini.Status == domain.InitiativeRunning {
 		return "", fmt.Errorf("initiative is running; wait for it to finish")
 	}
-	if ini.Status != domain.InitiativeNeedsHumanJudgment && ini.Status != domain.InitiativePlanApproved {
+	// needs_human_judgment only. `plan_approved` used to be accepted too, and
+	// once ApprovePlan became a real accept that was a hole: SetInitiativeStatus
+	// clears judgment_reason, so a plan_approved initiative carries "", which the
+	// reason gate below allows -- and the web UI's commit bar renders in every
+	// status (PlanPage.tsx). A stray click would then have dispositioned every
+	// open finding as a human's accepted_risk, with no review and no
+	// confirmation. Refusing here means the button is inert rather than
+	// destructive, and it makes the idempotency explicit instead of silent.
+	if ini.Status == domain.InitiativePlanApproved {
+		return "", preconditionf("this plan is already approved")
+	}
+	if ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
 	}
 	// The reason, not just the status. All four JudgmentReasons share one, so a
@@ -1159,11 +1193,36 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	} else if len(cses) > 0 {
 		return "", preconditionf("cannot approve a plan that already has change sets")
 	}
+	// A human can accept an adversarial reviewer's judgment. A human cannot
+	// accept a dependency cycle: detectCycle's own finding says "the plan cannot
+	// be scheduled", and nextReadyTask will never yield a task whose
+	// predecessors can never apply. Approving one would trade audit 7's
+	// live-lock for a Build that no command can advance -- `idea next` answers
+	// "verify" forever and only revise-plan recovers, which it will not name.
+	//
+	// critical ONLY, deliberately. deterministicPlanChecks also emits a `high`
+	// traceability finding per untraced task, and a task is untraced whenever
+	// the model's `requirement` string does not resolve: reqByCode returns "" and
+	// createTask skips the edge with no error. That field is a bare string with
+	// no enum, so an untraced task is ordinary, not exceptional. Sweeping `high`
+	// in here would refuse approve-plan on the common case and send the user to
+	// revise-plan, which re-runs the same unconstrained call -- reconstructing
+	// the live-lock this fix exists to remove, with a different message.
+	// Untraced work schedules and applies fine; it is a judgment call, and
+	// judgment calls are exactly what a human may accept.
+	if blocked, err := hasOpenStructuralPlanFinding(ctx, pr, initiativeID); err != nil {
+		return "", err
+	} else if blocked {
+		return "", preconditionf("this plan has a structural defect a human cannot sign off " +
+			"(see `idea reviews`); `idea revise-plan` regenerates it")
+	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
 	// four of these entry points asked "is it running?" and never set it, so
 	// two concurrent callers both passed.
-	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment, domain.InitiativePlanApproved); err != nil {
+	// Narrowed with the read gate above: both must move together, or the request
+	// passes one and fails the other with the wrong message.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID, domain.InitiativeNeedsHumanJudgment); err != nil {
 		if errors.Is(err, store.ErrInitiativeNotClaimable) {
 			return "", preconditionf("initiative is already running or not ready to approve-plan")
 		}

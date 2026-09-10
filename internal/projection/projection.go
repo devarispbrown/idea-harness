@@ -307,7 +307,7 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 				Affected: []string{"Execution Plan"}}
 		case domain.JudgmentPlanReview:
 			return Guidance{Action: "Resolve blocking plan-review findings",
-				Why:      "The plan review did not converge. `idea reviews` lists the findings; `idea revise-plan` regenerates the plan. `idea approve-plan` re-runs the review, which can block again.",
+				Why:      "The plan review did not converge. `idea reviews` lists the findings; `idea revise-plan` regenerates the plan, and `idea approve-plan` accepts it as it stands.",
 				Affected: []string{"Execution Plan", "Review"}}
 		case domain.JudgmentVerification:
 			return Guidance{Action: "Re-record verification evidence",

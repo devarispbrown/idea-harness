@@ -76,17 +76,57 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 // a lie. accepted_risk by HumanActor, the same pair Approve records, because
 // that is what happened -- nothing was fixed.
 func (e *Engine) ApprovePlan(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
-	// The reason and change-set gates are in Runtime.ApprovePlanInitiative, not
+	// The gates -- running, status, judgment reason, change sets, and the
+	// deterministic-findings check -- are in Runtime.ApprovePlanInitiative, not
 	// here: this runs inside the launched operation, so a refusal raised at this
 	// point fails the initiative rather than declining the request. A
 	// precondition has to be answered before the work starts.
 	//
-	// Before the re-run, so it closes what the human was shown and the fresh run
-	// is judged on its own findings alone.
+	// This used to end `return e.runExecutionPlanReview(...)`, and that made
+	// `approve-plan` a retry rather than an accept. runExecutionPlanReview runs a
+	// fresh adversarial review, and a model reviewer is not a fixed point: on a
+	// real provider the plan review blocked again, and again -- observed eleven
+	// consecutive times in DX audit 7, with no route to plan_approved from any
+	// surface. `revise-plan` re-enters the same function after regenerating the
+	// plan; the web UI posts to the same endpoint. The PRD half never had this
+	// problem because Engine.Approve accepts outright and does not re-run
+	// runReviewLoop. This is that asymmetry closed.
+	//
+	// Six audits could not see it. demoProvider primes a FINITE queue from
+	// demo.block_plan_review_cycles, so once it drains the demo reviewer
+	// converges and approve-plan appears to work -- scripts/smoke.sh says so in
+	// its own comment. A converging blocker proves the park is reachable; it can
+	// never prove the escape exists, because the escape is indistinguishable
+	// from the queue running out.
+	//
+	// Unconditional, not a compare-and-swap. Engine.Approve CASes, but it can:
+	// Runtime.ApproveInitiative calls it synchronously on the request goroutine
+	// with no claim, so the status is still needs_human_judgment. This runs from
+	// launchOperation AFTER ClaimInitiativeRunning (runtime.go), so the status
+	// here is always `running` and a CAS from {needs_human_judgment,
+	// plan_approved} would match zero rows -- sending failOperation(...,
+	// failInitiative: true) down the error path and marking every initiative
+	// FAILED. The claim is already the compare-and-swap this would have added.
+	//
+	// Disposition before the status write. Either order ends `failed` if the
+	// other call errors, since this is inside the operation -- what the order
+	// decides is which inconsistency survives into that failed state.
+	// Disposition-first leaves a human's accepted_risk signature on a plan that
+	// was never approved: visible in `idea reviews`, and recoverable.
+	// Status-first would show a plan_approved the human never got. The
+	// precedent is runReviewLoop's convergence path (engine.go), which
+	// dispositions and then writes the status.
+	//
+	// accepted_risk, not fixed: nothing was fixed. It is also the one
+	// disposition the reviewer is forbidden to set, which keeps it
+	// unambiguously a human's signature on the risk.
 	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionAcceptedRisk, store.HumanActor); err != nil {
 		return "", err
 	}
-	return e.runExecutionPlanReview(ctx, initiativeID)
+	if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativePlanApproved, store.HumanActor); err != nil {
+		return "", err
+	}
+	return domain.InitiativePlanApproved, nil
 }
 
 // ReopenPhase re-runs the design pipeline from the given design stage through
@@ -385,6 +425,14 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	return nil
 }
 
+// DeterministicPlanCheckRun is the ReviewRunID stamped on every finding
+// deterministicPlanChecks produced, distinguishing them from the adversarial
+// reviewer's, whose run id runModel supplies. The daemon reads it to refuse
+// `approve-plan` over a structural defect a human cannot meaningfully accept.
+// The PRD loop's equivalent literal is "deterministic-check", deliberately
+// different, so the two sets cannot be confused.
+const DeterministicPlanCheckRun = "deterministic-plan-check"
+
 func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	det := e.deterministicPlanChecks(ctx, initiativeID)
 	adv, err := e.runPlanAdversarialReview(ctx, initiativeID)
@@ -395,7 +443,7 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	for i := range all {
 		all[i].InitiativeID = initiativeID
 		if all[i].ReviewRunID == "" {
-			all[i].ReviewRunID = "deterministic-plan-check"
+			all[i].ReviewRunID = DeterministicPlanCheckRun
 		}
 		all[i].Finding = e.redact(all[i].Finding)
 		all[i].Evidence = e.redact(all[i].Evidence)

@@ -65,6 +65,51 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **`idea approve-plan` accepts the plan instead of re-reviewing it.** It was a
+  retry wearing an accept's name: `Engine.ApprovePlan` dispositioned the open
+  findings and then re-ran the adversarial review, and a model reviewer is not a
+  fixed point. DX audit 7 observed the plan review blocking **eleven consecutive
+  times** on `openai/gpt-4o-mini`, across `revise-plan` regenerations and five
+  further bare `approve-plan` calls, with no route to `plan_approved` from the
+  CLI, the API or the web UI. `revise-plan` re-enters the same function;
+  `PlanPage.tsx` posts to the same endpoint.
+
+  The PRD half never had this: `Engine.Approve` accepts outright and does not
+  re-run `runReviewLoop`. This closes that asymmetry.
+
+  | | Was | Now |
+  |---|---|---|
+  | `POST …/approve-plan` on a blocked plan review | 202, then a fresh review that could block again | 202, then `plan_approved` — no model call |
+  | `POST …/approve-plan` on an already-`plan_approved` initiative | 202, and every open finding dispositioned `accepted_risk` | **409** `this plan is already approved` |
+  | `POST …/approve-plan` with an open `critical` deterministic finding | 202, then a re-block | **409** naming `idea revise-plan` |
+
+  Consumer impact: a client calling `approve-plan` to *obtain a fresh review*
+  no longer gets one — use `revise-plan`, which regenerates the plan and
+  reviews it. The 202 and its `operation_id` are unchanged.
+
+  Two gates ship with it. A **dependency cycle cannot be accepted**: an
+  undisposed `critical` finding from the deterministic plan checks refuses the
+  request, because `nextReadyTask` can never schedule a task whose predecessors
+  can never apply, so accepting one would trade this live-lock for a Build no
+  command can advance. Deliberately `critical` only — the traceability check
+  emits `high` per untraced task, and a task is untraced whenever the model's
+  `requirement` string does not resolve, which is ordinary; sweeping `high` in
+  would refuse the common case and rebuild the live-lock with a new message.
+  And **`plan_approved` is no longer an accepted starting state**, because
+  `SetInitiativeStatus` clears `judgment_reason` and the web UI's commit bar
+  rendered in every status — a stray click would have signed off every open
+  finding as a human's `accepted_risk` with no review behind it. That commit bar
+  and its "needs approval" pill are now gated on `needs_human_judgment`.
+
+  Why six audits missed it: `demoProvider` primes a **finite** queue from
+  `demo.block_plan_review_cycles`, so the demo reviewer always converges and
+  `approve-plan` succeeding was indistinguishable from the queue running out —
+  `scripts/smoke.sh` said exactly that in its own comment. A converging blocker
+  proves the park is reachable; it can never prove the escape exists. There is
+  now a smoke pass with a reviewer that does not converge, and it fails on the
+  unfixed tree.
+
+
 - **`idea doctor` asks the daemon whether it has the API key, and fails when it
   does not.** It asked itself, which is the wrong process: `keyProblems`
   resolves the variable with `os.Getenv`, so doctor reported the shell you typed

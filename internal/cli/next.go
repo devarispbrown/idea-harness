@@ -273,24 +273,28 @@ func reportJudgment(reason string, stdout io.Writer) {
 	case "plan":
 		fmt.Fprintln(stdout, bold("Next:")+" the plan review raised blocking findings — "+muted("idea reviews")+muted(" lists them"))
 		line("idea revise-plan ", "regenerate the plan from the findings")
-		// Named second and described honestly. `ApprovePlan` does not approve
-		// anything -- it re-runs the adversarial review (advance.go:58), and
-		// EvaluateApproval only sees the findings from that fresh run, so
-		// whether it escapes depends on the model not raising a blocking
-		// finding this time. Observed blocking twice in a row on a real
-		// provider. Calling it "accept the plan as it stands" would be a lie
-		// with a coin flip behind it.
+		// This used to read "re-run the plan review (it can block again)", and
+		// that was honest about a defect rather than a feature: ApprovePlan
+		// re-ran the adversarial review, so whether it escaped depended on the
+		// model not raising a blocking finding this time. DX audit 7 observed it
+		// blocking eleven consecutive times on a real provider, with no route to
+		// plan_approved from any surface. It is now a terminal accept, matching
+		// `idea approve` on the PRD half, so this line can promise an outcome.
+		//
+		// It can still be refused, but only for a reason the user can act on:
+		// a change set already exists, the initiative is parked on a different
+		// judgment reason, or the plan carries a `critical` deterministic
+		// finding -- a dependency cycle -- which no human can sign off because
+		// nextReadyTask could never schedule it. All three are 409s naming what
+		// to do, not silent re-blocks.
 		//
 		// `idea execute` is deliberately NOT offered, though it works from this
 		// state. It is a one-way door: the blocking findings stay undisposed,
-		// and the only routes that disposition them -- revise-plan and
-		// reopen-phase -- both refuse once a change set exists (advance.go:132,
-		// :74). `idea approve` dispositions too, but refuses any reason but
-		// prd_review, so it is not a way out of this one. One execute here
-		// therefore wedges the completion gate, which requires no open blocking
-		// findings (verify.go:231). Offering it as "the reliable
-		// escape" would have traded this dead end for a worse one.
-		line("idea approve-plan", "re-run the plan review (it can block again)")
+		// and the only routes that disposition them -- approve-plan,
+		// revise-plan and reopen-phase -- all refuse once a change set exists.
+		// One execute here therefore wedges the completion gate, which requires
+		// no open blocking findings.
+		line("idea approve-plan", "accept the plan, findings and all, and move to Build")
 	case "verification":
 		fmt.Fprintln(stdout, bold("Next:")+" a requirement was failed after this initiative completed")
 		line("idea verify <REQ-n> --pass|--fail --note \"<how you checked>\"", "record the evidence")
