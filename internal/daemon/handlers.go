@@ -1939,14 +1939,9 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	// A requirement with no disposition used to be dropped on the floor: the CLI
 	// sent {} and this handler never saw the name, so `idea verify REQ-99`
-	// reported the whole-initiative gate and never mentioned REQ-99. Resolving it
-	// here gives the read path the same answer the write path already gave.
-	if body.Requirement != "" && disposition == "" {
-		if _, err := pr.db.GetRequirementByRef(r.Context(), initiativeID, body.Requirement); err != nil {
-			s.writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-	}
+	// reported the whole-initiative gate and never mentioned REQ-99. The name is
+	// resolved inside RunVerificationGate, alongside the state check, so the two
+	// refusals have one precedence rather than depending on which field was set.
 	status, coverage, err := s.rt.RunVerificationGate(
 		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note)
 	if err != nil {

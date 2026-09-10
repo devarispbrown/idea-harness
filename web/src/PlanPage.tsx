@@ -178,11 +178,21 @@ export default function PlanPage({
   // only `revise-plan` trigger in the whole UI, and the daemon still accepts it
   // from `plan_approved` — so gating the entire bar on `awaitingApproval` left
   // the page with no action at all once a plan was approved.
+  // Parked for some OTHER reason -- plan_dependencies, or a park this page did
+  // not cause. Approving is refused by the API, but revise-plan is accepted from
+  // needs_human_judgment whatever the reason, and `idea next` names it as the
+  // only escape from plan_dependencies. Narrowing `awaitingApproval` without
+  // this branch left those states with no pill and no bar, which is the same
+  // defect the plan_approved branch below exists to fix, one state over.
+  const parkedElsewhere = status === "needs_human_judgment" && !awaitingApproval;
+
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
-    : status === "plan_approved"
-      ? { label: "approved", state: "verified" }
-      : undefined;
+    : parkedElsewhere
+      ? { label: "needs a revision", state: "needs-you" }
+      : status === "plan_approved"
+        ? { label: "approved", state: "verified" }
+        : undefined;
 
   const commit = awaitingApproval
     ? {
@@ -191,13 +201,19 @@ export default function PlanPage({
         onAction: approve,
         secondary: { label: "Ask for a revision", onAction: revisePlan },
       }
-    : status === "plan_approved"
+    : parkedElsewhere
       ? {
-          explanation: "This plan is approved. Build runs it task by task.",
+          explanation: "This plan needs regenerating before it can be approved.",
           actionLabel: "Ask for a revision",
           onAction: revisePlan,
         }
-      : undefined;
+      : status === "plan_approved"
+        ? {
+            explanation: "This plan is approved. Build runs it task by task.",
+            actionLabel: "Ask for a revision",
+            onAction: revisePlan,
+          }
+        : undefined;
 
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>

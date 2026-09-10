@@ -82,7 +82,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   |---|---|---|
   | `POST …/verify` on a `failed` initiative | 200, status becomes `complete`, `failure_reason` erased | **409** `cannot verify a failed initiative` |
   | `POST …/verify` with zero (or only removed) requirements | 200, status becomes `complete` | 200, the gate reports not-done and the status is unchanged |
-  | `POST …/verify` `{"requirement":"REQ-99"}` where REQ-99 does not exist | 200, reporting on a *different* requirement | **404** naming REQ-99 |
+  | `POST …/verify` `{"requirement":"REQ-99"}` where REQ-99 does not exist | 200, reporting on a *different* requirement | **404** naming REQ-99. The gate and the returned coverage stay initiative-wide either way — the defect was the silent discard, not the breadth of the report |
   | `idea verify REQ-99` | exit 0, `REQ-1 0/1 verified` | exit non-zero, `no requirement matching "REQ-99"` |
 
   The last row is the CLI half: `cmdVerify` built a request body only for
@@ -90,14 +90,25 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   never left the machine. The write path was already correct, so the validation
   existed and was applied to the opposite case from the one that was reported.
 
-  `running` is deliberately **not** refused. `idea apply` does not wait for its
-  operation, and the initiative reads `running` until the release that follows
-  the change set being marked applied — so the apply-then-verify sequence both
-  demo guides document, and which `scripts/smoke.sh` runs, happens inside that
-  window. A test pins that it stays allowed. The residual: a `complete` written
-  during an in-flight apply can still be reverted by that apply's release, which
-  writes the prior status unconditionally. Pre-existing, recorded in
-  `docs/plans/deferred.md`, not closed here.
+  The refusal is on the **recorded failure reason**, not on the status, and that
+  distinction is load-bearing. Five entry points — apply, revert, revise, retry,
+  reopen-phase — claim `running` *from* `failed` by design, and the claim
+  deliberately leaves `failure_reason` intact so the release can restore it. For
+  the length of any of them a failed initiative reads `running`, so a
+  status-only guard passed and the completion write cleared the reason
+  **permanently** — the release restores the status, not the reason. A commit
+  review found it by reproducing exactly that against the real handler.
+
+  `running` is otherwise deliberately **not** refused. `idea apply` does not
+  wait for its operation, so the apply-then-verify sequence both demo guides
+  document, and which `scripts/smoke.sh` runs, happens inside that window. A
+  test pins that it stays allowed.
+
+  **Recording human evidence is not refused on a failed initiative** — only the
+  gate is. A pass, fail or waive is a judgment about a requirement, not about
+  the workflow, and `idea retry` calls `SupersedeRequirements` before re-running
+  framing, so evidence that could not be recorded now could never be recorded
+  again. The first version of this fix gated both.
 
   The completion write is also guarded at the store (`CompleteInitiative`, which
   refuses to run over `failed`), so the window between the Runtime's check and
