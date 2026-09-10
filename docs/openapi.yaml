@@ -613,7 +613,17 @@ paths:
       tags: [initiatives]
       operationId: approvePlan
       summary: Human approval gate on the execution plan
-      description: Re-runs the plan review. An initiative state that cannot take the gate answers 409 with the domain message.
+      description: |
+        Accepts the execution plan as it stands: the open findings are dispositioned `accepted_risk`
+        against the human, and the initiative moves to `plan_approved`. It does **not** re-run the
+        plan review — it used to, which made it a retry rather than an accept and left a
+        non-converging review with no route to `plan_approved`.
+
+        409 when the initiative is running, when it is parked on a judgment reason other than
+        `plan_review`, when it already has change sets, when the plan is already approved, or when
+        the plan carries an open `critical` finding from the deterministic checks — a task
+        dependency cycle, which no human can sign off because it can never be scheduled.
+        `revise-plan` is the route out of that last one.
       responses:
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }

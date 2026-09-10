@@ -459,11 +459,18 @@ echo "both remaining judgment reasons reported, each with its own instruction"
 
 # And it finishes — escaping the plan review with approve-plan specifically.
 #
-# This is the assertion that catches the wedge. approve-plan re-runs the review;
-# on the demo provider the queue is drained by now so it converges and sets
-# plan_approved. If it does not also disposition the findings that earlier block
-# left open, the completion gate refuses forever and no CLI command can clear
-# them. revise-plan would hide that, because it dispositions on its own way past.
+# This asserts the disposition side-effect: if approve-plan does not disposition
+# the findings that earlier block left open, the completion gate refuses forever
+# and no CLI command can clear them. revise-plan would hide that, because it
+# dispositions on its own way past.
+#
+# It does NOT assert that approve-plan escapes a review that keeps blocking, and
+# it never could. This comment used to say approve-plan "re-runs the review; on
+# the demo provider the queue is drained by now so it converges" — which was
+# true, and was exactly the blind spot: on a converging queue, approve-plan
+# succeeding is indistinguishable from the queue running out. DX audit 7 found a
+# live-lock underneath it that six audits, CI and this script all passed over.
+# The NON-CONVERGING pass below is what asserts the escape.
 "$ROOT/bin/idea" approve-plan
 "$ROOT/bin/idea" next --until-human
 wait_for "a change set in the plan-judgment project" 60 chg1_in_changes
@@ -478,3 +485,71 @@ PREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 echo "a plan revised out of both judgment states reaches complete"
 
 echo "=== PLAN-JUDGMENT PASS OK ==="
+
+# ---------------------------------------------------------------------------
+# PASS 5 — a plan review that never converges.
+#
+# This is the pass DX audit 7's P0-1 needed and no pass provided. Every earlier
+# plan-judgment pass sizes demo.block_plan_review_cycles so the reviewer
+# CONVERGES, and on a converging reviewer `idea approve-plan` reaching
+# plan_approved proves nothing: it is indistinguishable from the queue running
+# out. On a real provider the review kept blocking — observed eleven consecutive
+# times — and approve-plan, which used to re-run it, had no route to
+# plan_approved from any surface. The demo oracle could not express that, so six
+# audits, CI and this script all passed over a live-lock in the documented path.
+#
+# 50 is not a converging count: nothing here makes fifty plan_review calls, so
+# the queue cannot drain and a pass is attributable to the accept alone.
+#
+# dangle_plan_dependency stays OFF. With it on the initiative parks on
+# plan_dependencies, which approve-plan refuses by design, and the pass would
+# never reach the review it exists to test.
+# ---------------------------------------------------------------------------
+echo "=== NON-CONVERGING PLAN REVIEW PASS ==="
+NPROJ="$TMPROOT/planlivelock"
+mkdir -p "$NPROJ"
+cd "$NPROJ"
+"$ROOT/bin/idea" init
+# The queues are primed when the daemon opens the project and refilled on every
+# config reload, so this restart must stay the LAST config write before `idea new`.
+printf '\ndemo:\n  block_plan_review_cycles: 50\n' >>.idea-harness/harness.yaml
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+"$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
+DAEMON_PID=$!
+wait_for "daemon to report running (non-converging pass)" 5 daemon_running
+
+"$ROOT/bin/idea" new "A bike-share pricing engine"
+wait_for "the PRD to converge" 60 initiative_left_running
+"$ROOT/bin/idea" next --until-human || true
+wait_for "the plan review to park" 60 initiative_left_running
+
+NOUT=$("$ROOT/bin/idea" next 2>&1 || true)
+printf '%s' "$NOUT" | grep -q 'plan review raised blocking findings' ||
+  { echo "ERROR: setup did not reach a blocked plan review:"; printf '%s\n' "$NOUT"; exit 1; }
+
+# The assertion. A reviewer that will not converge, and one approve-plan.
+"$ROOT/bin/idea" approve-plan
+wait_for "approve-plan to settle" 60 initiative_left_running
+# The status, read structurally. A prose grep with alternatives would pass on
+# the rendered word "plan" and assert nothing.
+NSTATUS=$("$ROOT/bin/idea" status --json | grep -o '"status": *"[a-z_]*"' | head -1)
+[ "$NSTATUS" = '"status": "plan_approved"' ] ||
+  { echo "ERROR: approve-plan did not accept a plan the reviewer keeps blocking (status=$NSTATUS)";
+    "$ROOT/bin/idea" status; exit 1; }
+echo "approve-plan accepts a plan review that never converges"
+
+# And the accepted findings really are dispositioned, so completion is reachable.
+"$ROOT/bin/idea" next --until-human
+wait_for "a change set in the non-converging project" 60 chg1_in_changes
+"$ROOT/bin/idea" review CHG-1 approve
+"$ROOT/bin/idea" apply CHG-1
+wait_for "the non-converging change set to read applied" 30 chg1_applied
+NREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
+[ -n "$NREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
+"$ROOT/bin/idea" verify "$NREQ" --pass
+"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
+  { echo "ERROR: an accepted non-converging plan did not reach complete"; exit 1; }
+echo "an accepted non-converging plan reaches complete"
+
+echo "=== NON-CONVERGING PLAN REVIEW PASS OK ==="

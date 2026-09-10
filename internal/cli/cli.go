@@ -114,7 +114,7 @@ func commands() []command {
 		{names: []string{"advance"}, usage: "advance", summary: "run Design → Execution Plan (M2)", flags: flagSpec{}, maxPositional: 1, run: cmdAdvance, inHelp: true},
 		{names: []string{"approve"}, usage: "approve", summary: "accept the reviewed PRD as it stands", flags: flagSpec{}, maxPositional: 1, run: cmdApprove, inHelp: true},
 		{names: []string{"revise"}, usage: "revise", summary: "regenerate the PRD from the review findings", flags: flagSpec{}, maxPositional: 1, run: cmdRevise, inHelp: true},
-		{names: []string{"approve-plan"}, usage: "approve-plan", summary: "re-run the plan review (it can block again)", flags: flagSpec{}, maxPositional: 1, run: cmdApprovePlan, inHelp: true},
+		{names: []string{"approve-plan"}, usage: "approve-plan", summary: "accept the execution plan as it stands", flags: flagSpec{}, maxPositional: 1, run: cmdApprovePlan, inHelp: true},
 		{names: []string{"revise-plan"}, usage: "revise-plan", summary: "regenerate the execution plan", flags: flagSpec{}, maxPositional: 1, run: cmdRevisePlan, inHelp: true},
 		{names: []string{"plan"}, usage: "plan", summary: "render the execution plan", flags: flagSpec{"--json": flagBool}, rejectsJSON: true, maxPositional: 1, run: cmdPlan, inHelp: true},
 		{names: []string{"tasks"}, usage: "tasks", summary: "list the ordered plan tasks", flags: jsonFlag, maxPositional: 1, run: cmdTasks, inHelp: true},

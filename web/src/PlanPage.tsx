@@ -136,17 +136,26 @@ export default function PlanPage({
       ]
     : [];
 
-  const pill: StatusPill | undefined =
-    status === "needs_human_judgment" || status === "plan_approved"
-      ? { label: "needs approval", state: "needs-you" }
-      : undefined;
+  // `plan_approved` used to render this too, and after approve-plan became a
+  // real accept that combination was wrong in both directions: the pill told the
+  // user a plan already approved still needed approval, and the button behind it
+  // posted an accept that the daemon now refuses with a 409 — which `post`
+  // throws and nothing here catches, so the click was a silent no-op under a
+  // label promising otherwise. The gate is the same one the API applies.
+  const awaitingApproval = status === "needs_human_judgment";
 
-  const commit = {
-    explanation: "Approving unlocks Build. Tasks run one at a time, each pausing for review.",
-    actionLabel: "Approve plan →",
-    onAction: approve,
-    secondary: { label: "Ask for a revision", onAction: revisePlan },
-  };
+  const pill: StatusPill | undefined = awaitingApproval
+    ? { label: "needs approval", state: "needs-you" }
+    : undefined;
+
+  const commit = awaitingApproval
+    ? {
+        explanation: "Approving accepts the plan as it stands and unlocks Build. Tasks run one at a time, each pausing for review.",
+        actionLabel: "Approve plan →",
+        onAction: approve,
+        secondary: { label: "Ask for a revision", onAction: revisePlan },
+      }
+    : undefined;
 
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>
