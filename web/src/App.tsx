@@ -44,6 +44,10 @@ interface Initiative {
   description: string;
   status: string;
   failure_reason?: string;
+  // The daemon records WHY an initiative is parked; all four reasons share the
+  // `needs_human_judgment` status, so the status alone cannot tell a plan-review
+  // park from a plan-dependencies one -- and the two have different escapes.
+  judgment_reason?: string;
 }
 interface Artifact {
   id: string;
@@ -292,6 +296,7 @@ export default function App() {
             projectId={projectId}
             initiativeId={currentInitiative.id}
             status={currentInitiative.status}
+            judgmentReason={currentInitiative.judgment_reason}
           />
         )}
         {route.name === "phase" && currentInitiative && route.phase === "design" && (
