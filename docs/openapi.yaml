@@ -679,10 +679,17 @@ paths:
       operationId: verifyInitiative
       summary: Run the verification gate
       description: |
-        Synchronous. When `requirement` is set and `pass` is true, human evidence is recorded first;
-        the gate then runs and the response carries the initiative status plus per-requirement
-        coverage. A JSON body is required, but every field in it is optional - `{}` just runs the
-        gate.
+        Synchronous. When `requirement` is set together with a disposition, human evidence is
+        recorded first; the gate then runs and the response carries the initiative status plus
+        per-requirement coverage. A JSON body is required, but every field in it is optional -
+        `{}` just runs the gate.
+
+        `requirement` with no disposition runs the gate and is validated: a code that does not
+        resolve answers 404 naming it, rather than reporting on the initiative as a whole.
+
+        409 when the initiative has failed - `retry` re-runs it. The gate is deliberately still
+        allowed while an operation is running, because `apply` does not wait and the documented
+        apply-then-verify sequence runs inside that window.
       requestBody:
         required: true
         content:
@@ -727,6 +734,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers:

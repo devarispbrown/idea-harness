@@ -295,3 +295,56 @@ func TestApprovePlanRefusesAnAlreadyApprovedPlan(t *testing.T) {
 		}
 	}
 }
+
+// TestRevisePlanClearsTheStructuralGate closes the loop on the refusal above.
+//
+// The gate's message names `idea revise-plan` as the way out, and a named
+// escape that does not work is how this project produced audit 7's P0-1 in the
+// first place -- `approve-plan` was offered as the escape from a blocked plan
+// review and could not deliver it. So the escape is asserted, not assumed.
+//
+// It works because RevisePlan dispositions every open finding NotApplicable
+// before regenerating (advance.go), so a cycle finding cannot outlive the plan
+// it described. Were that disposition removed, the stale critical would block
+// approve-plan forever and the gate would become a new live-lock.
+func TestRevisePlanClearsTheStructuralGate(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.CreateFinding(t.Context(), &domain.Finding{
+		InitiativeID: iniID, TargetType: "initiative", TargetID: iniID,
+		ReviewRunID: workflow.DeterministicPlanCheckRun,
+		Severity:    domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "plan", Finding: "task dependency cycle detected: TASK-1",
+		Impact: "the plan cannot be scheduled", Recommendation: "break the cycle",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.NeedsHumanJudgment(t.Context(), iniID, domain.JudgmentPlanReview, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ApprovePlanInitiative(t.Context(), projectID, iniID); err == nil {
+		t.Fatal("setup: the structural gate did not refuse")
+	}
+
+	opID, err := rt.RevisePlanInitiative(t.Context(), projectID, iniID)
+	if err != nil {
+		t.Fatalf("revise-plan is the escape the refusal names, and it was refused: %v", err)
+	}
+	waitForOperation(t, ts, token, opID)
+
+	findings, err := pr.db.ListFindingsByInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Disposition == "" && f.ReviewRunID == workflow.DeterministicPlanCheckRun &&
+			f.Severity == domain.SeverityCritical {
+			t.Fatalf("revise-plan left a stale cycle finding undisposed (%q); "+
+				"approve-plan would refuse forever and the gate would be a new live-lock", f.Finding)
+		}
+	}
+}

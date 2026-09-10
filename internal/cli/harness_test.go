@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,6 +49,9 @@ type fakeDaemon struct {
 	// net/http.ServeMux panics on a duplicate pattern, so it is a field rather
 	// than a second registration.
 	verifyCoverage map[string]any
+
+	// verifyBodies records each POST /verify request body.
+	verifyBodies []string
 }
 
 // newFakeDaemon wires a fake daemon and a cwd that resolves to projectID.
@@ -177,7 +181,13 @@ func (f *fakeDaemon) seedInitiative() {
 		},
 	}
 	f.mux.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify",
-		func(w http.ResponseWriter, _ *http.Request) {
+		func(w http.ResponseWriter, r *http.Request) {
+			// The body is recorded, not just the path: `idea verify REQ-99` used
+			// to send `{}` on the read path, silently discarding the argument,
+			// and a path-only recorder cannot tell that apart from a correct
+			// request.
+			raw, _ := io.ReadAll(r.Body)
+			f.verifyBodies = append(f.verifyBodies, string(raw))
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(f.verifyCoverage)
 		})

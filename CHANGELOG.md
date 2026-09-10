@@ -65,6 +65,58 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **`idea verify` can no longer complete a failed initiative, and it no longer
+  discards a requirement you named.** Two defects in one command, both found by
+  DX audit 7.
+
+  A bare `idea verify` — no arguments, no flags — on an initiative that died at
+  framing with a 401 printed `✓ verified status: complete`, exited 0, moved a
+  terminal state to `complete` and discarded the recorded `failure_reason`. With
+  zero requirements the gate loop never runs, so `allVerified` stays true
+  vacuously, and the terminal write was an unconditional `SetInitiativeStatus`.
+  `handleVerify` was the one state-writing path that never went through the
+  Runtime, which is why `verifyInitiative` declared no 409 and the conflict axis
+  correctly agreed there was nothing to declare.
+
+  | | Was | Now |
+  |---|---|---|
+  | `POST …/verify` on a `failed` initiative | 200, status becomes `complete`, `failure_reason` erased | **409** `cannot verify a failed initiative` |
+  | `POST …/verify` with zero (or only removed) requirements | 200, status becomes `complete` | 200, the gate reports not-done and the status is unchanged |
+  | `POST …/verify` `{"requirement":"REQ-99"}` where REQ-99 does not exist | 200, reporting on a *different* requirement | **404** naming REQ-99 |
+  | `idea verify REQ-99` | exit 0, `REQ-1 0/1 verified` | exit non-zero, `no requirement matching "REQ-99"` |
+
+  The last row is the CLI half: `cmdVerify` built a request body only for
+  `<req> --pass|--fail|--waive` and fell through to `{}` otherwise, so the name
+  never left the machine. The write path was already correct, so the validation
+  existed and was applied to the opposite case from the one that was reported.
+
+  `running` is deliberately **not** refused. `idea apply` does not wait for its
+  operation, and the initiative reads `running` until the release that follows
+  the change set being marked applied — so the apply-then-verify sequence both
+  demo guides document, and which `scripts/smoke.sh` runs, happens inside that
+  window. A test pins that it stays allowed. The residual: a `complete` written
+  during an in-flight apply can still be reverted by that apply's release, which
+  writes the prior status unconditionally. Pre-existing, recorded in
+  `docs/plans/deferred.md`, not closed here.
+
+  The completion write is also guarded at the store (`CompleteInitiative`, which
+  refuses to run over `failed`), so the window between the Runtime's check and
+  the write is closed and a future caller that does not go through the Runtime
+  cannot repeat this. That guard is expressed as `status != 'failed'` rather than
+  a list of the five states that are allowed: `InitiativeStatus` has six values,
+  and an enumeration would silently exclude a seventh added later.
+
+  This is audit 5's **A2**, which was rejected on review and recorded in
+  `deferred.md`. That rejection was correct — A2 proposed requiring a change set
+  before `complete`, which would have killed the documented all-waived flow — and
+  the predicate here is different: at least one requirement that is not
+  `removed`. Waived requirements are a human's judgment that the work is out of
+  scope, so all-waived still completes; zero requirements and all-removed do not.
+  The all-removed case is not hypothetical: `Engine.Revise` supersedes every
+  requirement before regenerating, so a model failure there leaves an initiative
+  with N removed requirements and nothing active.
+
+
 - **`idea approve-plan` accepts the plan instead of re-reviewing it.** It was a
   retry wearing an accept's name: `Engine.ApprovePlan` dispositioned the open
   findings and then re-ran the adversarial review, and a model reviewer is not a
