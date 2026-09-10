@@ -27,7 +27,19 @@ outside the gate.
 
 1. **Decide the version.** Pre-1.0, breaking changes go in a minor bump —
    `CHANGELOG.md`, `README.md` and the release notes all state that contract.
-   `docs/versioning.md` has the classification rules.
+   The classification rules, in full:
+
+   | Change | Bump | Goes under |
+   |---|---|---|
+   | A request or response field removed or renamed; a status code changed; a body closed to a field it used to accept; a CLI flag or verb removed or renamed; a config key removed, renamed, or newly rejected | **minor** (pre-1.0) | `### Changed — BREAKING`, with a Was/Now row and a consumer-impact sentence |
+   | A new endpoint, flag, verb, config key, or response field; a new optional request field | **minor** | `### Added` |
+   | Behaviour corrected to match what was already documented; an error message improved; a guard added that rejects what was always invalid | **patch** | `### Fixed` |
+   | Documentation, comments, tests, CI, or refactoring with no observable change | **patch** | `### Changed`, or omitted if nothing a consumer can see moved |
+
+   Two rules that have caught real mistakes: a guard that starts rejecting a
+   configuration that passed yesterday **is** breaking, even though the config
+   was always wrong; and "we only added a field" is breaking if the field is
+   *required*, or if the body it lands in is closed.
 2. **Bump `docs/openapi.yaml`'s `info.version`** to that version, in a normal
    commit, merged before the tag. `make version-check` fails on every push while
    it is older than the newest released `CHANGELOG.md` heading, so this is

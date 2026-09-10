@@ -16,7 +16,24 @@ package main
 //
 // This is cheap because the handlers are uniform: every body-decoding handler
 // in internal/daemon uses `var body struct{…}` with json tags, immediately
-// followed by json.NewDecoder(r.Body).Decode(&body).
+// followed by either json.NewDecoder(r.Body).Decode(&body) or
+// decodeStrict(r.Body, &body).
+//
+// decodeStrict is the closed-body decoder, and it is a documented breaking
+// change: a field the operation does not declare becomes a 400 instead of
+// being dropped. It shipped on two endpoints, gained a third, and the third was
+// named in neither CHANGELOG.md nor its operation's 400 in docs/openapi.yaml --
+// because decode.go's own comment still said "the two config-writing
+// endpoints". So the census below is pinned: adding a call site fails this
+// check until a human adds it here.
+//
+// What this does NOT do, stated plainly because the distinction is the whole
+// value of the check: it does not read CHANGELOG.md or the spec, so it cannot
+// prove either document was updated. It is a tripwire on the one edit that
+// cannot be skipped, not an enforcement of the invariant. It is also keyed on
+// the decodeStrict identifier, so the equivalent written inline --
+// `dec := json.NewDecoder(r); dec.DisallowUnknownFields()` -- closes a body
+// without tripping it. Both gaps are recorded in docs/plans/deferred.md.
 
 import (
 	"fmt"
@@ -64,6 +81,36 @@ func decodesBody(body *ast.BlockStmt) bool {
 		}
 		return true
 	})
+	return found || callsDecodeStrict(body)
+}
+
+// strictDecodeHandlers is the pinned census of handlers using the closed-body
+// decoder. Each one is a documented breaking change, so the set is stated here
+// rather than counted: adding a call site fails the check until CHANGELOG.md's
+// BREAKING row and that operation's 400 in docs/openapi.yaml both name it.
+//
+// AST, not grep, deliberately: a textual census of "decodeStrict" in
+// internal/daemon returns six hits, of which three are calls and three are a
+// comment, a comment and the definition.
+var strictDecodeHandlers = map[string]bool{
+	"handleUpdateProviders": true,
+	"handleReviewChangeSet": true,
+	"handleUpdateExecutors": true,
+}
+
+// callsDecodeStrict reports whether a function body calls decodeStrict.
+func callsDecodeStrict(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "decodeStrict" {
+			found = true
+		}
+		return true
+	})
 	return found
 }
 
@@ -105,6 +152,38 @@ func handlerBodyFields(dir string) (map[string][]string, []string, error) {
 	}
 	sort.Strings(unreadable)
 	return out, unreadable, nil
+}
+
+// strictDecodeCallers returns the sorted names of functions in dir that call
+// decodeStrict.
+func strictDecodeCallers(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	fset := token.NewFileSet()
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, err
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if callsDecodeStrict(fn.Body) {
+				out = append(out, fn.Name.Name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // bodyFieldsIn finds `var body struct{…}` in a function body and returns its
@@ -317,7 +396,32 @@ func runBodyCheck(routesDir, specPath string) error {
 		return err
 	}
 
+	strict, err := strictDecodeCallers(routesDir)
+	if err != nil {
+		return err
+	}
+
 	var problems []string
+	seen := map[string]bool{}
+	for _, h := range strict {
+		seen[h] = true
+		if !strictDecodeHandlers[h] {
+			problems = append(problems, fmt.Sprintf(
+				"  %s calls decodeStrict but is not in strictDecodeHandlers.\n"+
+					"    Closing a body is a BREAKING change. This check does NOT read CHANGELOG.md or the\n"+
+					"    spec -- it exists to stop you here so you go and update both: name the endpoint in\n"+
+					"    CHANGELOG.md's `### Changed — BREAKING` row and in that operation's 400 description\n"+
+					"    in docs/openapi.yaml, then add it here", h))
+		}
+	}
+	for h := range strictDecodeHandlers {
+		if !seen[h] {
+			problems = append(problems, fmt.Sprintf(
+				"  strictDecodeHandlers lists %s, but it no longer calls decodeStrict;\n"+
+					"    if the body was reopened that is also a breaking change", h))
+		}
+	}
+
 	routed := map[string]bool{}
 	for _, h := range handlers {
 		routed[h] = true
