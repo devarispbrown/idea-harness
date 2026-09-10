@@ -3,11 +3,13 @@
 Audit 7 returned **FAIL at 49/100** with the magic-path gate broken. This plan
 covers the two P0s and the read-path defect that shares a function with P0-2.
 
-## What the plan review rejected
+## What the plan reviews rejected
 
-This plan was reviewed adversarially before implementation and **rejected**. The
-first draft would have failed every initiative it touched. Recording the
-rejections rather than quietly editing, because they are the useful part:
+This plan was reviewed adversarially before implementation and rejected
+**twice**. Recording the rejections rather than quietly editing, because they
+are the useful part.
+
+### Round 1 — the first draft would have failed every initiative it touched
 
 | # | First draft said | Reality | Now |
 |---|---|---|---|
@@ -27,6 +29,25 @@ argument (`errors.go:52-60`, pinned by `TestPreconditionErrorMapsToConflict`),
 so `handleVerify`'s existing `http.StatusBadRequest` is harmless; and
 `FakeProvider.Calls()` + `Request.JSONSchemaName` (`fake.go:105,132`) already
 supports the per-schema call count, with no new helper.
+
+### Round 2 — the revision's four new decisions, three of which were wrong
+
+| # | Revision said | Reality | Now |
+|---|---|---|---|
+| R1 | Refuse `approve-plan` while an undisposed deterministic finding of severity **critical or high** is open | **Recreates the live-lock.** `deterministicPlanChecks` emits the traceability finding at `high`, once per untraced task (`advance.go:444-453`). A task is untraced whenever the model's `requirement` string misses: `reqByCode[str(t["requirement"])]` returns `""` (`advance.go:346`) and `createTask` then silently skips the edge (`store/graph.go:148`). `requirement` is a bare required string with no enum (`schema/schemas.go:235`), so `REQ-01`, `R1`, or a cross-cutting task all produce one. The gate would refuse `approve-plan` and name `revise-plan`, which re-runs the same unconstrained model call and can miss again. The `detectCycle` argument — *"the plan cannot be scheduled"* — is true only of the `critical` finding; an untraced task schedules and applies fine, since `nextReadyTask` never consults `implements` edges | **`critical` only.** Plus an acceptance test that a `high` traceability finding stays approvable — without it this ships green, because the demo plan emits `"requirement":"REQ-1"` (`fake.go:258`), which always resolves |
+| R2 | The `plan_approved` refusal gives the web user "a clean 409" | False. `post` throws on non-2xx (`api.ts:17-19`) and `approve` has no `catch` (`PlanPage.tsx:114-117`), so the click is a silent no-op. Worse, `PlanPage.tsx:139-142` renders the pill **"needs approval"** for `plan_approved` — the UI would say the plan needs approval while the button silently fails. `PlanPage.tsx` was absent from the artifacts table | The pill and the commit bar are gated on `needs_human_judgment`, in this change |
+| R3 | Layer 2's CAS `from` set enumerates the five non-`failed` states | A maintenance trap: `InitiativeStatus` has exactly six values (`domain/enums.go:245-250`), so the list is the exact complement of layer 1's single refusal. A seventh status added later is silently excluded and completion from it becomes a 409 with no test failing | A store helper expressing the invariant directly — `… WHERE id = ? AND status != 'failed'` |
+| R4 | Layer 2 maps `ErrInitiativeNotClaimable` "to a precondition" | Not implementable there. `preconditionf` lives in `internal/daemon` (`precondition.go:33`), and `internal/daemon` imports `internal/workflow` — the engine cannot construct a `*PreconditionError` | The mapping happens in `Runtime.RunVerificationGate` |
+| R5 | Three citations | All wrong. `TestWaiveRequirementExcludedFromGate` is at `verify_test.go:250`, not `:357` (`:357` is inside `TestFailOnVerifiedRequirementSticksAndCanBeWaived`, `:296`). `judgment_reason` is cleared by `SetInitiativeStatus` (`store/repo.go:288`), not `TransitionInitiative`. `runExecutionPlanReview:412-419` contains **no** disposition call, so it is not the precedent for disposition-before-status | Corrected below |
+| R6 | Disposition-first "leaves the initiative claimed and parked" on a failure between the two writes | False. `ApprovePlan` runs inside `launchOperation`, so any error goes to `failOperation(..., failInitiative: true)` (`runtime.go:1197`) and the initiative ends **`failed`** in either order. `reconcileStaleOperations` never sees it — it only touches initiatives still reading `running` (`runtime.go:1296`) | Rationale rewritten to what the order actually buys |
+| R7 | The `precondition.go` enumeration must change | Overstated. That comment forbids retyping **engine** errors surfaced at 400; layer 1's `preconditionf` lives in a new `Runtime.*` method, which it already permits. `precondition_test.go:145` is a comment line; the assertion drives `errPlain` and does not change | Comment update only |
+
+Sound on re-review and unchanged: narrowing both the read gate and the claim
+(no caller approves from `plan_approved` — `smoke.sh:467`, `next_failed_test.go:181,230`,
+`claim_invariant_test.go:175` all pass `needs_human_judgment`); `ReviewRunID` as
+a det/adv discriminator (`advance.go:397`, `review/review.go:136`, stored and
+selected at `store/repo.go:953,987`, no collision with the PRD loop's
+`"deterministic-check"`); dropping the `running` clause; and `fp.Calls()`.
 
 ---
 
@@ -56,28 +77,46 @@ return domain.InitiativePlanApproved, nil
 ```
 
 Unconditional, not a CAS — per D1, the claim at `runtime.go:1166` is the CAS,
-and this runs while the status is `running`. Disposition **before** the status
-write, so a failure between them leaves the initiative claimed and parked rather
-than `plan_approved` with open findings wedging the completion gate. This is the
-same order `runExecutionPlanReview:412-419` already uses.
+and this runs while the status is `running`.
+
+Disposition **before** the status write, but not for the reason the last draft
+gave (R6): an error in either position ends `failed` via
+`failOperation(..., failInitiative: true)` (`runtime.go:1197`). What the order
+buys is which inconsistency survives into that `failed` state. Disposition-first
+leaves a human's `accepted_risk` signature on findings for a plan that was never
+approved — recoverable, and visible in `idea reviews`. Status-first would write
+`plan_approved` and then have `failed` overwrite it, which is a status the human
+never got. The precedent is the convergence path at `engine.go:785-789`, not
+`runExecutionPlanReview`, which has no disposition call at all. Note that
+`Engine.Approve` uses the **reverse** order (`engine.go:924` then `:943`); it can
+afford to, because it is not inside an operation that fails the initiative.
 
 **2. A deterministic-findings gate in `Runtime.ApprovePlanInitiative`** (D5),
 synchronous, alongside the three that are already there:
 
 ```go
 // A human can accept an adversarial reviewer's judgment. A human cannot accept
-// a dependency cycle: `detectCycle`'s own finding says "the plan cannot be
+// a dependency cycle: detectCycle's own finding says "the plan cannot be
 // scheduled", and nextReadyTask (execute.go:107) will never yield a task whose
 // predecessors can never apply. Approving one would trade the live-lock for a
-// Build that no command can advance. Deterministic findings are machine-checked
-// facts, not judgment calls, and only `revise-plan` clears them.
+// Build that no command can advance.
+//
+// critical ONLY, deliberately. deterministicPlanChecks also emits a `high`
+// traceability finding per untraced task (advance.go:444), and a task is
+// untraced whenever the model's `requirement` string does not resolve --
+// reqByCode returns "" (advance.go:346) and createTask skips the edge
+// (store/graph.go:148) with no error. `requirement` is a bare string with no
+// enum (schema/schemas.go:235), so this is ordinary, not exceptional. Sweeping
+// `high` in here would refuse approve-plan on the common case and send the user
+// to revise-plan, which re-runs the same unconstrained call -- the live-lock
+// this gate exists inside a fix for. Untraced work schedules and applies fine;
+// it is a judgment call, and judgment calls are exactly what a human may accept.
 ```
 
-Refuse with `preconditionf` when any **undisposed** finding on the initiative
-has `ReviewRunID == "deterministic-plan-check"` and severity critical or high,
-naming `idea revise-plan` as the resolution. `deterministicPlanChecks` emits
-exactly two: the `critical` cycle and the `high` untraced-task finding
-(`advance.go:444-462`).
+Refuse with `preconditionf` when any **undisposed** finding has
+`ReviewRunID == "deterministic-plan-check"` and `Severity == critical`, naming
+`idea revise-plan`. Today that is exactly the cycle finding
+(`advance.go:456-462`).
 
 **3. Narrow the status gate to `needs_human_judgment`** (D8). Both the read
 gate at `runtime.go:1137` and the claim at `:1166` currently accept
@@ -87,9 +126,15 @@ reason gate allows — and the web UI's commit bar renders in **every** status
 (audit 7 P1-5, `PlanPage.tsx:143`). Today a stray click there re-runs a review;
 after step 1 it would silently disposition every open finding as a human's
 `accepted_risk` with no review and no confirmation. Refusing `plan_approved`
-with `preconditionf("this plan is already approved")` turns P1-5's dead click
-into a clean 409 instead of a forged signature, and makes the idempotency
-explicit rather than silent.
+with `preconditionf("this plan is already approved")` stops the forged
+signature. It does **not** give the web user a visible error (R2): `post` throws
+on non-2xx (`api.ts:17-19`) and `approve` has no `catch`, so the click becomes a
+silent no-op. So this change also gates `PlanPage.tsx`'s commit bar **and** its
+`"needs approval"` pill (`:139-142`, which today fires for `plan_approved` too)
+on `needs_human_judgment`, so the button is not rendered in a state that refuses
+it. That is a partial, contained fix for audit 7's P1-5; the rest of P1-5 — the
+missing `catch` and `judgment_reason` never reaching the UI — stays in the
+backlog.
 
 **What does not change.** The running, reason and change-set gates stay exactly
 as they are. `revise-plan` is untouched — regenerating and re-reviewing is what
@@ -134,17 +179,38 @@ it a fix that got lucky on one re-run passes.
 `critical` cycle finding answers **409** to `approve-plan` and names
 `revise-plan`; status unchanged. Mutation: removing the gate must fail it.
 
+**Anti-gate, `internal/daemon`** — an initiative parked with a deterministic
+`high` **traceability** finding and no cycle **is** approvable and reaches
+`plan_approved` (R1). This is the guard that keeps the gate from widening back
+into a live-lock, and it cannot be written against the demo path as it stands:
+`demoResponse`'s execution plan emits `"requirement":"REQ-1"`, which always
+resolves (`fake.go:258`), so the test seeds the untraced task directly.
+
 **Gate, `internal/daemon`** — `approve-plan` on a `plan_approved` initiative
 answers 409 and disposes nothing.
 
 ### Smoke
 
 Add a second plan-judgment pass with `block_plan_review_cycles: 50` and
-**`dangle_plan_dependency` off** (D12 — with it on, the initiative parks on
+**`dangle_plan_dependency` off** (with it on, the initiative parks on
 `plan_dependencies` and never reaches the review the pass exists to test),
-asserting `approve-plan` reaches `plan_approved` and then `complete`. The
-existing pass stays: it covers the disposition side-effect on the converging
-path, a different property.
+asserting `approve-plan` reaches `plan_approved` and then `complete`.
+
+It needs its own project directory, its own config write, a **daemon restart as
+the last write before `idea new`**, and a `wait_for` on the daemon — the
+existing pass carries an explicit warning about exactly that ordering
+(`smoke.sh:424-426`). Traced: the PRD converges (`block_review_cycles` unset),
+`advance` drains one `plan_review` entry and parks, `approve-plan` sets
+`plan_approved` with zero model calls, the 49 stranded entries are harmless
+because the change-set review uses the separate `"review"` key
+(`execute.go:1307`, queues separated at `runtime.go:1512-1518`), and the
+disposition clears `hasOpenBlockingFindings` so verify completes.
+`BlockPlanReviewCycles` is unclamped, so 50 is accepted (`runtime.go:1507`).
+
+The existing pass stays — it covers the disposition side-effect on the
+converging path, a different property — but its six-line comment at
+`smoke.sh:460-466`, which explains that `approve-plan` works there *because the
+queue is drained*, becomes false and must be rewritten.
 
 ---
 
@@ -175,26 +241,38 @@ if ini.Status == domain.InitiativeFailed {
 `idea verify` is its documented escape. `handleVerify` calls the Runtime and
 stops calling the engine directly.
 
-This inverts a pinned invariant and must say so (D10): `precondition.go:22-26`
-names `VerifyInitiative` among the paths that must **not** carry the
-precondition type, and `precondition_test.go:145` pins it. Both change, and the
-comment must record why the enumeration moved rather than being widened.
+`precondition.go:22-26` names `VerifyInitiative` among the paths that must not
+carry the precondition type. That does **not** need inverting (R7): the comment
+forbids retyping *engine* errors surfaced at 400, and layer 1's `preconditionf`
+lives in a new `Runtime.*` method, which the enumeration already permits. The
+comment is updated to say so; `precondition_test.go` does not change — its
+assertion drives `errPlain`, not this path.
 
 Declare `409` on `verifyInitiative` in `docs/openapi.yaml`; `api-check`'s
 conflict axis then requires it.
 
-**2. A compare-and-swap on the completion write.** Replace the terminal
-`SetInitiativeStatus(..., InitiativeComplete, ...)` with
-`TransitionInitiative(..., InitiativeComplete, ..., InitiativeRunning,
-InitiativeApproved, InitiativePlanApproved, InitiativeNeedsHumanJudgment,
-InitiativeComplete)` — every state except `failed` (D3: `running` is in the set
-because `CreateInitiative` defaults to it and five existing tests rely on that).
-Layer 1 refuses the request; this refuses the *write*, from any future caller.
+**2. A guarded completion write.** Replace the terminal
+`SetInitiativeStatus(..., InitiativeComplete, ...)` with a store helper that
+expresses the invariant directly — `UPDATE … WHERE id = ? AND status != 'failed'`
+— rather than a `TransitionInitiative` enumerating the other five states (R3).
+`InitiativeStatus` has exactly six values (`domain/enums.go:245-250`), so an
+enumeration is the exact complement of layer 1's single refusal, and a seventh
+status added later would be silently excluded with no test failing. `running`
+must remain permitted regardless: `CreateInitiative` defaults to it
+(`store/repo.go:41-43`) and five `verify_test.go` fixtures rely on that (D3).
 
-`ErrInitiativeNotClaimable` must be mapped, not leaked (D7): `handleVerify`
-would otherwise answer `400: store: initiative is not in a claimable state`.
-With layer 1 in place the only reachable trigger is a race, so map it to a
-domain message and return it as a precondition.
+Layer 1 refuses the request; this refuses the *write*. What it buys beyond
+layer 1 is narrow and should not be overstated (D4): a genuine TOCTOU, where a
+concurrent `failOperation(..., failInitiative: true)` (`runtime.go:357`) lands
+between layer 1's read and the terminal write — reachable precisely because
+layer 1 permits `running` — plus any future caller.
+
+The no-rows error must be mapped, not leaked (D7), and the mapping belongs in
+`Runtime.RunVerificationGate`, not the engine (R4): `preconditionf` lives in
+`internal/daemon` (`precondition.go:33`) and `internal/daemon` imports
+`internal/workflow`, so the engine cannot construct a `*PreconditionError`.
+Unmapped, `handleVerify` would answer `400: store: initiative is not in a
+claimable state`.
 
 **3. Zero *active* requirements is not "everything verified."** Guard the
 completion conclusion on **at least one non-`removed` requirement** (D6). Not
@@ -206,7 +284,7 @@ That rejection was correct and this does not reopen it:
 
 | A2 proposed | Why rejected | This plan |
 |---|---|---|
-| Require a change set before `complete` | Kills the documented all-waived flow (`verify_test.go:357`, `openapi.yaml:2946-2950`, `ui.md:227`) | Not proposed; change sets are not consulted |
+| Require a change set before `complete` | Kills the documented all-waived flow (`verify_test.go:250`, `openapi.yaml:2946-2950`, `ui.md:227`) | Not proposed; change sets are not consulted |
 | Predicate `{applied, reverted}` from `ui.md:101` | `rejected`/`superseded` are absorbing states minted on ordinary paths | Not used |
 | — | `VerifyInitiative` has no channel to report a refusal | Layers 1 and 2 supply it: a 409, and a write refusal |
 
@@ -214,6 +292,17 @@ All-waived has waived requirements, which are not `removed`, so it passes the
 guard, reaches the loop, and still concludes `allVerified`. Zero-requirements
 and all-removed are refused. The rejected predicate conflated these; this one
 separates them.
+
+### A residual this does not close, stated rather than implied
+
+With `running` permitted by layer 1 and by layer 2's guard, a `complete` written
+by `idea verify` during an in-flight apply can be silently reverted:
+`release()` writes `priorStatus` unconditionally (`runtime.go:768-772`), while
+`handleVerify` has already re-read and reported `{"status":"complete"}`
+(`handlers.go:1950-1959`). That is the documented sequence smoke runs
+(`smoke.sh:472-477`). It is pre-existing, and excluding `running` would break
+that flow the other way (D4), so it is deferred rather than fixed here. P0-2 is
+not airtight; it is closed for the defect audit 7 reported.
 
 ### Acceptance tests
 
@@ -224,8 +313,11 @@ separates them.
 - `internal/workflow`: zero requirements → no `complete`. All requirements
   `removed` → no `complete`. Mutation: removing the guard must fail both.
 - `internal/workflow`: `TestWaiveRequirementExcludedFromGate`
-  (`verify_test.go:357`) stays green **untouched** — the A2 regression guard.
-  If any layer requires editing it, that layer is wrong.
+  (`verify_test.go:250`) and `TestFailOnVerifiedRequirementSticksAndCanBeWaived`
+  (`:296`) both stay green **untouched** — the A2 regression guards. `waived` is
+  not `removed`, so layer 3 passes them. If any layer requires editing either,
+  that layer is wrong. (The previous draft cited `:357`, which is a line
+  *inside* the second test — R5.)
 - `internal/workflow`: `TransitionInitiative` `failed` → `complete` is refused.
   Mutation: reverting to `SetInitiativeStatus` must fail it.
 
@@ -262,8 +354,10 @@ non-zero and names REQ-99. Mutation: restoring the empty body must fail it.
 | `internal/projection/projection.go:308` | the `JudgmentPlanReview` guidance says the same thing |
 | `docs/api.md:231` | "(re-runs its review)" becomes false — `STALE_PUBLIC_REFERENCE` class |
 | `docs/openapi.yaml` | `approvePlan` description; `verifyInitiative` gains 409; the verify description's "`{}` just runs the gate" and its requirement/disposition wording, contradicted by P0-2b |
-| `internal/daemon/precondition.go:22-26`, `precondition_test.go:145` | the enumeration that names `VerifyInitiative` |
-| `docs/plans/deferred.md` | the empty-`judgment_reason` hole (D9) |
+| `internal/daemon/precondition.go:22-26` | comment only — the enumeration already permits a new `Runtime.*` method (R7). `precondition_test.go` does not change |
+| `web/src/PlanPage.tsx:139-149` | the `"needs approval"` pill and the commit bar both gated on `needs_human_judgment` (R2) |
+| `scripts/smoke.sh:460-466` | the comment explaining that `approve-plan` converges "because the queue is drained" becomes false |
+| `docs/plans/deferred.md` | the empty-`judgment_reason` hole (D9); the apply-release residual; the rest of P1-5 |
 
 ## CHANGELOG — three breaking changes, not one (D11)
 
