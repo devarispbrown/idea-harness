@@ -24,6 +24,7 @@ type ledgerRow struct {
 	file      string // the ledger the row is in
 	line      int
 	id        string // U1, A6, …
+	cells     string // the Claim and Truth cells, which R2 reads for cited paths
 	predicate string
 	status    string // open | fixed <commit> | deferred <reason>
 }
@@ -46,7 +47,7 @@ type ledgerRow struct {
 // shape this guard was least able to see was the one most likely to be written.
 var ledgerRowStartRe = regexp.MustCompile("^\\s*\\|\\s*[*`_]*[A-Za-z][A-Za-z0-9-]*[0-9][a-z]?[*`_]*\\s*\\|")
 
-var ledgerRowRe = regexp.MustCompile("^\\s*\\|\\s*[*`_]*([A-Za-z][A-Za-z0-9-]*[0-9][a-z]?)[*`_]*\\s*\\|(?:[^|]*\\|){2}\\s*`([^`]+)`\\s*\\|\\s*([^|]+?)\\s*\\|\\s*$")
+var ledgerRowRe = regexp.MustCompile("^\\s*\\|\\s*[*`_]*([A-Za-z][A-Za-z0-9-]*[0-9][a-z]?)[*`_]*\\s*\\|((?:[^|]*\\|){2})\\s*`([^`]+)`\\s*\\|\\s*([^|]+?)\\s*\\|\\s*$")
 
 // runLedgerCheck evaluates every row's predicate and reports both directions of
 // drift: a row marked open whose defect is gone (stale-open), and a row marked
@@ -94,7 +95,7 @@ func runLedgerCheck() error {
 				}
 				continue
 			}
-			rows = append(rows, ledgerRow{file: lf, line: i + 1, id: m[1], predicate: m[2], status: m[3]})
+			rows = append(rows, ledgerRow{file: lf, line: i + 1, id: m[1], cells: m[2], predicate: m[3], status: m[4]})
 		}
 	}
 	if len(rows) == 0 {
@@ -104,31 +105,43 @@ func runLedgerCheck() error {
 	var problems []string
 	manual := 0
 	for _, r := range rows {
-		defectPresent, checkable, err := evalPredicate(root, r.predicate)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s:%d %s: %v", r.file, r.line, r.id, err))
-			continue
-		}
-		if !checkable {
-			manual++
-			continue
-		}
+		preds := splitPredicates(r.predicate)
+		problems = append(problems, checkRowAssertions(r, preds)...)
+
 		wantDefect, err := statusExpectsDefect(r.status)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s:%d %s: %v", r.file, r.line, r.id, err))
 			continue
 		}
-		if defectPresent == wantDefect {
-			continue
+		// EVERY predicate must agree with the status. A row is one claim; if its
+		// predicates disagree with each other the row asserts nothing, and
+		// evaluating only the first would make the rest decorative.
+		anyCheckable := false
+		for _, pred := range preds {
+			defectPresent, checkable, err := evalPredicate(root, pred)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("%s:%d %s: %v", r.file, r.line, r.id, err))
+				continue
+			}
+			if !checkable {
+				continue
+			}
+			anyCheckable = true
+			if defectPresent == wantDefect {
+				continue
+			}
+			if wantDefect {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d %s is marked %q but its predicate no longer holds — the defect is gone and the row was not updated\n    predicate: %s",
+					r.file, r.line, r.id, r.status, pred))
+			} else {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d %s is marked %q but its predicate holds — the defect is present\n    predicate: %s",
+					r.file, r.line, r.id, r.status, pred))
+			}
 		}
-		if wantDefect {
-			problems = append(problems, fmt.Sprintf(
-				"%s:%d %s is marked %q but its predicate no longer holds — the defect is gone and the row was not updated\n    predicate: %s",
-				r.file, r.line, r.id, r.status, r.predicate))
-		} else {
-			problems = append(problems, fmt.Sprintf(
-				"%s:%d %s is marked %q but its predicate holds — the defect is present\n    predicate: %s",
-				r.file, r.line, r.id, r.status, r.predicate))
+		if !anyCheckable {
+			manual++
 		}
 	}
 
@@ -453,3 +466,137 @@ func statusExpectsDefect(status string) (bool, error) {
 var wrapped = regexp.MustCompile(`\s*\n\s*(?://+\s*|#\s*|\*\s*)?`)
 
 func normalizeWrapping(s string) string { return wrapped.ReplaceAllString(s, " ") }
+
+// ---------- what a row must assert, not merely what it says ----------
+//
+// DX audit 7's method finding: a green row is not evidence of a correct fix.
+// Three of audit 6's ~19 `fixed audit-6` rows were green over replacement text
+// that was itself false, and one (D8d) carried a predicate whose file was not
+// the file its claim cited, so it passed on an import line.
+//
+// A `present:` predicate proves a specific false sentence is GONE. It cannot
+// prove the sentence that replaced it is TRUE. Two rules close that, and a
+// third makes them expressible.
+
+// predicateForms are the prefixes a predicate may start with. Used to split a
+// multi-predicate cell: Go's RE2 has no lookahead, so the split is done by
+// rejoining fragments that do not begin a new predicate, which is exactly what
+// a lookahead on these prefixes would express.
+var predicateForms = []string{"absent:", "present:", "manual:"}
+
+var predicateSepRe = regexp.MustCompile(`\s+\+\s+`)
+
+// splitPredicates splits a predicate cell into its predicates.
+//
+// The separator is ` + `, and a literal may contain that sequence -- the docs
+// are full of `pass + fail`-shaped prose -- so a naive split would cut a
+// predicate in half. A fragment that does not begin with a form prefix is not a
+// new predicate; it is the continuation of the one before it, and is rejoined
+// with the separator it was split on.
+func splitPredicates(cell string) []string {
+	parts := predicateSepRe.Split(cell, -1)
+	var out []string
+	for _, p := range parts {
+		starts := false
+		for _, form := range predicateForms {
+			if strings.HasPrefix(p, form) {
+				starts = true
+				break
+			}
+		}
+		if starts || len(out) == 0 {
+			out = append(out, p)
+			continue
+		}
+		out[len(out)-1] += " + " + p
+	}
+	return out
+}
+
+// ledgerLegacyFiles are the ledgers written before the two rules below existed.
+// They are exempt, and the exemption is a literal set rather than a date or a
+// glob so a new file cannot join it by accident.
+//
+// Retrofitting was measured, not estimated: of 110 rows, **50** non-`manual`
+// rows cite no path at all in their Claim or Truth cells -- audit 3 puts the
+// file in the section HEADING, so ten of its rows read `| U1 | Top bar with a
+// project selector | No top bar … |` -- and **18** rows marked `fixed` carry
+// only a `present:`. Retrofitting means ~68 hand-edits, most of them
+// re-deriving the corrected text for a defect fixed up to four rounds ago and
+// finding a literal that still holds. That is worth doing when someone touches
+// a row, and is not worth blocking this round's rows on.
+//
+// The list shrinks. Removing a file from it is the way a round adopts the rules
+// for its own ledger -- audit 7 removed its own when it wrote D9b, which is the
+// first row written under them.
+var ledgerLegacyFiles = map[string]bool{
+	"docs/plans/dx-audit-3-doc-defects.md": true,
+	"docs/plans/dx-audit-4-doc-defects.md": true,
+	"docs/plans/dx-audit-5-doc-defects.md": true,
+	"docs/plans/dx-audit-6-doc-defects.md": true,
+}
+
+// citedPathRe finds a path-shaped backtick span in a row's Claim or Truth cell.
+// Longest extension first: Go's regexp alternation is leftmost-FIRST, not
+// leftmost-longest, so `md|go|ts|tsx` captured `HealthPage.ts` out of
+// `HealthPage.tsx` and the row read as citing a file that does not exist.
+var citedPathRe = regexp.MustCompile("`([A-Za-z0-9_./-]+\\.(?:tsx|ts|yaml|yml|md|go|sh|py|json|html))")
+
+// checkRowAssertions applies the two rules to one row. Legacy files are exempt.
+func checkRowAssertions(r ledgerRow, preds []string) []string {
+	if ledgerLegacyFiles[r.file] {
+		return nil
+	}
+	var out []string
+
+	// R1: a row claiming the defect is gone must assert what is TRUE now, not
+	// only that the false text is absent. Keyed on the row rather than on what
+	// else it carries, so it covers a `present:`-only row AND a `manual:`-only
+	// one -- a row marked fixed that asserts nothing mechanically is the same
+	// "green over unverified" failure, one form over.
+	if wantDefect, err := statusExpectsDefect(r.status); err == nil && !wantDefect {
+		hasAbsent := false
+		for _, p := range preds {
+			if strings.HasPrefix(p, "absent:") {
+				hasAbsent = true
+			}
+		}
+		if !hasAbsent {
+			out = append(out, fmt.Sprintf(
+				"%s:%d %s is marked %q but carries no `absent:` predicate.\n"+
+					"    A `present:` proves the false sentence is gone; it cannot prove its replacement is true,\n"+
+					"    and three of audit 6's rows were green over replacement text that was itself false.\n"+
+					"    Add an `absent:` naming what the corrected text says, joined with ` + `.",
+				r.file, r.line, r.id, r.status))
+		}
+	}
+
+	// R2: the predicate must name a file the row cites. D8d pointed at
+	// web/src/Settings.tsx for a claim about docs/security.md and passed on an
+	// import line -- a row that can never fail for the reason it describes.
+	cited := map[string]bool{}
+	for _, m := range citedPathRe.FindAllStringSubmatch(r.cells, -1) {
+		cited[m[1]] = true
+	}
+	for _, p := range preds {
+		if strings.HasPrefix(p, "manual:") {
+			continue // no path to check
+		}
+		_, rest, ok := strings.Cut(p, ":")
+		if !ok {
+			continue // reported by evalPredicate
+		}
+		relPath, _, ok := strings.Cut(rest, ":")
+		if !ok {
+			continue
+		}
+		if !cited[relPath] {
+			out = append(out, fmt.Sprintf(
+				"%s:%d %s has a predicate on %s, which its Claim and Truth cells never name.\n"+
+					"    A predicate pointing somewhere the row does not describe cannot fail for the reason\n"+
+					"    the row gives. Cite the file in the row, or point the predicate at the file it is about.",
+				r.file, r.line, r.id, relPath))
+		}
+	}
+	return out
+}

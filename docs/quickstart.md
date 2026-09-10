@@ -275,7 +275,7 @@ before you spend time on it:
 ```text
 ✗ key no ANTHROPIC_API_KEY (anthropic, from default_model) anywhere
   A model is configured, so this is not demo mode: the first call fails with a
-  401 the run cannot retry. Export the key and run idea daemon stop, or clear the model with idea model set.
+  401 the run cannot retry. Export it, then idea daemon stop — or point that field at a provider you have a key for.
 ```
 
 Run it after `idea model set` and before `idea new`. It **exits non-zero**, because with a
