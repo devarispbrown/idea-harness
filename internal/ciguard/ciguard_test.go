@@ -29,11 +29,24 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("cannot locate the test file")
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	// Under -trimpath runtime.Caller reports a relative path and this silently
+	// produces garbage, failing later with a confusing message about ci.yml.
+	// Nothing builds with -trimpath today; say so rather than debug it twice.
+	if !filepath.IsAbs(root) {
+		t.Skipf("runtime.Caller reported a relative path (%s); these guards read files "+
+			"from the repository and cannot locate it under -trimpath", file)
+	}
+	return root
 }
 
 // releaseJobID is the job that publishes a tag.
 const releaseJobID = "release"
+
+// releaseIf is the exact condition under which a tag publishes. Compared whole:
+// see TestReleaseGatesOnEveryCIJob for the two mutations a substring check
+// let through.
+const releaseIf = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
 
 // gateExemptions are the ci.yml jobs that deliberately do NOT gate a release,
 // each with the reason. A job absent from both this list and the release job's
@@ -46,8 +59,9 @@ var gateExemptions = map[string]string{
 
 type workflow struct {
 	Jobs map[string]struct {
-		Needs yaml.Node `yaml:"needs"`
-		If    string    `yaml:"if"`
+		Needs           yaml.Node `yaml:"needs"`
+		If              string    `yaml:"if"`
+		ContinueOnError bool      `yaml:"continue-on-error"`
 	} `yaml:"jobs"`
 }
 
@@ -106,14 +120,43 @@ func TestReleaseGatesOnEveryCIJob(t *testing.T) {
 		}
 	}
 
-	// The release must not be reachable by a manual dispatch against a tag ref:
-	// ci.yml carries workflow_dispatch, and a dispatch can select a tag, which
-	// would be a publishing path release.yml never had.
-	if !strings.Contains(release.If, "github.event_name == 'push'") {
-		t.Errorf("the %q job's `if` does not require a push (%q).\n"+
-			"ci.yml accepts workflow_dispatch and a dispatch can select a tag ref, "+
-			"so a ref test alone opens a release path that did not exist before.",
-			releaseJobID, release.If)
+	// The WHOLE condition, not a substring of it. A `strings.Contains` check for
+	// the push clause passed both of these:
+	//
+	//   if: github.event_name == 'push'                       -- no tag filter,
+	//       so the job runs on every push to every branch holding contents:write
+	//   if: (github.event_name == 'push' || github.event_name ==
+	//       'workflow_dispatch') && startsWith(...)           -- reopening the
+	//       dispatch-selects-a-tag hole this test exists to close
+	//
+	// Any change to the publishing condition should require touching this line,
+	// which is what an equality check buys and a substring check does not.
+	if got := strings.TrimSpace(release.If); got != releaseIf {
+		t.Errorf("the %q job's publishing condition changed.\n got  %s\n want %s\n"+
+			"Both halves are load-bearing: the tag filter, and the push requirement "+
+			"(ci.yml accepts workflow_dispatch, and a dispatch can select a tag ref).",
+			releaseJobID, got, releaseIf)
+	}
+
+	// A job in `needs` that cannot run on a tag push is worse than one missing
+	// from it: a skipped dependency skips the dependent, so every release would
+	// be silently skipped. Same for a gating job that swallows its own failure --
+	// `needs` reads a continue-on-error job as successful.
+	for id := range needs {
+		job, ok := wf.Jobs[id]
+		if !ok {
+			continue // reported below
+		}
+		if strings.Contains(job.If, "workflow_dispatch") || strings.Contains(job.If, "schedule") {
+			t.Errorf("the %q job gates on %q, which does not run on a tag push (%q).\n"+
+				"A skipped dependency skips the dependent, so every release would be "+
+				"skipped in silence.", releaseJobID, id, job.If)
+		}
+		if job.ContinueOnError {
+			t.Errorf("the %q job gates on %q, which sets continue-on-error.\n"+
+				"`needs` reads that job as successful however it ends, so it is not a gate.",
+				releaseJobID, id)
+		}
 	}
 }
 
@@ -179,5 +222,75 @@ func TestCITestSummaryHonoursTheExitStatus(t *testing.T) {
 	if _, err := exec.Command("python3", script, clean, "1").CombinedOutput(); err == nil {
 		t.Fatal("a non-zero `go test` status with no failure in the stream was reported as success; " +
 			"that is what a truncated output file looks like")
+	}
+
+	// The three shapes that emit no terminal event at all. Each answered
+	// "All tests passed (0 package(s) with tests)" before the status was wired
+	// through -- on the job that gates a release.
+	for _, tc := range []struct{ name, content string }{
+		{"empty file", ""},
+		{"not JSON", "go: cannot load module github.com/x\n"},
+		{"truncated mid-line", `{"Time":"2026-01-01T00:00:00Z","Action":"run","Pack`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "gotest.json")
+			if err := os.WriteFile(f, []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := exec.Command("python3", script, f, "1").CombinedOutput(); err == nil {
+				t.Errorf("%s with a non-zero `go test` status was reported as success", tc.name)
+			}
+			if _, err := exec.Command("python3", script, f, "0").CombinedOutput(); err != nil {
+				t.Errorf("%s with a zero status must not fail: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestMacOSJobPassesTheExitStatus is the other half: the script grew the
+// argument, and its only caller has to actually pass it. Without this, the
+// unit test above passes while the release still gates on a job that swallows
+// `go test`'s status -- which is exactly what a commit review found.
+func TestMacOSJobPassesTheExitStatus(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name            string `yaml:"name"`
+				Run             string `yaml:"run"`
+				ContinueOnError bool   `yaml:"continue-on-error"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatal(err)
+	}
+	var summary, test string
+	var testContinues bool
+	for _, st := range wf.Jobs["macos"].Steps {
+		if strings.Contains(st.Run, "ci-test-summary.py") {
+			summary = st.Run
+		}
+		if strings.Contains(st.Run, "go test -json") {
+			test, testContinues = st.Run, st.ContinueOnError
+		}
+	}
+	if summary == "" || test == "" {
+		t.Fatal("the macos job no longer runs `go test -json` into ci-test-summary.py")
+	}
+	if !strings.Contains(test, "|| status=") {
+		t.Errorf("the macos job's test step does not capture `go test`'s exit status:\n%s\n"+
+			"Without it the summary cannot tell a clean run from an unwritten output file.", test)
+	}
+	if testContinues {
+		t.Errorf("the macos job's test step sets continue-on-error, which swallows the status " +
+			"the summary step needs")
+	}
+	if !strings.Contains(summary, "gotest.status") {
+		t.Errorf("ci-test-summary.py is called without the exit status:\n%s", summary)
 	}
 }

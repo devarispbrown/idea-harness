@@ -184,12 +184,22 @@ jobs:
       # shows only normal output cannot distinguish "ran everything" from
       # "silently skipped the container-backed tests", which is exactly the
       # claim this platform's green check would otherwise be making.
+      # `|| status=$?` rather than continue-on-error: the step must reach the
+      # summary below, but the status has to survive to it. No event in the
+      # stream can describe an output file that was truncated or never written,
+      # and without this the summary answers "All tests passed (0 package(s)
+      # with tests)" for an empty file, a non-JSON file, and a stream cut
+      # mid-run -- on a job that now gates a release.
       - name: Test
-        run: go test -json ./... > "$RUNNER_TEMP/gotest.json"
-        continue-on-error: true
+        run: |
+          status=0
+          go test -json ./... > "$RUNNER_TEMP/gotest.json" || status=$?
+          echo "$status" > "$RUNNER_TEMP/gotest.status"
 
       - name: Results — failures and what skipped here
-        run: python3 scripts/ci-test-summary.py "$RUNNER_TEMP/gotest.json"
+        run: |
+          python3 scripts/ci-test-summary.py \
+            "$RUNNER_TEMP/gotest.json" "$(cat "$RUNNER_TEMP/gotest.status")"
 
       - name: Smoke (end-to-end, deterministic demo — no secrets)
         env:
@@ -322,7 +332,11 @@ jobs:
       # openapi.yaml's info.version sat at 0.1.0 across three tags because the
       # only thing asking for a bump was a sentence in a hosting document.
       - name: The spec's version matches the tag
-        run: make version-check VERSION=${{ github.ref_name }}
+        # $GITHUB_REF_NAME, not ${{ github.ref_name }}: git accepts `v0.4.0$(id)`
+        # and `v0.4.0;id` as tag names, and this job holds contents: write. The
+        # variable is set automatically; interpolation would splice the tag into
+        # the shell.
+        run: make version-check VERSION="$GITHUB_REF_NAME"
 
       # Deliberately NOT `make embed-web` here: it overwrites the tracked
       # internal/web/dist/index.html placeholder, and goreleaser refuses to run

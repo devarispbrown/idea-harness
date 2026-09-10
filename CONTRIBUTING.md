@@ -36,11 +36,18 @@ honor `GOPATH`/`GOCACHE`/`GOMODCACHE` relative to the repo (the Makefile does no
 red PR. Run them before pushing:
 
 ```bash
-make check-embed docs-check api-check api-docs-check docs-lint      claims-check ledger-check enum-check version-check
-bash scripts/smoke.sh   # the end-to-end pass; ~1 minute
+make check-embed docs-check api-check api-docs-check docs-lint
+make claims-check ledger-check enum-check version-check
+bash scripts/smoke.sh                                  # end-to-end; ~1 minute
+(cd web && pnpm install --frozen-lockfile && pnpm build && pnpm test)
 ```
 
-Each exists because a specific defect shipped past the ones before it; the comments in
+The `web` line matters and is easy to miss: CI's `web` job runs `pnpm build` and `pnpm test`, and
+**no Makefile target reaches them** — `make web` starts a dev server and `web-build` is
+`embed-web`. A list that stopped at the make targets would still let you push a red PR, which is
+the defect this section exists to fix.
+
+Each guard exists because a specific defect shipped past the ones before it; the comments in
 `.github/workflows/ci.yml` say which. Releasing is `RELEASING.md`.
 
 ## Conventions
