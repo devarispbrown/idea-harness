@@ -2215,7 +2215,12 @@ paths:
                   status: { type: string, const: reviewed }
                 required: [status]
         "400":
-          description: "`verdict is required`, or the engine's rejection of the verdict or the change set's state."
+          description: |
+            `verdict is required`, the engine's rejection of the verdict or the change set's
+            state, or `json: unknown field "..."`. The body is closed: this operation decodes
+            strictly and rejects any key it does not declare, so `acceptFindings` (camelCase)
+            is a 400 rather than a silently-dropped field. Closed only up to Go's
+            ASCII-case-insensitive field matching — `Verdict` is accepted as `verdict`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
