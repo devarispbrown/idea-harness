@@ -96,8 +96,8 @@ func commands() []command {
 	return []command{
 		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
 		{names: []string{"new"}, usage: `new "<idea>" [--no-wait]`, summary: "create an initiative and start the workflow", flags: flagSpec{"--doc": flagRepeated, "--no-wait": flagBool}, run: cmdNew, inHelp: true},
-		{names: []string{"status"}, usage: "status", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
-		{names: []string{"changed"}, usage: "changed", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
+		{names: []string{"status"}, usage: "status [<initiative>]", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
+		{names: []string{"changed"}, usage: "changed [<initiative>]", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
 		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, maxPositional: 1, run: cmdDecisions, inHelp: true},
 		{names: []string{"reviews"}, usage: "reviews", summary: "list review findings", flags: jsonFlag, maxPositional: 1, run: cmdReviews, inHelp: true},
 		{names: []string{"model"}, usage: "model", summary: "list/set model providers (Gemini, OpenAI, …)", flags: flagSpec{}, subs: map[string]flagSpec{

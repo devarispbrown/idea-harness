@@ -1008,6 +1008,30 @@ instead of a change that cost nothing.
 
 ### Changed
 
+- **An initiative reference that matches nothing is now an error, and two
+  commands stopped ignoring theirs.** `docs/cli.md` promised that every
+  initiative-scoped command takes an optional reference defaulting to the most
+  recently created, and used `idea status` as its worked example.
+
+  | | Was | Now |
+  |---|---|---|
+  | `idea <cmd> <unknown-id>` on the 16 reference-taking commands | `resolveInitiative` returned the argument unchecked; whatever downstream 404 that endpoint gave | exit non-zero, `no initiative matching "…"` |
+  | `idea status <id>` / `idea status ZZZZ` | printed **every** initiative, exit 0 | scoped to that initiative; an unknown id is an error |
+  | `idea changed` | acted on `inis[0]` — the **oldest** initiative | acts on the newest, as documented |
+  | `idea changed <id>` | ignored the argument | scoped to that initiative |
+
+  `idea status --json` stays an **array**, filtered to one element when scoped:
+  `docs/cli.md` documents that shape, ledger row `G4` pins the sentence, and
+  `jq '.[0]'` keeps working.
+
+  `idea explain` was folded into `resolveInitiative` rather than left behind —
+  it re-implemented the resolution by hand, so a fix applied to the shared
+  helper would have skipped one of the commands the docs name.
+
+  `idea prd` is deliberately unaffected: its first positional is an artifact
+  **kind**, not a reference.
+
+
 - `idea apply` on a change set that cannot be applied now fails with what to do instead — already
   applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
   Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.

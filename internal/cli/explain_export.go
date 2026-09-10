@@ -24,16 +24,12 @@ func cmdExplain(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var inis []cliInitiative
-	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives", nil, &inis); err != nil {
+	// resolveInitiative, not a hand-rolled copy of it. This was the copy, so
+	// the validation added there would have skipped `idea explain` -- one of
+	// the commands docs/cli.md's reference-taking set names.
+	iniID, err := resolveInitiative(c, projectID, positional)
+	if err != nil {
 		return err
-	}
-	if len(inis) == 0 {
-		return fmt.Errorf("no initiatives yet; run `idea new` first")
-	}
-	iniID := inis[len(inis)-1].ID
-	if len(positional) > 0 {
-		iniID = positional[0]
 	}
 
 	var u cliExplainUnderstanding

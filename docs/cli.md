@@ -17,8 +17,8 @@ if this file has drifted.
 | --- | --- | --- | --- |
 | `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
 | `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow | `--doc`, `--no-wait` | no |
-| `idea status` | show initiative + current work | `--json` | yes |
-| `idea changed` | show What Changed since last look | `--json` | yes |
+| `idea status [<initiative>]` | show initiative + current work | `--json` | yes |
+| `idea changed [<initiative>]` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |
 | `idea reviews` | list review findings | `--json` | yes |
 | `idea model` | list/set model providers (Gemini, OpenAI, …) | `add --base-url`, `add --key-env`, `add --type`, `list`, `ls`, `set --role` | takes no flags |
@@ -98,14 +98,18 @@ assume every number it can see is in the JSON. The shapes themselves are
 ([`api.md`](api.md) maps command to route).
 
 **Which initiative a bare command acts on.** Every initiative-scoped command takes an optional
-initiative reference as its first positional argument. With none, it acts on the **most recently
-created** initiative in the project — not the one you last touched, and not one you selected. With
-several in flight, pass the reference explicitly:
+initiative reference as its first positional argument, and an id that matches no initiative is an
+error rather than a silent miss. With none, it acts on the **most recently created** initiative in
+the project — not the one you last touched, and not one you selected. With several in flight, pass
+the reference explicitly:
 
 ```bash
-idea status                      # the newest initiative
-idea status 4c1629f3382af9cd     # a specific one
+idea prd                         # the newest initiative
+idea prd 4c1629f3382af9cd        # a specific one
 ```
+
+`idea status` and `idea changed` take the same reference, and both are the overview when you omit
+it: `idea status` lists every initiative in the project, and `idea changed` reports on the newest.
 
 **Unknown flags are an error on every command.** So are unknown subcommands of `model`,
 `executors`, `config` and `daemon`. Ten commands used to ignore what they did not recognise — 

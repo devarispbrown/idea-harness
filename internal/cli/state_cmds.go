@@ -100,7 +100,32 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives", nil, &inis); err != nil {
 		return err
 	}
+	// docs/cli.md promises every initiative-scoped command takes an optional
+	// reference, and uses THIS command as its worked example -- while cmdStatus
+	// read no positional at all, so `idea status <id>` and `idea status ZZZZ`
+	// both printed every initiative and exited 0, the second also contradicting
+	// the promise that an unknown argument is an error.
+	//
+	// Unscoped it stays the overview, which is what its help line says and what
+	// an overview command should do.
+	if len(a.positional) > 0 {
+		iniID, err := resolveInitiative(c, projectID, a.positional)
+		if err != nil {
+			return err
+		}
+		kept := inis[:0:0]
+		for _, ini := range inis {
+			if ini.ID == iniID {
+				kept = append(kept, ini)
+			}
+		}
+		inis = kept
+	}
 	if a.has("--json") {
+		// Still an array, filtered. docs/cli.md documents the shape as
+		// `[{"id","title","status"}]` and ledger row G4 pins that sentence, so
+		// returning an object here would be an undeclared response change and
+		// would break `jq '.[0]'`.
 		return dumpJSON(stdout, inis)
 	}
 	if isDemoMode(c, projectID) {
@@ -148,7 +173,15 @@ func cmdChanged(a cmdArgs, stdout, stderr io.Writer) error {
 		return nil
 	}
 	var changed cliChanged
-	if err := c.do("GET", initiativeResource(projectID, inis[0].ID, "changed"), nil, &changed); err != nil {
+	// inis[0] was the OLDEST -- ListInitiatives is ORDER BY created_at ASC --
+	// which is the direct opposite of the "most recently created" default
+	// docs/cli.md promises. And like cmdStatus it is declared maxPositional: 1
+	// and read no positional, so its documented reference was ignored too.
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	if err := c.do("GET", initiativeResource(projectID, iniID, "changed"), nil, &changed); err != nil {
 		return err
 	}
 	if a.has("--json") {
