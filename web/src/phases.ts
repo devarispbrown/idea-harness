@@ -6,6 +6,10 @@ import type { PhaseName } from "./router";
 
 export interface PhaseSource {
   status: string;
+  // Why the initiative is parked. All four reasons share
+  // `needs_human_judgment`, so the status alone cannot tell a PRD-review park
+  // from a plan-stage one.
+  judgmentReason?: string;
   artifacts: { kind: string; version: number }[];
   tasks: { status: string }[];
   changeSets: { status: string }[];
@@ -18,6 +22,7 @@ export interface InitiativeRollup {
   id: string;
   title: string;
   status: string;
+  judgment_reason?: string;
   artifacts: { kind: string; version: number }[];
   task_statuses: string[];
   change_set_statuses: string[];
@@ -31,6 +36,7 @@ export interface InitiativeRollup {
 export function rollupPhaseSource(r: InitiativeRollup): PhaseSource {
   return {
     status: r.status,
+    judgmentReason: r.judgment_reason,
     artifacts: r.artifacts,
     tasks: r.task_statuses.map((status) => ({ status })),
     changeSets: r.change_set_statuses.map((status) => ({ status })),
@@ -100,7 +106,7 @@ function hasAll(artifacts: { kind: string; version: number }[], kinds: string[])
 }
 
 export function derivePhases(src: PhaseSource): PhaseState[] {
-  const { artifacts, status } = src;
+  const { artifacts, status, judgmentReason } = src;
   const complete = status === "complete";
 
   const taskCount = src.tasks.length;
@@ -113,12 +119,37 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
     src.changeSets.length > 0 &&
     src.changeSets.every((c) => c.status === "applied" || c.status === "reverted");
 
-  // "Past define" = the PRD was approved. The execution-plan artifact is the
-  // disambiguator between M1-review-blocked (no plan yet) and M2-plan-blocked
-  // (plan exists), since both use the same `needs_human_judgment` status.
+  // "Past define" = the PRD was approved.
+  //
+  // This used to key on the execution-plan ARTIFACT, as the disambiguator
+  // between an M1-review park and an M2-plan park, since both share
+  // `needs_human_judgment`. The artifact is a proxy: `runExecutionPlan` writes
+  // it before the dependency check, so its presence says "a plan was generated",
+  // not "the plan stage is legitimately under way".
+  //
+  // The tightening that matters is at the other end -- a park on `prd_review`,
+  // or one carrying no reason, no longer reads as past define because an
+  // artifact from an earlier cycle is lying around.
+  //
+  // The reason is the real discriminator, and it is exact where the artifact is
+  // a proxy. Three of the four reasons only occur after the PRD is approved --
+  // verified at each write site: plan_review and plan_dependencies in
+  // advance.go, verification in verify.go's completion path.
   const hasExecutionPlan = hasAll(artifacts, ["execution_plan"]);
+  const pastDefinePark =
+    judgmentReason === "plan_review" ||
+    judgmentReason === "plan_dependencies" ||
+    judgmentReason === "verification";
   const pastDefine =
-    status === "approved" || status === "plan_approved" || complete || hasExecutionPlan;
+    status === "approved" ||
+    status === "plan_approved" ||
+    complete ||
+    // `running` and `failed` record no reason, and the status is `running` for
+    // the whole of every M2 and M3 operation -- so during `idea execute` the
+    // artifact is the only evidence available, and dropping it here would
+    // un-complete Define mid-build and jump the rail backwards.
+    ((status === "running" || status === "failed") && hasExecutionPlan) ||
+    pastDefinePark;
 
   const done: Record<PhaseName, boolean> = {
     explore: hasAll(artifacts, ["idea_brief", "research_brief"]),
