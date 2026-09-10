@@ -196,6 +196,29 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 	if err != nil {
 		return err
 	}
+	// Zero requirements is not "everything verified". The loop below concludes
+	// allVerified vacuously when there is nothing to walk, and the write that
+	// followed set `complete` over anything -- including a `failed` initiative
+	// that died at framing before a single requirement existed (DX audit 7 P0-2).
+	//
+	// The predicate is "at least one requirement that is not removed", and each
+	// half of that matters. len(reqs) alone does not close it: Engine.Revise
+	// supersedes every requirement before regenerating, so a model failure there
+	// leaves N removed requirements and zero active ones, and the loop `continue`s
+	// all N. Excluding waived would go too far the other way and kill the
+	// documented all-waived flow, which audit 5's A2 proposed and a plan review
+	// rejected for exactly that reason -- waived is a human's judgment that the
+	// requirement is out of scope, not an absence of work.
+	inScope := 0
+	for _, r := range reqs {
+		if r.Status != domain.RequirementRemoved {
+			inScope++
+		}
+	}
+	if inScope == 0 {
+		return nil // nothing was ever built; not done, and not an error
+	}
+
 	allVerified := true
 	for _, r := range reqs {
 		// Removed/superseded requirements are not part of the active set and can
@@ -235,7 +258,9 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 	if blocking {
 		return fmt.Errorf("workflow: initiative has open blocking findings; cannot complete")
 	}
-	return e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeComplete, store.ActorOrchestrator)
+	// CompleteInitiative, not SetInitiativeStatus: the write refuses to run over
+	// a `failed` initiative. See its doc comment.
+	return e.db.CompleteInitiative(ctx, initiativeID, store.ActorOrchestrator)
 }
 
 // requirementCovered reports whether every mandatory acceptance criterion of r

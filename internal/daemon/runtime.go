@@ -1144,6 +1144,63 @@ func hasOpenStructuralPlanFinding(ctx context.Context, pr *projectRuntime, initi
 	return false, nil
 }
 
+// RunVerificationGate records any human evidence in the request and then runs
+// the verification gate, refusing an initiative that has already failed.
+//
+// Verify was the one state-writing path that never went through the Runtime:
+// handleVerify called the engine directly, with no running check, no claim and
+// no state precondition -- which is why `verifyInitiative` declared no 409 and
+// the conflict axis correctly agreed there was nothing to declare.
+//
+// `failed` only. `running` is deliberately NOT refused: `idea apply` does not
+// wait for its operation, and the initiative reads `running` until the release
+// that follows the change set being marked applied -- so the documented
+// apply-then-verify sequence (docs/demo-greenfield.md, and scripts/smoke.sh,
+// which polls the change set and then verifies) runs inside that window.
+// Refusing it there would break the flow this fix is not about.
+//
+// The residual that leaves: a `complete` written during an in-flight apply can
+// be reverted by that apply's release, which writes priorStatus unconditionally.
+// Pre-existing, recorded in docs/plans/deferred.md, and not closed here.
+func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiativeID, requirement string,
+	disposition domain.VerificationStatus, note string) (domain.InitiativeStatus, []workflow.Coverage, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", nil, err
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", nil, err
+	}
+	if ini.Status == domain.InitiativeFailed {
+		return "", nil, preconditionf("cannot verify a failed initiative; `idea retry` re-runs it")
+	}
+	if requirement != "" && disposition != "" {
+		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, requirement, disposition, note, ""); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := pr.engine.VerifyInitiative(ctx, initiativeID); err != nil {
+		// The engine cannot build a *PreconditionError -- internal/daemon imports
+		// internal/workflow, not the reverse -- so the store's raw sentinel is
+		// translated here. Unmapped it reached the client as
+		// `400: store: initiative is not in a claimable state`.
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", nil, preconditionf("the initiative changed state while the gate ran; re-run `idea verify`")
+		}
+		return "", nil, err
+	}
+	ini, err = pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", nil, err
+	}
+	coverage, err := pr.engine.Coverage(ctx, initiativeID)
+	if err != nil {
+		return "", nil, err
+	}
+	return ini.Status, coverage, nil
+}
+
 // ApprovePlanInitiative accepts the execution plan, findings and all.
 func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)

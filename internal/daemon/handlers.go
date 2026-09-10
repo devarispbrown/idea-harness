@@ -1937,27 +1937,23 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	case body.Pass:
 		disposition = domain.VerificationPass
 	}
-	if body.Requirement != "" && disposition != "" {
-		if err := pr.engine.RecordHumanEvidence(r.Context(), initiativeID, body.Requirement, disposition, body.Note, ""); err != nil {
+	// A requirement with no disposition used to be dropped on the floor: the CLI
+	// sent {} and this handler never saw the name, so `idea verify REQ-99`
+	// reported the whole-initiative gate and never mentioned REQ-99. Resolving it
+	// here gives the read path the same answer the write path already gave.
+	if body.Requirement != "" && disposition == "" {
+		if _, err := pr.db.GetRequirementByRef(r.Context(), initiativeID, body.Requirement); err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 	}
-	if err := pr.engine.VerifyInitiative(r.Context(), initiativeID); err != nil {
+	status, coverage, err := s.rt.RunVerificationGate(
+		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note)
+	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ini, err := pr.db.GetInitiative(r.Context(), initiativeID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	coverage, err := pr.engine.Coverage(r.Context(), initiativeID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": ini.Status, "coverage": coverage})
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "coverage": coverage})
 }
 
 // handleNext returns the deterministic next step for an initiative (§52).

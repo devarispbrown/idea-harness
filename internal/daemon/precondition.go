@@ -18,12 +18,18 @@ import (
 // a sixth handler would have left the seventh to get it wrong; this makes the
 // classification travel with the error instead.
 //
-// Deliberately narrow. Only Runtime.*Initiative precondition checks return this
-// type, never internal/workflow. Fourteen handler call sites pass
-// http.StatusBadRequest for engine errors (ReviewChangeSet and VerifyInitiative
-// among them); retyping an error those paths can surface would silently flip a
-// 400 into a 409, so the type is applied to an enumerated set and TestPrecondition
-// pins both halves.
+// Deliberately narrow. Only Runtime.* precondition checks return this type,
+// never internal/workflow. Handler call sites pass http.StatusBadRequest for
+// engine errors; retyping an error those paths can surface would silently flip
+// a 400 into a 409, so the type is applied to an enumerated set and
+// TestPrecondition pins both halves.
+//
+// Runtime.RunVerificationGate joined that set when `idea verify` stopped being
+// able to complete a failed initiative. Note what did and did not change:
+// Engine.VerifyInitiative's own errors still reach writeErr as plain errors and
+// still answer 400. What carries this type is the Runtime's own read of the
+// status, and the translation of store.ErrInitiativeNotClaimable, both of which
+// are preconditions on the request rather than failures inside the gate.
 type PreconditionError struct {
 	Reason string
 }

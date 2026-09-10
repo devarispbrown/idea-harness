@@ -243,6 +243,54 @@ func (db *DB) TransitionInitiative(ctx context.Context, initiativeID string, to 
 	})
 }
 
+// CompleteInitiative writes `complete`, but never over a failed initiative.
+//
+// This is a guard on the write, not an enumeration of the states it accepts.
+// InitiativeStatus has six values, so listing the other five would be the exact
+// complement of the one refusal -- and a seventh status added later would be
+// silently excluded, turning a legitimate completion into a refusal with no
+// test failing. The invariant is "not failed", so that is what the SQL says.
+//
+// The defect: VerifyInitiative concluded `complete` for an initiative with no
+// requirements at all (the gate loop never runs, so allVerified stays true) and
+// wrote it with SetInitiativeStatus, unconditionally. DX audit 7 reproduced a
+// bare `idea verify` on an initiative that failed at framing with a 401 --
+// zero requirements, zero tasks, zero change sets -- printing
+// `✓ verified status: complete`, exiting 0, and discarding the failure_reason.
+//
+// Runtime.RunVerificationGate refuses the request synchronously; this refuses
+// the write, which closes the window between that read and this write where a
+// concurrent FailInitiative can land, and covers any future caller that does
+// not go through the Runtime.
+func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.status_changed",
+		Operation:     string(domain.InitiativeComplete),
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ?
+			 WHERE id = ? AND status != ?`,
+			domain.InitiativeComplete, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeFailed)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrInitiativeNotClaimable
+		}
+		return nil
+	})
+}
+
 // ErrInitiativeNotClaimable reports that an initiative could not be claimed:
 // another request holds it, or it is not in a state the operation runs from.
 var ErrInitiativeNotClaimable = errors.New("store: initiative is not in a claimable state")

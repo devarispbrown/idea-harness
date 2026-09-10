@@ -437,6 +437,16 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		body = map[string]any{"requirement": req, "waived": true, "note": note}
 	case req != "" && pass:
 		body = map[string]any{"requirement": req, "pass": true, "note": note}
+	case req != "":
+		// The read path used to fall through to an empty body, silently
+		// discarding the argument: `idea verify REQ-99` on a project holding only
+		// REQ-1 reported `REQ-1 0/1 verified` and never mentioned REQ-99, exiting
+		// on the whole-initiative gate. The write path was already correct --
+		// `idea verify REQ-99 --pass` exits 1 with `no requirement matching
+		// "REQ-99"` -- so the validation existed and was applied to the opposite
+		// case from the one that was reported. Sending the name is what lets the
+		// daemon resolve it and answer about the requirement that was asked for.
+		body = map[string]any{"requirement": req}
 	}
 	var out struct {
 		Status   string        `json:"status"`
