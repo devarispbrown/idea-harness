@@ -2437,13 +2437,16 @@ paths:
                 required: [status]
         "400":
           description: |
-            `invalid body`, a provider entry the validator refused, a config problem attributable to
-            a field this request wrote, or a rejected inline secret.
+            `invalid body`, a field this endpoint does not declare (the body is closed:
+            `json: unknown field "api_key"`), a provider entry the validator refused — including one
+            that resolves to no endpoint — a config problem attributable to a field this request
+            wrote, or a rejected inline secret.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500":
           description: The config was written but the runtime reload failed.
           content:
@@ -3607,7 +3610,14 @@ components:
     ProviderConfig:
       type: object
       title: ProviderConfig
-      description: One provider entry as written to `harness.yaml`. Inline key values are rejected.
+      description: |
+        One provider entry as written to `harness.yaml`. Inline key values are rejected — the body
+        is closed, so a field this schema does not declare (`api_key`, say) answers 400 naming it
+        rather than being silently dropped. Use `api_key_env`.
+
+        An entry that resolves to no endpoint is refused: a built-in preset may be configured by
+        name alone (`{"openai": {}}` inherits the preset's type, base URL and key variable), but any
+        other name needs a `base_url`.
       properties:
         type:
           type: string

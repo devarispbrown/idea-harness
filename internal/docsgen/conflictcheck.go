@@ -51,6 +51,49 @@ func conflictSources(dir string) (map[string]bool, error) {
 		files[name] = f
 	}
 
+	// Helpers whose EVERY writeError status is 409, so a caller reaching one can
+	// only produce a conflict. `writeReloadErr` is the case this exists for:
+	// both its branches write 409, and `PUT /providers` reached it while
+	// declaring no 409 at all -- while its sibling `PUT /executors`, which
+	// reaches 409 by the identical call, did declare one. The axis saw neither.
+	//
+	// "Every status is 409", not "writes 409 somewhere". The obvious rule is
+	// wrong because `writeErr` itself contains a literal
+	// writeError(w, http.StatusConflict, …) in its *PreconditionError branch,
+	// and 75 functions call it -- every read-only GET included. Measured, that
+	// rule takes conflict-capable operations from 15 to 78 and newly demands a
+	// spurious 409 on 57 of them, including GET /projects and GET /next, on a
+	// guard whose whole purpose is keeping the spec honest. writeErr's own 409
+	// branch is precondition-driven and is already covered by the
+	// preconditionMethods propagation below.
+	conflictOnlyHelpers := map[string]bool{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Name.Name == "writeErr" {
+				continue
+			}
+			statuses := 0
+			conflicts := 0
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "writeError" && len(call.Args) >= 2 {
+					statuses++
+					if isStatusConflict(call.Args[1]) {
+						conflicts++
+					}
+				}
+				return true
+			})
+			if statuses > 0 && statuses == conflicts {
+				conflictOnlyHelpers[fn.Name.Name] = true
+			}
+		}
+	}
+
 	// Runtime methods that can return a precondition error.
 	preconditionMethods := map[string]bool{}
 	for _, f := range files {
@@ -92,6 +135,13 @@ func conflictSources(dir string) (map[string]bool, error) {
 				}
 				// Indirect: a call to a Runtime method that returns preconditionf.
 				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && preconditionMethods[sel.Sel.Name] {
+					out[fn.Name.Name] = true
+				}
+				// Indirect: a call to a helper that can only write 409.
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && conflictOnlyHelpers[sel.Sel.Name] {
+					out[fn.Name.Name] = true
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && conflictOnlyHelpers[id.Name] {
 					out[fn.Name.Name] = true
 				}
 				return true

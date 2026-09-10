@@ -263,6 +263,22 @@ func lookupKey(name string, dotEnv map[string]string) string {
 // prompts and an API key are sent, so it is validated before it is stored, not
 // when it is first used.
 func ValidateProvider(name string, pc ProviderConfig) error {
+	// An entry that names nothing to send requests to. This is NOT "declares no
+	// fields": ResolveProvider fills every field from the preset when the name
+	// matches one, so `openai: {}` is a complete, working configuration and
+	// internal/daemon/providers.go relies on exactly that as the preset-fallback
+	// path. The unusable shape is a name that resolves to no endpoint --
+	// `mycustom: {}` -- which was accepted and failed at the first model call
+	// instead of here, because of the BaseURL == "" early return below.
+	//
+	// Here rather than in the handler so it runs on the write path AND again
+	// when the registry is built, which is what docs/security.md promises.
+	// Consequence, stated rather than discovered: an entry already on disk that
+	// resolves to no endpoint now reports `problem` on GET /providers.
+	if _, base, _ := ResolveProvider(name, pc); base == "" {
+		return fmt.Errorf("provider %q names no endpoint: it is not a built-in preset, so it needs "+
+			"a base_url (and an api_key_env if the endpoint requires a key)", name)
+	}
 	if pc.BaseURL == "" {
 		return nil
 	}
