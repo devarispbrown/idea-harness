@@ -9,6 +9,53 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`idea review <CHG-n> approve --accept-findings`** — a human may accept a
+  change set the adversarial reviewer will not pass, the way `idea approve`
+  already accepts a PRD and `idea approve-plan` a plan.
+
+  This was the **third** live-lock of one shape, and the one that kept the keyed
+  quickstart at 0/3 after the other two were fixed. `idea next` names
+  `idea review CHG-1 approve`; that runs a fresh adversarial review, and a model
+  reviewer is not a fixed point. Worse, the first attempt **persists** its
+  findings, so every later attempt is refused by the `review_open_blocking` deny
+  before the review runs, and `idea apply` answers "needs approval first". Every
+  other command refuses. Measured on `openai/gpt-5.6-luna` and `gpt-4o-mini`
+  alike.
+
+  The accept dispositions the reviewer's open findings on that change set as
+  `accepted_risk` against the human, **re-runs** the deny gate, and does not run
+  a fresh review. Two predicates decide what it may sign off, and both are
+  needed: a finding must carry **no deny code** (`secret_sweep`, `pii`,
+  `host_exec`, `blob_digest_mismatch` — only the reviewer leaves it empty) **and**
+  be undisposed (a failing build check carries no code but is `rejected`, and a
+  failing build is not a judgment to accept away). Anything it declines to touch
+  still denies, naming the code.
+
+  The web UI gets the same affordance, and now renders the error when a verdict
+  is refused rather than swallowing it.
+
+- **`demo.block_change_set_review_cycles`**, and the change-set review has its
+  own fake-provider key. All three adversarial reviews shared the key `review`,
+  so the change-set review could not be made to block on demand — which is why
+  five smoke passes and seven audits never reached the state above. There is a
+  sixth smoke pass now, with a reviewer that blocks 50 times.
+
+### Changed
+
+- **`docs/security-model.md`'s `review_open_blocking` row is conditionally
+  overridable.** It sat beside five codes that genuinely are not, and read as
+  flatly non-overridable. Only this one is a reviewer's judgment.
+
+- **Documented model ids now resolve.** `anthropic/claude-3-7-sonnet-latest`
+  (9 sites) and `openrouter/anthropic/claude-3.7-sonnet` are absent from the live
+  catalogs; the examples move to `anthropic/claude-sonnet-4-5`,
+  `openai/gpt-5.6-luna` and `openrouter/anthropic/claude-opus-5`, each checked
+  with `idea model ls` on 2026-09-10. A ledger predicate pinned to a model id has
+  a shelf life, so the date is part of the claim — audit 4's own D9 row had to be
+  updated for exactly that reason.
+
 ### Fixed
 
 - **The phase rail derives Define from the judgment reason, not from an

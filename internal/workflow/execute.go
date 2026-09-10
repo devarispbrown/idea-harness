@@ -1177,13 +1177,44 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 		// a system-deny (review: non-overridable means non-overridable).
 		resolved := f.Disposition == domain.DispositionFixed || f.Disposition == domain.DispositionAcceptedRisk
 		if !resolved && f.Severity.Blocking() {
-			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding)", domain.DenyCodeReviewOpenBlocking, f.Severity)
+			if f.Code == "" {
+				// A reviewer's judgment. A human may accept it, and until this
+				// message said so the only command `idea next` names was refused
+				// and named nothing that works.
+				return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding); "+
+					"`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` "+
+					"accepts the change set findings and all", domain.DenyCodeReviewOpenBlocking, f.Severity)
+			}
+			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding, %s); "+
+				"a system deny is not something a human can accept — `idea reviews` shows it",
+				domain.DenyCodeReviewOpenBlocking, f.Severity, f.Code)
 		}
 	}
 	return nil
 }
 
+// ReviewChangeSet with acceptFindings=true is the human accept: it signs off the
+// reviewer's open findings on this change set and approves, without running a
+// fresh review.
+//
+// That last clause is the whole point, and it is the third time this project has
+// needed it. `idea approve` had to stop re-running the PRD review; `idea
+// approve-plan` had to stop re-running the plan review; and this had to stop
+// re-running the change-set review. A model reviewer is not a fixed point, so
+// "disposition, then review again" is a retry, not an accept -- and here it was
+// worse than a coin flip: the first attempt persists its findings, and every
+// later attempt fails denyReviewOpenBlocking on them before the review even
+// runs. The keyed magic path hit this every run and had no way out.
 func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string) error {
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, false)
+}
+
+// ReviewChangeSetAccepting is ReviewChangeSet with the human accept.
+func (e *Engine) ReviewChangeSetAccepting(ctx context.Context, initiativeID, changeSetID, verdict string) error {
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, true)
+}
+
+func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1199,6 +1230,29 @@ func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 	case "approved":
 		if cs.Status != domain.ChangeSetReviewRequired {
 			return fmt.Errorf("workflow: cannot approve change set in status %q", cs.Status)
+		}
+		// The human accept: sign off the reviewer's own findings on this change
+		// set, then re-run the gate. NOT skip it -- anything the disposition
+		// declined to touch still refuses, which is what keeps the two predicates
+		// in DispositionUnclaimedFindingsByTarget load-bearing rather than
+		// decorative. A secret_sweep or host_exec finding carries a deny code and
+		// is untouched; a failing build check carries `rejected` and is untouched;
+		// both then block here, naming the deny.
+		if acceptFindings {
+			if err := e.db.DispositionUnclaimedFindingsByTarget(ctx, initiativeID,
+				"change_set", changeSetID, domain.DispositionAcceptedRisk, store.HumanActor); err != nil {
+				return err
+			}
+			if err := e.denyReviewOpenBlocking(ctx, changeSetID); err != nil {
+				return err
+			}
+			// No fresh review, and no EvaluateApproval. See the doc comment.
+			//
+			// review_id is deliberately left unstamped: there is no run, and no
+			// review passed. The provenance is the event log -- a
+			// change_set.transitioned carrying HumanActor -- which is what the
+			// audit trail rests on.
+			return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
 		}
 		// System-deny: refuse to approve while an undisposed blocking finding
 		// targets this change set (e.g. a prior adversarial review's critical/high
@@ -1219,7 +1273,14 @@ func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 			}
 		}
 		if blocked, reason := review.EvaluateApproval(findings); blocked {
-			return fmt.Errorf("workflow: approval blocked: %s", reason)
+			// The FIRST refusal a user meets, and the one that persists the
+			// findings every later attempt then fails the deny gate on. Naming
+			// the route here matters more than naming it there: by the time the
+			// deny gate speaks, the user has already been told "no" once with no
+			// way forward.
+			return fmt.Errorf("workflow: approval blocked: %s; "+
+				"`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` "+
+				"accepts the change set findings and all", reason)
 		}
 		if err := e.db.SetChangeSetReview(ctx, changeSetID, runID, store.HumanActor); err != nil {
 			return err
@@ -1301,10 +1362,23 @@ func (e *Engine) RejectConflicted(ctx context.Context, initiativeID, changeSetID
 	return nil
 }
 
+// ChangeSetReviewSchemaName is the fake provider's queue key for the change-set
+// adversarial review. Exported so demoProvider can prime it and tests can steer
+// it; it never reaches a real provider.
+const ChangeSetReviewSchemaName = "change_set_review"
+
 // runChangeSetAdversarialReview runs the adversarial reviewer over a change set
 // and converts its structured output into findings.
 func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, error) {
-	runID, obj, err := e.runModel(ctx, cs.InitiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,
+	// "change_set_review", not "review". The name is a demo/test discriminator
+	// only -- JSONSchemaName is read by nothing but the fake provider, and real
+	// providers never see it, because runModel inlines the schema text into the
+	// system prompt. Sharing the key with the PRD review meant a queued demo
+	// response could outlive the review it was meant for and land here, which is
+	// the hazard the plan review's key was split to avoid; and it meant there
+	// was no way to make THIS review block on demand, which is why five smoke
+	// passes and every audit missed the live-lock behind it.
+	runID, obj, err := e.runModel(ctx, cs.InitiativeID, StageReview, RoleAdversarialReviewer, ChangeSetReviewSchemaName, schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the change set. Emit structured findings. Never set accepted_risk."},
 			{Selector: "change_set", Content: renderChangeSet(cs, e.RenderPatch(cs))},

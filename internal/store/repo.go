@@ -1092,6 +1092,49 @@ func (db *DB) DispositionOpenFindings(ctx context.Context, initiativeID string, 
 	})
 }
 
+// DispositionUnclaimedFindingsByTarget dispositions the undisposed findings
+// targeting one node that carry NO deny code, in a single event.
+//
+// Three constraints, each of which a simpler call gets wrong:
+//
+//   - Target-scoped. DispositionOpenFindings is `WHERE initiative_id = ?`, so
+//     using it to accept a change set's findings would also sign off every open
+//     finding on the initiative -- including the PRD review's.
+//   - `code = ”`. Every producer that raises a system deny stamps a DenyCode:
+//     secret_sweep, pii, host_exec, blob_digest_mismatch. Only the adversarial
+//     reviewer leaves it empty (review.ParseFindings never sets it). So this
+//     cannot sign off a credential detection, whatever the caller intends, and
+//     "system deny beats human approve" survives.
+//   - accepted_risk requires a human. SetFindingDisposition enforces that and
+//     DispositionOpenFindings does not; a bulk path that skipped it would let an
+//     automated actor forge the one disposition the reviewer is forbidden to
+//     set.
+//
+// One event rather than N: a loop of SetFindingDisposition is not atomic, and a
+// partial write here leaves a change set half-accepted.
+func (db *DB) DispositionUnclaimedFindingsByTarget(ctx context.Context, initiativeID, targetType, targetID string, disp domain.Disposition, actor string) error {
+	if !disp.Valid() {
+		return fmt.Errorf("store: invalid disposition %q", disp)
+	}
+	if disp == domain.DispositionAcceptedRisk && actor != HumanActor {
+		return fmt.Errorf("store: accepted_risk requires a human actor")
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "finding",
+		AggregateID:   targetID,
+		Actor:         actor,
+		EventType:     "findings.dispositioned",
+		Operation:     string(disp),
+	}, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE findings SET disposition = ?, disposition_actor = ?
+			 WHERE initiative_id = ? AND target_type = ? AND target_id = ?
+			   AND (disposition IS NULL OR disposition = '')
+			   AND (code IS NULL OR code = '')`,
+			disp, actor, initiativeID, targetType, targetID)
+		return err
+	})
+}
+
 // SetFindingDisposition records a disposition from a distinct actor.
 func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp domain.Disposition, actor string) error {
 	if !disp.Valid() {

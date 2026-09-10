@@ -47,7 +47,8 @@ func TestDemoBlockingReviewHasEveryRequiredField(t *testing.T) {
 // review cycles. This pins that it is a queue and not a standing response --
 // all three adversarial reviews share the schema name `review`, and a standing
 // response would also block the change-set review, where a blocking finding
-// cannot be cleared by anything the CLI can do.
+// could not be cleared by anything the CLI could do (until
+// `--accept-findings`, which clears the reviewer's own findings, not a deny code).
 func TestBlockingReviewIsQueuedNotStanding(t *testing.T) {
 	f := NewFakeProvider()
 	f.EnqueueResponse("review", DemoBlockingReviewJSON)

@@ -9,7 +9,9 @@ import (
 
 // "It is a count, not a flag" is the load-bearing claim behind this design —
 // a standing response would also block the plan and change-set reviews, and a
-// blocking finding on a change set cannot be cleared by anything the CLI can do.
+// blocking finding on a change set could not be cleared by anything the CLI
+// could do (until `--accept-findings`, which clears the reviewer's own findings
+// and not a deny code).
 // It was asserted in a CHANGELOG entry, two doc comments and the configuration
 // reference, and tested nowhere.
 func TestDemoProviderQueuesExactlyWhatIsAsked(t *testing.T) {

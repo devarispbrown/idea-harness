@@ -205,12 +205,23 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	body := map[string]any{"verdict": verdict}
+	accepting := a.has("--accept-findings")
+	if accepting {
+		if verdict != "approved" {
+			return fmt.Errorf("--accept-findings only applies to `approve`")
+		}
+		body["accept_findings"] = true
+	}
 	var out map[string]string
-	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"),
-		map[string]string{"verdict": verdict}, &out); err != nil {
+	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, ok("✓ review recorded")+" "+code(positional[0])+" → "+verdict)
+	line := ok("✓ review recorded") + " " + code(positional[0]) + " → " + verdict
+	if accepting {
+		line += " " + muted("(findings accepted)")
+	}
+	fmt.Fprintln(stdout, line)
 	return nil
 }
 

@@ -566,3 +566,65 @@ NREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 echo "an accepted non-converging plan reaches complete"
 
 echo "=== NON-CONVERGING PLAN REVIEW PASS OK ==="
+
+# ---------------------------------------------------------------------------
+# PASS 6 — a change-set review that never converges.
+#
+# The third live-lock, and the one that kept the keyed magic path at 0/3 after
+# the first two were fixed. `idea next` names `idea review CHG-1 approve`; that
+# runs a fresh adversarial review, and a model reviewer is not a fixed point.
+# Worse: the first attempt PERSISTS its findings, so every later attempt is
+# refused by denyReviewOpenBlocking before the review even runs, and `idea apply`
+# answers "needs approval first". Every other command refuses.
+#
+# No demo configuration could reach that state until this round: the change-set
+# review shared the `review` schema key with the PRD review, so it could not be
+# made to block on its own. It has its own key and its own knob now, and this is
+# what asserts the escape.
+#
+# 50, not 1: on a converging queue the accept and a retry are indistinguishable.
+# ---------------------------------------------------------------------------
+echo "=== NON-CONVERGING CHANGE-SET REVIEW PASS ==="
+CPROJ="$TMPROOT/csreview"
+mkdir -p "$CPROJ"
+cd "$CPROJ"
+"$ROOT/bin/idea" init
+# The queues are primed when the daemon opens the project and refilled on every
+# config reload, so this restart must stay the LAST config write before `idea new`.
+printf '\ndemo:\n  block_change_set_review_cycles: 50\n' >>.idea-harness/harness.yaml
+kill "$DAEMON_PID" 2>/dev/null || true
+wait "$DAEMON_PID" 2>/dev/null || true
+"$ROOT/bin/idea" daemon >"$STATE/daemon.log" 2>&1 &
+DAEMON_PID=$!
+wait_for "daemon to report running (change-set review pass)" 5 daemon_running
+
+"$ROOT/bin/idea" new "A parking permit renewal service"
+wait_for "the PRD to converge" 60 initiative_left_running
+"$ROOT/bin/idea" next --until-human
+wait_for "a change set to exist" 60 chg1_in_changes
+
+# `idea next` must name BOTH commands. Naming only the first is the defect: the
+# one command it offered was refused and pointed at nothing that works.
+CNEXT=$("$ROOT/bin/idea" next 2>&1 || true)
+printf '%s\n' "$CNEXT"
+printf '%s' "$CNEXT" | grep -q 'idea review CHG-1 approve --accept-findings' ||
+  { echo "ERROR: idea next did not name the accept"; exit 1; }
+
+# The plain approve is refused, and the refusal names the way out.
+CERR=$("$ROOT/bin/idea" review CHG-1 approve 2>&1 || true)
+printf '%s' "$CERR" | grep -q 'accept-findings' ||
+  { echo "ERROR: the blocked approval does not name the accept: $CERR"; exit 1; }
+echo "a blocked change-set review names its escape"
+
+# And the accept finishes the loop.
+"$ROOT/bin/idea" review CHG-1 approve --accept-findings
+"$ROOT/bin/idea" apply CHG-1
+wait_for "the accepted change set to read applied" 30 chg1_applied
+CREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
+[ -n "$CREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
+"$ROOT/bin/idea" verify "$CREQ" --pass
+"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
+  { echo "ERROR: an accepted change set did not reach complete"; exit 1; }
+echo "an accepted change set reaches complete"
+
+echo "=== NON-CONVERGING CHANGE-SET REVIEW PASS OK ==="

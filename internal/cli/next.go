@@ -233,7 +233,18 @@ func renderNextAction(step nextStep, stdout io.Writer) error {
 	switch {
 	case strings.HasPrefix(action, "review "):
 		id := strings.TrimPrefix(action, "review ")
-		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id)+" — "+muted("idea review "+id+" approve"))
+		fmt.Fprintln(stdout, bold("Next:")+" review "+code(id))
+		// Two lines, like the judgment arms. `idea review <id> approve` runs the
+		// adversarial reviewer and approves only if it passes -- and on a real
+		// model it often does not, after which the deny gate refuses outright.
+		// Naming only the first command left the one command this arm offered
+		// refused, with nothing else named: the live-lock the keyed magic path hit
+		// every run.
+		line := func(cmd, what string) {
+			fmt.Fprintln(stdout, "  "+bold(cmd)+"  "+muted(what))
+		}
+		line("idea review "+id+" approve", "review it, and approve if it passes")
+		line("idea review "+id+" approve --accept-findings", "accept it, findings and all")
 	case strings.HasPrefix(action, "apply "):
 		id := strings.TrimPrefix(action, "apply ")
 		fmt.Fprintln(stdout, bold("Next:")+" apply "+code(id)+" — "+muted("idea apply "+id))

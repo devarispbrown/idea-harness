@@ -65,6 +65,10 @@ export default function BuildPage({
   const [tasks, setTasks] = useState<Task[]>([]);
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
+  // A failed verdict used to be an unhandled rejection: `post` throws on non-2xx
+  // and nothing caught it, so an approve refused by the deny gate was a silent
+  // dead click.
+  const [error, setError] = useState("");
   const [openDiff, setOpenDiff] = useState<string | null>(null);
   const [diffText, setDiffText] = useState("");
   const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
@@ -91,8 +95,19 @@ export default function BuildPage({
     return () => clearInterval(id);
   }, [load]);
 
-  const review = async (cs: ChangeSet, verdict: string) => {
-    await post(`/projects/${projectId}/change-sets/${cs.id}/review`, { verdict });
+  // acceptFindings signs off the adversarial reviewer's open findings on this
+  // change set and approves without re-reviewing. Only the reviewer's: a finding
+  // carrying a deny code is untouched and still refuses, which is the panel
+  // above this one.
+  const review = async (cs: ChangeSet, verdict: string, acceptFindings = false) => {
+    setError("");
+    try {
+      await post(`/projects/${projectId}/change-sets/${cs.id}/review`,
+        acceptFindings ? { verdict, accept_findings: true } : { verdict });
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
     await load();
   };
   const apply = async (cs: ChangeSet) => {
@@ -212,10 +227,18 @@ export default function BuildPage({
                 )}
               </div>
             )}
+            {error && <p className="error">{error}</p>}
             <div className="cs-actions">
               {cs.status === "review_required" && (
                 <>
                   <button className="cs-green" onClick={() => review(cs, "approved")}>Approve</button>
+                  {/* The escape. Without it, a change set the reviewer will not
+                      pass has no route forward in this UI at all: Approve 400s,
+                      Request changes regenerates into the same block, and Reject
+                      throws the work away. */}
+                  <button className="cs-secondary" onClick={() => review(cs, "approved", true)}>
+                    Approve, accepting findings
+                  </button>
                   <button className="cs-secondary" onClick={() => review(cs, "changes_requested")}>Request changes</button>
                   <button className="cs-secondary" onClick={() => review(cs, "rejected")}>Reject</button>
                 </>

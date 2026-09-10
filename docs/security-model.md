@@ -19,7 +19,7 @@ conditions. Everything else is ordinary policy that a human may override.
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
 | `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
-| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. |
+| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. **Conditionally overridable, and only this one.** `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above, or one already dispositioned (a failing build check is `rejected`), is left untouched and still denies. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
 `Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
