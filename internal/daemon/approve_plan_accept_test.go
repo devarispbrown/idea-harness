@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -145,6 +147,11 @@ func TestApprovePlanAcceptsAPlanTheReviewerWillNotPass(t *testing.T) {
 func startOp(t *testing.T, ts *httptest.Server, token, url string) string {
 	t.Helper()
 	resp := doReq(t, http.MethodPost, url, token, "", "{}")
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("%s answered %d: %s", url, resp.StatusCode, body)
+	}
 	var out struct {
 		OperationID string `json:"operation_id"`
 	}
@@ -282,8 +289,17 @@ func TestApprovePlanRefusesAnAlreadyApprovedPlan(t *testing.T) {
 	}
 	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
 
-	if _, err := rt.ApprovePlanInitiative(t.Context(), projectID, iniID); err == nil {
+	// The message, not just the refusal. Deleting the dedicated check and
+	// widening the status gate back still fails the request -- the narrowed
+	// ClaimInitiativeRunning refuses it -- but with "already running or not ready
+	// to approve-plan", which tells the user something untrue. Asserting only
+	// `err != nil` left that swap invisible.
+	_, err = rt.ApprovePlanInitiative(t.Context(), projectID, iniID)
+	if err == nil {
 		t.Fatal("approve-plan re-accepted an already-approved plan")
+	}
+	if !strings.Contains(err.Error(), "already approved") {
+		t.Errorf("the refusal does not say the plan is already approved: %v", err)
 	}
 	findings, err := pr.db.ListFindingsByInitiative(t.Context(), iniID)
 	if err != nil {

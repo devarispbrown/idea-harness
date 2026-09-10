@@ -521,7 +521,10 @@ wait_for "daemon to report running (non-converging pass)" 5 daemon_running
 
 "$ROOT/bin/idea" new "A bike-share pricing engine"
 wait_for "the PRD to converge" 60 initiative_left_running
-"$ROOT/bin/idea" next --until-human || true
+# No `|| true`: this exits non-zero only when the advance itself failed, and
+# swallowing that would surface as the setup grep below failing instead, which
+# names the wrong cause.
+"$ROOT/bin/idea" next --until-human
 wait_for "the plan review to park" 60 initiative_left_running
 
 NOUT=$("$ROOT/bin/idea" next 2>&1 || true)

@@ -25,10 +25,12 @@ export default function PlanPage({
   projectId,
   initiativeId,
   status,
+  judgmentReason,
 }: {
   projectId: string;
   initiativeId: string;
   status: string;
+  judgmentReason?: string;
 }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -111,12 +113,29 @@ export default function PlanPage({
     });
     await load();
   };
+  // Both of these refuse with a 409 in states this page cannot always rule out,
+  // and `post` throws on any non-2xx. Without the catch the rejection was
+  // unhandled, `load()` never ran, and the click was a silent no-op -- including
+  // for the refusal whose message names `idea revise-plan` as the way out, which
+  // is the one the user most needs to read.
   const approve = async () => {
-    await post(`/projects/${projectId}/initiatives/${initiativeId}/approve-plan`, {});
+    setError("");
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/approve-plan`, {});
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
     await load();
   };
   const revisePlan = async () => {
-    await post(`/projects/${projectId}/initiatives/${initiativeId}/revise-plan`, {});
+    setError("");
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/revise-plan`, {});
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
     await load();
   };
 
@@ -136,17 +155,34 @@ export default function PlanPage({
       ]
     : [];
 
-  // `plan_approved` used to render this too, and after approve-plan became a
-  // real accept that combination was wrong in both directions: the pill told the
+  // `plan_approved` used to render the approve button too, and after approve-plan
+  // became a real accept that was wrong in both directions: the pill told the
   // user a plan already approved still needed approval, and the button behind it
-  // posted an accept that the daemon now refuses with a 409 — which `post`
-  // throws and nothing here catches, so the click was a silent no-op under a
-  // label promising otherwise. The gate is the same one the API applies.
-  const awaitingApproval = status === "needs_human_judgment";
+  // posted an accept the daemon now refuses.
+  //
+  // The reason, not just the status. All four judgment reasons share
+  // `needs_human_judgment`, and the API only accepts `plan_review` here — an
+  // initiative parked on `plan_dependencies` was still offered "Approve plan →",
+  // which only `revise-plan` can resolve. Undefined is treated as eligible:
+  // rows parked before the reason was recorded carry "", and the API accepts
+  // those too, so the two agree.
+  //
+  // This is NOT full parity with the API, which also refuses a running
+  // initiative, one that already has change sets, and one carrying a structural
+  // plan defect. Those are states this page cannot cheaply determine, so they
+  // surface as the error the catch above now renders.
+  const awaitingApproval =
+    status === "needs_human_judgment" && (!judgmentReason || judgmentReason === "plan_review");
 
+  // An approved plan still needs a way back. This bar's secondary action is the
+  // only `revise-plan` trigger in the whole UI, and the daemon still accepts it
+  // from `plan_approved` — so gating the entire bar on `awaitingApproval` left
+  // the page with no action at all once a plan was approved.
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
-    : undefined;
+    : status === "plan_approved"
+      ? { label: "approved", state: "verified" }
+      : undefined;
 
   const commit = awaitingApproval
     ? {
@@ -155,7 +191,13 @@ export default function PlanPage({
         onAction: approve,
         secondary: { label: "Ask for a revision", onAction: revisePlan },
       }
-    : undefined;
+    : status === "plan_approved"
+      ? {
+          explanation: "This plan is approved. Build runs it task by task.",
+          actionLabel: "Ask for a revision",
+          onAction: revisePlan,
+        }
+      : undefined;
 
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>

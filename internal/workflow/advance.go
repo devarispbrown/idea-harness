@@ -53,10 +53,11 @@ func (e *Engine) Advance(ctx context.Context, initiativeID string) (domain.Initi
 	return e.runExecutionPlanReview(ctx, initiativeID)
 }
 
-// ApprovePlan accepts a plan whose review raised findings: it records the human's
-// acceptance of them and re-evaluates the plan, which then transitions to
-// plan_approved (or back to needs_human_judgment if the fresh run raises new
-// ones). It does not regenerate tasks.
+// ApprovePlan accepts a plan whose review raised findings: it records the
+// human's acceptance of them and moves the initiative to plan_approved. It does
+// not regenerate tasks, and it is terminal -- there is no re-evaluation and no
+// path back to needs_human_judgment, which is what makes it an accept rather
+// than a retry.
 //
 // Gated on the reason, exactly as Approve is, and for the same defect. All four
 // JudgmentReasons share one status, so a status-only gate let this accept a plan
@@ -99,7 +100,18 @@ func (e *Engine) ApprovePlan(ctx context.Context, initiativeID string) (domain.I
 	// never prove the escape exists, because the escape is indistinguishable
 	// from the queue running out.
 	//
-	// Unconditional, not a compare-and-swap. Engine.Approve CASes, but it can:
+	// Unconditional, not a compare-and-swap -- including the one CAS that WOULD
+	// match here, TransitionInitiative(..., plan_approved, ..., running). The
+	// package documents TransitionInitiative as the compare-and-swap for a
+	// status change that is not a claim, so that is the conventional call, and
+	// it is declined on purpose: it converts a race that cannot happen (nothing
+	// moves the status out of `running` between the claim and this write) into a
+	// FAILED initiative if it ever did, because this runs inside the operation.
+	// The whole reason the first draft of this fix was rejected was a CAS in
+	// exactly this position failing every initiative, so the safe write wins over
+	// the conventional one, and the reasoning is recorded rather than implied.
+	//
+	// Engine.Approve CASes, but it can:
 	// Runtime.ApproveInitiative calls it synchronously on the request goroutine
 	// with no claim, so the status is still needs_human_judgment. This runs from
 	// launchOperation AFTER ClaimInitiativeRunning (runtime.go), so the status
@@ -172,7 +184,14 @@ func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (d
 	if err := e.db.DeleteTasksForInitiative(ctx, initiativeID); err != nil {
 		return domain.InitiativeFailed, err
 	}
-	_ = e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator)
+	// Not ignored. This write is what keeps a finding from outliving the plan it
+	// described: hasOpenBlockingFindings refuses `complete` while any undisposed
+	// critical/high exists, and approve-plan's structural gate now refuses while
+	// an undisposed critical deterministic finding exists. A silent failure here
+	// wedges both, and the escape approve-plan's refusal names is this function.
+	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator); err != nil {
+		return domain.InitiativeFailed, err
+	}
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {
 			// plan_dependencies, not plan_review: only regenerating the plan
@@ -207,7 +226,14 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 	}
 	// Clear prior plan-review findings (they target the now-deleted tasks or the
 	// superseded execution plan). NotApplicable preserves the record as dissent.
-	_ = e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator)
+	// Not ignored. This write is what keeps a finding from outliving the plan it
+	// described: hasOpenBlockingFindings refuses `complete` while any undisposed
+	// critical/high exists, and approve-plan's structural gate now refuses while
+	// an undisposed critical deterministic finding exists. A silent failure here
+	// wedges both, and the escape approve-plan's refusal names is this function.
+	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator); err != nil {
+		return domain.InitiativeFailed, err
+	}
 
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {

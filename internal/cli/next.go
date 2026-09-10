@@ -267,8 +267,10 @@ func reportJudgment(reason string, stdout io.Writer) {
 		line("idea revise ", "regenerate it from the findings (may not converge either)")
 	case "plan-dependencies":
 		fmt.Fprintln(stdout, bold("Next:")+" the execution plan has unresolved task dependencies — "+muted("idea tasks")+muted(" shows the order"))
-		// Deliberately only one option. approve-plan is accepted from this
-		// state by the API and is the wrong move.
+		// Deliberately only one option. The API refuses approve-plan on this
+		// reason -- the undisposed plan_dependency finding is the guard keeping
+		// an incomplete graph out of `complete` -- so offering it would name a
+		// command that 409s.
 		line("idea revise-plan", "regenerate the plan")
 	case "plan":
 		fmt.Fprintln(stdout, bold("Next:")+" the plan review raised blocking findings — "+muted("idea reviews")+muted(" lists them"))
@@ -281,12 +283,15 @@ func reportJudgment(reason string, stdout io.Writer) {
 		// plan_approved from any surface. It is now a terminal accept, matching
 		// `idea approve` on the PRD half, so this line can promise an outcome.
 		//
-		// It can still be refused, but only for a reason the user can act on:
-		// a change set already exists, the initiative is parked on a different
-		// judgment reason, or the plan carries a `critical` deterministic
-		// finding -- a dependency cycle -- which no human can sign off because
-		// nextReadyTask could never schedule it. All three are 409s naming what
-		// to do, not silent re-blocks.
+		// It can still be refused, and the refusals are 409s rather than silent
+		// re-blocks. Reachable from THIS state: the plan carries a `critical`
+		// deterministic finding -- a dependency cycle -- which no human can sign
+		// off because nextReadyTask could never schedule it, and whose message
+		// names revise-plan; a change set already exists, which names nothing
+		// because nothing clears that state (see below); or the initiative is
+		// running. The judgment-reason refusal is NOT reachable from here: this
+		// branch is entered only when the reason already is plan_review, which
+		// is exactly what the API accepts.
 		//
 		// `idea execute` is deliberately NOT offered, though it works from this
 		// state. It is a one-way door: the blocking findings stay undisposed,
