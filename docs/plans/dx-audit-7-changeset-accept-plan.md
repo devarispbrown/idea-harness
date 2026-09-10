@@ -292,3 +292,34 @@ drift `runCoverageCheck` exists to prevent.
 4. The flag's CLI surface, the spec, and `decodeStrict`.
 5. The message and doc sites, including the web UI.
 6. Smoke pass, then the keyed re-measure on `gpt-5.6-luna`.
+
+---
+
+## Result
+
+Measured on `HEAD`, `openai/gpt-5.6-luna`, guided path following the product's
+own instruction at each stop:
+
+| run | result | elapsed | commands |
+|---|---|---|---|
+| 3 | **PASS** `✓ initiative complete` | 369s | 37 |
+| 4 | **PASS** | 844s | 37 |
+| 6 | **PASS** | 398s | 33 |
+| 5 | not counted — `read: operation timed out` to `api.openai.com` mid-run | 585s | 6 |
+
+**3/3 on completed runs**, against 0/3 before. Run 5 died on a network read
+timeout, twice seen this session and unrelated to the product; the error names
+its cause and `idea retry` as the recovery, which is the error work behaving
+correctly.
+
+Two things the measurement surfaced that are not locks and are worth recording:
+
+- **Command count.** `MAGIC_PATH_MAX_COMMANDS` is 8. These runs take 33–37,
+  because `gpt-5.6-luna` produces ~38 requirements for one idea and
+  `idea verify <REQ> --pass` is one command per requirement. The gate is time,
+  which passes comfortably, but the P2 command-count target does not — and the
+  first draft of the measurement script mistook this for a product stop, because
+  it signed off only the first requirement and then ran out of loop turns.
+- **Elapsed spread.** 369–844s on the same input. All well inside the 15-minute
+  gate, but a reader told "about two minutes" by the demo guides is reading the
+  no-key number.
