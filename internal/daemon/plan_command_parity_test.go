@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -42,6 +43,16 @@ func TestPlanCommandsRefuseOnceAChangeSetExists(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// reopen-phase checks for a design artifact BEFORE it checks change
+			// sets, so without this the subtest passed on "no design or plan to
+			// reopen" and stayed green when the change-set guard was deleted --
+			// a vacuous row in the table whose whole purpose is catching a
+			// command that diverges.
+			if err := pr.db.CreateArtifact(t.Context(),
+				&domain.Artifact{InitiativeID: iniID, Kind: domain.ArtifactExecutionPlan},
+				&domain.ArtifactVersion{BodyDigest: "d", Status: "draft"}); err != nil {
+				t.Fatal(err)
+			}
 			if err := pr.db.NeedsHumanJudgment(t.Context(), iniID, domain.JudgmentPlanReview, "test"); err != nil {
 				t.Fatal(err)
 			}
@@ -50,12 +61,21 @@ func TestPlanCommandsRefuseOnceAChangeSetExists(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := tc.call(rt, projectID, iniID); err == nil {
+			_, err = tc.call(rt, projectID, iniID)
+			if err == nil {
 				t.Fatalf("%s accepted an initiative that already has change sets", tc.name)
-			} else if !isPrecondition(err) {
+			}
+			if !isPrecondition(err) {
 				t.Errorf("%s refused with an error that does not carry the precondition type (%v); "+
 					"the classification has to travel with the error, or the 409 depends on "+
 					"whichever status the handler happened to pass", tc.name, err)
+			}
+			// The REASON, not just the refusal. Two of these commands have other
+			// guards that fire earlier, so a row asserting only `err != nil`
+			// passes while the change-set guard it exists for is gone.
+			if !strings.Contains(err.Error(), "change set") &&
+				!strings.Contains(err.Error(), "execution has begun") {
+				t.Errorf("%s refused for a reason other than change sets: %v", tc.name, err)
 			}
 
 			after, err := pr.db.GetInitiative(t.Context(), iniID)
@@ -131,4 +151,63 @@ func TestRevisePlanIsStillAcceptedWithoutChangeSets(t *testing.T) {
 func isPrecondition(err error) bool {
 	var pre *PreconditionError
 	return errors.As(err, &pre)
+}
+
+// TestPlanCommandsIgnoreTerminalChangeSets is the other half of the change-set
+// predicate. `rejected` and `superseded` are absorbing states minted on ordinary
+// paths -- every credential-sweep reject leaves one behind and reopens the task
+// -- so an initiative carrying only those has no work in flight and is
+// legitimately revisable.
+//
+// Counting them made all three commands refuse forever, and the refusal named
+// `idea review` and `idea apply`, both of which are closed for a rejected change
+// set. That is the predicate audit 5's A2 was rejected for proposing, one
+// command over.
+func TestPlanCommandsIgnoreTerminalChangeSets(t *testing.T) {
+	for _, st := range []domain.ChangeSetStatus{domain.ChangeSetRejected, domain.ChangeSetSuperseded} {
+		t.Run(string(st), func(t *testing.T) {
+			rt, ts, token := newTestServer(t)
+			projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+			pr, err := rt.EnsureProject(t.Context(), projectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Through the state machine, not straight into the terminal state:
+			// CreateChangeSet forces `draft` on purpose, so a caller can never
+			// persist a change set that skipped checks and review.
+			cs := &domain.ChangeSet{InitiativeID: iniID, PatchDigest: "p"}
+			if err := pr.db.CreateChangeSet(t.Context(), cs); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range walkTo[st] {
+				if err := pr.db.TransitionChangeSet(t.Context(), cs.ID, step.from, step.to, "test"); err != nil {
+					t.Fatalf("setup: %s -> %s: %v", step.from, step.to, err)
+				}
+			}
+			setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+
+			opID, err := rt.RevisePlanInitiative(t.Context(), projectID, iniID)
+			if err != nil {
+				t.Fatalf("revise-plan was refused over a %s change set, which holds no work: %v\n"+
+					"The refusal names `idea review` and `idea apply`, both closed for it.", st, err)
+			}
+			waitForOperation(t, ts, token, opID)
+		})
+	}
+}
+
+// walkTo is the shortest legal route to each terminal state, per
+// legalChangeSetTransition. `rejected` is what the credential sweep mints;
+// `superseded` is what a re-execution leaves behind.
+var walkTo = map[domain.ChangeSetStatus][]struct{ from, to domain.ChangeSetStatus }{
+	domain.ChangeSetRejected: {
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetRejected},
+	},
+	domain.ChangeSetSuperseded: {
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired},
+		{domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested},
+		{domain.ChangeSetChangesRequested, domain.ChangeSetSuperseded},
+	},
 }

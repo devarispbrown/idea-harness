@@ -14,9 +14,15 @@ package main
 //
 // "Can produce a 409" is derived, not listed:
 //
-//   - the handler writes http.StatusConflict directly, or
+//   - the handler writes http.StatusConflict directly,
 //   - the handler calls a Runtime method whose body contains preconditionf(),
-//     which writeErr maps to 409 regardless of the status the handler passed.
+//     which writeErr maps to 409 regardless of the status the handler passed, or
+//   - the handler calls a helper whose EVERY error exit is 409 -- writeReloadErr.
+//     PUT /providers reached 409 that way and declared none, while PUT /executors
+//     reached it identically and did declare one; neither rule above saw either.
+//     Deliberately "every exit", not "writes 409 somewhere": writeErr itself
+//     carries a literal StatusConflict in its precondition branch and 75
+//     functions call it, so the looser rule flags 78 of 81 routes.
 
 import (
 	"fmt"
@@ -80,7 +86,20 @@ func conflictSources(dir string) (map[string]bool, error) {
 				if !ok {
 					return true
 				}
+				// Both exits, not just the literal one. Counting only
+				// `writeError` made the rule "every LITERAL writeError status is
+				// 409", which classified handleApplyChangeSet -- 404, 409, 500 and
+				// 202, three of them through s.writeErr -- as conflict-only. Inert
+				// today because nothing calls it, and exactly the shape that would
+				// mark every caller 409-capable once such a body is extracted into
+				// a shared helper.
 				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "writeError" && len(call.Args) >= 2 {
+					statuses++
+					if isStatusConflict(call.Args[1]) {
+						conflicts++
+					}
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "writeErr" && len(call.Args) >= 2 {
 					statuses++
 					if isStatusConflict(call.Args[1]) {
 						conflicts++

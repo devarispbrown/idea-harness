@@ -35,11 +35,17 @@ func decodeStrict(r io.Reader, into any) error {
 		if strings.HasPrefix(err.Error(), "json: unknown field ") {
 			return err
 		}
-		var synErr *json.SyntaxError
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &synErr) || errors.As(err, &typeErr) || errors.Is(err, io.EOF) {
-			return errors.New("invalid body")
-		}
+		// Everything else -- a syntax error, a type mismatch, an empty body --
+		// is "invalid body". Deliberately not the decoder's text: it can quote
+		// the body, and a body carrying a credential is exactly the case this
+		// exists for.
+		return errors.New("invalid body")
+	}
+	// One JSON value, and nothing after it. Decode stops at the end of the first
+	// value, so `{"providers":{...}} {"api_key":"sk"}` was accepted and the
+	// trailing object silently discarded -- the same class as the unknown field,
+	// on the endpoint the fix exists for.
+	if dec.More() {
 		return errors.New("invalid body")
 	}
 	return nil

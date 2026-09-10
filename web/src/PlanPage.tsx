@@ -176,42 +176,52 @@ export default function PlanPage({
   // initiative, one that already has change sets, and one carrying a structural
   // plan defect. Those are states this page cannot cheaply determine, so they
   // surface as the error the catch above now renders.
-  // Once a change set exists, every plan-level command is refused: revising a
-  // plan whose work has started would orphan it, and approving one sweeps that
-  // change set's findings. Both are 409s, and the page should not offer a
-  // button that is guaranteed to fail.
+  // Once a change set exists, every plan-level command is refused by the API:
+  // revising a plan whose work has started would orphan it, and approving one
+  // sweeps that change set's findings. Both are 409s, so the page must not
+  // offer a button guaranteed to fail.
+  //
+  // Hoisted and applied to EVERY branch. An earlier version wrote this into the
+  // two needs_human_judgment branches and left it out of `plan_approved` --
+  // which is the only one that matters, because plan_approved is where change
+  // sets appear (`execute` runs from there), while no ordinary path reaches
+  // needs_human_judgment with change sets present. The comment claimed the bar
+  // went away; it did not.
+  const planCommandsAvailable = !hasChangeSets;
+
   const awaitingApproval =
     status === "needs_human_judgment" &&
     (!judgmentReason || judgmentReason === "plan_review") &&
-    !hasChangeSets;
+    planCommandsAvailable;
 
-  // An approved plan still needs a way back while one is available. This bar's
-  // secondary action is the only `revise-plan` trigger in the whole UI, so
-  // gating the entire bar on `awaitingApproval` left the page with no action at
-  // all once a plan was approved. But the daemon accepts revise-plan from
-  // `plan_approved` only while no change set exists — and `plan_approved` is
-  // exactly where change sets appear, since `execute` runs from there — so the
-  // bar goes away when Build has started rather than offering a certain 409.
-  // Parked for some OTHER reason -- plan_dependencies, or a park this page did
-  // not cause. Approving is refused by the API, but revise-plan is accepted from
-  // needs_human_judgment whatever the reason, and `idea next` names it as the
-  // only escape from plan_dependencies. Narrowing `awaitingApproval` without
-  // this branch left those states with no pill and no bar, which is the same
-  // defect the plan_approved branch below exists to fix, one state over.
+  // Parked for some other reason -- plan_dependencies, say. Approving is
+  // refused there, but revise-plan is accepted from needs_human_judgment
+  // whatever the reason, and `idea next` names it as the only escape. Narrowing
+  // `awaitingApproval` without this branch left those states with no pill and no
+  // bar at all.
   const parkedElsewhere =
-    status === "needs_human_judgment" && !awaitingApproval && !hasChangeSets;
+    status === "needs_human_judgment" && !awaitingApproval && planCommandsAvailable;
+
+  // An approved plan still needs a way back while one exists: this bar's action
+  // is the only `revise-plan` trigger in the whole UI, so gating the bar on
+  // `awaitingApproval` alone left the page with nothing to do once a plan was
+  // approved. The daemon accepts it from `plan_approved` only while no change
+  // set exists, so the bar goes away when Build starts -- and the pill says
+  // "building" rather than disappearing, because the state is not an error.
+  const approvedIdle = status === "plan_approved" && planCommandsAvailable;
 
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
     : parkedElsewhere
       ? { label: "needs a revision", state: "needs-you" }
       : status === "plan_approved"
-        ? { label: "approved", state: "verified" }
+        ? { label: hasChangeSets ? "building" : "approved", state: "verified" }
         : undefined;
 
   const commit = awaitingApproval
     ? {
-        explanation: "Approving accepts the plan as it stands and unlocks Build. Tasks run one at a time, each pausing for review.",
+        explanation:
+          "Approving accepts the plan as it stands and unlocks Build. Tasks run one at a time, each pausing for review.",
         actionLabel: "Approve plan →",
         onAction: approve,
         secondary: { label: "Ask for a revision", onAction: revisePlan },
@@ -222,7 +232,7 @@ export default function PlanPage({
           actionLabel: "Ask for a revision",
           onAction: revisePlan,
         }
-      : status === "plan_approved"
+      : approvedIdle
         ? {
             explanation: "This plan is approved. Build runs it task by task.",
             actionLabel: "Ask for a revision",

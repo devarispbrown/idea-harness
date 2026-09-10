@@ -100,9 +100,11 @@ func TestUpdateProvidersAcceptsAPresetByNameAlone(t *testing.T) {
 }
 
 // Every body a first-party client actually sends, as a literal lifted from the
-// call site. DisallowUnknownFields turns a field added on one side into a 400
-// for the other, so these are what make that a test failure here rather than a
-// broken Settings page.
+// call site. These are hand-copied, so they catch a field REMOVED from a Go
+// struct, not one added to a client and the struct together -- the honest limit,
+// stated because a stronger claim would be a reason not to check the call sites
+// by hand next time. All eight matched their call site when written:
+// Settings.tsx x4, model_cmd.go x2, huh.go, change.go.
 func TestStrictDecodeAcceptsEveryFirstPartyBody(t *testing.T) {
 	for _, tc := range []struct{ name, route, body string }{
 		// web/src/Settings.tsx
@@ -132,5 +134,19 @@ func TestStrictDecodeAcceptsEveryFirstPartyBody(t *testing.T) {
 				t.Fatalf("a first-party body was refused: %d %s\n%s", resp.StatusCode, body.Error, tc.body)
 			}
 		})
+	}
+}
+
+// A trailing JSON value after the body was accepted and silently discarded --
+// the same class as the unknown field, on the endpoint the fix exists for.
+func TestUpdateProvidersRejectsATrailingValue(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, _ := newTestProjectInitiative(t, rt, ts, token)
+
+	resp := doReq(t, http.MethodPut, ts.URL+"/api/v1/projects/"+projectID+"/providers",
+		token, "", `{"providers":{"openai":{}}} {"api_key":"sk-live-x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a body with a trailing JSON value answered %d, want 400", resp.StatusCode)
 	}
 }

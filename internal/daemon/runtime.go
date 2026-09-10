@@ -996,7 +996,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if err != nil {
 		return "", err
 	}
-	if len(cses) > 0 {
+	if changeSetsHoldingWork(cses) > 0 {
 		return "", preconditionf("cannot reopen a design phase after execution has begun")
 	}
 	// Reopen re-runs design stages, so the design must already exist (the PRD was
@@ -1102,7 +1102,7 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	// nothing there is how J1 survived a round.
 	if cses, err := pr.db.ListChangeSets(ctx, initiativeID); err != nil {
 		return "", err
-	} else if len(cses) > 0 {
+	} else if changeSetsHoldingWork(cses) > 0 {
 		return "", preconditionf("cannot revise a plan that already has change sets; " +
 			"`idea changes` lists them, and `idea review <CHG-n>` then `idea apply` is the way on")
 	}
@@ -1148,6 +1148,20 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		r.log.Info("plan revision complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
+}
+
+// changeSetsHoldingWork counts the change sets a plan-level command must not
+// disturb. See domain.ChangeSetStatus.HoldsWork: `rejected` and `superseded`
+// are absorbing states minted on ordinary paths, so counting them made these
+// guards refuse forever.
+func changeSetsHoldingWork(cses []domain.ChangeSet) int {
+	n := 0
+	for _, cs := range cses {
+		if cs.Status.HoldsWork() {
+			n++
+		}
+	}
+	return n
 }
 
 // hasOpenStructuralPlanFinding reports whether the initiative carries an
@@ -1299,7 +1313,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	// blocking change-set finding -- the one nothing else can clear.
 	if cses, err := pr.db.ListChangeSets(ctx, initiativeID); err != nil {
 		return "", err
-	} else if len(cses) > 0 {
+	} else if changeSetsHoldingWork(cses) > 0 {
 		return "", preconditionf("cannot approve a plan that already has change sets")
 	}
 	// A human can accept an adversarial reviewer's judgment. A human cannot
