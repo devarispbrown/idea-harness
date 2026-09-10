@@ -2796,6 +2796,13 @@ components:
         id: { type: string }
         title: { type: string }
         status: { $ref: "#/components/schemas/InitiativeStatus" }
+        judgment_reason:
+          allOf: [{ $ref: "#/components/schemas/JudgmentReason" }]
+          description: |
+            Why the initiative is parked. All four reasons share `needs_human_judgment`, so the
+            status alone cannot tell a PRD-review park from a plan-stage one - and the phase rail
+            this rollup feeds would otherwise have to infer it from artifact presence, which is
+            wrong for a plan whose dependencies never resolved. Omitted when empty.
         artifacts:
           type: array
           items:

@@ -165,6 +165,7 @@ export default function App() {
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",
+    judgmentReason: currentInitiative?.judgment_reason,
     artifacts,
     tasks,
     changeSets,

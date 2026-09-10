@@ -9,6 +9,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The phase rail derives Define from the judgment reason, not from an
+  artifact.** `phases.ts` used execution-plan artifact presence to tell an
+  M1-review park from an M2-plan park, since both share
+  `needs_human_judgment`. The artifact is a proxy — `runExecutionPlan` writes it
+  before the dependency check — so a park on `prd_review`, or one carrying no
+  reason at all, read as past Define merely because an artifact from an earlier
+  cycle was lying around. `running` and `failed` record no reason and keep the
+  artifact check, because the status is `running` for the whole of every M2 and
+  M3 operation and dropping it would un-complete Define mid-build.
+
+  Fixed on **both** consumers. `ProductHome` reaches `derivePhases` through
+  `rollupPhaseSource`, and `InitiativeRollup` carried no reason in the Go
+  struct, the projection, the OpenAPI schema or the TS mirror — so fixing only
+  `App.tsx` would have left the bug on the page that renders the rail for every
+  initiative at once. A plan review caught that; the first draft named one
+  consumer.
+
+  An empty reason is treated as *not* past Define rather than falling back to
+  the artifact check. Migration 18 backfills nothing, so every pre-migration
+  park carries `''` whichever path parked it — including `plan_dependencies`,
+  whose artifact is present — and the fallback would have re-run the wrong
+  inference on exactly the population it is wrong for.
+
 ### Changed
 
 - **An initiative reference that matches nothing is now an error, and two

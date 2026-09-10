@@ -20,6 +20,12 @@ type InitiativeRollup struct {
 	ID                string                  `json:"id"`
 	Title             string                  `json:"title"`
 	Status            domain.InitiativeStatus `json:"status"`
+	// JudgmentReason is why the initiative is parked. All four reasons share
+	// `needs_human_judgment`, so the status alone cannot tell a PRD-review park
+	// from a plan-stage one -- and ProductHome derives its phase rail from this
+	// rollup, so without it that page has to guess from artifact presence, which
+	// is wrong for exactly the plan_dependencies case.
+	JudgmentReason domain.JudgmentReason `json:"judgment_reason,omitempty"`
 	Artifacts         []ArtifactRollup        `json:"artifacts"`
 	TaskStatuses      []string                `json:"task_statuses"`
 	ChangeSetStatuses []string                `json:"change_set_statuses"`
@@ -42,6 +48,7 @@ func (db *DB) ListInitiativeRollups(ctx context.Context) ([]InitiativeRollup, er
 			ID:                ini.ID,
 			Title:             ini.Title,
 			Status:            ini.Status,
+			JudgmentReason:    ini.JudgmentReason,
 			Artifacts:         []ArtifactRollup{},
 			TaskStatuses:      []string{},
 			ChangeSetStatuses: []string{},
