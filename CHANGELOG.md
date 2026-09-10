@@ -140,6 +140,17 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   | `POST …/revise-plan` with ≥1 change set | **202**, then the initiative went `failed` asynchronously | **409** `cannot revise a plan that already has change sets` |
   | `PUT …/providers` or `…/executors` with an undeclared field | **200** `{"status":"updated"}`, field silently dropped | **400** naming it, e.g. `json: unknown field "api_key"` |
   | `PUT …/providers` with a provider that resolves to no endpoint | **200**, stored, failing at the first model call | **400** naming the missing `base_url` |
+  | `idea doctor`, `idea config validate`, `idea model add` on a `harness.yaml` that already contains such an entry | exit **0** (`valid (with warnings)`) | exit **1**, naming the entry |
+
+  That last row is a break for existing configs, not just for new writes: the
+  predicate lives in `config.ValidateProvider`, which feeds `providerProblems`
+  at error severity, so `idea doctor` — the README's post-install check — now
+  fails on a project that passed yesterday. It is the right place for it
+  (`docs/security.md` promises the check runs on the write path *and* again when
+  the registry is built), and the entry it refuses could never have served a
+  request. Daemon startup and project open are unaffected: `config.Load` does
+  not call `ValidateProvider`, and `resolveProviderEntries` partitions and logs
+  rather than failing.
 
   Consumer impact: any third-party client sending an extra key to either config
   endpoint now gets a 400, not only the two first-party ones. Both first-party

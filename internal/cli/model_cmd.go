@@ -256,9 +256,10 @@ func addProvider(a cmdArgs, stdout io.Writer) error {
 	if v := a.value("--key-env"); v != "" {
 		pc["api_key_env"] = v
 	}
-	// ValidateProvider returns nil early when base_url is empty, so the daemon
-	// accepts an endpoint-less provider and the failure surfaces at the first
-	// model call instead of here.
+	// The daemon refuses an entry that resolves to no endpoint now, so this is a
+	// nearer, friendlier message rather than the only thing standing between an
+	// unusable entry and the first model call -- which is what the comment here
+	// used to say, and what made it a client-side fix for a server-side hole.
 	if pc["type"] == nil && pc["base_url"] == nil {
 		return fmt.Errorf("provider %q needs --type (a known preset) or --base-url (a custom endpoint)", name)
 	}

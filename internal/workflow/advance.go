@@ -151,7 +151,7 @@ func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (d
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
-	if len(cses) > 0 {
+	if changeSetsHoldingWork(cses) > 0 {
 		return domain.InitiativeFailed, fmt.Errorf("cannot reopen a design phase after execution has begun")
 	}
 
@@ -218,7 +218,7 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
-	if len(cses) > 0 {
+	if changeSetsHoldingWork(cses) > 0 {
 		return domain.InitiativeFailed, fmt.Errorf("cannot revise a plan that already has change sets")
 	}
 	if err := e.db.DeleteTasksForInitiative(ctx, initiativeID); err != nil {
@@ -247,6 +247,20 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 		return domain.InitiativeFailed, err
 	}
 	return e.runExecutionPlanReview(ctx, initiativeID)
+}
+
+// changeSetsHoldingWork counts the change sets a plan-level command must not
+// disturb. The daemon applies the same predicate before the claim; this is the
+// invariant behind that precondition, and the two must agree or the API refuses
+// what the engine would have allowed.
+func changeSetsHoldingWork(cses []domain.ChangeSet) int {
+	n := 0
+	for _, cs := range cses {
+		if cs.Status.HoldsWork() {
+			n++
+		}
+	}
+	return n
 }
 
 // storeArtifact renders a body into the BlobStore and records an artifact family

@@ -25,11 +25,11 @@ func (t AssertionType) Valid() bool {
 type AssertionStatus string
 
 const (
-	AssertionCandidate   AssertionStatus = "candidate"
-	AssertionAccepted    AssertionStatus = "accepted"
-	AssertionDisputed    AssertionStatus = "disputed"
-	AssertionRetracted   AssertionStatus = "retracted"
-	AssertionSuperseded  AssertionStatus = "superseded"
+	AssertionCandidate  AssertionStatus = "candidate"
+	AssertionAccepted   AssertionStatus = "accepted"
+	AssertionDisputed   AssertionStatus = "disputed"
+	AssertionRetracted  AssertionStatus = "retracted"
+	AssertionSuperseded AssertionStatus = "superseded"
 )
 
 func (s AssertionStatus) Valid() bool {
@@ -221,12 +221,12 @@ func (t DecisionType) Valid() bool {
 type TrustLevel string
 
 const (
-	TrustSystem               TrustLevel = "system"
-	TrustPolicy               TrustLevel = "policy"
-	TrustHumanApproved        TrustLevel = "human_approved"
-	TrustReviewedAgentOutput  TrustLevel = "reviewed_agent_output"
+	TrustSystem                TrustLevel = "system"
+	TrustPolicy                TrustLevel = "policy"
+	TrustHumanApproved         TrustLevel = "human_approved"
+	TrustReviewedAgentOutput   TrustLevel = "reviewed_agent_output"
 	TrustUnreviewedAgentOutput TrustLevel = "unreviewed_agent_output"
-	TrustExternalUntrusted    TrustLevel = "external_untrusted"
+	TrustExternalUntrusted     TrustLevel = "external_untrusted"
 )
 
 func (t TrustLevel) Valid() bool {
@@ -242,12 +242,12 @@ func (t TrustLevel) Valid() bool {
 type InitiativeStatus string
 
 const (
-	InitiativeRunning           InitiativeStatus = "running"
+	InitiativeRunning            InitiativeStatus = "running"
 	InitiativeNeedsHumanJudgment InitiativeStatus = "needs_human_judgment"
-	InitiativeApproved          InitiativeStatus = "approved"
-	InitiativePlanApproved      InitiativeStatus = "plan_approved"
-	InitiativeFailed            InitiativeStatus = "failed"
-	InitiativeComplete          InitiativeStatus = "complete"
+	InitiativeApproved           InitiativeStatus = "approved"
+	InitiativePlanApproved       InitiativeStatus = "plan_approved"
+	InitiativeFailed             InitiativeStatus = "failed"
+	InitiativeComplete           InitiativeStatus = "complete"
 )
 
 func (s InitiativeStatus) Valid() bool {
@@ -355,19 +355,19 @@ func (s VerificationStatus) Valid() bool {
 type EdgeType string
 
 const (
-	EdgeSupports     EdgeType = "supports"
-	EdgeContradicts  EdgeType = "contradicts"
-	EdgeDerivedFrom  EdgeType = "derived_from"
-	EdgeDependsOn    EdgeType = "depends_on"
-	EdgeImplements   EdgeType = "implements"
-	EdgeAddresses    EdgeType = "addresses"
-	EdgeTests        EdgeType = "tests"
-	EdgeVerifies     EdgeType = "verifies"
-	EdgeReviews      EdgeType = "reviews"
-	EdgeSupersedes   EdgeType = "supersedes"
-	EdgeInvalidates  EdgeType = "invalidates"
-	EdgeProducedBy   EdgeType = "produced_by"
-	EdgeConsumes     EdgeType = "consumes"
+	EdgeSupports    EdgeType = "supports"
+	EdgeContradicts EdgeType = "contradicts"
+	EdgeDerivedFrom EdgeType = "derived_from"
+	EdgeDependsOn   EdgeType = "depends_on"
+	EdgeImplements  EdgeType = "implements"
+	EdgeAddresses   EdgeType = "addresses"
+	EdgeTests       EdgeType = "tests"
+	EdgeVerifies    EdgeType = "verifies"
+	EdgeReviews     EdgeType = "reviews"
+	EdgeSupersedes  EdgeType = "supersedes"
+	EdgeInvalidates EdgeType = "invalidates"
+	EdgeProducedBy  EdgeType = "produced_by"
+	EdgeConsumes    EdgeType = "consumes"
 )
 
 func (e EdgeType) Valid() bool {
@@ -405,14 +405,14 @@ type ArtifactKind string
 const (
 	ArtifactIdeaBrief            ArtifactKind = "idea_brief"
 	ArtifactResearchBrief        ArtifactKind = "research_brief"
-	ArtifactPRD                 ArtifactKind = "prd"
-	ArtifactTechnicalDesign     ArtifactKind = "technical_design"
-	ArtifactDesignSpec          ArtifactKind = "design_spec"
-	ArtifactVerificationPlan    ArtifactKind = "verification_plan"
-	ArtifactThreatModel         ArtifactKind = "threat_model"
-	ArtifactExecutionPlan       ArtifactKind = "execution_plan"
+	ArtifactPRD                  ArtifactKind = "prd"
+	ArtifactTechnicalDesign      ArtifactKind = "technical_design"
+	ArtifactDesignSpec           ArtifactKind = "design_spec"
+	ArtifactVerificationPlan     ArtifactKind = "verification_plan"
+	ArtifactThreatModel          ArtifactKind = "threat_model"
+	ArtifactExecutionPlan        ArtifactKind = "execution_plan"
 	ArtifactOperationalReadiness ArtifactKind = "operational_readiness"
-	ArtifactVerificationReport  ArtifactKind = "verification_report"
+	ArtifactVerificationReport   ArtifactKind = "verification_report"
 )
 
 func (k ArtifactKind) Valid() bool {
@@ -451,12 +451,12 @@ func (s OperationStatus) Valid() bool {
 type DenyCode string
 
 const (
-	DenyCodeSecretSweep       DenyCode = "secret_sweep"
-	DenyCodePII               DenyCode = "pii"
-	DenyCodePathEscape        DenyCode = "path_escape"
-	DenyCodeHostExec          DenyCode = "host_exec"
+	DenyCodeSecretSweep        DenyCode = "secret_sweep"
+	DenyCodePII                DenyCode = "pii"
+	DenyCodePathEscape         DenyCode = "path_escape"
+	DenyCodeHostExec           DenyCode = "host_exec"
 	DenyCodeBlobDigestMismatch DenyCode = "blob_digest_mismatch"
-	DenyCodeTrustDeny         DenyCode = "trust_deny"
+	DenyCodeTrustDeny          DenyCode = "trust_deny"
 	DenyCodeReviewOpenBlocking DenyCode = "review_open_blocking"
 )
 
@@ -486,6 +486,30 @@ const (
 	ChangeSetConflicted       ChangeSetStatus = "conflicted"
 )
 
+// HoldsWork reports whether a change set in this state is work a plan-level
+// command must not disturb.
+//
+// `rejected` and `superseded` are absorbing states minted on ordinary paths --
+// every credential-sweep reject leaves one behind and reopens the task, and a
+// re-execution supersedes its predecessor -- so a plan carrying only those has
+// no work in flight and is legitimately revisable. Counting them made
+// `revise-plan`, `approve-plan` and `reopen-phase` refuse forever, and the
+// refusal named `idea review` and `idea apply`, both of which are closed for a
+// rejected change set.
+//
+// This is the same distinction that got audit 5's A2 rejected: it proposed
+// gating completion on `{applied, reverted}` and review pointed out that the
+// absorbing states are minted on ordinary paths, so the predicate would wedge
+// any initiative that ever tripped the sweep. Here it is stated once and read
+// by every site rather than re-derived at each.
+func (s ChangeSetStatus) HoldsWork() bool {
+	switch s {
+	case ChangeSetRejected, ChangeSetSuperseded:
+		return false
+	}
+	return true
+}
+
 func (s ChangeSetStatus) Valid() bool {
 	switch s {
 	case ChangeSetDraft, ChangeSetChecksRunning, ChangeSetReviewRequired, ChangeSetRejected,
@@ -500,11 +524,11 @@ func (s ChangeSetStatus) Valid() bool {
 type ApplyState string
 
 const (
-	ApplyPrepared          ApplyState = "prepared"
-	ApplyWorkspaceMutated  ApplyState = "workspace_mutated"
-	ApplyCommitted         ApplyState = "committed"
-	ApplyRolledBack        ApplyState = "rolled_back"
-	ApplyRecoveryRequired  ApplyState = "recovery_required"
+	ApplyPrepared         ApplyState = "prepared"
+	ApplyWorkspaceMutated ApplyState = "workspace_mutated"
+	ApplyCommitted        ApplyState = "committed"
+	ApplyRolledBack       ApplyState = "rolled_back"
+	ApplyRecoveryRequired ApplyState = "recovery_required"
 )
 
 func (s ApplyState) Valid() bool {
@@ -537,8 +561,8 @@ func (t RiskTier) Valid() bool {
 type ExecutorTrust string
 
 const (
-	ExecutorInternal      ExecutorTrust = "internal"
-	ExecutorLocalExternal ExecutorTrust = "local_external"
+	ExecutorInternal       ExecutorTrust = "internal"
+	ExecutorLocalExternal  ExecutorTrust = "local_external"
 	ExecutorRemoteExternal ExecutorTrust = "remote_external"
 )
 
@@ -554,9 +578,9 @@ func (t ExecutorTrust) Valid() bool {
 type SandboxMode string
 
 const (
-	SandboxContainer      SandboxMode = "container"
+	SandboxContainer       SandboxMode = "container"
 	SandboxLocalRestricted SandboxMode = "local_restricted"
-	SandboxHostApproved   SandboxMode = "host_approved"
+	SandboxHostApproved    SandboxMode = "host_approved"
 )
 
 func (m SandboxMode) Valid() bool {
