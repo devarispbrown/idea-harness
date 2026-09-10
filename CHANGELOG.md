@@ -130,6 +130,48 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed — BREAKING
 
+- **Two API state guards: `revise-plan` refuses a plan whose work has started,
+  and the config endpoints refuse a field they do not declare.** Both are the
+  same shape — a check that existed, applied to one caller and not to the path
+  that matters.
+
+  | | Was | Now |
+  |---|---|---|
+  | `POST …/revise-plan` with ≥1 change set | **202**, then the initiative went `failed` asynchronously | **409** `cannot revise a plan that already has change sets` |
+  | `PUT …/providers` or `…/executors` with an undeclared field | **200** `{"status":"updated"}`, field silently dropped | **400** naming it, e.g. `json: unknown field "api_key"` |
+  | `PUT …/providers` with a provider that resolves to no endpoint | **200**, stored, failing at the first model call | **400** naming the missing `base_url` |
+
+  Consumer impact: any third-party client sending an extra key to either config
+  endpoint now gets a 400, not only the two first-party ones. Both first-party
+  clients' exact bodies are pinned as literals in a test, so a field added on one
+  side fails there rather than in a broken Settings page.
+
+  `Engine.RevisePlan` already refused a plan with change sets — but it runs
+  inside the launched operation and returns `InitiativeFailed`, so a healthy
+  `plan_approved` initiative with one unreviewed change set became **failed**
+  because of a refusal the API answers synchronously on the sibling endpoint one
+  function away. `ApprovePlanInitiative`'s guard carries the comment *"Matching
+  RevisePlan and ReopenPhase"*; that was false of the Runtime sibling.
+
+  The `api_key` case did **not** write an unusable entry, which is worth stating
+  because the first version of this fix got it backwards and would have shipped a
+  regression: `ResolveProvider("openai", {})` returns the complete preset, so the
+  write really did configure OpenAI, `demo` correctly went false, and real billed
+  calls followed. The defect is exactly that a field sent to carry a credential
+  was discarded under a response saying the write succeeded. Configuring a preset
+  by name alone still works, and a test pins it.
+
+  Seven Runtime preconditions that used plain `fmt.Errorf` now carry the
+  precondition type, so the 409 no longer depends on which status the handler
+  happened to pass. And `make api-check`'s conflict axis learned to follow a
+  helper whose *every* status is 409 — which found `PUT /providers` answering
+  409 through `writeReloadErr` while declaring none, though its sibling
+  `PUT /executors` reaches it identically and did declare one. The obvious rule
+  ("follows anything that writes 409") is worse than the gap: `writeErr` carries
+  a literal `StatusConflict` and 75 functions call it, so it would demand a
+  spurious 409 on 78 of 81 routes.
+
+
 - **`idea verify` can no longer complete a failed initiative, and it no longer
   discards a requirement you named.** Two defects in one command, both found by
   DX audit 7.

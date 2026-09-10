@@ -460,8 +460,8 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		Models       map[string]string                `json:"models"`
 		GitCommit    *bool                            `json:"git_commit"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	if err := decodeStrict(r.Body, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -2316,8 +2316,8 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		Image *string `json:"image"`
 		Model *string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+	if err := decodeStrict(r.Body, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Kind != "" && !config.ExecutorKind(body.Kind).Valid() {

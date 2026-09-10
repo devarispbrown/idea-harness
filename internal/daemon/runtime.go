@@ -929,7 +929,7 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 		return "", preconditionf("initiative is already running")
 	}
 	if ini.Status != domain.InitiativeFailed {
-		return "", fmt.Errorf("retry requires a failed initiative (status=%s)", ini.Status)
+		return "", preconditionf("retry requires a failed initiative (status=%s)", ini.Status)
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -997,7 +997,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		return "", err
 	}
 	if len(cses) > 0 {
-		return "", fmt.Errorf("cannot reopen a design phase after execution has begun")
+		return "", preconditionf("cannot reopen a design phase after execution has begun")
 	}
 	// Reopen re-runs design stages, so the design must already exist (the PRD was
 	// approved and design attempted); refuse before that to avoid running design
@@ -1014,7 +1014,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		}
 	}
 	if !hasDesign {
-		return "", fmt.Errorf("no design or plan to reopen — advance the initiative first")
+		return "", preconditionf("no design or plan to reopen — advance the initiative first")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -1072,10 +1072,39 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is running; wait for it to finish")
+		return "", preconditionf("initiative is running; wait for it to finish")
 	}
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
-		return "", fmt.Errorf("no plan to revise (status=%s)", ini.Status)
+		return "", preconditionf("no plan to revise (status=%s)", ini.Status)
+	}
+	// The change-set guard, which lived only in Engine.RevisePlan -- and that
+	// runs inside the launched operation, returning InitiativeFailed, so the
+	// refusal marked the initiative FAILED instead of declining the request. A
+	// healthy plan_approved initiative with one unreviewed change set became
+	// `failed` because of a refusal the API answers synchronously on the sibling
+	// endpoint one function away. ApprovePlanInitiative's own guard carries the
+	// comment "Matching RevisePlan and ReopenPhase"; that was false of the
+	// Runtime sibling until now.
+	//
+	// The engine check stays: it is the invariant, this is the precondition.
+	//
+	// Before the claim, matching ApprovePlanInitiative. After it would close the
+	// window where a concurrent `execute` creates CHG-1 between this read and the
+	// claim, but would need a compensating release -- and a failed release
+	// strands the initiative `running` with no operation for
+	// reconcileStaleOperations, which is worse than the race. The race degrades
+	// to exactly the old behaviour, with the engine check as the backstop.
+	//
+	// The message names the route that does exist. With a change set present and
+	// the initiative parked on plan_review, `idea next` offers revise-plan and
+	// approve-plan and BOTH are now refused (deferred.md, audit 6 / J1: the
+	// change-set walk in NextAction sits under plan_approved only). Saying
+	// nothing there is how J1 survived a round.
+	if cses, err := pr.db.ListChangeSets(ctx, initiativeID); err != nil {
+		return "", err
+	} else if len(cses) > 0 {
+		return "", preconditionf("cannot revise a plan that already has change sets; " +
+			"`idea changes` lists them, and `idea review <CHG-n>` then `idea apply` is the way on")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -1235,7 +1264,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 		return "", err
 	}
 	if ini.Status == domain.InitiativeRunning {
-		return "", fmt.Errorf("initiative is running; wait for it to finish")
+		return "", preconditionf("initiative is running; wait for it to finish")
 	}
 	// needs_human_judgment only. `plan_approved` used to be accepted too, and
 	// once ApprovePlan became a real accept that was a hole: SetInitiativeStatus
@@ -1249,7 +1278,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 		return "", preconditionf("this plan is already approved")
 	}
 	if ini.Status != domain.InitiativeNeedsHumanJudgment {
-		return "", fmt.Errorf("no plan to approve (status=%s)", ini.Status)
+		return "", preconditionf("no plan to approve (status=%s)", ini.Status)
 	}
 	// The reason, not just the status. All four JudgmentReasons share one, so a
 	// status-only gate let this accept a plan parked on `plan_dependencies` --

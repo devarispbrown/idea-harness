@@ -39,6 +39,16 @@ Status values: `open`, `fixed <ref>`, `deferred <reason>`, `not reproduced`.
 | T1 | `scripts/ci-test-summary.py`'s docstring: "Exits non-zero if any test or package failed" | It failed only on an `action == "fail"` carrying a `Test`. A compile error, a `TestMain` panic and a background-goroutine panic all emit no such event, so the macOS job could go green printing "All tests passed (0 package(s) with tests)" | `absent:scripts/ci-test-summary.py:panic in a background` | fixed audit-7 |
 | T2 | The same file: "a build error is printed as plain text, not JSON" | go1.24+ emits `build-output`/`build-fail` as JSON on stdout | `present:scripts/ci-test-summary.py:a build error is printed as plain text` | fixed audit-7 |
 
+## API state guards
+
+| # | Claim | Truth | Predicate | Status |
+|---|---|---|---|---|
+| A1 | `ApprovePlanInitiative`'s change-set guard carries the comment "Matching RevisePlan and ReopenPhase" | False of the Runtime sibling: `RevisePlanInitiative` had no such guard, so the refusal lived only in `Engine.RevisePlan`, which runs inside the launched operation and marked the initiative **failed** instead of declining the request | `absent:internal/daemon/runtime.go:cannot revise a plan that already has change sets;` | fixed audit-7 |
+| A2 | Seven Runtime preconditions used plain `fmt.Errorf`, so they reached 409 only because the handler happened to pass `StatusConflict` — the classification did not travel with the error, which is the property `precondition.go` says the type exists to guarantee | `retry`, `reopen-phase` (×2), `revise-plan` (×2) and `approve-plan` (×2) | `present:internal/daemon/runtime.go:return "", fmt.Errorf("initiative is running; wait for it to finish")` | fixed audit-7 |
+| A3 | `docs/openapi.yaml`'s `ProviderConfig`: "Inline key values are rejected" | They were **ignored**, not rejected: `api_key` is not a field of the decode target, so `encoding/json` dropped it and the endpoint answered `200 {"status":"updated"}` | `absent:docs/openapi.yaml:answers 400 naming it rather than being silently dropped` | fixed audit-7 |
+| A4 | `config.ValidateProvider` returned `nil` immediately for an empty `base_url`, so an entry naming no endpoint was stored and failed at the first model call | The CLI carried the check client-side with the root cause written on it; the daemon, which serves every client, did not | `absent:internal/config/problems.go:names no endpoint: it is not a built-in preset` | fixed audit-7 |
+| A5 | `make api-check`'s conflict axis seeded only on functions containing a literal `preconditionf`, so `PUT /providers` reached 409 through `writeReloadErr` and declared none — while `PUT /executors`, which reaches it identically, did declare one | The obvious widening is worse than the gap: `writeErr` contains a literal `StatusConflict` and 75 functions call it, so "follows any callee that writes 409" flags 78 of 81 routes | `absent:internal/docsgen/conflictcheck.go:Helpers whose EVERY writeError status is 409` | fixed audit-7 |
+
 ## Still open
 
 | # | Claim | Truth | Predicate | Status |
