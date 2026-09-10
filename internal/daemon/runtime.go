@@ -1104,7 +1104,8 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		return "", err
 	} else if changeSetsHoldingWork(cses) > 0 {
 		return "", preconditionf("cannot revise a plan that already has change sets; " +
-			"`idea changes` lists them, and `idea review <CHG-n>` then `idea apply` is the way on")
+			"`idea changes` lists them, and `idea review <CHG-n> approve` — or " +
+			"`--accept-findings` if the reviewer blocks — then `idea apply` is the way on")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -1672,11 +1673,14 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 // make the PRD review not converge.
 //
 // The queue is the mechanism, not a flag on the provider: all three adversarial
-// reviews (`engine.go` for the PRD, `advance.go` for the plan, `execute.go` for
-// a change set) use the schema name `review`, so a flag would block all three --
-// and a blocking finding on a change set cannot be cleared by anything the CLI
-// can do. M1's review cycles are the first `review` calls a run makes, so a
-// queue of exactly max_cycles entries drains on them and nothing else.
+// reviews used the schema name `review`, so a flag would have blocked all three.
+// Each has its own key now -- `review`, `plan_review`, `change_set_review` -- so
+// a queue primed for one cannot land on another.
+//
+// A blocking finding on a change set used to be unclearable by anything the CLI
+// could do, which is why that sharing was a hazard rather than a nuisance. It is
+// clearable now: `idea review <CHG-n> approve --accept-findings` signs off the
+// reviewer's own findings. A finding carrying a deny code still is not.
 func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	fp := model.NewFakeProvider()
 	// Clamped to max_cycles. The queue is safe only while it drains on M1's
@@ -1697,6 +1701,9 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	// after M1's queue is drained.
 	for i := 0; i < h.Demo.BlockPlanReviewCycles; i++ {
 		fp.EnqueueResponse("plan_review", model.DemoBlockingReviewJSON)
+	}
+	for i := 0; i < h.Demo.BlockChangeSetReviewCycles; i++ {
+		fp.EnqueueResponse(workflow.ChangeSetReviewSchemaName, model.DemoBlockingReviewJSON)
 	}
 	if h.Demo.DanglePlanDependency {
 		fp.EnqueueResponse("execution_plan", model.DemoDanglingPlanJSON)

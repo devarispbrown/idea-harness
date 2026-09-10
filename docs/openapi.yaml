@@ -2188,6 +2188,21 @@ paths:
                     The wire vocabulary, which is not the CLI's: `idea review <id> approve` sends
                     `approved`. A client that posts `approve` or `reject` gets a 400.
                   enum: [approved, rejected, changes_requested]
+                accept_findings:
+                  type: boolean
+                  description: |
+                    With `approved`, sign off the adversarial reviewer's open findings on this
+                    change set and approve **without re-running the review**. Re-approving runs a
+                    fresh review, and a model reviewer is not a fixed point: after the first block
+                    its findings are persisted and every later attempt is refused by the
+                    `review_open_blocking` deny before the review runs, with no route out.
+
+                    Only the reviewer's findings. A finding carrying a deny code — `secret_sweep`,
+                    `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
+                    dispositioned (a failing build check is `rejected`, not a judgment to accept
+                    away). The deny gate is re-run afterwards, so anything left alone still refuses.
+
+                    Ignored without `approved`.
               required: [verdict]
       responses:
         "200":

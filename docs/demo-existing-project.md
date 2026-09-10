@@ -132,6 +132,14 @@ idea review CHG-1 approve
 idea apply CHG-1
 ```
 
+> **If the review blocks.** With a real model the adversarial reviewer may raise a
+> blocking finding on the change set, and `idea review CHG-1 approve` then refuses.
+> `idea reviews` lists what it found, and
+> `idea review CHG-1 approve --accept-findings` accepts the change set findings and
+> all — the same judgment call `idea approve` makes on the PRD. A finding raised by
+> the credential sweep is not acceptable that way and still refuses.
+
+
 Then look at your repository rather than at the tool's output:
 
 ```bash

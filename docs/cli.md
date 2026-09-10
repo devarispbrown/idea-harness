@@ -45,7 +45,7 @@ if this file has drifted.
 | `idea change <id>` | show a change set | `--json` | yes |
 | `idea apply <id>` | apply an approved change set | none | takes no flags |
 | `idea revert <id>` | roll back a change set | none | takes no flags |
-| `idea review <id> <verdict>` | approve\|reject\|changes_requested | none | takes no flags |
+| `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |

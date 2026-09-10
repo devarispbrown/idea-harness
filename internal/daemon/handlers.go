@@ -2130,12 +2130,29 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Verdict string `json:"verdict"`
+		// AcceptFindings signs off the reviewer's open findings on this change
+		// set and approves without re-reviewing. Only the reviewer's: a finding
+		// carrying a deny code is untouched and still refuses.
+		AcceptFindings bool `json:"accept_findings"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Verdict == "" {
+	// decodeStrict, so a NEW CLI against an OLD daemon gets
+	// `400 json: unknown field "accept_findings"` rather than having the flag
+	// silently dropped and being told, while passing the documented escape, that
+	// approval is blocked. `idea daemon` is long-lived, so that is a realistic
+	// first experience.
+	if err := decodeStrict(r.Body, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Verdict == "" {
 		writeError(w, http.StatusBadRequest, "verdict is required")
 		return
 	}
-	if err := pr.engine.ReviewChangeSet(r.Context(), cs.InitiativeID, cs.ID, body.Verdict); err != nil {
+	review := pr.engine.ReviewChangeSet
+	if body.AcceptFindings {
+		review = pr.engine.ReviewChangeSetAccepting
+	}
+	if err := review(r.Context(), cs.InitiativeID, cs.ID, body.Verdict); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}

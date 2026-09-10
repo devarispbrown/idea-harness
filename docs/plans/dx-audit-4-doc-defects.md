@@ -29,7 +29,7 @@ Status values: `open`, `fixed <commit>`, `deferred <reason>`, `not reproduced`.
 | D6 | `architecture.md` carried the inverted redaction claim a third time | `blobs/` redacts on Put; `raw-blobs/` does not | `absent:docs/architecture.md:deliberately NOT redacted` | fixed 9152317 |
 | D7 | The capability broker was listed as shipped in two documents | `CapabilityBroker` has no non-test caller; `TrustAllows` is the gate that runs | `absent:docs/security.md:has no` | fixed 9152317 |
 | D8 | The documented with-key quickstart path dead-ends | The daemon reads the environment once, and `idea init` starts it, so a key exported afterwards is invisible | `absent:docs/quickstart.md:reads the environment once` | fixed 25a96ee |
-| D9 | Nine model ids that resolve to nothing | e.g. the catalog spells it `claude-3-7-sonnet-latest`; the first call 404s, non-retryably | `absent:docs/quickstart.md:idea model set openai/gpt-4o-mini` | fixed 25a96ee |
+| D9 | Nine model ids that resolve to nothing | e.g. the catalog spells it `claude-3-7-sonnet-latest`; the first call 404s, non-retryably. **Predicate updated 2026-09-10**: it pinned `openai/gpt-4o-mini` as the correction, and audit 7 moved the examples to the model this project actually runs. A predicate naming a specific model id has a shelf life — that is the finding audit 7 recorded as L3, and this row is its first instance | `absent:docs/quickstart.md:idea model set openai/gpt-5.6-luna` | fixed 25a96ee |
 
 ## Contract gaps — the spec describing a shape the code does not produce
 

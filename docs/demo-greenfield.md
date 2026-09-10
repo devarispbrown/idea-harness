@@ -120,6 +120,14 @@ idea review CHG-1 approve
 idea apply CHG-1
 ```
 
+> **If the review blocks.** With a real model the adversarial reviewer may raise a
+> blocking finding on the change set, and `idea review CHG-1 approve` then refuses.
+> `idea reviews` lists what it found, and
+> `idea review CHG-1 approve --accept-findings` accepts the change set findings and
+> all — the same judgment call `idea approve` makes on the PRD. A finding raised by
+> the credential sweep is not acceptable that way and still refuses.
+
+
 ```text
 ✓ review recorded CHG-1 → approved
 ✓ apply started CHG-1
@@ -154,7 +162,7 @@ Everything above was synthetic. To get real output:
 ```bash
 export OPENAI_API_KEY=sk-…          # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
 idea daemon stop                     # it started at `idea init`, without the key
-idea model set openai/gpt-4o-mini
+idea model set openai/gpt-5.6-luna
 idea doctor
 ```
 

@@ -35,7 +35,7 @@ research:
     - https://en.wikipedia.org/wiki/Your_topic
 
 # Default model as "provider/model" (first slash separates provider from model).
-default_model: openai/gpt-4o-mini
+default_model: openai/gpt-5.6-luna
 
 # Model providers. API keys are resolved from the environment variable named by
 # api_key_env — NEVER stored inline (§47).
@@ -81,6 +81,7 @@ Top-level fields:
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
+| `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: re-approving re-runs the reviewer, and after the first block the deny gate refuses outright | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
 
 `demo.block_review_cycles` exists because the demo provider was a happy-path
@@ -183,22 +184,22 @@ wire format, so they are configured as `type: openai` with a custom `base_url`.
 The model is a `provider/model` string. Examples:
 
 ```text
-openai/gpt-4o-mini
-anthropic/claude-3-7-sonnet-latest
+openai/gpt-5.6-luna
+anthropic/claude-sonnet-4-5
 gemini/gemini-2.5-flash
 deepseek/deepseek-chat
-openrouter/anthropic/claude-3.7-sonnet   # note: OpenRouter model ids contain slashes
+openrouter/anthropic/claude-opus-5   # note: OpenRouter model ids contain slashes
 ollama/llama3.1
 groq/llama-3.3-70b-versatile
 ```
 
-Splitting is on the **first** slash, so `openrouter/anthropic/claude-3.7-sonnet` resolves to the
-`openrouter` provider with model `anthropic/claude-3.7-sonnet`.
+Splitting is on the **first** slash, so `openrouter/anthropic/claude-opus-5` resolves to the
+`openrouter` provider with model `anthropic/claude-opus-5`.
 
 Set it via:
 
 ```bash
-idea model set openai/gpt-4o-mini
+idea model set openai/gpt-5.6-luna
 # or interactively / via the web UI (Settings)
 ```
 

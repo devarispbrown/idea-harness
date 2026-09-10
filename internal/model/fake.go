@@ -225,7 +225,13 @@ func demoResponse(schemaName, idea string) string {
 			"open_questions": []string{"Who is the primary user?", "What is the core value?"},
 			"risks":          []string{"This is synthetic demo output, not a real PRD."},
 		}
-	case "review", "plan_review":
+	case "review", "plan_review", "change_set_review":
+		// change_set_review is listed here deliberately. It got its own queue key
+		// so the change-set review can be made to block on demand; without this
+		// arm the default answer would be `{}`, ParseFindings would return
+		// "findings array missing", and `idea review CHG-1 approve` would fail on
+		// the no-key path both demo guides walk and five smoke passes exercise --
+		// a P0 regression introduced by test scaffolding.
 		m = map[string]any{"findings": []any{}}
 	case "architecture":
 		m = map[string]any{

@@ -47,6 +47,7 @@ const harnessSchema = `{
       "properties": {
         "block_review_cycles": { "type": "integer", "minimum": 0 },
         "block_plan_review_cycles": { "type": "integer", "minimum": 0 },
+        "block_change_set_review_cycles": { "type": "integer", "minimum": 0 },
         "dangle_plan_dependency": { "type": "boolean" }
       },
       "additionalProperties": false

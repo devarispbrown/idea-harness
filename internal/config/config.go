@@ -33,8 +33,8 @@ func (n NetworkPolicy) Valid() bool {
 
 // ReviewConfig is the review budget (§11, §16).
 type ReviewConfig struct {
-	MaxCycles int     `json:"max_cycles" yaml:"max_cycles"`
-	MaxTokens int64   `json:"max_tokens" yaml:"max_tokens"`
+	MaxCycles  int     `json:"max_cycles" yaml:"max_cycles"`
+	MaxTokens  int64   `json:"max_tokens" yaml:"max_tokens"`
 	MaxCostUSD float64 `json:"max_cost_usd" yaml:"max_cost_usd"`
 }
 
@@ -150,6 +150,15 @@ type DemoConfig struct {
 	// Unclamped, unlike BlockReviewCycles: `idea revise-plan` clears a plan
 	// review however many times it blocks, so a surplus is survivable here.
 	BlockPlanReviewCycles int `json:"block_plan_review_cycles,omitempty" yaml:"block_plan_review_cycles,omitempty"`
+	// BlockChangeSetReviewCycles does the same for the M3 change-set review.
+	//
+	// Its own queue, on its own key, for the reason the plan review needed one:
+	// the change-set review shared the `review` key with the PRD review, so
+	// there was no way to make it block without a leftover PRD response landing
+	// here -- and no way to reach the state where a human must accept a change
+	// set the reviewer will not pass. That state was a live-lock the keyed
+	// magic path hit every run, and no demo configuration could produce it.
+	BlockChangeSetReviewCycles int `json:"block_change_set_review_cycles,omitempty" yaml:"block_change_set_review_cycles,omitempty"`
 	// DanglePlanDependency makes the first execution plan name a dependency no
 	// task provides, which parks the initiative on `plan_dependencies` -- the
 	// one judgment reason whose fix is regenerating the plan and never

@@ -43,7 +43,7 @@ machine, the review gates, the product graph, apply/revert — without spending 
 **If you already exported the key before `idea init` above**, the daemon has it and you only need:
 
 ```bash
-idea model set openai/gpt-4o-mini
+idea model set openai/gpt-5.6-luna
 idea doctor                                # asks the DAEMON whether it has the key; non-zero if not
 ```
 
@@ -53,7 +53,7 @@ it reads the environment once, at start:
 ```bash
 export OPENAI_API_KEY=sk-…                 # or ANTHROPIC_API_KEY, GOOGLE_API_KEY, …
 idea daemon stop                           # the next command restarts it, with the key
-idea model set openai/gpt-4o-mini
+idea model set openai/gpt-5.6-luna
 idea doctor
 ```
 
@@ -256,7 +256,7 @@ leaves the reasoning synthetic. **The real path needs both.**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
 idea daemon stop                         # it started at `idea init`, without the key
-idea model set anthropic/claude-3-7-sonnet-latest
+idea model set anthropic/claude-sonnet-4-5
 idea doctor                              # asks the DAEMON whether it has the key; non-zero if not
 ```
 
@@ -291,10 +291,10 @@ and tells you to run `idea daemon stop`.
 
 ```bash
 # Hermes — downloads the pinned official image and prints its digest
-idea executors setup --model anthropic/claude-3-7-sonnet-latest --yes
+idea executors setup --model anthropic/claude-sonnet-4-5 --yes
 
 # OMP — bring your own image
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-3-7-sonnet-latest --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-sonnet-4-5 --yes
 ```
 
 This verifies the agent CLI exists in the image, prints the security tradeoff, and writes

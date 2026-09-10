@@ -151,7 +151,7 @@ export OPENAI_API_KEY=sk-…
 # on the built-in demo provider; artifacts are synthetic and labeled as such.
 
 idea init                              # creates .idea-harness/ (works with no Git)
-idea model set openai/gpt-4o-mini      # only with a key; or use the web UI Settings
+idea model set openai/gpt-5.6-luna      # only with a key; or use the web UI Settings
 
 idea new "Build usage-based billing"   # M1: idea → reviewed PRD
 idea next --until-human                # M2–M3: design → plan → change set, then stops for you
@@ -247,7 +247,7 @@ API keys are read from environment variables (never stored inline):
 
 ```yaml
 # .idea-harness/harness.yaml
-default_model: openai/gpt-4o-mini
+default_model: openai/gpt-5.6-luna
 providers:
   openai:    { api_key_env: OPENAI_API_KEY }
   anthropic: { api_key_env: ANTHROPIC_API_KEY }

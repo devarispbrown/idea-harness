@@ -55,6 +55,14 @@ Status values: `open`, `fixed <ref>`, `deferred <reason>`, `not reproduced`.
 |---|---|---|---|---|
 | D9b | `docs/quickstart.md`'s `idea doctor` block ends "Export the key and run idea daemon stop, or clear the model with idea model set" | `internal/cli/doctor_keys.go` prints "Export it, then idea daemon stop — or point that field at a provider you have a key for". Lines 1-2 of the block match verbatim; only the third was invented, and its remedy is unperformable — `idea model set` requires `<provider/model>` and no CLI verb clears `default_model`. Ledger row `D9` was marked `fixed audit-6` and green throughout, because that round replaced a wrong block with a **different** wrong block and the predicate only asserted the first one's absence | `present:docs/quickstart.md:or clear the model with idea model set + absent:docs/quickstart.md:or point that field at a provider you have a key for` | fixed audit-7 |
 
+## The third live-lock
+
+| # | Claim | Truth | Predicate | Status |
+|---|---|---|---|---|
+| L1 | `internal/daemon/runtime.go` asserts that "a blocking finding on a change set cannot be cleared by anything the CLI can do" | It can, since audit 7: `idea review <CHG-n> approve --accept-findings` signs off the adversarial reviewer's own findings — those carrying no deny code and not already dispositioned. A finding raised by the credential sweep, the sandbox guard or a digest mismatch is untouched and still denies. Verified against the live catalog on 2026-09-10 | `present:internal/daemon/runtime.go:cannot be cleared by anything the CLI\ncan do + absent:internal/daemon/runtime.go:It is clearable now` | fixed audit-7 |
+| L2 | `docs/security-model.md`'s `review_open_blocking` row read as flatly non-overridable, alongside five codes that genuinely are | Only this one is a reviewer's judgment; the rest are system denies. The row now says which, and why a human may overrule one and not the others | `present:docs/security-model.md:approve is denied. | + absent:docs/security-model.md:Conditionally overridable, and only this one` | fixed audit-7 |
+| L3 | `README.md`, `docs/agents.md` and `docs/configuration.md` carried `anthropic/claude-3-7-sonnet-latest` (9 sites) and `openrouter/anthropic/claude-3.7-sonnet` | Neither resolves against the live catalog. Checked with `idea model ls` on 2026-09-10 — a model id is a fact with a shelf life, so the date is the claim | `present:docs/agents.md:claude-3-7-sonnet-latest + absent:docs/agents.md:claude-sonnet-4-5` | fixed audit-7 |
+
 ## Still open
 
 | # | Claim | Truth | Predicate | Status |
