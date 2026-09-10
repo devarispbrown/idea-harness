@@ -25,8 +25,22 @@ func resolveInitiative(c *client, projectID string, args []string) (string, erro
 		return "", fmt.Errorf("no initiatives yet; run `idea new` first")
 	}
 	if len(args) > 0 {
-		return args[0], nil
+		// Validated, not trusted. This returned args[0] unchecked, so every
+		// reference-taking command accepted a garbage id and produced whatever
+		// downstream 404 that endpoint happened to give -- and `docs/cli.md`
+		// promises that an unknown argument is an error. The list is already in
+		// hand, initiatives have no human id and no prefix form, and
+		// ListInitiatives is project-scoped and unpaginated, so membership is
+		// the whole of the question.
+		for _, ini := range inis {
+			if ini.ID == args[0] {
+				return ini.ID, nil
+			}
+		}
+		return "", fmt.Errorf("no initiative matching %q; `idea status` lists them", args[0])
 	}
+	// The newest, which is what docs/cli.md promises: ListInitiatives is
+	// ORDER BY created_at ASC, so the last row is the most recently created.
 	return inis[len(inis)-1].ID, nil
 }
 

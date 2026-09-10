@@ -52,6 +52,20 @@ type fakeDaemon struct {
 
 	// verifyBodies records each POST /verify request body.
 	verifyBodies []string
+
+	// initiatives is what GET /initiatives reports. Set it before seedInitiative
+	// to serve a different list.
+	initiatives []map[string]any
+}
+
+// seedTwoInitiatives serves an oldest-first list, which is the order
+// ListInitiatives produces (ORDER BY created_at ASC). ini-2 is the newest.
+func (f *fakeDaemon) seedTwoInitiatives() {
+	f.initiatives = []map[string]any{
+		{"id": "ini-1", "title": "The older one", "status": "approved"},
+		{"id": "ini-2", "title": "The newer one", "status": "plan_approved"},
+	}
+	f.seedInitiative()
 }
 
 // newFakeDaemon wires a fake daemon and a cwd that resolves to projectID.
@@ -157,9 +171,19 @@ func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
 // seedInitiative registers the endpoints a command needs to resolve "the
 // current initiative" and render a populated project.
 func (f *fakeDaemon) seedInitiative() {
-	f.json("GET /api/v1/projects/{projectId}/initiatives", []map[string]any{
-		{"id": "ini-1", "title": "Build usage-based billing", "status": "plan_approved"},
-	})
+	// A field rather than a second registration: net/http.ServeMux panics on a
+	// duplicate pattern, so a test wanting a different list sets this before
+	// seeding rather than registering its own.
+	if f.initiatives == nil {
+		f.initiatives = []map[string]any{
+			{"id": "ini-1", "title": "Build usage-based billing", "status": "plan_approved"},
+		}
+	}
+	f.mux.HandleFunc("GET /api/v1/projects/{projectId}/initiatives",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(f.initiatives)
+		})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/tasks", []map[string]any{
 		{"id": "task-1", "code": "TASK-1", "title": "Implement billing", "priority": "must"},
 	})
@@ -170,6 +194,9 @@ func (f *fakeDaemon) seedInitiative() {
 		"requirements": []map[string]any{{"id": "req-1", "code": "REQ-1", "title": "Bill by usage"}},
 		"decisions":    []map[string]any{},
 		"questions":    []map[string]any{},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/changed", map[string]any{
+		"groups": []map[string]any{},
 	})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/risk", map[string]any{
 		"level": "low", "signals": []string{},

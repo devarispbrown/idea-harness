@@ -4,8 +4,8 @@ Usage: idea <command>
 Commands:
   init [<dir>]         initialize a project (defaults to the current directory)
   new "<idea>" [--no-wait] create an initiative and start the workflow
-  status               show initiative + current work
-  changed              show What Changed since last look
+  status [<initiative>] show initiative + current work
+  changed [<initiative>] show What Changed since last look
   decisions            list open/blocked decisions
   reviews              list review findings
   model                list/set model providers (Gemini, OpenAI, …)
