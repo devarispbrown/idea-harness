@@ -102,3 +102,102 @@ func TestVerifyNamesARequirementThatDoesNotExist(t *testing.T) {
 		t.Errorf("the error does not name the requirement that was asked for: %q", body.Error)
 	}
 }
+
+// TestVerifyRefusesAFailedInitiativeClaimedRunning is the bypass a commit review
+// found in the first version of this guard.
+//
+// apply, revert, revise, retry and reopen-phase all claim `running` FROM
+// `failed`, and ClaimInitiativeRunning deliberately leaves failure_reason intact
+// so the release can restore it. For the length of any of those operations the
+// row is a failed initiative wearing a running status -- so a status-only guard
+// passes, verify completes it, and CompleteInitiative clears the reason. The
+// release then writes only the status back, so the recorded failure reason is
+// gone for good. That is the exact symptom P0-2 is named after, reachable
+// through the documented apply-then-verify sequence.
+func TestVerifyRefusesAFailedInitiativeClaimedRunning(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = "workflow: framing: anthropic: status 401: API key is invalid."
+	if err := pr.db.FailInitiative(t.Context(), iniID, reason); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what `idea apply` does to a failed initiative.
+	if err := pr.db.ClaimInitiativeRunning(t.Context(), iniID, domain.InitiativeFailed); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := pr.db.GetInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Status != domain.InitiativeRunning || claimed.FailureReason != reason {
+		t.Fatalf("setup: want running with the reason intact, got status=%q reason=%q",
+			claimed.Status, claimed.FailureReason)
+	}
+
+	resp := doReq(t, http.MethodPost,
+		ts.URL+"/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", token, "", "{}")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("verify answered %d for a failed initiative claimed running, want 409", resp.StatusCode)
+	}
+
+	got, err := pr.db.GetInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureReason != reason {
+		t.Fatalf("the recorded failure reason was destroyed: %q\n"+
+			"the release restores the status, not the reason, so this is permanent", got.FailureReason)
+	}
+}
+
+// Recording a human's judgment about a requirement is not the gate, and is not
+// refused because a later stage failed. `idea retry` -- the escape the refusal
+// names -- supersedes every requirement before re-running framing, so evidence
+// that could not be recorded here can never be recorded at all.
+func TestVerifyStillRecordsEvidenceOnAFailedInitiative(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: iniID, Statement: "s", Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "1", Condition: "c"}}}
+	if err := pr.db.CreateRequirement(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.FailInitiative(t.Context(), iniID, "provider 401"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := doReq(t, http.MethodPost,
+		ts.URL+"/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/verify", token, "",
+		`{"requirement":"`+req.Code+`","pass":true}`)
+	resp.Body.Close()
+
+	// The evidence rows, not the requirement's status: a `pass` is recorded as
+	// evidence and the requirement is marked verified by the GATE, which is the
+	// half a failed initiative may not run. So this asserts the half that must
+	// still work.
+	passed, err := pr.db.PassedCriterionKeys(t.Context(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(passed) != len(req.AcceptanceCriteria) {
+		t.Fatalf("the human's pass was discarded because a later stage failed "+
+			"(%d of %d criteria recorded); `idea retry` supersedes every requirement, "+
+			"so it could never be recorded again", len(passed), len(req.AcceptanceCriteria))
+	}
+	ini, err := pr.db.GetInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativeFailed {
+		t.Errorf("recording evidence completed a failed initiative: %q", ini.Status)
+	}
+}

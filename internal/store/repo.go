@@ -259,9 +259,18 @@ func (db *DB) TransitionInitiative(ctx context.Context, initiativeID string, to 
 // `✓ verified status: complete`, exiting 0, and discarding the failure_reason.
 //
 // Runtime.RunVerificationGate refuses the request synchronously; this refuses
-// the write, which closes the window between that read and this write where a
-// concurrent FailInitiative can land, and covers any future caller that does
-// not go through the Runtime.
+// the write, which covers any future caller that does not go through the
+// Runtime and the window where a concurrent FailInitiative lands.
+//
+// The predicate is failure_reason, not just status, and that is load-bearing.
+// Five entry points -- apply, revert, revise, retry, reopen-phase -- claim
+// `running` FROM `failed` by design, and ClaimInitiativeRunning deliberately
+// leaves failure_reason intact so the release can restore it. During any of
+// them the row is a failed initiative wearing a running status: a status-only
+// guard passes, this write lands, and it clears the reason PERMANENTLY, since
+// the release only writes the status back. A commit review caught it by
+// reproducing exactly that against the real handler. `failed` is a transient
+// display of the status; the recorded reason is the durable fact.
 func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
@@ -275,7 +284,7 @@ func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string
 	}, func(tx *sql.Tx) error {
 		res, err := tx.Exec(
 			`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ?
-			 WHERE id = ? AND status != ?`,
+			 WHERE id = ? AND status != ? AND failure_reason = ''`,
 			domain.InitiativeComplete, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeFailed)
 		if err != nil {
 			return err

@@ -684,8 +684,9 @@ paths:
         per-requirement coverage. A JSON body is required, but every field in it is optional -
         `{}` just runs the gate.
 
-        `requirement` with no disposition runs the gate and is validated: a code that does not
-        resolve answers 404 naming it, rather than reporting on the initiative as a whole.
+        `requirement` with no disposition is validated: a code that does not resolve answers 404
+        naming it, instead of being silently discarded and answering about the initiative as a
+        whole. The gate itself, and the `coverage` returned, remain initiative-wide either way.
 
         409 when the initiative has failed - `retry` re-runs it. The gate is deliberately still
         allowed while an operation is running, because `apply` does not wait and the documented

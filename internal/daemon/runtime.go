@@ -1172,13 +1172,36 @@ func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiative
 	if err != nil {
 		return "", nil, err
 	}
-	if ini.Status == domain.InitiativeFailed {
-		return "", nil, preconditionf("cannot verify a failed initiative; `idea retry` re-runs it")
+	// Resolved here rather than in the handler, so a missing code and a refused
+	// state are decided in one place. With the lookup outside, the same failed
+	// initiative answered 404 for `{"requirement":"REQ-99"}` and 409 for
+	// `{"requirement":"REQ-99","pass":true}` -- the same request, two precedences.
+	if requirement != "" {
+		if _, err := pr.db.GetRequirementByRef(ctx, initiativeID, requirement); err != nil {
+			return "", nil, err
+		}
 	}
+	// Evidence is recorded BEFORE the failed check, and that ordering is the
+	// point. A human's pass/fail/waive on a requirement is a judgment about that
+	// requirement, not about the workflow, and refusing it because a later stage
+	// failed strands work with no way back: `idea retry` -- the escape named
+	// below -- calls SupersedeRequirements before re-running framing, so it
+	// regenerates the whole set and takes any evidence with it. The first version
+	// of this fix gated both and a commit review caught the over-reach.
 	if requirement != "" && disposition != "" {
 		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, requirement, disposition, note, ""); err != nil {
 			return "", nil, err
 		}
+	}
+	// The GATE is what a failed initiative may not run -- it is the only thing
+	// here that can write `complete`. The status alone is not the test: apply,
+	// revert, revise, retry and reopen-phase all claim `running` from `failed`
+	// and leave failure_reason intact, so a failed initiative reads `running`
+	// for the length of those operations. The recorded reason is the durable
+	// fact; store.CompleteInitiative guards on the same predicate.
+	if ini.Status == domain.InitiativeFailed || ini.FailureReason != "" {
+		return "", nil, preconditionf(
+			"the verification gate does not run on a failed initiative; `idea retry` re-runs it")
 	}
 	if err := pr.engine.VerifyInitiative(ctx, initiativeID); err != nil {
 		// The engine cannot build a *PreconditionError -- internal/daemon imports
