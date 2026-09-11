@@ -13,6 +13,13 @@ type cliInitiative struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
+	// The only thing that matters about a failed initiative, and the machine
+	// path did not carry it: `idea status` printed the provider's 401 in full
+	// while `idea status --json` returned {id,title,status} and nothing else,
+	// so a script could tell that something failed but never why. The daemon
+	// has always sent it (domain.Initiative.FailureReason, and the spec's
+	// Initiative schema declares it); the CLI struct dropped it on the floor.
+	FailureReason string `json:"failure_reason,omitempty"`
 }
 
 type cliUnderstanding struct {
@@ -122,11 +129,15 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 		inis = kept
 	}
 	if a.has("--json") {
-		// Still an array, filtered. docs/cli.md documents the shape as
-		// `[{"id","title","status"}]` and ledger row G4 pins that sentence, so
-		// returning an object here would be an undeclared response change and
-		// would break `jq '.[0]'`.
-		return dumpJSON(stdout, inis)
+		// Still an array, filtered. docs/cli.md documents the shape and ledger
+		// row G4 pins that sentence, so returning an object here would be an
+		// undeclared response change and would break `jq '.[0]'`. Adding a field
+		// is not that: `failure_reason` is omitempty, so every existing shape is
+		// byte-identical and only a failed initiative gains a key.
+		if err := dumpJSON(stdout, inis); err != nil {
+			return err
+		}
+		return failedInitiativeExit(inis)
 	}
 	if isDemoMode(c, projectID) {
 		fmt.Fprintln(stdout, warn("demo mode — synthetic output. Configure a model with:")+" "+bold("idea model set <provider/model>"))
@@ -155,7 +166,44 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stdout)
 	}
-	return nil
+	return failedInitiativeExit(inis)
+}
+
+// failedInitiativeExit makes `idea status` exit non-zero when it has just
+// printed a failed initiative.
+//
+// `idea status` rendered `● failed` together with the provider's full error and
+// returned 0, so a script that ran it as a health check could not tell. Audit 8
+// counted 18 commands exiting 0 over a reported or concealed failure; this is
+// the one that reports the failure in full and is most often scripted.
+//
+// Deliberately only `failed`. `needs_human_judgment` is the loop working as
+// designed -- it is waiting on a person, not broken -- and treating it as an
+// error would make `idea next`, `idea reviews` and the whole judgment path exit
+// non-zero on their happy path. The full exit-code taxonomy is a separate piece
+// of work (docs/plans/deferred.md, audit 8 / E2).
+func failedInitiativeExit(inis []cliInitiative) error {
+	// The newest only, which is the one every other command means by "the
+	// initiative" -- ListInitiatives is ORDER BY created_at ASC and
+	// resolveInitiative takes the last row. When scoped, the list is already
+	// filtered to one, so this is that one.
+	//
+	// Scanning them all instead made the exit code STICKY: a single abandoned
+	// experiment from weeks ago made the project's overview command exit 1
+	// forever, with nothing a user could do to clear it. An overview of ten
+	// initiatives has no single status, and the exit code has to mean the
+	// thing the next command will act on.
+	if len(inis) == 0 {
+		return nil
+	}
+	ini := inis[len(inis)-1]
+	if ini.Status != "failed" {
+		return nil
+	}
+	if ini.FailureReason != "" {
+		return fmt.Errorf("%s failed: %s", ini.Title, ini.FailureReason)
+	}
+	return fmt.Errorf("%s failed; `idea logs` has the full text", ini.Title)
 }
 
 // cmdChanged shows What Changed since last look.

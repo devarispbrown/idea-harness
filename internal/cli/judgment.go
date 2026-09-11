@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -122,4 +123,56 @@ func judgmentPost(c *client, projectID, iniID string, stdout io.Writer, path, ge
 	}
 	fmt.Fprintln(stdout, ok("✓ done")+" "+muted("— next: ")+bold("idea next --until-human"))
 	return nil
+}
+
+// reopenPhases are the design phases the daemon accepts. Kept here so the CLI
+// refuses a bad one with the list, rather than sending a body the daemon 400s.
+var reopenPhases = []string{"architecture", "product_design", "verification_design"}
+
+// cmdReopenPhase reopens a design phase.
+//
+// `idea revise` has prescribed `idea reopen-phase` since audit 7 — twice, in
+// the two states where revising the PRD would discard work below it — and the
+// verb did not exist: the route was there, the CLI had no row for it, and
+// following the advice answered `unknown command "reopen-phase"`. Half a
+// prescription is worse than none, because it reads as though the user typed
+// it wrong.
+func cmdReopenPhase(a cmdArgs, stdout, stderr io.Writer) error {
+	if len(a.positional) == 0 {
+		return fmt.Errorf("usage: idea reopen-phase <%s> [<initiative>]",
+			strings.Join(reopenPhases, "|"))
+	}
+	phase := a.positional[0]
+	if !slices.Contains(reopenPhases, phase) {
+		return fmt.Errorf("unknown phase %q; use one of: %s", phase, strings.Join(reopenPhases, ", "))
+	}
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional[1:])
+	if err != nil {
+		return err
+	}
+	var out map[string]string
+	if err := c.do("POST", initiativeResource(projectID, iniID, "reopen-phase"),
+		map[string]string{"phase": phase}, &out); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ reopened")+" "+code(phase)+" "+muted("on")+" "+code(iniID))
+	opID := out["operation_id"]
+	if opID == "" || a.has("--no-wait") {
+		fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+		return nil
+	}
+	fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	if err := waitForOperation(c, projectID, iniID, opID, stdout); err != nil {
+		return err
+	}
+	step, nerr := nextAction(c, projectID, iniID)
+	if nerr != nil {
+		return fmt.Errorf("the phase reopened but the next step could not be read: %w\n"+
+			"  `idea status` shows where it is", nerr)
+	}
+	return renderNextAction(step, stdout)
 }
