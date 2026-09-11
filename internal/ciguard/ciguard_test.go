@@ -16,7 +16,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -292,5 +294,90 @@ func TestMacOSJobPassesTheExitStatus(t *testing.T) {
 	}
 	if !strings.Contains(summary, "gotest.status") {
 		t.Errorf("ci-test-summary.py is called without the exit status:\n%s", summary)
+	}
+}
+
+// TestEveryDocumentedMakeTargetRunsInCI closes the gap skill 2.9.4 added a gate
+// for: UNVERIFIABLE_CI_PARITY, "the documented local check command does not
+// appear in CI configuration, so a green local run does not predict a green CI
+// run."
+//
+// `make build` was the one that did not. CI ran a bare `go build ./...`, which
+// compiles every package but skips what the make target actually does — embed
+// the web UI, stamp the version through ldflags, write bin/idea, restore the
+// placeholder. A contributor following CONTRIBUTING could be green locally on a
+// target CI never ran.
+//
+// `make test` and `make vet` are exempt because CI runs their bodies verbatim:
+// the targets are exactly `go test ./...` and `go vet ./...`, which is parity in
+// substance even though the `make` wrapper never appears.
+func TestEveryDocumentedMakeTargetRunsInCI(t *testing.T) {
+	root := repoRoot(t)
+	contributing, err := os.ReadFile(filepath.Join(root, "CONTRIBUTING.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Targets named inside CONTRIBUTING's fenced command blocks.
+	fence := regexp.MustCompile("(?s)```(?:bash|sh)\n(.*?)```")
+	documented := map[string]bool{}
+	for _, block := range fence.FindAllStringSubmatch(string(contributing), -1) {
+		for _, line := range strings.Split(block[1], "\n") {
+			line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+			if !strings.HasPrefix(line, "make ") {
+				continue
+			}
+			for _, target := range strings.Fields(strings.TrimPrefix(line, "make ")) {
+				documented[target] = true
+			}
+		}
+	}
+	if len(documented) == 0 {
+		t.Fatal("no make targets found in CONTRIBUTING's command blocks — the matcher is broken")
+	}
+
+	// Only what CI actually RUNS. Searching the whole file matched the comment
+	// above the very step this test exists to require, so deleting that step
+	// left the test green -- the same read-your-own-prose mistake the guards in
+	// this round were written to catch elsewhere.
+	var commands strings.Builder
+	for _, line := range strings.Split(string(ci), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if i := strings.Index(trimmed, "run:"); i >= 0 {
+			commands.WriteString(trimmed[i+len("run:"):] + "\n")
+			continue
+		}
+		// A `run: |` block's body lines carry no marker of their own.
+		if trimmed != "" && !strings.HasPrefix(trimmed, "-") && !strings.Contains(trimmed, ": ") {
+			commands.WriteString(trimmed + "\n")
+		}
+	}
+	ran := commands.String()
+
+	// Whose bodies CI runs verbatim instead of through make.
+	runVerbatim := map[string]string{"test": "go test ./...", "vet": "go vet ./..."}
+
+	var missing []string
+	for target := range documented {
+		if strings.Contains(ran, "make "+target) {
+			continue
+		}
+		if body, ok := runVerbatim[target]; ok && strings.Contains(ran, body) {
+			continue
+		}
+		missing = append(missing, target)
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("CONTRIBUTING documents %v, which CI never runs.\n"+
+			"    A green local run does not predict a green CI run, which is the whole point of\n"+
+			"    documenting them. Add a step, or stop documenting the target.", missing)
 	}
 }
