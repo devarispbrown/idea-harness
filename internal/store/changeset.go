@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -251,6 +253,7 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 	}
 	defer rows.Close()
 	var found *domain.ChangeSet
+	var all []domain.ChangeSet
 	count := 0
 	for rows.Next() {
 		var cs domain.ChangeSet
@@ -260,6 +263,7 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 		}
 		cs.CreatedAt = time.UnixMilli(created)
 		found = &cs
+		all = append(all, cs)
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -271,8 +275,39 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 	case 1:
 		return found, nil
 	default:
-		return nil, fmt.Errorf("ambiguous change set reference %q: matches %d change sets across initiatives; use the full change set id", ref, count)
+		return nil, db.ambiguousChangeSet(ctx, ref, all)
 	}
+}
+
+// ambiguousChangeSet names the candidates, because the old message did not.
+//
+// `idea next` prescribes `idea apply CHG-1`; with two initiatives in one project
+// each holding a CHG-1, that command always failed with "use the full change set
+// id" -- and no human-readable command printed one. `idea changes` resolves a
+// single initiative and prints HumanID only, while apply/review/change resolve
+// project-wide, so the lister and the resolver disagreed about scope. The id
+// existed only in `idea changes --json`, which nothing named. `next` went on
+// answering 0 and prescribing the same failing command.
+//
+// The initiative title is looked up per candidate rather than joined in the main
+// query: this path runs only on the ambiguous branch, and a failed lookup must
+// degrade to the id rather than replace a useful refusal with a database error.
+func (db *DB) ambiguousChangeSet(ctx context.Context, ref string, candidates []domain.ChangeSet) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "ambiguous change set reference %q: matches %d change sets across initiatives. Use the full id:", ref, len(candidates))
+	for _, cs := range candidates {
+		title := ""
+		if err := db.SQL().QueryRowContext(ctx,
+			`SELECT title FROM initiatives WHERE id = ?`, cs.InitiativeID).Scan(&title); err != nil {
+			title = ""
+		}
+		if title == "" {
+			b.WriteString("\n  " + cs.ID)
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s  (%s in %q)", cs.ID, cs.HumanID, title)
+	}
+	return errors.New(b.String())
 }
 
 // ListChangeSetsByTask returns change sets for a task, oldest first.

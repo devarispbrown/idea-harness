@@ -455,8 +455,10 @@ func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, descrip
 
 // StartInitiativeWithDocs creates an initiative, ingests its context docs, and
 // only THEN launches the M1 run — so `idea new --doc` grounds framing/research/
-// PRD in the supplied material. Docs are credential-swept/validated BEFORE the
-// initiative is created, so a rejected doc never leaves a half-created row.
+// PRD in the supplied material. Docs are size-checked, credential-swept and
+// validated BEFORE the initiative is created, so a rejected doc never leaves a
+// half-created row; anything that fails after creation marks the initiative
+// failed rather than stranding it in `running`.
 func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title, description string, docs []InitiativeDocInput) (string, string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
@@ -465,12 +467,26 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	if len(docs) > maxContextDocsPerInitiative {
 		return "", "", ingestError{http.StatusBadRequest, "too many context docs"}
 	}
-	// Pre-validate every doc (non-empty + credential sweep) before persisting
-	// anything, so a rejected upload cannot leave a dangling initiative.
+	// Pre-validate every doc (non-empty + size + credential sweep) before
+	// persisting anything, so a rejected upload cannot leave a dangling
+	// initiative.
+	//
+	// The size cap used to be missing from this loop -- it lives in
+	// ingestTextDoc, which runs AFTER CreateInitiative below. So an oversized
+	// doc answered 413 with the initiative row already committed as `running`
+	// and no operation ever created. reconcileStaleOperations sweeps
+	// operations, so it never saw that row; `retry` and `resume` both refused
+	// it, `next` answered `wait` forever, and there is no DELETE route -- the
+	// project's attention list was wedged until someone hand-edited SQLite.
+	// The comment above this loop had promised the opposite since it was
+	// written.
 	for _, d := range docs {
 		content := strings.TrimSpace(d.Content)
 		if content == "" {
 			return "", "", ingestError{http.StatusBadRequest, "content is required"}
+		}
+		if len(content) > maxDocFileBytes {
+			return "", "", ingestError{http.StatusRequestEntityTooLarge, "document too large"}
 		}
 		if pr.redactor.ContainsCredential(content) {
 			return "", "", ingestError{http.StatusBadRequest, "document contains a credential and was rejected"}
@@ -481,15 +497,36 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	if err := pr.db.CreateInitiative(ctx, ini); err != nil {
 		return "", "", err
 	}
+
+	// Anything that fails from here to launchOperation leaves a row already
+	// committed as `running`. Ordering fixes the known case (the size cap); this
+	// covers the rest -- a blob write, or CreateOperation itself -- by marking
+	// the initiative failed, which is a first-class recoverable state: `idea
+	// retry` requires exactly that status. Without it the row is unreachable by
+	// any route the product offers.
+	// context.WithoutCancel for the same reason the release at the bottom of
+	// ClaimInitiativeRunning gives: this is a compensating write and ctx is the
+	// HTTP request's. The likeliest trigger in this window is the client
+	// disconnecting -- `idea new --doc <big file>` then Ctrl-C -- in which case
+	// ingestTextDoc fails on ctx.Err() and a repair sharing that context fails
+	// too, deterministically, leaving exactly the stranded row this function was
+	// changed to prevent.
+	fail := func(err error) (string, string, error) {
+		if ferr := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID, err.Error()); ferr != nil {
+			r.log.Error("could not fail a half-created initiative", "initiative", ini.ID, "err", ferr)
+		}
+		return "", "", err
+	}
+
 	for _, d := range docs {
 		if _, err := pr.ingestTextDoc(ctx, ini.ID, d.Content, d.Kind, d.Title); err != nil {
-			return "", "", err
+			return fail(err)
 		}
 	}
 
 	opID, err := pr.db.CreateOperation(ctx, projectID, ini.ID, "run_initiative")
 	if err != nil {
-		return "", "", err
+		return fail(err)
 	}
 
 	r.launchOperation(opID, func(bg context.Context) {
@@ -1493,7 +1530,11 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 			// suggest_answers row would come back from a restart blaming the
 			// restart, and `idea next` would report that as the cause and send
 			// the user to `idea retry` against a 401 it no longer mentioned.
-			_ = pr.db.FailInitiative(ctx, op.InitiativeID,
+			// WithoutCancel: EnsureProject runs this sweep on the first request
+			// that touches a project, so ctx is that request's. A client that
+			// hangs up mid-reconcile would otherwise leave the very rows this
+			// sweep exists to clean.
+			_ = pr.db.FailInitiative(context.WithoutCancel(ctx), op.InitiativeID,
 				"the daemon restarted while this operation was running, so it could not finish")
 		}
 	}
@@ -1803,7 +1844,9 @@ func (r *Runtime) releaseOrphanedClaims(ctx context.Context, pr *projectRuntime)
 		}
 		r.log.Warn("releasing an initiative left running with no live operation",
 			"initiative", ini.ID)
-		if err := pr.db.FailInitiative(ctx, ini.ID,
+		// WithoutCancel, for the reason reconcileStaleOperations gives: this
+		// runs under the first request to touch the project.
+		if err := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID,
 			"the operation that claimed this initiative ended without releasing it"); err != nil {
 			r.log.Error("could not release an orphaned initiative claim",
 				"initiative", ini.ID, "error", err)

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -394,5 +395,82 @@ func TestApprovedToRejectedRecoveryTransition(t *testing.T) {
 	// approved→rejected is the system-deny apply-boundary recovery transition.
 	if err := db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetApproved, domain.ChangeSetRejected, HumanActor); err != nil {
 		t.Fatalf("approved→rejected should be legal: %v", err)
+	}
+}
+
+// TestAmbiguousChangeSetNamesTheCandidates pins the error TEXT, not just that an
+// error happened.
+//
+// `idea next` prescribes `idea apply CHG-1`. With two initiatives in one project
+// each holding a CHG-1 that command always failed, and the refusal said "use the
+// full change set id" while no human-readable command printed one — `idea
+// changes` is initiative-scoped and prints HumanID only, and the id lived solely
+// in `idea changes --json`. `next` kept exiting 0 and prescribing the same
+// failing command: a live-lock with no route out.
+//
+// TestGetChangeSetByRefAmbiguousFailsClosed asserts only `err != nil`, so it
+// stays green if the lookup regresses to "not found" — which is why this test
+// exists separately and reads the message.
+func TestAmbiguousChangeSetNamesTheCandidates(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	one := &domain.Initiative{Title: "Tiered pricing", Status: domain.InitiativeRunning}
+	two := &domain.Initiative{Title: "Recipe sharing", Status: domain.InitiativeRunning}
+	for _, ini := range []*domain.Initiative{one, two} {
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+	}
+	csA := newTestChangeSet(t, db, one.ID)
+	csB := newTestChangeSet(t, db, two.ID)
+
+	_, err := db.GetChangeSetByRef(ctx, "CHG-1")
+	if err == nil {
+		t.Fatal("expected an ambiguity error for cross-initiative CHG-1")
+	}
+	msg := err.Error()
+
+	// The full ids are the whole point: they are the only thing that resolves,
+	// and before this they appeared in no human-readable output anywhere.
+	for _, want := range []string{csA.ID, csB.ID} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error does not name the full id %q, so it prescribes no working command:\n%s", want, msg)
+		}
+	}
+	// The titles are what let a reader tell the two candidates apart.
+	for _, want := range []string{"Tiered pricing", "Recipe sharing"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error does not name initiative %q, so the ids are unattributable:\n%s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "ambiguous change set reference") {
+		t.Errorf("error no longer reports ambiguity; a regression to not-found would be worse:\n%s", msg)
+	}
+}
+
+// TestAmbiguousChangeSetSurvivesAMissingInitiative keeps the lookup degrading to
+// the id rather than replacing a useful refusal with a database error. The
+// fixtures elsewhere in this file create change sets against initiative ids that
+// have no row, so this is the shape most of the suite exercises.
+func TestAmbiguousChangeSetSurvivesAMissingInitiative(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	csA := newTestChangeSet(t, db, "ini-does-not-exist-1")
+	csB := newTestChangeSet(t, db, "ini-does-not-exist-2")
+
+	_, err := db.GetChangeSetByRef(ctx, "CHG-1")
+	if err == nil {
+		t.Fatal("expected an ambiguity error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ambiguous change set reference") {
+		t.Fatalf("a missing initiative row must not turn the refusal into something else:\n%s", msg)
+	}
+	for _, want := range []string{csA.ID, csB.ID} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error does not name %q:\n%s", want, msg)
+		}
 	}
 }

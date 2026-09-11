@@ -30,7 +30,10 @@ type entryPoint struct {
 
 var asyncEntryPoints = map[string]entryPoint{
 	"StartInitiativeWithDocs": {false,
-		"does not claim: the initiative is created running, so there is no prior state to take"},
+		"does not claim: the initiative is created running, so there is no prior state to take. " +
+			"It does write a terminal status on the error paths between CreateInitiative and " +
+			"launchOperation — a half-created row is marked failed so `idea retry` can reach it — " +
+			"but that is not a release of a claim it never took"},
 	"AdvanceInitiative": {true,
 		"workflow/advance.go sets a terminal status on success; failOperation on error"},
 	"ExecuteInitiative": {true,
@@ -331,4 +334,85 @@ func TestApplyIsAllowedFromEveryRestingState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// compensatingWrites are the durable status writes that repair state after
+// something else already failed.
+//
+// Every one of them must run on a context that outlives the request. ctx in a
+// handler path is the HTTP request's: if the client disconnected -- `idea new
+// --doc <big file>` then Ctrl-C -- the original call fails on ctx.Err() AND the
+// repair sharing that context fails too, deterministically. The row is then
+// left in the exact state the repair exists to prevent.
+//
+// runtime.go establishes the pattern in nineteen places and explains it at the
+// release in ClaimInitiativeRunning. This is enumerated rather than read
+// because the departure that prompted this test was written directly beneath
+// that comment, by someone who had just read it.
+//
+// An end-to-end test cannot reach this: cancelling before the call makes the
+// FIRST write fail, so no row is created and the compensating path never runs;
+// cancelling during it is a race on a window microseconds wide. The property is
+// syntactic, so it is checked syntactically.
+var compensatingWrites = map[string]bool{
+	"FailInitiative":      true,
+	"SetInitiativeStatus": true,
+	"CompleteInitiative":  true,
+}
+
+func TestCompensatingWritesDoNotShareTheRequestContext(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "runtime.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		// Only functions that take a context can pass the request's.
+		if !takesContext(fn) {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !compensatingWrites[sel.Sel.Name] {
+				return true
+			}
+			id, ok := call.Args[0].(*ast.Ident)
+			if !ok || id.Name != "ctx" {
+				return true // WithoutCancel, Background, sctx, bg — all fine
+			}
+			// A write on the happy path is not compensating; only those in an
+			// error branch are. Distinguishing them syntactically is not worth
+			// the machinery, so the rule is blunt on purpose: inside a function
+			// that holds a request context, reach for a detached one.
+			t.Errorf("%s:%d: %s is called with the request's ctx.\n"+
+				"    A durable write here must survive client cancellation: use "+
+				"context.WithoutCancel(ctx),\n    as the nineteen other compensating "+
+				"writes in this file do. If this one is genuinely on the happy path,\n"+
+				"    say so here and add it to the exemptions.",
+				fset.Position(call.Pos()).Filename, fset.Position(call.Pos()).Line, sel.Sel.Name)
+			return true
+		})
+	}
+}
+
+func takesContext(fn *ast.FuncDecl) bool {
+	if fn.Type.Params == nil {
+		return false
+	}
+	for _, p := range fn.Type.Params.List {
+		sel, ok := p.Type.(*ast.SelectorExpr)
+		if ok && sel.Sel.Name == "Context" {
+			return true
+		}
+	}
+	return false
 }
