@@ -50,9 +50,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 - **Documented model ids now resolve.** `anthropic/claude-3-7-sonnet-latest`
   (9 sites) and `openrouter/anthropic/claude-3.7-sonnet` are absent from the live
-  catalogs; the examples move to `anthropic/claude-sonnet-4-5`,
-  `openai/gpt-5.6-luna` and `openrouter/anthropic/claude-opus-5`, each checked
-  with `idea model ls` on 2026-09-10. A ledger predicate pinned to a model id has
+  catalogs; the examples move to `anthropic/claude-sonnet-4-5-20250929`,
+  `openai/gpt-5.6-luna` and `openrouter/anthropic/claude-opus-5`. The first two
+  were re-checked against the providers' own `/v1/models` on 2026-09-10 and are
+  live; the undated `anthropic/claude-sonnet-4-5` this entry first named is
+  absent from that listing, which is why the examples now carry the date. A ledger predicate pinned to a model id has
   a shelf life, so the date is part of the claim — audit 4's own D9 row had to be
   updated for exactly that reason.
 
@@ -105,37 +107,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
   `idea prd` is deliberately unaffected: its first positional is an artifact
   **kind**, not a reference.
-
-
-- `idea apply` on a change set that cannot be applied now fails with what to do instead — already
-  applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
-  Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.
-
-- The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
-  declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
-  made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
-  change the moment either exists, which is why it lands before the first tag.
-
-- `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
-  answered `✓ default model set to bogus/model` and failed at the first run.
-- `idea doctor` exits non-zero when a check fails. It printed the failure and exited 0, so a script
-  that ran it as the post-install check could not tell.
-- `idea help` now lists `verify`, `next` and `help` itself, which were dispatched but never shown.
-
-- Unknown flags are now an error naming the command's accepted flags, instead of being silently
-  treated as a positional argument (or, for `idea next`, discarded).
-- `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
-  the flag and printed markdown. The execution plan is a markdown artifact and has no JSON form.
-- `idea prd` and `idea export` render daemon errors in the same shape as every other command; they
-  previously printed the raw response body behind a `daemon: ` prefix.
-- `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
-  the flag and printed human-formatted output.
-- `docs/configuration.md` documents the top-level `harness.yaml` fields, including `git_commit`,
-  which README, the quick start and `docs/ui.md` all referenced while the configuration reference
-  did not mention it at all.
-
-- `README.md` no longer describes Node and pnpm as optional for installing. They are needed only to
-  change the web UI.
 
 ### Added
 
@@ -256,19 +227,49 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
   fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
 
+- **`openai/gpt-5.6-luna` and `anthropic/claude-sonnet-4-5-20250929` are in the
+  bundled model catalog**, so `idea model set` no longer warns on either.
+  `gpt-5.6-luna` is the model this project runs on and the one `README.md` and
+  `docs/quickstart.md` put on the front page, and it warned on every run.
+
+  The catalog feeds `GET /providers`'s `models`, `idea model ls`'s fallback list
+  and the `idea model set` warning, so this is a visible response change.
+  `DefaultModelFor("anthropic")` also moves to the dated id: it leads the row
+  deliberately, being the only anthropic entry the provider's own `/v1/models`
+  returns. The openai row is appended to, leaving its default at `gpt-4o` —
+  changing a default that six releases have shipped is a separate decision from
+  fixing a warning, and this entry is the latter.
+
+  Nothing was removed. The four undated anthropic ids are absent from the live
+  listing, but a listing omits aliases by construction and a direct probe could
+  not settle it (every id returned `400 credit balance is too low`, because
+  billing is checked before the model name), so removing them on an unproven
+  claim would also have broken `internal/config/catalog_warning_test.go`. That
+  contradiction is recorded in `docs/plans/deferred.md` as audit 8 / E6.
+
 ### Changed — BREAKING
 
 - **Two API state guards: `revise-plan` refuses a plan whose work has started,
-  and the config endpoints refuse a field they do not declare.** Both are the
+  and three endpoints refuse a field they do not declare.** Both are the
   same shape — a check that existed, applied to one caller and not to the path
   that matters.
 
   | | Was | Now |
   |---|---|---|
   | `POST …/revise-plan` with ≥1 change set | **202**, then the initiative went `failed` asynchronously | **409** `cannot revise a plan that already has change sets` |
-  | `PUT …/providers` or `…/executors` with an undeclared field | **200** `{"status":"updated"}`, field silently dropped | **400** naming it, e.g. `json: unknown field "api_key"` |
+  | `PUT …/providers`, `PUT …/executors`, or `POST …/change-sets/{id}/review` with an undeclared field | **200** (`{"status":"updated"}` / `{"status":"reviewed"}`), field silently dropped | **400** naming it, e.g. `json: unknown field "api_key"` |
   | `PUT …/providers` with a provider that resolves to no endpoint | **200**, stored, failing at the first model call | **400** naming the missing `base_url` |
   | `idea doctor`, `idea config validate`, `idea model add` on a `harness.yaml` that already contains such an entry | exit **0** (`valid (with warnings)`) | exit **1**, naming the entry |
+
+  **Migration.** All three now use `decodeStrict`, so a client must send only the
+  fields the operation declares. `POST …/change-sets/{id}/review` takes
+  `verdict` and `accept_findings` and nothing else — a body carrying
+  `acceptFindings` (camelCase) or any extra key is now a 400 rather than a
+  silently-dropped field. The two config endpoints are **not** round-trippable
+  from their own `GET`: `GET …/providers` returns `demo`, `models` and
+  `git_commit` alongside the writable fields, and `GET …/executors` is a
+  catalog of all four executor kinds rather than a projection of the config, so
+  neither response can be edited and sent back verbatim.
 
   That last row is a break for existing configs, not just for new writes: the
   predicate lives in `config.ValidateProvider`, which feeds `providerProblems`
@@ -1111,6 +1112,7 @@ instead of a change that cost nothing.
 - A running daemon serves the spec and a rendered API reference without a token, outside `/api/`:
   `http://127.0.0.1:8787/openapi.yaml` and `/api-reference`.
 
+
 - CI builds, vets, tests and smoke-tests on macOS as well as Linux. Nothing in the codebase branches
   on the operating system, so the differences that matter are filesystem semantics — case
   sensitivity, symlink resolution — which is exactly where the path guard and the change-set deny
@@ -1133,6 +1135,38 @@ instead of a change that cost nothing.
   and `make docs` regenerates it. `docs/cli.md` documented 16 of the 36 commands the CLI dispatches;
   `risk`, `diff`, `cancel` and `change <id>` appeared in no document at all. `make docs-check` fails
   on drift and runs in CI, so a new command can no longer ship undocumented.
+
+### Changed
+
+- `idea apply` on a change set that cannot be applied now fails with what to do instead — already
+  applied (`idea revert`), not yet approved (`idea review … approve`), rejected (`idea reviews`).
+  Apply is asynchronous, so it previously answered `✓ apply started` and failed out of sight.
+
+- The Go module path is now `github.com/devarispbrown/idea-harness`, matching the repository. It
+  declared `github.com/idea-harness/idea-harness`, which resolves nowhere, so no tag could ever have
+  made `go install <module>@<version>` work. Free to change now (no tags, no consumers); a breaking
+  change the moment either exists, which is why it lands before the first tag.
+
+- `idea model set` refuses a provider that does not exist, naming the ones that do. It previously
+  answered `✓ default model set to bogus/model` and failed at the first run.
+- `idea doctor` exits non-zero when a check fails. It printed the failure and exited 0, so a script
+  that ran it as the post-install check could not tell.
+- `idea help` now lists `verify`, `next` and `help` itself, which were dispatched but never shown.
+
+- Unknown flags are now an error naming the command's accepted flags, instead of being silently
+  treated as a positional argument (or, for `idea next`, discarded).
+- `idea plan --json` now fails with a message pointing at `idea tasks --json`. It previously accepted
+  the flag and printed markdown. The execution plan is a markdown artifact and has no JSON form.
+- `idea prd` and `idea export` render daemon errors in the same shape as every other command; they
+  previously printed the raw response body behind a `daemon: ` prefix.
+- `idea verify --json` now emits the verification status and coverage as JSON. It previously accepted
+  the flag and printed human-formatted output.
+- `docs/configuration.md` documents the top-level `harness.yaml` fields, including `git_commit`,
+  which README, the quick start and `docs/ui.md` all referenced while the configuration reference
+  did not mention it at all.
+
+- `README.md` no longer describes Node and pnpm as optional for installing. They are needed only to
+  change the web UI.
 
 ### Fixed
 
