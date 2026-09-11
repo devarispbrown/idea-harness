@@ -29,12 +29,12 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 		// Human judgment points first: review → apply → verify.
 		for _, cs := range changes {
 			if cs.Status == domain.ChangeSetReviewRequired {
-				return "review " + cs.HumanID, nil
+				return "review " + e.changeSetRef(ctx, cs), nil
 			}
 		}
 		for _, cs := range changes {
 			if cs.Status == domain.ChangeSetApproved {
-				return "apply " + cs.HumanID, nil
+				return "apply " + e.changeSetRef(ctx, cs), nil
 			}
 		}
 		for _, cs := range changes {
@@ -97,4 +97,24 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 	default: // running
 		return "wait", nil
 	}
+}
+
+// changeSetRef is the reference `idea next` should print for a change set.
+//
+// The human id is the readable one and is right almost always. But human ids
+// are assigned per initiative while apply/review/change resolve project-wide,
+// so once a project has two initiatives each holding a CHG-1, `idea apply
+// CHG-1` refuses as ambiguous -- and `next` went on prescribing it, exiting 0,
+// making no progress, with the full id printed by no human-readable command.
+// The refusal now lists the candidates; this stops next from sending anyone
+// there in the first place.
+//
+// A failed count falls back to the human id: a prescription that is usually
+// right beats surfacing a database error from a hint.
+func (e *Engine) changeSetRef(ctx context.Context, cs domain.ChangeSet) string {
+	n, err := e.db.CountChangeSetsByHumanID(ctx, cs.HumanID)
+	if err == nil && n > 1 {
+		return cs.ID
+	}
+	return cs.HumanID
 }

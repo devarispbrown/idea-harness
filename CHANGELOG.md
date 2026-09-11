@@ -121,11 +121,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   preferring the newest initiative was rejected: silently applying a change set
   from the wrong initiative is worse than refusing.
 
-  **This downgrades the live-lock rather than closing it.** `idea next` still
-  prints `idea apply CHG-1` — `workflow/next.go` returns the human id and
-  nothing here changes that — so the user must still read the refusal and copy
-  a hex id by hand. Having `next` emit the full id when the human one is
-  ambiguous is the smaller remaining half, and it is not in this change.
+  `idea next` no longer sends anyone there in the first place: it prints the
+  full id when, and only when, the human one is ambiguous, so its prescription
+  always runs. The readable `CHG-1` is still what you see in the ordinary case,
+  which is almost always.
 
 - **A rejected oversized context doc no longer strands an initiative.**
   `POST …/initiatives` with a doc over the size cap answered 413 having already
