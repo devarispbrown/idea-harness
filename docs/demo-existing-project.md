@@ -197,7 +197,7 @@ Everything above ran without a model touching your source. For real edits you ne
 agent in a container:
 
 ```bash
-idea executors setup --model anthropic/claude-sonnet-4-5 --yes --smoke
+idea executors setup --model anthropic/claude-sonnet-4-5-20250929 --yes --smoke
 ```
 
 That auto-downloads the pinned Hermes image and, with `--smoke`, runs a trivial task through

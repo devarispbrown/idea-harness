@@ -10,6 +10,13 @@ import (
 // decodeStrict decodes a request body and refuses a field the target does not
 // declare, returning a message that names it.
 //
+// Three endpoints use it: `PUT /providers`, `PUT /executors` and
+// `POST /change-sets/{id}/review`. Adding a fourth means updating the BREAKING
+// row in CHANGELOG.md and that operation's 400 in docs/openapi.yaml -- the
+// review endpoint was added here and named in neither, and this comment said
+// "the two config-writing endpoints" while there were three, which is how it
+// escaped both documents. bodycheck enforces the census.
+//
 // The two config-writing endpoints used the permissive decoder, and
 // `encoding/json` drops an unknown field in silence. So
 // `PUT …/providers {"providers":{"openai":{"api_key":"sk-live-…"}}}` answered
