@@ -321,6 +321,22 @@ Same commands, same gates, same graph — different content:
   adversarial reviewer raises findings that are about *your* product rather than the fixed demo
   strings. The review loop can now actually block and revise (up to `review.max_cycles`), which in
   demo mode it effectively never does.
+
+  **This changes the shape of the run, not just its content.** Measured on
+  `openai/gpt-5.6-luna`: the PRD review did not converge in 2 of 2 runs and the plan review raised
+  blocking findings in 2 of 2, so the sequence stopped twice for a human before it reached
+  `idea review`. `idea new` and `idea next` each name the command that moves it on — `idea approve`
+  or `idea revise` for the PRD, `idea approve-plan` or `idea revise-plan` for the plan — and you
+  re-run `idea next --until-human` after each. Budget for those stops; they are the governance
+  working, not a fault.
+
+- **Requirement codes are not stable across review cycles, so `REQ-1` is a demo-mode artifact.**
+  Each cycle supersedes the requirement set and mints new codes. One measured run created 34
+  requirement rows, superseded 22, and ended with 12 live ones numbered `REQ-23`–`REQ-34`. Use
+  `idea status` to list the live codes rather than assuming `REQ-1`; verifying a superseded code
+  answers `requirement "REQ-1" in state "removed" cannot take a human judgment`. Expect several
+  requirements, each with 3–5 acceptance criteria needing sign-off — not the single
+  `idea verify REQ-1 --pass` the demo walkthrough shows.
 - **`idea tasks`** is a plan whose dependency order reflects the real architecture, not a fixed
   skeleton.
 - **`idea changes` / `idea change CHG-1`** shows a patch touching real source files with real
