@@ -520,3 +520,19 @@ func requireOneRow(res sql.Result, format string, args ...any) error {
 	}
 	return nil
 }
+
+// CountChangeSetsByHumanID reports how many change sets in this project share a
+// human id.
+//
+// Human ids are assigned per initiative, so CHG-1 exists once per initiative
+// while apply/review/change resolve project-wide. `idea next` printed the human
+// id unconditionally and so prescribed `idea apply CHG-1`, which refuses as
+// ambiguous the moment a project has two initiatives with change sets. Callers
+// use this to print the full id in exactly that case, and the friendly one
+// otherwise.
+func (db *DB) CountChangeSetsByHumanID(ctx context.Context, humanID string) (int, error) {
+	var n int
+	err := db.SQL().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM change_sets WHERE human_id = ?`, humanID).Scan(&n)
+	return n, err
+}
