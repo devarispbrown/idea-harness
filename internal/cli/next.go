@@ -315,7 +315,10 @@ func reportJudgment(reason string, stdout io.Writer) {
 	switch reason {
 	case "prd":
 		fmt.Fprintln(stdout, bold("Next:")+" the PRD review did not converge — "+muted("idea reviews")+muted(" lists the findings"))
-		line("idea approve", "accept the PRD as it stands and move to design")
+		// "accept ... and move to design" promised more than approve does:
+		// cmdApprove posts and prints `next: idea next --until-human`, so the
+		// command's own output contradicted this line one step earlier.
+		line("idea approve", "accept the PRD as it stands; `idea next` then moves to design")
 		line("idea revise ", "regenerate it from the findings (may not converge either)")
 	case "plan-dependencies":
 		fmt.Fprintln(stdout, bold("Next:")+" the execution plan has unresolved task dependencies — "+muted("idea tasks")+muted(" shows the order"))
