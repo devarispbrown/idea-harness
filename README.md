@@ -161,6 +161,24 @@ idea verify REQ-1 --pass               # record pass evidence; repeat per requir
 idea next                              # → "✓ initiative complete"
 ```
 
+> **The block above is the demo-provider path. With a key it differs in three ways.** Measured on
+> `openai/gpt-5.6-luna`, 2 of 2 runs, ~7–9 minutes end to end:
+>
+> 1. **It stops for you twice before `idea review`.** The PRD review did not converge (2/2) and the
+>    plan review raised blocking findings (2/2). `idea new` and `idea next` each print the command
+>    that moves it on — `idea approve` or `idea revise` for the PRD, `idea approve-plan` or
+>    `idea revise-plan` for the plan. Run what it names, then `idea next --until-human` again.
+> 2. **`idea review CHG-1 approve` may refuse**, with an open critical finding. See the note below.
+> 3. **The requirement is not `REQ-1`.** Every review cycle supersedes the requirement set and mints
+>    new codes, so after the PRD review revises a few times the surviving requirements started at
+>    `REQ-23` in one measured run — 12 of them, 34 rows created, 22 superseded. `idea status` lists
+>    the live codes; `idea verify REQ-1` on a superseded one answers
+>    `requirement "REQ-1" in state "removed" cannot take a human judgment`.
+>
+> None of this is a fault — an adversarial reviewer that never blocks is not doing anything. It is
+> the difference between a deterministic demo and a real model, and it is why the block is written
+> against the demo provider.
+
 > **If `idea review CHG-1 approve` refuses.** With a real model the adversarial reviewer can raise
 > a blocking finding on the change set, and approve then refuses rather than waving it through.
 > `idea reviews` lists what it found, and `idea review CHG-1 approve --accept-findings` signs off
