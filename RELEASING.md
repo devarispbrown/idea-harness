@@ -40,6 +40,15 @@ outside the gate.
    configuration that passed yesterday **is** breaking, even though the config
    was always wrong; and "we only added a field" is breaking if the field is
    *required*, or if the body it lands in is closed.
+   **Correcting a released section.** `make version-check` compares every
+   released `## [X.Y.Z]` section against its content at the newest tag, so a
+   correction to already-shipped history is red on every push until the next
+   release moves that baseline. This is deliberate — released history is what
+   shipped inside every archive — but it means such a correction lands with a
+   known-red guard. Make the correction its own commit, say in the message that
+   `changelog-history` is expected to fail and why, and cut the release
+   promptly. Do not work around it by editing the guard.
+
 2. **Bump `docs/openapi.yaml`'s `info.version`** to that version, in a normal
    commit, merged before the tag. `make version-check` fails on every push while
    it is older than the newest released `CHANGELOG.md` heading, so this is

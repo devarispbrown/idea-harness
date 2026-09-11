@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -355,5 +356,91 @@ func TestStartInitiativeWithDocsRejectsCredential(t *testing.T) {
 	}
 	if len(inis) != 0 {
 		t.Fatalf("expected no initiative after rejected create-with-docs, got %d", len(inis))
+	}
+}
+
+// TestStartInitiativeWithDocsRejectsOversizedAtomically is the size half of the
+// atomicity promise in StartInitiativeWithDocs's doc comment.
+//
+// The credential and empty-content checks ran before CreateInitiative; the size
+// cap did not — it lives in ingestTextDoc, which runs after. So a 413 committed
+// an initiative as `running` with no operation, and nothing could reach it:
+// reconcileStaleOperations sweeps operations, `retry` and `resume` refuse,
+// `next` answers `wait`, and there is no DELETE route.
+func TestStartInitiativeWithDocsRejectsOversizedAtomically(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "", `{"root_path":"`+dir+`"}`)
+	var p map[string]string
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+
+	_, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
+		{Content: strings.Repeat("A", maxDocFileBytes+1), Kind: "prd", Title: "big.md"},
+	})
+	if err == nil {
+		t.Fatal("expected an oversized-document rejection")
+	}
+	var ie ingestError
+	if !errors.As(err, &ie) || ie.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %v, want a 413 ingestError", err)
+	}
+
+	pr, _ := rt.EnsureProject(t.Context(), p["project_id"])
+	inis, lerr := pr.db.ListInitiatives(t.Context())
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(inis) != 0 {
+		t.Fatalf("expected no initiative after a rejected oversized doc, got %d (status %q) — "+
+			"the row is unreachable: there is no DELETE route and retry/resume both refuse it",
+			len(inis), inis[0].Status)
+	}
+}
+
+// TestStartInitiativeWithDocsFailsRatherThanStranding covers the window
+// ordering cannot: a failure after CreateInitiative. The row must not be left
+// in `running`, because `idea retry` requires `failed` and nothing else can
+// reach it.
+//
+// Sabotage is at the SQL level because projectRuntime.db is a concrete
+// *store.DB with no interface seam to inject through.
+func TestStartInitiativeWithDocsFailsRatherThanStranding(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "", `{"root_path":"`+dir+`"}`)
+	var p map[string]string
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+
+	pr, _ := rt.EnsureProject(t.Context(), p["project_id"])
+	if _, err := pr.db.SQL().ExecContext(t.Context(), "DROP TABLE operations"); err != nil {
+		t.Fatalf("could not sabotage the operations table: %v", err)
+	}
+
+	if _, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", nil); err == nil {
+		t.Fatal("expected CreateOperation to fail with the table dropped")
+	}
+
+	inis, lerr := pr.db.ListInitiatives(t.Context())
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(inis) != 1 {
+		t.Fatalf("expected the initiative row to survive, got %d", len(inis))
+	}
+	if inis[0].Status != domain.InitiativeFailed {
+		t.Fatalf("initiative is %q, want %q — a row left running after a post-create failure "+
+			"is reachable by no route: retry requires failed, resume refuses, next answers wait",
+			inis[0].Status, domain.InitiativeFailed)
+	}
+	if inis[0].FailureReason == "" {
+		t.Error("failed initiative carries no failure_reason, so `idea status` cannot say why")
 	}
 }
