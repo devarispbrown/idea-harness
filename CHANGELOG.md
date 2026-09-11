@@ -215,6 +215,27 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **`docs/demo-greenfield.md` shows each command beside its output again.** The
   `--accept-findings` note had been inserted between the two.
 
+- **`README.md` and `docs/quickstart.md` describe the keyed path as it actually
+  runs.** Both presented the magic-path block as a straight line. Measured on
+  `openai/gpt-5.6-luna`, 2 of 2 runs, it is not: the PRD review does not
+  converge and the plan review raises blocking findings, so it stops for a human
+  twice before reaching `idea review`; `idea review CHG-1 approve` can refuse on
+  an open critical finding; and the requirement is not `REQ-1`, because every
+  review cycle supersedes the requirement set and mints new codes — one run
+  created 34 rows, superseded 22, and ended with `REQ-23`–`REQ-34`.
+
+  Nothing in the product was wrong here: `idea new` and `idea next` name the
+  command that moves it on, and verifying a superseded code answers
+  `requirement "REQ-1" in state "removed" cannot take a human judgment`. The
+  documents were written against the demo provider, where the review converges
+  on the first cycle and `REQ-1` therefore survives, and they did not say so.
+
+- **`idea approve`'s advice line no longer overstates what it does.** `idea next`
+  offered it as "accept the PRD as it stands and move to design", while
+  `cmdApprove` posts, prints `✓ PRD approved` and tells you to run `idea next
+  --until-human` — the command's own output contradicting the advice one step
+  earlier.
+
 - **CI runs `make build`, the way CONTRIBUTING documents it.** It ran a bare
   `go build ./...`, which compiles every package but skips what the target
   actually does — embed the web UI, stamp the version through ldflags, write
