@@ -132,8 +132,10 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("api-check: docs/openapi.yaml covers every route in internal/daemon/routes.go,")
-		fmt.Println("           every handler's request-body fields are documented, and every")
-		fmt.Println("           operation that can answer 409 declares one")
+		fmt.Println("           every handler's request-body fields are documented, every operation")
+		fmt.Println("           that can answer 409 declares one, every $ref resolves, every schema")
+		fmt.Println("           is a schema, every operation declares the statuses it can emit, and")
+		fmt.Println("           the spec's own operation count is correct")
 		return
 	}
 

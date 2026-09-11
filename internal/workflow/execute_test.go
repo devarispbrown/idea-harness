@@ -2,9 +2,13 @@ package workflow
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -568,4 +572,79 @@ func TestApproveDeniedByOpenBlockingFinding(t *testing.T) {
 	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
 		t.Fatalf("approve should succeed after dispositioning: %v", err)
 	}
+}
+
+// TestCheckCommandRecommendsARealHarnessKey ties the advice to the schema that
+// validates the file the advice is about.
+//
+// `idea reviews` printed `set tests_cmd in harness.yaml`, built by concatenating
+// the finding category ("tests") with "_cmd". The field is `test_cmd`, so
+// following the recommendation literally made `idea config validate` exit 1
+// with `additional properties 'tests_cmd' not allowed`.
+//
+// The config keys are read from the PRODUCTION call sites by AST, not supplied
+// by this test. A first version passed them in from a table here, so it
+// validated its own strings: reintroducing the exact bug at execute.go's call
+// site left the whole suite green.
+func TestCheckCommandRecommendsARealHarnessKey(t *testing.T) {
+	valid := map[string]bool{}
+	for _, k := range config.HarnessTopLevelKeys() {
+		valid[k] = true
+	}
+	if len(valid) == 0 {
+		t.Fatal("no harness schema keys — the accessor is broken, so this check proves nothing")
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "execute.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// checkCommand(ctx, cs, workRoot, category, configKey, description, cmd)
+	const categoryArg, configKeyArg = 3, 4
+	found := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) <= configKeyArg {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "checkCommand" {
+			return true
+		}
+		key, kok := stringLit(call.Args[configKeyArg])
+		cat, cok := stringLit(call.Args[categoryArg])
+		if !kok || !cok {
+			t.Errorf("%s: checkCommand's category/configKey are not string literals, so this "+
+				"check cannot read them", fset.Position(call.Pos()))
+			return true
+		}
+		found++
+		if !valid[key] {
+			t.Errorf("%s: recommends %q, which harness.yaml rejects — `idea config validate`\n"+
+				"    exits 1 on it. Valid keys: %v", fset.Position(call.Pos()), key,
+				config.HarnessTopLevelKeys())
+		}
+		if key == cat+"_cmd" && !valid[cat+"_cmd"] {
+			t.Errorf("%s: the config key is being derived from the category again", fset.Position(call.Pos()))
+		}
+		return true
+	})
+	if found == 0 {
+		t.Fatal("no checkCommand call sites found — the matcher is broken, so this proves nothing")
+	}
+	if found < 2 {
+		t.Errorf("found only %d checkCommand call site(s); build and tests are both expected", found)
+	}
+}
+
+// stringLit unquotes a basic string literal argument.
+func stringLit(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	v, err := strconv.Unquote(lit.Value)
+	return v, err == nil
 }

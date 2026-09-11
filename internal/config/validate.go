@@ -29,7 +29,12 @@ func validateAgainst(name, schemaJSON string, doc any) error {
 		return fmt.Errorf("config: compile schema %s: %w", name, err)
 	}
 	if err := sch.Validate(doc); err != nil {
-		return fmt.Errorf("config: %s invalid: %w", name, err)
+		// Typed for the same reason a syntax error is: this is the user's file,
+		// and it is the MORE likely malformation — a valid-YAML document the
+		// schema rejects, `tests_cmd` being the example this project shipped
+		// advice for. Untyped, it reached every project-scoped route as a 404
+		// carrying raw jsonschema text.
+		return &ParseError{File: name, Msg: "invalid: " + err.Error()}
 	}
 	return nil
 }

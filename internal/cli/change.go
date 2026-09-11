@@ -560,9 +560,38 @@ func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ retry started")+" "+code(iniID)+" "+muted("on")+" "+accent(model))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
 	}
-	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
-	return nil
+
+	// Wait, for the reason `idea new` waits. retry posts and returned, so a
+	// retry against an unchanged cause -- the same 401, the same unreachable
+	// base_url -- printed `✓ retry started` and exited 0 while the operation
+	// failed half a second later. The tick said the opposite of what happened,
+	// on the command whose entire job is recovering from a failure.
+	if a.has("--no-wait") || opID == "" {
+		fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+		return nil
+	}
+	fmt.Fprintln(stdout, muted("working… (")+bold("--no-wait")+muted(" returns immediately; ")+bold("idea watch")+muted(" follows it)"))
+	if err := waitForOperation(c, projectID, iniID, opID, stdout); err != nil {
+		return err
+	}
+	return reportRetryOutcome(c, projectID, iniID, stdout)
+}
+
+// reportRetryOutcome names the state the retry actually reached, rather than
+// reporting the start as the result.
+func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) error {
+	step, nerr := nextAction(c, projectID, iniID)
+	if nerr != nil {
+		// Not `return nil`. The retry ran and its outcome is unknown, which is
+		// the same "reported success without checking" this command was changed
+		// to stop doing -- one layer up.
+		return fmt.Errorf("the retry finished but its outcome could not be read: %w\n"+
+			"  `idea status` shows where it is", nerr)
+	}
+	// renderNextAction already turns a `failed` action into failedInitiativeError.
+	return renderNextAction(step, stdout)
 }
