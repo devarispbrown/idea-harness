@@ -240,6 +240,15 @@ jobs:
       - name: Build web UI and embed into the binary
         run: make embed-web
 
+      # `make build` and not just `go build ./...`: the make target is what
+      # CONTRIBUTING documents, and it differs -- it embeds the web UI, stamps
+      # the version through ldflags, writes bin/idea and then restores the
+      # placeholder. A green `go build ./...` does not predict it. Skill 2.9.4
+      # makes a documented check with no CI step its own gate
+      # (UNVERIFIABLE_CI_PARITY), and this was the only one left.
+      - name: Build the binary the documented way
+        run: make build
+
       - name: Vet
         run: go vet ./...
 
