@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
 )
 
 func TestNextAction(t *testing.T) {
@@ -72,5 +74,61 @@ func TestNextAction(t *testing.T) {
 	setStatus(domain.InitiativeRunning)
 	if a, _ := eng.NextAction(ctx, iniID); a != "wait" {
 		t.Errorf("running -> %q, want wait", a)
+	}
+}
+
+// TestNextPrescribesARunnableChangeSetRef closes the other half of the
+// ambiguous-CHG live-lock.
+//
+// Human ids are per initiative; apply/review/change resolve project-wide. With
+// two initiatives each holding a CHG-1, `idea next` printed `idea apply CHG-1`,
+// that command refused as ambiguous, and next printed it again — exit 0, no
+// progress, and the id that would work appeared in no human-readable output.
+func TestNextPrescribesARunnableChangeSetRef(t *testing.T) {
+	ctx := context.Background()
+	e, db := newTestEngine(t, model.NewFakeProvider(), config.HarnessConfig{Network: config.NetworkDisabled})
+
+	one := &domain.Initiative{Title: "first", Status: domain.InitiativePlanApproved}
+	two := &domain.Initiative{Title: "second", Status: domain.InitiativePlanApproved}
+	for _, ini := range []*domain.Initiative{one, two} {
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	csA := &domain.ChangeSet{InitiativeID: one.ID, TaskID: "t1", PatchDigest: "d1"}
+	if err := db.CreateChangeSet(ctx, csA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().ExecContext(ctx,
+		`UPDATE change_sets SET status = ? WHERE id = ?`, domain.ChangeSetApproved, csA.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unique so far: the readable id is correct and is what should be printed.
+	got, err := e.NextAction(ctx, one.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "apply "+csA.HumanID {
+		t.Fatalf("got %q, want %q — the human id is right while it is unambiguous", got, "apply "+csA.HumanID)
+	}
+
+	// A second initiative mints its own CHG-1, and `idea apply CHG-1` now refuses.
+	csB := &domain.ChangeSet{InitiativeID: two.ID, TaskID: "t2", PatchDigest: "d2"}
+	if err := db.CreateChangeSet(ctx, csB); err != nil {
+		t.Fatal(err)
+	}
+	if csB.HumanID != csA.HumanID {
+		t.Fatalf("fixture assumption broken: %q vs %q", csA.HumanID, csB.HumanID)
+	}
+
+	got, err = e.NextAction(ctx, one.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "apply "+csA.ID {
+		t.Errorf("got %q, want %q — next must prescribe a command that runs, and `idea apply %s` "+
+			"now refuses as ambiguous", got, "apply "+csA.ID, csA.HumanID)
 	}
 }
