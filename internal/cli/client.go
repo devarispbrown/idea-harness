@@ -199,6 +199,28 @@ func (c *client) doRaw(method, path string) (string, error) {
 	return string(data), nil
 }
 
+// daemonAnswersHealth probes /api/v1/health without a token.
+//
+// healthy() cannot answer "is a daemon running": it calls newClient(), which
+// fails when the token file is absent, so it returns false before any HTTP
+// happens. Remove the state directory while the daemon serves -- the natural
+// "start fresh" move -- and `idea doctor` reported "daemon: not running" while
+// curl got a 200 from that same daemon, and `idea daemon status` said running.
+// Three answers to one question, and the designated diagnostic had the wrong
+// one.
+//
+// /api/v1/health is the one unauthenticated route (auth short-circuits it), so
+// this is the question asked directly.
+func daemonAnswersHealth() bool {
+	c := &http.Client{Timeout: healthProbeTimeout}
+	resp, err := c.Get("http://" + daemonAddr() + "/api/v1/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 // healthProbeTimeout bounds a liveness probe.
 //
 // healthy() used newClient()'s 60s timeout, which is right for a data call and

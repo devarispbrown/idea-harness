@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -16,13 +17,20 @@ type cliTask struct {
 }
 
 // resolveInitiative returns the initiative id (args[0] or the newest).
+// errNoInitiatives is an absence, not a failure. It has to be distinguishable
+// from a transport or store error, because they reached callers through the
+// same error value: `idea doctor` rendered an unreadable store as
+// "graph audit: no initiative yet — nothing to audit" and reported
+// "all checks passed", while every other command exited 1 on the same state.
+var errNoInitiatives = errors.New("no initiatives yet; run `idea new` first")
+
 func resolveInitiative(c *client, projectID string, args []string) (string, error) {
 	var inis []cliInitiative
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/initiatives", nil, &inis); err != nil {
 		return "", err
 	}
 	if len(inis) == 0 {
-		return "", fmt.Errorf("no initiatives yet; run `idea new` first")
+		return "", errNoInitiatives
 	}
 	if len(args) > 0 {
 		// Validated, not trusted. This returned args[0] unchecked, so every

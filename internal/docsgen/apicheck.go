@@ -86,6 +86,29 @@ func runAPICheck() error {
 		return err
 	}
 
+	// Structural validity, which the three axes below do not touch: they compare
+	// paths, body fields and 409s, and none of them reads a schema as a schema.
+	rawSpec, err := os.ReadFile(filepath.Join(root, specPath))
+	if err != nil {
+		return err
+	}
+	var specDoc any
+	if err := yaml.Unmarshal(rawSpec, &specDoc); err != nil {
+		return err
+	}
+	if err := schemaShapeError(checkSchemaShapes(specDoc)); err != nil {
+		return err
+	}
+	if err := declaredStatusError(checkDeclaredStatuses(specDoc)); err != nil {
+		return err
+	}
+	if err := declaredStatusError(checkRefsResolve(specDoc)); err != nil {
+		return err
+	}
+	if err := declaredStatusError(checkOperationCountClaim(string(rawSpec), specDoc)); err != nil {
+		return err
+	}
+
 	var undocumented, unimplemented []string
 	for _, op := range sortedOps(routes) {
 		if !strings.HasPrefix(op.path, apiPrefix) {

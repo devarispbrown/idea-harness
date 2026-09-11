@@ -250,7 +250,10 @@ func readDoc(path string) ([]byte, map[string]any, error) {
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, nil, fmt.Errorf("config: parse %s: %w", path, err)
+		// Typed, and project-relative: the caller turns this into a 4xx naming
+		// the file. The absolute path is the daemon's business, and the reader
+		// already knows their own project root.
+		return nil, nil, &ParseError{File: filepath.Base(path), Msg: err.Error()}
 	}
 	return data, doc, nil
 }

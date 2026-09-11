@@ -17,9 +17,22 @@ const (
 	// operationTimeout bounds one automatable step. A model-backed advance can
 	// legitimately take minutes; hanging forever is what this prevents.
 	operationTimeout = 15 * time.Minute
+
 	// maxAutomaticSteps stops a loop that keeps being handed the same action
 	// without the initiative moving.
 	maxAutomaticSteps = 50
+)
+
+// How long to wait before saying anything while an operation runs, and how
+// often after that. A demo-provider step finishes in well under a second, so
+// these never fire on the no-key path; they exist for the model-backed one,
+// where the only signal used to be a cursor.
+//
+// var, not const, so a test can drive the reporting without waiting 20 seconds
+// for it. Nothing in the product reassigns them.
+var (
+	progressNoteAfter = 20 * time.Second
+	progressNoteEvery = 30 * time.Second
 )
 
 // cmdNext drives the "continue until I'm needed" loop (§52, Track C): it runs
@@ -130,7 +143,9 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 // is an error here rather than a silent continue: the loop must not carry on
 // past a step that did not do what it said.
 func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer) error {
-	deadline := time.Now().Add(operationTimeout)
+	started := time.Now()
+	deadline := started.Add(operationTimeout)
+	nextNote := started.Add(progressNoteAfter)
 	for {
 		var op struct {
 			Status string `json:"status"`
@@ -159,6 +174,17 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 			return fmt.Errorf("%s failed — run `idea logs` for details", op.Type)
 		case "cancelled":
 			return fmt.Errorf("%s was cancelled", op.Type)
+		}
+		// A model call that hangs is indistinguishable from one that is merely
+		// slow, and both looked like `working…` forever. The provider client
+		// allows 5 minutes per attempt and the engine retries three times, so a
+		// black-holing endpoint produces ~15 minutes of total silence before
+		// anything is written anywhere the user looks.
+		if now := time.Now(); now.After(nextNote) {
+			fmt.Fprintf(stdout, "%s\n", muted(fmt.Sprintf(
+				"  still working… %s elapsed (gives up at %s; `idea cancel %s` stops it)",
+				now.Sub(started).Round(time.Second), operationTimeout, opID)))
+			nextNote = now.Add(progressNoteEvery)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s did not finish within %s; it may still be running — `idea watch` follows it, `idea cancel %s` stops it",
