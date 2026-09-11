@@ -11,6 +11,28 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **`make version-check` now proves released changelog sections have not
+  changed.** A released section is immutable — goreleaser ships `CHANGELOG.md`
+  in every archive — so editing one rewrites what shipped, and moving entries
+  out of one re-advertises old work as new. `e53bf2f` did exactly that with 29
+  lines of v0.1.0 history, and nothing saw it: no line was deleted, so a
+  lost-line or line-count check would have passed.
+
+  The baseline is the **newest** tag, not each section's own tag. That
+  distinction is load-bearing: `[0.1.0]` was legitimately corrected between
+  v0.1.0 and v0.2.0, so comparing each section to its own tag fails forever and
+  would force re-introducing a false claim to satisfy a checker. It rides
+  `version-check` rather than adding a tenth target, and `compile-no-node` now
+  checks out with `fetch-depth: 0` — without tags the rule skips, and it says so
+  rather than printing a green line. It also fails closed if the tag-side file
+  parses to no sections at all, rather than reporting success having compared
+  nothing.
+
+  **The cost, stated rather than discovered later:** a deliberate correction to
+  released history is red on every push until the next release moves the
+  baseline. That is the same trade the `[0.1.0]` operation-count fix would have
+  faced. `RELEASING.md` says what to do about it.
+
 - **`idea review <CHG-n> approve --accept-findings`** — a human may accept a
   change set the adversarial reviewer will not pass, the way `idea approve`
   already accepts a PRD and `idea approve-plan` a plan.
@@ -59,6 +81,64 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   updated for exactly that reason.
 
 ### Fixed
+
+- **`idea init` reports a failed daemon start instead of hanging.** With a
+  non-daemon process holding the port, it printed *nothing at all* for a
+  code-bound ~51 minutes: the health probe used the 60-second data-call timeout,
+  `ensureDaemon` calls it 51 times, and the loop could not tell "not ready yet"
+  from "already dead". The reason was in `daemon.log` the whole time and the
+  message only named the command that would show it, while `idea doctor`,
+  `idea status` and `idea daemon status` stalled on the same probe — the last
+  answering `daemon is not running` after a full minute.
+
+  The probe now has its own 2-second timeout, the spawned daemon is waited on so
+  an immediate exit ends the loop at once, and the failure quotes the log:
+  `the daemon exited immediately: idea: listen tcp 127.0.0.1:8787: bind: address
+  already in use; run \`idea logs\` for the full output`.
+
+  Observed **4 seconds** when the daemon exits, which is the held-port case. Be
+  precise about the other one: if the spawned daemon *hangs* instead of exiting,
+  the child-watch never fires and the bound is the loop — 50 × (2s + 100ms), or
+  **~107 seconds**. That is 1.8 minutes rather than 51, not 4 seconds.
+
+  Only the log this run produced is quoted. `daemon.log` is opened `O_APPEND`
+  and never rotated, so the last line of the file is whatever failed last —
+  possibly weeks ago, possibly a routine startup line from a run that worked.
+  The offset is recorded before the child starts, and the `idea logs` hint
+  survives, because quoting one line must not remove the route to the rest.
+
+- **An ambiguous `CHG-n` now names the candidates.** `idea next` prescribes
+  `idea apply CHG-1`; with two initiatives in one project each holding a CHG-1,
+  that command always failed with *"use the full change set id"* — and no
+  human-readable command printed one. `idea changes` resolves a single
+  initiative and prints the human id only, while apply/review/change resolve
+  project-wide, so the lister and the resolver disagreed about scope. The id
+  existed solely in `idea changes --json`, which nothing named, and `next` went
+  on exiting 0 and prescribing the same failing command.
+
+  The refusal now lists each candidate's full id with its initiative title, so
+  the message itself carries a command that works. Resolving the ambiguity by
+  preferring the newest initiative was rejected: silently applying a change set
+  from the wrong initiative is worse than refusing.
+
+  **This downgrades the live-lock rather than closing it.** `idea next` still
+  prints `idea apply CHG-1` — `workflow/next.go` returns the human id and
+  nothing here changes that — so the user must still read the refusal and copy
+  a hex id by hand. Having `next` emit the full id when the human one is
+  ambiguous is the smaller remaining half, and it is not in this change.
+
+- **A rejected oversized context doc no longer strands an initiative.**
+  `POST …/initiatives` with a doc over the size cap answered 413 having already
+  committed the initiative as `running`, with no operation row — and nothing
+  could reach it. `reconcileStaleOperations` sweeps operations, `retry` and
+  `resume` both refused, `next` answered `wait` forever, the project's attention
+  list stayed wedged, and there is no DELETE route: recovery meant hand-editing
+  SQLite. The size check now runs with the other two in the pre-validation loop,
+  making true a comment that had promised exactly this since it was written.
+
+  Anything that still fails after the row exists — a blob write, or creating the
+  operation — now marks the initiative `failed` with the reason rather than
+  leaving it `running`, because `idea retry` requires precisely that status.
 
 - **The phase rail derives Define from the judgment reason, not from an
   artifact.** `phases.ts` used execution-plan artifact presence to tell an

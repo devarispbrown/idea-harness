@@ -157,8 +157,18 @@ func runVersionCheck(want string) error {
 			have, changelogPath, released)
 	}
 
+	// Released history is checked on the same target rather than a tenth make
+	// target: skill 2.9.4 makes a documented check with no CI step its own P1
+	// gate (UNVERIFIABLE_CI_PARITY), and version-check is already the release
+	// guard that reads CHANGELOG.md.
+	histLine, err := runChangelogHistoryCheck()
+	if err != nil {
+		return err
+	}
+
 	if want == "" {
 		fmt.Printf("version-check: docs/openapi.yaml info.version = %s (>= released %s)\n", have, released)
+		fmt.Println(histLine)
 		return nil
 	}
 
@@ -181,5 +191,6 @@ func runVersionCheck(want string) error {
 			want, have, target)
 	}
 	fmt.Printf("version-check: docs/openapi.yaml info.version = %s, matching tag %s\n", have, want)
+	fmt.Println(histLine)
 	return nil
 }

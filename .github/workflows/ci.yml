@@ -24,7 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     container: golang:1.25-bookworm
     steps:
+      # fetch-depth: 0 is load-bearing, not hygiene. version-check compares every
+      # released CHANGELOG section against its content at the newest tag, and the
+      # default depth-1 checkout has no tags -- the rule would skip, in the one
+      # place it is supposed to run. Skill 2.9.4's UNVERIFIABLE_CI_PARITY makes a
+      # documented check that cannot predict CI its own P1 gate.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Assert no Node toolchain
         run: |

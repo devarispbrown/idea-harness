@@ -199,12 +199,23 @@ func (c *client) doRaw(method, path string) (string, error) {
 	return string(data), nil
 }
 
+// healthProbeTimeout bounds a liveness probe.
+//
+// healthy() used newClient()'s 60s timeout, which is right for a data call and
+// catastrophic for a probe: ensureDaemon calls healthy() once and then 50 more
+// times, so against a socket that accepts and never answers -- a non-daemon
+// process holding the port -- `idea init` printed NOTHING for a code-bound
+// 51 minutes. The same stall wedged `idea doctor`, `idea status` and
+// `idea daemon status`, which answered wrongly after a full minute.
+const healthProbeTimeout = 2 * time.Second
+
 // healthy reports whether the daemon responds.
 func healthy() bool {
 	c, err := newClient()
 	if err != nil {
 		return false
 	}
+	c.http = &http.Client{Timeout: healthProbeTimeout}
 	var out map[string]string
 	if err := c.do(http.MethodGet, "/api/v1/health", nil, &out); err != nil {
 		return false
@@ -251,12 +262,25 @@ func daemonBuild() (buildinfo.Info, bool) {
 	return out, true
 }
 
+// daemonExecutable is the seam the tests need.
+//
+// ensureDaemon spawns os.Executable(), which under `go test` is the test binary
+// -- it binds nothing, writes no bind error, exits 0, and re-runs the package's
+// tests, forking again. So the failure this function exists to report could not
+// be tested at all until the lookup was indirectable.
+var daemonExecutable = os.Executable
+
 // ensureDaemon starts a detached daemon if none is reachable.
+//
+// The daemon can fail to start for reasons the poll loop cannot distinguish from
+// "not ready yet" -- a held port being the common one. Waiting on the child
+// separates them: a daemon that exits is never going to answer, so the loop
+// stops immediately instead of polling a corpse 50 times.
 func ensureDaemon() error {
 	if healthy() {
 		return nil
 	}
-	exe, err := os.Executable()
+	exe, err := daemonExecutable()
 	if err != nil {
 		return err
 	}
@@ -269,16 +293,96 @@ func ensureDaemon() error {
 		cmd.Stderr = f
 		defer f.Close()
 	}
+	// Where this run's output begins. daemon.log is opened O_APPEND and never
+	// rotated, so without an offset the "last line" is whatever failed last --
+	// possibly weeks ago, possibly a routine INFO line from a successful start.
+	// Quoting that as the cause of this failure is worse than saying nothing.
+	logStart := logSize()
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
+
+	// Setsid makes the child a session leader, not someone else's child, so
+	// Wait still reaps it here.
+	//
+	// The channel is buffered because on the success path this goroutine
+	// outlives the call: the child is a daemon designed never to exit, so Wait
+	// blocks until the CLI process ends. Buffering keeps the send from blocking
+	// if that ever changes; it does not make the goroutine finish.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
 	for i := 0; i < 50; i++ {
+		// Checked before probing: a dead child cannot answer, and this saves a
+		// probe timeout on the common failure.
+		select {
+		case werr := <-exited:
+			return daemonStartFailed(werr, true, logStart)
+		default:
+		}
 		if healthy() {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("daemon did not become healthy; run `idea logs` for details")
+	return daemonStartFailed(nil, false, logStart)
+}
+
+// daemonStartFailed reports why the daemon did not come up, quoting the log.
+//
+// The reason was always in daemon.log and the message only named the command
+// that would show it -- so the one diagnostic that answered was the one nobody
+// was told to run, while doctor and status hung on the same stalled probe.
+func daemonStartFailed(werr error, exited bool, logStart int64) error {
+	what := "daemon did not become healthy"
+	if exited {
+		// cmd.Wait returns nil for exit status 0, so werr alone cannot
+		// distinguish "exited cleanly" from "loop ran out".
+		what = "the daemon exited immediately"
+		if werr != nil {
+			what = fmt.Sprintf("the daemon exited immediately (%v)", werr)
+		}
+	}
+	if detail := lastLogLine(logStart); detail != "" {
+		return fmt.Errorf("%s: %s; run `idea logs` for the full output", what, detail)
+	}
+	return fmt.Errorf("%s; run `idea logs` for details", what)
+}
+
+// logSize is daemon.log's length now, or 0 when it does not exist yet.
+func logSize() int64 {
+	fi, err := os.Stat(filepath.Join(daemon.DefaultStateRoot(), "daemon.log"))
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// lastLogLine returns the final non-blank line daemon.log gained after `from`,
+// which is where this run's bind failure lands. Reading the whole file instead
+// would quote a previous run's failure -- or a previous run's success -- as the
+// reason this one did not start.
+func lastLogLine(from int64) string {
+	f, err := os.Open(filepath.Join(daemon.DefaultStateRoot(), "daemon.log"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // projectIDForCwd returns the registered project id whose root_path matches cwd.
