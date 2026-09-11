@@ -215,6 +215,14 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **`docs/demo-greenfield.md` shows each command beside its output again.** The
   `--accept-findings` note had been inserted between the two.
 
+- **CI runs `make build`, the way CONTRIBUTING documents it.** It ran a bare
+  `go build ./...`, which compiles every package but skips what the target
+  actually does — embed the web UI, stamp the version through ldflags, write
+  `bin/idea`, restore the placeholder. A contributor following CONTRIBUTING
+  could be green locally on a target CI never ran. A test now asserts every
+  documented `make` target appears in a CI `run:` step, with `test` and `vet`
+  exempt because CI runs their bodies verbatim.
+
 - **`scripts/smoke.sh` no longer fails at random.** Its assertions piped a
   command into `grep -q` under `set -o pipefail`, which fails *even when the
   grep matches*: `grep -q` exits on the first match and closes the pipe, the Go
