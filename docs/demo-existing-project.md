@@ -139,7 +139,6 @@ idea apply CHG-1
 > all — the same judgment call `idea approve` makes on the PRD. A finding raised by
 > the credential sweep is not acceptable that way and still refuses.
 
-
 Then look at your repository rather than at the tool's output:
 
 ```bash

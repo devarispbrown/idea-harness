@@ -729,8 +729,8 @@ func (e *Engine) runDeterministicChecks(ctx context.Context, cs *domain.ChangeSe
 	}
 
 	appendFinding(e.checkPatchApplies(cs, files))
-	appendFinding(e.checkCommand(ctx, cs, workRoot, "build", "build/type-check passes", e.cfg.BuildCmd))
-	appendFinding(e.checkCommand(ctx, cs, workRoot, "tests", "tests pass", e.cfg.TestCmd))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "build", "build_cmd", "build/type-check passes", e.cfg.BuildCmd))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "tests", "test_cmd", "tests pass", e.cfg.TestCmd))
 	return out, blocked
 }
 
@@ -778,7 +778,13 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 // checkCommand runs a config-supplied build/test command in the isolated work
 // root and reports pass/fail. A missing command is not_applicable, never a
 // fabricated pass.
-func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoot, category, description, cmd string) domain.Finding {
+// configKey is the harness.yaml field name, which is NOT derivable from the
+// category: the category is "tests" (its value is pinned by the /checks
+// endpoint and by execute_test.go) while the field is `test_cmd`. Deriving one
+// from the other printed `set tests_cmd in harness.yaml`, and following that
+// advice literally makes `idea config validate` exit 1 with
+// `additional properties 'tests_cmd' not allowed`.
+func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoot, category, configKey, description, cmd string) domain.Finding {
 	base := domain.Finding{
 		InitiativeID: cs.InitiativeID,
 		TargetType:   "change_set",
@@ -791,7 +797,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		base.Finding = description + " — not applicable"
 		base.Evidence = "no " + category + " command configured"
 		base.Impact = "deterministic check skipped"
-		base.Recommendation = "set " + category + "_cmd in harness.yaml"
+		base.Recommendation = "set " + configKey + " in harness.yaml (top level)"
 		base.Disposition = domain.DispositionNotApplicable
 		return base
 	}

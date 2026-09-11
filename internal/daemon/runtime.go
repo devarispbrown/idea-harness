@@ -569,7 +569,7 @@ func (r *Runtime) ApproveInitiative(ctx context.Context, projectID, initiativeID
 			ini, gerr := pr.db.GetInitiative(ctx, initiativeID)
 			if gerr == nil {
 				return "", preconditionf(
-					"approve accepts a PRD that is waiting on your judgment (status=%s); `idea next` names the step this initiative is actually ready for",
+					"approve accepts a PRD that is waiting on your judgment (initiative is %s); `idea next` names the step this initiative is actually ready for",
 					ini.Status)
 			}
 			return "", preconditionf("initiative is not in a state that can be approved")
@@ -610,7 +610,7 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 		return "", preconditionf("initiative is already running")
 	}
 	if ini.Status != domain.InitiativeApproved {
-		return "", preconditionf("advance requires an approved PRD (status=%s)", ini.Status)
+		return "", preconditionf("advance requires an approved PRD (initiative is %s); `idea next` names the step this initiative is actually ready for", ini.Status)
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -687,7 +687,7 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	// would have been a fourth spelling of the same precondition.
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return "", preconditionf(
-			"execute requires an approved plan (status=%s); `idea next` names the step this initiative is actually ready for",
+			"execute requires an approved plan (initiative is %s); `idea next` names the step this initiative is actually ready for",
 			ini.Status)
 	}
 	// Claim the initiative atomically. The read-only check above gives the
@@ -966,7 +966,7 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 		return "", preconditionf("initiative is already running")
 	}
 	if ini.Status != domain.InitiativeFailed {
-		return "", preconditionf("retry requires a failed initiative (status=%s)", ini.Status)
+		return "", preconditionf("retry requires a failed initiative (initiative is %s); `idea next` names the step this initiative is actually ready for", ini.Status)
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
@@ -1112,7 +1112,7 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		return "", preconditionf("initiative is running; wait for it to finish")
 	}
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
-		return "", preconditionf("no plan to revise (status=%s)", ini.Status)
+		return "", preconditionf("no plan to revise (initiative is %s, so no execution plan exists yet); `idea next` names the step this initiative is actually ready for", ini.Status)
 	}
 	// The change-set guard, which lived only in Engine.RevisePlan -- and that
 	// runs inside the launched operation, returning InitiativeFailed, so the
@@ -1330,7 +1330,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 		return "", preconditionf("this plan is already approved")
 	}
 	if ini.Status != domain.InitiativeNeedsHumanJudgment {
-		return "", preconditionf("no plan to approve (status=%s)", ini.Status)
+		return "", preconditionf("no plan to approve (initiative is %s, so no plan is waiting on your judgment); `idea next` names the step this initiative is actually ready for", ini.Status)
 	}
 	// The reason, not just the status. All four JudgmentReasons share one, so a
 	// status-only gate let this accept a plan parked on `plan_dependencies` --
@@ -1727,9 +1727,13 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	// Clamped to max_cycles. The queue is safe only while it drains on M1's
 	// review calls; a surplus entry outlives them and lands on the plan review,
 	// or -- via `idea execute`, which the API accepts from a plan-blocked
-	// initiative -- on the change-set review, where a blocking finding cannot be
-	// cleared by anything the CLI can do. That is the exact state this design
-	// chose a queue over a flag to avoid, so it is enforced rather than trusted.
+	// initiative -- on the change-set review, where it parks the initiative on a
+	// review the run did not intend to block. That is the exact state this
+	// design chose a queue over a flag to avoid, so it is enforced rather than
+	// trusted. (It is no longer unrecoverable: `idea review <CHG-n> approve
+	// --accept-findings` clears the reviewer's own findings, as the comment
+	// above demoProvider says. This sentence used to claim otherwise and
+	// survived the fix that made it false.)
 	n := h.Demo.BlockReviewCycles
 	if max := h.Review.MaxCycles; max > 0 && n > max {
 		n = max

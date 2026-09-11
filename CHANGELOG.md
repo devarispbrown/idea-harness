@@ -82,6 +82,154 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **`idea retry` waits, and reports what the retry reached.** It posted and
+  returned, so retrying against an unchanged cause — the same 401, the same
+  unreachable `base_url` — printed `✓ retry started` and exited 0 while the
+  operation failed half a second later. The tick said the opposite of what
+  happened, on the command whose whole job is recovering from a failure.
+  `--no-wait` keeps the old behaviour.
+
+- **`idea reopen-phase` exists.** `idea revise` has prescribed it since audit 7,
+  in the two states where revising the PRD would discard work below it, and the
+  verb was never added: the route was registered and `docs/api.md` documented
+  it, so following the advice answered `unknown command "reopen-phase"`. A
+  misspelled phase is now refused locally, naming the three the daemon accepts,
+  instead of being sent on to become a `400 invalid body`.
+
+- **`idea doctor` no longer renders an unreadable store as an empty one.**
+  `resolveInitiative` returned a transport failure and "no initiatives yet"
+  through the same error, so doctor printed `graph audit: no initiative yet —
+  nothing to audit` over a store every other command exited 1 on, and reported
+  "all checks passed".
+
+- **`idea doctor` no longer reports "not running" for a daemon that is
+  running.** Its probe builds a client first, which fails when the token file is
+  gone — so after a state-directory wipe doctor said the daemon was down while
+  `curl` got a 200 from it and `idea daemon status` said running. Three answers
+  to one question, and the designated diagnostic had the wrong one. `/health` is
+  unauthenticated, so it is now asked directly.
+
+- **A long model call reports elapsed time.** The provider client allows five
+  minutes per attempt and the engine retries three times, so an endpoint that
+  accepts and never answers produced ~15 minutes in which `working…` was the
+  only output — no counter, no timeout, nothing to separate a slow call from a
+  dead one, while `idea status` said `running` and `idea watch` needs a TTY.
+
+- **`idea reviews` recommends a `harness.yaml` key that exists.** It said `set
+  tests_cmd in harness.yaml`, built by concatenating the finding category with
+  `_cmd`; the field is `test_cmd`, so following it literally made `idea config
+  validate` exit 1 with `additional properties 'tests_cmd' not allowed`. The
+  category is pinned by the `/checks` filter and could not simply be renamed,
+  so the config key is now passed separately, and a test ties every such
+  recommendation to the schema that validates the file.
+
+- **Six precondition refusals say what to run instead, and whose status they
+  are reporting.** `no plan to approve (status=approved)` was reporting the
+  *PRD's* status and read as though the plan were approved.
+
+- **BREAKING: `idea status` exits non-zero when the newest initiative has
+  failed, and `--json` carries `failure_reason`.** It printed `● failed` with
+  the provider's full error and returned 0, so a script running it as a health
+  check could not tell — and the machine path was strictly less informative
+  than the human one about the only thing that matters. **Any script that
+  branched on `idea status`'s exit code saw success unconditionally, and any
+  script that relied on that will now stop.**
+
+  Two deliberate limits. `needs_human_judgment` is *not* a failure: waiting on a
+  person is the loop working, and treating it as an error would make the whole
+  judgment path exit non-zero. And the code reflects only the **newest**
+  initiative — the one every other command means by "the initiative" — because
+  scanning all of them made the exit sticky: one abandoned experiment gated the
+  project's overview command forever, with nothing a user could do to clear it.
+
+  The full exit-code taxonomy remains deferred (audit 8 / E2).
+
+- **A malformed `harness.yaml` answers 422, not 404, and never with an absolute
+  path.** `config.Load` runs while resolving the project, so its failure reached
+  every project-scoped route as a store miss — neither the kind nor the
+  reference `NotFound` promises — carrying the absolute path of the file, which
+  `InternalError` promises never reaches a client. 500 would be the wrong
+  repair: the request cannot succeed until the user edits the file.
+
+  Both malformations, not just the syntactic one: YAML that does not parse, and
+  YAML that parses and the schema rejects. The second is the likelier — a first
+  version of this fix covered only syntax errors, so `tests_cmd`, literally the
+  key this release's own `idea reviews` fix stopped recommending, still 404'd
+  with raw jsonschema text. Reachable on a cold daemon; a running one caches its
+  config, which is why every "export your key" instruction ends in `idea daemon
+  stop`.
+
+- **`idea retry` and `idea reopen-phase` do not exit 0 with the outcome
+  unknown.** Both waited and then, if reading the next step failed, printed
+  `watch progress:` and returned success — the same "reported a start as a
+  result" they were changed to stop doing, one layer up.
+
+- **`docs/openapi.yaml`'s `updateExecutors` 200 is valid JSON Schema again.**
+  `required: [status]` was indented one level too far, landing inside
+  `properties:` — so it declared a property *named* `required` whose value was a
+  list, and the actual constraint was gone. `make api-check` now walks every
+  `properties` node.
+
+- **The spec declares the statuses its handlers emit.** Ten of thirty-six
+  non-GET operations did not declare 500, though `writeErr` promotes any storage
+  failure to it, and `createInitiative` did not declare 404. `createProject` has
+  no path parameter and genuinely cannot 404, which is the one stated exemption.
+
+- **Every operation declares a `default` response.** `403` (host/origin guard)
+  and `405` (wrong method, with an `Allow` header) are emitted on all 81
+  operations and were declared on none — a deliberate choice the spec argues
+  for, but one that leaves an undeclared status as an unhandled branch in most
+  generated clients. `default` gives them somewhere to go without repeating two
+  responses 81 times. The per-operation `404`, `422` and `500` stay literal: a
+  generator cannot turn a catch-all into "this operation answers 404 for a bad
+  id", and the guard requires the literal keys for that reason.
+
+- **The spec's own operation count is right.** It said 84 as the justification
+  for not declaring 404 and 405 per operation; there are 81. An argument about a
+  set that miscounts its subject is the weakest kind, and prose is exactly what
+  rots — so the number is now checked.
+
+- **The graph endpoints say that human codes do not resolve.** `impact-counts`'
+  worked example was `requirement:req-1`, a form that returns `0` rather than an
+  error — indistinguishable from a node with no edges. `ChangeSetId` promises
+  both forms resolve; `GraphNodeId` said only "Graph node id."
+
+- **Both config `PUT`s say they are not round-trippable from their `GET`.**
+  `GET /providers` carries `demo`, `models` and `git_commit` beside the writable
+  fields, so echoing it back answers `400 json: unknown field "demo"`; and
+  `GET /executors` is a catalog of all four executor kinds rather than a
+  projection of the config, so there is no round trip to perform at all.
+
+- **`--accept-findings` is documented where the magic path is.** It reached the
+  code and both demo guides and neither `README.md` nor `docs/quickstart.md` —
+  the two documents most readers actually follow — so a reader on the keyed path
+  who hit a blocking finding had no documented way past it.
+
+- **`internal/daemon/runtime.go` no longer asserts that a blocking change-set
+  finding cannot be cleared.** It can, and has been able to since audit 7. The
+  ledger row pinning that sentence was green over it, because its predicate
+  contained a two-character `\n` that could never match; `ledger-check` now
+  rejects an escape sequence in a predicate, since an unmatchable `present:` is
+  indistinguishable from a fixed defect.
+
+- **`docs/demo-greenfield.md` shows each command beside its output again.** The
+  `--accept-findings` note had been inserted between the two.
+
+- **`scripts/smoke.sh` no longer fails at random.** Its assertions piped a
+  command into `grep -q` under `set -o pipefail`, which fails *even when the
+  grep matches*: `grep -q` exits on the first match and closes the pipe, the Go
+  binary is usually still writing, the next write gets EPIPE, and Go re-raises
+  SIGPIPE on stdout — so the process dies with 141 and `pipefail` adopts that as
+  the pipeline's status. The `||` branch then printed a message saying the
+  output was wrong when it was not.
+
+  Measured against the real binary on a preserved failing state: 7 failures in
+  150 runs of `idea reviews | grep -q 'Review findings'`, with all three
+  findings present and printed correctly whenever the command ran on its own —
+  and 0 in 150 for the capture-then-grep shape now used. That 4.7% matches the
+  rate observed across 33 full runs. This is a test-harness defect, not a
+  product one, but it made every other guard's green worth less.
+
 - **`idea init` reports a failed daemon start instead of hanging.** With a
   non-daemon process holding the port, it printed *nothing at all* for a
   code-bound ~51 minutes: the health probe used the 60-second data-call timeout,

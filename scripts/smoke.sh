@@ -48,14 +48,66 @@ wait_for() {
   done
 }
 
+# assert_out runs a command, then greps its combined output — instead of piping
+# it into grep.
+#
+# `cmd | grep -q needle` under `set -o pipefail` fails **even when the grep
+# matches**, and that is the whole of this file's intermittent-failure history.
+#
+# grep -q exits on the first match and closes the pipe. The Go binary is usually
+# still writing -- `idea reviews` emits a heading and then three findings, one
+# write(2) each -- so the next write gets EPIPE, and Go re-raises SIGPIPE on
+# stdout rather than ignoring it. The process dies with 141, pipefail adopts
+# that as the pipeline's status, and the `||` branch fires and prints a message
+# saying the output was wrong when it was not.
+#
+# Measured against the real binary on a preserved failing state: 7 failures in
+# 150 runs of `idea reviews | grep -q 'Review findings'`, with all three
+# findings present in SQLite and printed correctly every time the command was
+# run on its own. The same 150 runs in the shape below: 0.
+#
+# So: run the command, keep its output and status, then grep the string. Prints
+# both on failure, plus a retry, because the two failures this replaced were
+# undiagnosable from their own output.
+#
+# The `wait_for` predicates below still pipe into grep -q, deliberately: they
+# return a status the poll loop reads, a spurious false costs one more
+# iteration, and the loop has its own timeout.
+assert_out() {
+  local label="$1" needle="$2"; shift 2
+  # `out=$(cmd); rc=$?` aborts here under `set -e` before anything is reported --
+  # which is the case this helper exists for. An assignment with `||` is exempt.
+  local out rc=0
+  out=$("$@" 2>&1) || rc=$?
+  if printf '%s' "$out" | grep -qF -- "$needle"; then return 0; fi
+  echo "ERROR: $label"
+  echo "  command: $*"
+  echo "  exit status: $rc"
+  echo "  looked for: $needle"
+  echo "  output:"
+  printf '%s\n' "$out" | sed 's/^/    /'
+  # `|| true`: the retry is diagnostic output, and a second failure must not
+  # abort before the exit below -- which would report the command's status
+  # instead of the assertion's.
+  echo "  retry:"
+  { "$@" 2>&1 | sed 's/^/    /'; } || true
+  exit 1
+}
+
 daemon_running() { "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; }
 # The two predicates below are negative ("the output no longer says X"), so they
 # must first establish that there IS output: a command that errored or printed
 # nothing would otherwise satisfy them on the first 0.1s poll and let the script
 # race ahead of the daemon — something the fixed sleeps they replaced could not do.
 initiative_left_running() {
+  # `|| true`, not `|| return 1`: `idea status` exits non-zero when the newest
+  # initiative has FAILED, and a failed initiative has certainly left the
+  # running state. Treating that as "not yet" made wait_for poll to its timeout
+  # and report `timed out waiting for initiative to leave the running state`
+  # over an initiative that had already failed -- turning a legible failure into
+  # a false timeout at the three call sites that use this.
   local out
-  out=$("$ROOT/bin/idea" status 2>/dev/null) || return 1
+  out=$("$ROOT/bin/idea" status 2>/dev/null) || true
   [ -n "$out" ] || return 1
   ! printf '%s' "$out" | grep -q running
 }
@@ -224,8 +276,7 @@ wait_for "the existing-project initiative to leave running" 30 initiative_left_r
 
 echo "--- DOCS (the source file is attached) ---"
 "$ROOT/bin/idea" docs
-"$ROOT/bin/idea" docs 2>/dev/null | grep -q "billing.py" ||
-  { echo "ERROR: --doc did not attach src/billing.py"; exit 1; }
+assert_out "--doc did not attach src/billing.py" "billing.py" "$ROOT/bin/idea" docs
 
 echo "--- NEXT --until-human ---"
 "$ROOT/bin/idea" next --until-human
@@ -319,10 +370,8 @@ echo "idea next names the commands that move it"
 
 # `grep -q .` would match "No open findings." -- cmdReviews prints that and
 # returns nil -- so this greps for the heading it only prints when there are some.
-"$ROOT/bin/idea" reviews | grep -q 'Review findings' ||
-  { echo "ERROR: idea reviews shows no findings on a blocked review"; exit 1; }
-"$ROOT/bin/idea" decisions | grep -q 'No decisions yet' ||
-  { echo "ERROR: idea decisions is not empty; the pointer test below is meaningless"; exit 1; }
+assert_out "idea reviews shows no findings on a blocked review" "Review findings" "$ROOT/bin/idea" reviews
+assert_out "idea decisions is not empty; the pointer test below is meaningless" "No decisions yet" "$ROOT/bin/idea" decisions
 echo "the findings are under idea reviews, and idea decisions is empty — as the defect described"
 
 echo "--- APPROVE ---"
@@ -347,8 +396,7 @@ JREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 [ -n "$JREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
 echo "active requirement after 3 revise cycles: $JREQ"
 "$ROOT/bin/idea" verify "$JREQ" --pass
-"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
-  { echo "ERROR: an approved-with-findings initiative did not reach complete"; exit 1; }
+assert_out "an approved-with-findings initiative did not reach complete" "initiative complete" "$ROOT/bin/idea" next
 echo "a PRD approved with its findings accepted reaches complete"
 
 # And the fourth judgment reason, which needs no provider change: failing a
@@ -463,8 +511,7 @@ printf '%s' "$PR_OUT" | grep -q 'plan review raised blocking findings' ||
   { echo "ERROR: idea next did not report the plan-review reason"; exit 1; }
 printf '%s' "$PR_OUT" | grep -q 'idea reviews' ||
   { echo "ERROR: idea next did not name where the findings are"; exit 1; }
-"$ROOT/bin/idea" reviews | grep -q 'Review findings' ||
-  { echo "ERROR: idea reviews shows nothing on a blocked plan review"; exit 1; }
+assert_out "idea reviews shows nothing on a blocked plan review" "Review findings" "$ROOT/bin/idea" reviews
 echo "both remaining judgment reasons reported, each with its own instruction"
 
 # And it finishes — escaping the plan review with approve-plan specifically.
@@ -490,8 +537,7 @@ wait_for "the plan-judgment change set to read applied" 30 chg1_applied
 PREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 [ -n "$PREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
 "$ROOT/bin/idea" verify "$PREQ" --pass
-"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
-  { echo "ERROR: a plan revised out of both judgment states did not reach complete"; exit 1; }
+assert_out "a plan revised out of both judgment states did not reach complete" "initiative complete" "$ROOT/bin/idea" next
 echo "a plan revised out of both judgment states reaches complete"
 
 echo "=== PLAN-JUDGMENT PASS OK ==="
@@ -561,8 +607,7 @@ wait_for "the non-converging change set to read applied" 30 chg1_applied
 NREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 [ -n "$NREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
 "$ROOT/bin/idea" verify "$NREQ" --pass
-"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
-  { echo "ERROR: an accepted non-converging plan did not reach complete"; exit 1; }
+assert_out "an accepted non-converging plan did not reach complete" "initiative complete" "$ROOT/bin/idea" next
 echo "an accepted non-converging plan reaches complete"
 
 echo "=== NON-CONVERGING PLAN REVIEW PASS OK ==="
@@ -623,8 +668,7 @@ wait_for "the accepted change set to read applied" 30 chg1_applied
 CREQ=$("$ROOT/bin/idea" verify 2>&1 | grep -oE 'REQ-[0-9]+' | head -1 || true)
 [ -n "$CREQ" ] || { echo "ERROR: could not find the active requirement"; exit 1; }
 "$ROOT/bin/idea" verify "$CREQ" --pass
-"$ROOT/bin/idea" next | grep -q 'initiative complete' ||
-  { echo "ERROR: an accepted change set did not reach complete"; exit 1; }
+assert_out "an accepted change set did not reach complete" "initiative complete" "$ROOT/bin/idea" next
 echo "an accepted change set reaches complete"
 
 echo "=== NON-CONVERGING CHANGE-SET REVIEW PASS OK ==="

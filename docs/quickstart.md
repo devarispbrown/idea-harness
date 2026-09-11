@@ -201,6 +201,12 @@ Change sets are gated by a reviewer run and then by you, the human — the verdi
 model's. `approve` records your
 decision (you can also request changes or reject).
 
+With a real model the reviewer can raise a blocking finding, and `approve` then refuses. `idea
+reviews` lists what it found, and `idea review CHG-1 approve --accept-findings` signs off the
+reviewer's own findings — the same judgment call `idea approve` makes on the PRD. A finding from
+the credential sweep, the sandbox guard or a digest mismatch carries a deny code and still refuses;
+that is the line between "the reviewer disagrees with you" and "this change set is unsafe".
+
 ```bash
 idea apply CHG-1
 ```

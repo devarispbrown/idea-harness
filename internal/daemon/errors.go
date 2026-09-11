@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -17,7 +18,7 @@ import (
 //	$ idea apply CHG-99
 //	idea: sql: no rows in result set        (exit 1)
 //
-// Four cases, in order:
+// Five cases, in order:
 //
 //   - A store miss is the caller's mistake: 404 with the store's message, which
 //     names the kind and the reference asked for.
@@ -56,6 +57,18 @@ func (s *Server) writeErr(w http.ResponseWriter, status int, err error) {
 	var pre *PreconditionError
 	if errors.As(err, &pre) {
 		writeError(w, http.StatusConflict, pre.Error())
+		return
+	}
+	// A malformed harness.yaml is the caller's file, not the daemon's fault.
+	// It used to reach here untyped, so EnsureProject's failure was reported as
+	// 404 on all 74 project-scoped routes -- neither a store miss nor a message
+	// naming a kind and a reference, and carrying an absolute filesystem path
+	// that the InternalError contract below promises never reaches a client.
+	// 422 rather than 500: the request cannot succeed until the user edits the
+	// file, and telling a client to retry would be wrong.
+	var cfgErr *config.ParseError
+	if errors.As(err, &cfgErr) {
+		writeError(w, http.StatusUnprocessableEntity, cfgErr.Error())
 		return
 	}
 	if store.IsStorageFailure(err) {

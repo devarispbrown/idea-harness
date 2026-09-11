@@ -178,6 +178,29 @@ func evalPredicate(root, pred string) (defectPresent, checkable bool, err error)
 	// Only the first two colons are separators; the literal may contain any
 	// number of its own, which docs full of `http://` and `file:line` do.
 	relPath, literal, ok := strings.Cut(rest, ":")
+
+	// An escape sequence in the LITERAL is always a mistake, and a silent one.
+	// A row wrote `cannot be cleared by anything the CLI\ncan do` meaning "the
+	// source wraps here"; normalizeWrapping collapses REAL newlines, so those
+	// two characters could never match. The `present:` clause was permanently
+	// false, the row passed as fixed, and the false claim it pinned stayed in
+	// the tree for a round.
+	//
+	// The literal only, not the path: a predicate pinning a real source line
+	// that contains `\n` -- `fmt.Fprintf(stdout, "%s\n", ...)` is everywhere in
+	// this codebase -- is legitimate and must not be rejected. Checking `rest`
+	// banned those outright.
+	//
+	// This closes one way to be unmatchable, not the class: a typo'd literal is
+	// equally unmatchable and equally green. Recorded in deferred.md rather
+	// than claimed closed.
+	if strings.Contains(literal, `\n`) || strings.Contains(literal, `\t`) {
+		return false, false, fmt.Errorf(
+			"predicate literal %q contains an escape sequence.\n"+
+				"    Source wrapping is normalised already, so write it on one line; as written it\n"+
+				"    can never match, and an unmatchable `present:` is indistinguishable from a\n"+
+				"    fixed defect", literal)
+	}
 	if !ok || strings.TrimSpace(literal) == "" {
 		return false, false, fmt.Errorf("predicate %q needs <path>:<literal>", pred)
 	}

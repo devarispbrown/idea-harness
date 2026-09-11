@@ -357,3 +357,30 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 func sortedNames(set map[string]bool) []string { return sortedKeys(set) }
+
+// ParseError is a malformed config file: the user's YAML, not the daemon's
+// fault. Both shapes it can take — YAML that does not parse, and YAML that
+// parses but the schema rejects — because the second is the more common one and
+// they are the same problem to a caller: this file has to be edited before any
+// request against this project can succeed.
+//
+// It used to travel as a bare fmt.Errorf, so every project-scoped handler
+// mapped it to 404 — `config.Load` runs inside EnsureProject, and a failure
+// there is indistinguishable from "no such project" to the caller. That
+// violated the spec's own NotFound contract ("the message names the kind and
+// the reference that was asked for") and leaked an absolute filesystem path
+// into the response, which InternalError explicitly promises never happens.
+//
+// 500 is the wrong repair: internal/daemon/errors.go reserves it for "the
+// daemon's problem", and telling a client to retry a syntax error in a file
+// only the user can fix is worse than the 404 was. So this carries enough for a
+// 4xx that names the file, the line, and nothing else.
+type ParseError struct {
+	// File, relative to the project root — never the absolute path.
+	File string
+	Msg  string
+}
+
+func (e *ParseError) Error() string {
+	return "config: " + e.File + ": " + e.Msg
+}

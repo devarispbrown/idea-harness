@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,7 +124,8 @@ func commands() []command {
 		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, maxPositional: 3, run: cmdTrace, inHelp: true},
 		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, maxPositional: 1, run: cmdDiff, inHelp: true},
 		{names: []string{"execute"}, usage: "execute", summary: "run the next ready task → change set", flags: flagSpec{}, maxPositional: 1, run: cmdExecute, inHelp: true},
-		{names: []string{"retry"}, usage: "retry [<initiative>] [--model <provider/model>]", summary: "re-run a failed initiative", flags: flagSpec{"--model": flagValue}, maxPositional: 1, run: cmdRetry, inHelp: true},
+		{names: []string{"reopen-phase"}, usage: "reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait]", summary: "reopen a design phase", flags: flagSpec{"--no-wait": flagBool}, maxPositional: 2, run: cmdReopenPhase, inHelp: true},
+		{names: []string{"retry"}, usage: "retry [<initiative>] [--model <provider/model>] [--no-wait]", summary: "re-run a failed initiative", flags: flagSpec{"--model": flagValue, "--no-wait": flagBool}, maxPositional: 1, run: cmdRetry, inHelp: true},
 		{names: []string{"changes"}, usage: "changes", summary: "list change sets", flags: jsonFlag, maxPositional: 1, run: cmdChanges, inHelp: true},
 		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, maxPositional: 1, run: cmdChange, inHelp: true},
 		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, maxPositional: 1, run: cmdApply, inHelp: true},
@@ -726,6 +728,16 @@ func cmdDoctor(stdout io.Writer) error {
 			daemonInfo, buildinfo.Get())
 	case daemonUp:
 		fmt.Fprintln(stdout, ok("✓ daemon")+" "+muted("running"))
+	case daemonAnswersHealth():
+		// healthy() returned false because newClient() could not read the token,
+		// not because nothing answered. Reporting "not running" here sent people
+		// to restart a daemon that was serving fine, while `idea daemon status`
+		// said running and every other command said `unauthorized`.
+		fmt.Fprintln(stdout, warn("✗ daemon")+" "+muted("running, but this CLI has no token for it"))
+		fmt.Fprintln(stdout, muted("  The state directory is gone or unreadable; the daemon still holds the token it read at start."))
+		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
+			muted(" — or, if its pidfile went with the state directory, ")+bold("pkill -f 'idea daemon'")+muted("."))
+		daemonProblem = fmt.Errorf("a daemon is running but this CLI has no token for it; stop it and let the next command restart it")
 	default:
 		fmt.Fprintln(stdout, muted("• daemon: not running (auto-starts on first command)"))
 	}
@@ -847,9 +859,18 @@ func cmdDoctor(stdout io.Writer) error {
 				// missing initiative skips the check rather than failing the
 				// command -- this is the health command someone runs when
 				// things are already wrong.
-				if iniID, ierr := resolveInitiative(c, projectID, nil); ierr != nil {
+				iniID, ierr := resolveInitiative(c, projectID, nil)
+				switch {
+				case errors.Is(ierr, errNoInitiatives):
 					fmt.Fprintln(stdout, muted("• graph audit: no initiative yet — nothing to audit"))
-				} else {
+				case ierr != nil:
+					// Not an absence. Listing initiatives failed, which means the
+					// store or the daemon is unhealthy -- the condition doctor
+					// exists to report. Rendering it as "no initiative yet" is how
+					// an unreadable store produced "all checks passed".
+					graphOK = false
+					fmt.Fprintf(stdout, "%s %v\n", errText("✗ graph audit:"), ierr)
+				default:
 					var findings []cliFinding
 					if derr := c.do("GET", initiativeResource(projectID, iniID, "doctor"), nil, &findings); derr != nil {
 						graphOK = false

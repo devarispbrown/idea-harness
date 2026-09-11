@@ -218,7 +218,10 @@ Buttons follow the status:
 | `applied` | **Revert** — which opens a confirmation card explaining that this restores the exact pre-apply bytes and leaves git history untouched |
 | `conflicted` | **Retry apply**, **Reject** |
 
-These are the same gates as `idea review`, `idea apply` and `idea revert`.
+These are the same gates as `idea review`, `idea apply` and `idea revert` — including the refusal:
+an adversarial reviewer's blocking finding stops **Approve**, and the UI has no equivalent of
+`idea review <CHG-n> approve --accept-findings`, so clearing one is a CLI action today. A finding
+from the credential sweep carries a deny code and is not acceptable either way.
 
 A change set rejected by a deterministic boundary renders instead as a **SYSTEM DENY** card carrying
 the deny code: it cannot be approved, overridden or applied, and the task is re-planned.

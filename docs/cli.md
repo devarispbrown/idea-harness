@@ -40,7 +40,8 @@ if this file has drifted.
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute` | run the next ready task → change set | none | takes no flags |
-| `idea retry [<initiative>] [--model <provider/model>]` | re-run a failed initiative | `--model` | no |
+| `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
+| `idea retry [<initiative>] [--model <provider/model>] [--no-wait]` | re-run a failed initiative | `--model`, `--no-wait` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
 | `idea apply <id>` | apply an approved change set | none | takes no flags |
@@ -89,9 +90,15 @@ The **`--json`** column is the contract:
   a message pointing at `idea tasks --json` rather than ignoring the flag.
 - **`—`** — a documentation row describing a subcommand, listed under its parent.
 
+**`idea status` exits non-zero when it prints a failed initiative.** The reason travels with it,
+on both paths — rendered for a human, and as `failure_reason` in `--json` — so a script can run it
+as a health check and say why. An initiative merely waiting on your judgment is **not** a failure
+and still exits 0: that is the loop working, and `idea next` names what it is waiting for.
+
 **`--json` is the wire response, not the rendered view.** The two are not the same shape, and the
 human form is usually the richer one: `idea status --json` emits the initiative list —
-`[{"id","title","status"}]` — while the rendered form additionally composes requirement, decision
+`[{"id","title","status"}]`, plus `"failure_reason"` on a failed initiative — while the rendered
+form additionally composes requirement, decision
 and question counts and the next-move guidance, each from a different endpoint. So a script cannot
 assume every number it can see is in the JSON. The shapes themselves are
 [`docs/openapi.yaml`](openapi.yaml)'s response schemas, by the endpoint each command calls

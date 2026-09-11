@@ -161,6 +161,12 @@ idea verify REQ-1 --pass               # record pass evidence; repeat per requir
 idea next                              # → "✓ initiative complete"
 ```
 
+> **If `idea review CHG-1 approve` refuses.** With a real model the adversarial reviewer can raise
+> a blocking finding on the change set, and approve then refuses rather than waving it through.
+> `idea reviews` lists what it found, and `idea review CHG-1 approve --accept-findings` signs off
+> the reviewer's own findings — the same judgment call `idea approve` makes on the PRD. A finding
+> from the credential sweep is not acceptable that way and still refuses.
+
 > **Export before `idea init`, and set a model only if you have its key.** The daemon reads your
 > environment once, when it starts — and `idea init` starts it — so a key exported afterwards is
 > invisible to it. If you forget, `idea daemon stop` makes the next command restart it with the key.

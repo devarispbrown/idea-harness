@@ -130,6 +130,7 @@ paths:
         they hold no token for. Every other operation requires the token.
       security: []
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The daemon is up.
           content:
@@ -149,6 +150,7 @@ paths:
       operationId: getVersion
       summary: Build stamp
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The binary's version, VCS revision and dirty-tree flag.
           content:
@@ -175,6 +177,7 @@ paths:
             maximum: 2000
             default: 100
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The tail of `daemon.log`.
           content:
@@ -209,6 +212,7 @@ paths:
                   description: Absolute path of the workspace root.
               required: [root_path]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The project id. This is a 200, not a 201.
           content:
@@ -230,6 +234,7 @@ paths:
       operationId: listProjects
       summary: List registered projects
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Every registry entry with its root path.
           content:
@@ -248,12 +253,14 @@ paths:
       operationId: getProject
       summary: One project's registry record
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The registry record.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProjectRecord" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/initiatives:
@@ -296,6 +303,7 @@ paths:
                     required: [content]
               required: [title]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202":
           description: Accepted. The initiative exists; the pipeline runs asynchronously.
           content:
@@ -312,6 +320,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "500": { $ref: "#/components/responses/InternalError" }
     get:
@@ -320,6 +330,7 @@ paths:
       summary: List the project's initiatives
       description: Ordered by creation, oldest first.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The initiatives in this project.
           content:
@@ -328,6 +339,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Initiative" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -340,12 +352,14 @@ paths:
       operationId: getInitiative
       summary: One initiative
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The initiative, including its status and any failure reason.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Initiative" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`initiative not found`, or the project is unknown."
           content:
@@ -364,12 +378,14 @@ paths:
         Assembled deterministically from relational state - never LLM narration. Requirements whose
         status is `removed` are omitted.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The projection.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Understanding" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -390,12 +406,14 @@ paths:
         it never loads change sets and can never name one. Use `/next` when you want a command to
         execute; the two legitimately disagree.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The guidance projection.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Guidance" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -432,6 +450,7 @@ paths:
         one, so an initiative moved to `failed` by a status transition alone has none. Clients must
         render the no-reason case rather than printing an empty string.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The next action token.
           content:
@@ -445,6 +464,7 @@ paths:
                     description: Present only when `action` is `failed`, and may be empty even then.
                 required: [action]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -463,12 +483,14 @@ paths:
 
         The cursor is project-scoped even though this read is addressed by initiative.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The grouped changes and the sequence they run through.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Changed" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -497,6 +519,7 @@ paths:
                   description: The sequence echoed from `/changed`.
               required: [through]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The cursor that was stored.
           content:
@@ -512,6 +535,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -525,6 +549,7 @@ paths:
       summary: Resume a paused or interrupted initiative
       description: Synchronous. Returns the status the initiative resumed into.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The new status.
           content:
@@ -536,6 +561,7 @@ paths:
                 required: [status]
         "409": { $ref: "#/components/responses/Conflict" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -555,6 +581,7 @@ paths:
         write with no check at all, which released the claim a running `advance` held and let two
         advances run concurrently on one initiative.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Approved.
           content:
@@ -566,6 +593,7 @@ paths:
                 required: [status]
         "409": { $ref: "#/components/responses/Conflict" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500":
           description: |
@@ -584,8 +612,10 @@ paths:
       operationId: reviseInitiative
       summary: Apply resolved decisions and answers, then regenerate the PRD
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -599,8 +629,10 @@ paths:
       operationId: advanceInitiative
       summary: Run the Design to Execution Plan pipeline
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -625,8 +657,11 @@ paths:
         dependency cycle, which no human can sign off because it can never be scheduled.
         `revise-plan` is the route out of that last one.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
@@ -640,8 +675,11 @@ paths:
       summary: Regenerate the execution plan and its review
       description: Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
@@ -655,6 +693,7 @@ paths:
       summary: Run the next ready task through the executor
       description: Produces a change set. The response names the executor the run will use.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202":
           description: Accepted.
           content:
@@ -666,6 +705,7 @@ paths:
                   executor_kind: { $ref: "#/components/schemas/ExecutorKind" }
                 required: [operation_id, executor_kind]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -716,6 +756,7 @@ paths:
                   description: Records the requirement as waived. Same one-disposition rule as `fail`.
                 note: { type: string }
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The status after the gate, plus coverage per requirement.
           content:
@@ -734,6 +775,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -748,8 +790,10 @@ paths:
       summary: Ask the model to propose answers for the open questions
       description: Read the results back from `GET /initiatives/{id}/suggested-answers`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -768,6 +812,7 @@ paths:
         Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`) from the
         node towards its sources, bounded in depth. Both `type` and `id` are required.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The provenance edges, nearest first.
           content:
@@ -777,6 +822,7 @@ paths:
                 items: { $ref: "#/components/schemas/TraceItem" }
         "400": { $ref: "#/components/responses/TraceParamsRequired" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -791,6 +837,7 @@ paths:
       operationId: getImpact
       summary: Dependents and staleness for one graph node
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The dependent edges, each with a staleness classification.
           content:
@@ -800,6 +847,7 @@ paths:
                 items: { $ref: "#/components/schemas/ImpactItem" }
         "400": { $ref: "#/components/responses/TraceParamsRequired" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -814,6 +862,7 @@ paths:
       operationId: getTrace
       summary: Provenance and impact in one response
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Both directions at once.
           content:
@@ -830,6 +879,7 @@ paths:
                 required: [why, impact]
         "400": { $ref: "#/components/responses/TraceParamsRequired" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -846,12 +896,14 @@ paths:
         rather than diffing rendered markdown. Not a source diff - that is
         `GET /change-sets/{id}/diff`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The structured diff.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SemanticDiff" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -867,6 +919,7 @@ paths:
         The initiative's operation history, newest first (`ORDER BY created_at DESC`). `GET /operations/{id}` polls one
         operation; this lists them all, which is what a UI needs to show what has run.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The operations.
           content:
@@ -875,6 +928,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Operation" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/artifacts/{id}/comments:
@@ -887,6 +941,7 @@ paths:
       summary: Comments on one artifact version
       description: Comments are attached to a specific immutable version, not to the artifact family.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The comments.
           content:
@@ -895,6 +950,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/DocComment" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
     post:
@@ -916,6 +972,7 @@ paths:
                 section: { type: string }
                 text: { type: string }
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "201":
           description: The stored comment.
           content:
@@ -927,6 +984,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/comments/{id}/promote:
@@ -946,6 +1004,7 @@ paths:
         becomes something the workflow will surface rather than something buried in a margin. The
         comment records the question it produced in `promoted_question_id`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The question the comment became.
           content:
@@ -957,6 +1016,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/impact-counts:
@@ -977,9 +1037,16 @@ paths:
           required: true
           schema: { type: string }
           description: |
-            Comma-separated `type:id` pairs, e.g. `requirement:req-1,task:task-2`. An entry that is
-            not `type:id` is a 400.
+            Comma-separated `type:id` pairs, e.g.
+            `requirement:47093208274b1f5d9e3a6c8b2f4d1e07`. An entry that is not `type:id` is a 400.
+
+            **The id is the opaque graph id, not the human code.** `requirement:REQ-1` is accepted
+            and answers `0` — indistinguishable from a node that genuinely has no edges. Resolve the
+            code first via the initiative's `/requirements`, `/tasks` or `/decisions` listing, which
+            is what the CLI and the web UI both do. Unlike `ChangeSetId`, a human code does not
+            resolve here.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Dependent count per node.
           content:
@@ -996,6 +1063,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task:
@@ -1015,12 +1083,14 @@ paths:
         Creates a task whose job is to verify the named requirement, so the plan carries the work of
         proving a requirement rather than leaving verification to be remembered.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The created task.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/retry:
@@ -1049,6 +1119,7 @@ paths:
                   type: string
                   description: "`provider/model`, e.g. `anthropic/claude-sonnet-4-5-20250929`."
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
           description: model was empty.
@@ -1056,6 +1127,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: The initiative is not in a state that can be retried.
@@ -1089,6 +1161,7 @@ paths:
                   type: string
                   enum: [architecture, product_design, verification_design]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
           description: The body was malformed, or phase was not one of the three design stages.
@@ -1096,6 +1169,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: The initiative is not in a state where that phase can be reopened.
@@ -1115,6 +1189,7 @@ paths:
         each initiative's phase, plus counts of what is waiting on a human. It exists so a home
         screen does not issue one request per initiative per entity.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The rollups.
           content:
@@ -1126,6 +1201,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/InitiativeRollup" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/artifacts/diff:
@@ -1154,6 +1230,7 @@ paths:
           schema: { type: string }
           description: Artifact **version** id to diff to.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The unified diff.
           content:
@@ -1171,6 +1248,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: Either version id does not exist.
           content:
@@ -1192,6 +1270,7 @@ paths:
       summary: Execution-plan tasks, in plan order
       description: Ordered by the stored plan position, then by creation - the order `POST /tasks/reorder` sets.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The tasks.
           content:
@@ -1200,6 +1279,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Task" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
     post:
@@ -1236,6 +1316,7 @@ paths:
                   description: Existing task titles, codes or ids.
               required: [title]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The created task. This is a 200, not a 201.
           content:
@@ -1247,6 +1328,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/TaskNotEditable" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1273,6 +1355,7 @@ paths:
                   items: { type: string }
               required: [task_ids]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The reordered tasks.
           content:
@@ -1286,6 +1369,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/TaskNotEditable" }
 
@@ -1316,6 +1401,7 @@ paths:
                   type: string
                   description: Written through as given, so an empty string clears it.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The task after the edit.
           content:
@@ -1327,6 +1413,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`task not found`, or the initiative or project is unknown."
           content:
@@ -1340,6 +1427,7 @@ paths:
       summary: Delete a task
       description: Refused while another task still declares a `depends_on` edge to this one.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Deleted.
           content:
@@ -1350,6 +1438,7 @@ paths:
                   deleted: { type: boolean, const: true }
                 required: [deleted]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`task not found`, or the initiative or project is unknown."
           content:
@@ -1375,6 +1464,7 @@ paths:
       summary: Cancel a task
       description: Sets the task to `cancelled`. Subject to the same editable window as an edit.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Cancelled.
           content:
@@ -1385,6 +1475,7 @@ paths:
                   status: { $ref: "#/components/schemas/TaskStatus" }
                 required: [status]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`task not found`, or the initiative or project is unknown."
           content:
@@ -1442,6 +1533,7 @@ paths:
                   description: Defaults to the file's base name.
               required: [file]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The stored doc row.
           content:
@@ -1456,6 +1548,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1464,6 +1557,7 @@ paths:
       operationId: listContextDocs
       summary: List the initiative's context docs
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The docs, with previews rather than bodies.
           content:
@@ -1472,6 +1566,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ContextDoc" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1493,6 +1588,7 @@ paths:
         raw stored bytes with the media type sniffed from magic bytes (falling back to
         `application/octet-stream`); a text doc returns the redacted text.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The stored content.
           headers:
@@ -1509,6 +1605,7 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`doc not found`."
           content:
@@ -1531,6 +1628,7 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/requirements?initiative_id=`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The requirements, including any with status `removed`.
           content:
@@ -1539,6 +1637,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Requirement" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1553,6 +1652,7 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/assertions?initiative_id=`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The assertions.
           content:
@@ -1561,6 +1661,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Assertion" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1578,6 +1679,7 @@ paths:
         One row per artifact *version* - the `id` addresses the version, which is what
         `/artifacts/{id}/body` and `/artifacts/{id}/raw` take.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The artifact versions.
           content:
@@ -1586,6 +1688,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ArtifactVersion" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1601,6 +1704,7 @@ paths:
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/decisions?initiative_id=`.
         The mutations stay flat under the project, addressed by decision id.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The decisions.
           content:
@@ -1609,6 +1713,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Decision" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1623,6 +1728,7 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/questions?initiative_id=`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The questions.
           content:
@@ -1631,6 +1737,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Question" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1645,6 +1752,7 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/findings?initiative_id=`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The findings.
           content:
@@ -1653,6 +1761,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Finding" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1669,6 +1778,7 @@ paths:
         The single-change-set reads and every mutation stay flat under the project, addressed by
         change-set id.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The change sets.
           content:
@@ -1677,6 +1787,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ChangeSet" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1694,6 +1805,7 @@ paths:
 
         Produced by `POST /initiatives/{id}/suggest-answers`; empty until that operation finishes.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The suggested answers.
           content:
@@ -1702,6 +1814,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/SuggestedAnswer" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1723,12 +1836,14 @@ paths:
         on every read; the profile is a pure function of the patches, so it is recomputed here
         instead.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The risk profile computed for this initiative.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RiskProfile" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1747,6 +1862,7 @@ paths:
         dependency cycles - as findings. An empty array means a clean graph. This is one of the
         checks behind `idea doctor`, not the whole command.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The audit findings; empty when the graph is clean.
           content:
@@ -1755,6 +1871,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Finding" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1776,6 +1893,7 @@ paths:
                 resolution: { type: string }
               required: [resolution]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Resolved.
           content:
@@ -1794,6 +1912,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/decisions/{id}/reopen:
@@ -1806,6 +1926,7 @@ paths:
       summary: Undo a resolution
       description: Takes no body.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Reopened.
           content:
@@ -1823,6 +1944,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/decisions/{id}/discussion:
@@ -1834,6 +1957,7 @@ paths:
       operationId: getDecisionDiscussion
       summary: The decision's discussion thread
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The thread, oldest turn first.
           content:
@@ -1842,6 +1966,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/DecisionDiscussion" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1864,6 +1989,7 @@ paths:
                 message: { type: string }
               required: [message]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The model's reply, already appended to the thread.
           content:
@@ -1879,6 +2005,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1905,6 +2032,7 @@ paths:
                 answer: { type: string }
               required: [answer]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Answered.
           content:
@@ -1923,6 +2051,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1935,6 +2064,7 @@ paths:
       operationId: getArtifactBody
       summary: One artifact version's body, sanitized, as JSON
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The sanitized markdown body with its kind and version.
           content:
@@ -1950,6 +2080,7 @@ paths:
                   created_at: { type: string, format: date-time }
                 required: [kind, version, body, created_at]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`artifact not found`."
           content:
@@ -1973,6 +2104,7 @@ paths:
         **Not JSON.** The same body as `/body` but unsanitized and served as
         `text/markdown` for download or export.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The raw markdown.
           headers:
@@ -1983,6 +2115,7 @@ paths:
             text/markdown:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404":
           description: "`artifact not found`."
           content:
@@ -2016,6 +2149,7 @@ paths:
                 disposition: { $ref: "#/components/schemas/Disposition" }
               required: [disposition]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Recorded.
           content:
@@ -2031,6 +2165,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/findings/{id}/note:
@@ -2056,6 +2192,7 @@ paths:
                 note: { type: string }
               required: [note]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Recorded.
           content:
@@ -2071,6 +2208,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/change-sets/{id}:
@@ -2082,12 +2221,14 @@ paths:
       operationId: getChangeSet
       summary: One change set
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The change set.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ChangeSet" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/checks:
@@ -2103,6 +2244,7 @@ paths:
         `tests` categories. A finding dispositioned `not_applicable` reads as `not_applicable`; a
         `high` or `critical` severity reads as `fail`; anything else reads as `pass`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The checks and their tallies.
           content:
@@ -2130,6 +2272,7 @@ paths:
                   not_applicable: { type: integer }
                 required: [checks, pass, fail, not_applicable]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -2149,6 +2292,7 @@ paths:
         store is deliberately redaction-free so apply and revert round-trip byte-for-byte. See
         `docs/security-model.md`, "What this does not protect against".
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The rendered patch, plus the per-file list.
           content:
@@ -2165,6 +2309,7 @@ paths:
                     items: { $ref: "#/components/schemas/StructuredFile" }
                 required: [patch, files]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/review:
@@ -2205,6 +2350,7 @@ paths:
                     Ignored without `approved`.
               required: [verdict]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Reviewed.
           content:
@@ -2225,6 +2371,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/apply:
@@ -2240,8 +2388,10 @@ paths:
         is not `approved` is refused with 409 and a message that says what to do instead, rather
         than reporting "apply started" and failing where only the log would see it.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
@@ -2266,8 +2416,10 @@ paths:
       summary: Roll an applied change set back
       description: Byte-for-byte, from the recorded journal entry. Asynchronous.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -2296,6 +2448,7 @@ paths:
                   enum: [retry, reject]
               required: [resolution]
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Rejected (the `reject` resolution).
           content:
@@ -2312,6 +2465,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: The change set is not in a state the chosen resolution can act on.
@@ -2337,6 +2492,7 @@ paths:
         Poll until `status` leaves `pending`/`running`. A terminal `failed` carries no reason here -
         the initiative's `failure_reason` and `idea logs` do.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The operation.
           content:
@@ -2362,6 +2518,7 @@ paths:
       operationId: cancelOperation
       summary: Interrupt a running operation
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Cancellation was requested and recorded.
           content:
@@ -2373,6 +2530,7 @@ paths:
                   status: { $ref: "#/components/schemas/OperationStatus" }
                 required: [operation_id, status]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
@@ -2399,18 +2557,27 @@ paths:
         and falls back to the bundled catalog; configured models are always merged in. A rejected
         provider entry reports the endpoint requests will actually reach, and says why in `problem`.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The provider view.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProvidersView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [config]
       operationId: updateProviders
       summary: Merge provider settings into harness.yaml
       description: |
+        **Not round-trippable from `GET /providers`.** That response carries `demo`, `models` and
+        `git_commit` alongside the writable fields, and its `providers` is an array of summaries
+        rather than the map this takes — so sending it back verbatim answers
+        `400 json: unknown field "demo"`. The writable set is exactly the properties below.
+        The body is closed (see the 400), and closed only up to Go's ASCII-case-insensitive field
+        matching: `Default_Model` is accepted as `default_model`, and a duplicate key is last-wins.
+
         A field-level merge, then a runtime reload. Only the fields this request writes are
         validated against the resulting config: a pre-existing problem elsewhere in `harness.yaml`
         is logged, not returned, so an unrelated problem cannot lock the operator out of the only
@@ -2438,6 +2605,7 @@ paths:
                   type: boolean
                   description: Omitted leaves the current value; null is treated as omitted.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Written and reloaded.
           content:
@@ -2465,6 +2633,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500":
@@ -2491,6 +2660,7 @@ paths:
           description: Provider name, e.g. `openai`, `anthropic`.
           schema: { type: string }
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The provider that was consulted and its models.
           content:
@@ -2504,6 +2674,7 @@ paths:
                     items: { type: string }
                 required: [provider, models]
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/projects/{projectId}/executors:
@@ -2515,6 +2686,7 @@ paths:
       summary: Available executors and their declared capabilities
       description: Every known executor is listed; `selected` marks the configured one.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The executors.
           content:
@@ -2523,12 +2695,19 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ExecutorView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [config]
       operationId: updateExecutors
       summary: Merge executor settings into harness.yaml
       description: |
+        **`GET /executors` is not the read side of this.** It returns a catalog of all four
+        executor kinds with their capabilities, not a projection of the config, so there is no
+        round trip to perform: its per-item key is `name`, this takes `kind`, and echoing an entry
+        back answers `400 json: unknown field "capabilities"`. The writable set is the three
+        properties below.
+
         Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
         config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
         and `model` are nullable pointers: omit to leave alone, send `""` to clear.
@@ -2547,6 +2726,7 @@ paths:
                   type: string
                   description: Model spec for agent executors. Empty clears it.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: Written and reloaded.
           content:
@@ -2561,13 +2741,14 @@ paths:
                     description: |
                       Non-blocking problems with the fields this request wrote — a model id absent
                       from the bundled catalog, say. Omitted when empty; the write still succeeded.
-                  required: [status]
+                required: [status]
         "400":
           description: "`invalid body`, `invalid executor kind \"...\"`, `invalid executor image`, or a rejected write."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
@@ -2587,6 +2768,7 @@ paths:
         The first 200 events from sequence 0, ungrouped and unnarrated - unlike `/changed`, and
         including the machinery events `/changed` hides.
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The events.
           content:
@@ -2595,6 +2777,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Event" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -2630,6 +2813,7 @@ paths:
           description: Resume from this event sequence. Unparseable values are treated as 0.
           schema: { type: integer, format: int64 }
       responses:
+        default: { $ref: "#/components/responses/RoutingError" }
         "200":
           description: The stream.
           content:
@@ -2638,6 +2822,7 @@ paths:
                 type: string
                 description: "`id: <seq>` and `data: <Event as JSON>` per event."
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500":
           description: "`streaming unsupported` - the response writer cannot flush."
@@ -2728,12 +2913,42 @@ components:
       name: id
       in: query
       required: true
-      description: Graph node id.
+      description: |
+        Graph node id — the opaque 32-hex id, **not** the human code. A code such as `REQ-1`
+        returns `200 []`, which is indistinguishable from a node with no provenance. Resolve it
+        through the initiative's own listing first. `ChangeSetId` accepts both forms; this does
+        not, and the difference is not currently reconciled.
       schema: { type: string }
 
   responses:
     Unauthorized:
       description: "`401 {\"error\": \"unauthorized\"}` - the token was missing or wrong."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RoutingError:
+      description: |
+        Any status this operation does not declare. In practice: `403` from the host/origin guard,
+        and `405` with an `Allow` header when the path exists but the method does not — both
+        emitted uniformly at the routing layer for every path under `/api/`, which is why they are
+        not repeated on each operation.
+
+        Declared as `default` so a generated client has somewhere to put them. Without it an
+        undeclared status is an unhandled branch in most generators, which is the concrete cost the
+        `Error` schema's own note used to describe and not address.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ConfigInvalid:
+      description: |
+        `harness.yaml` in the project root could not be parsed. The message names the file and the
+        YAML parser's line, and never an absolute path.
+
+        A 4xx rather than a 500: the request cannot succeed until the user edits the file, so
+        telling a client to retry would be wrong, and `InternalError` is reserved for the daemon's
+        own faults. Every project-scoped operation can answer this, because the config is loaded
+        while resolving the project. It previously surfaced as a **404** — neither a store miss nor
+        a message naming a kind and a reference — carrying the absolute path of the file.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2859,7 +3074,12 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 84 times would say less than saying it once here.
+        `/api/`, and repeating them 81 times would say less than saying it once here. `403` is the
+        same shape and comes from the host/origin guard rather than the router.
+
+        Every operation does carry a `default` response, so a generated client has somewhere to put
+        all three rather than leaving an unhandled branch — which was the real cost of stating them
+        only in prose.
       properties:
         error:
           type: string
