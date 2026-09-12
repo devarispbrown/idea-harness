@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -121,5 +123,45 @@ func TestLegacyLedgersAreExemptButNewOnesAreNot(t *testing.T) {
 	fresh.file = "docs/plans/dx-audit-9-doc-defects.md"
 	if got := checkRowAssertions(fresh, splitPredicates(fresh.predicate)); len(got) == 0 {
 		t.Error("a new ledger's row was exempted; the grandfather list must be a literal set")
+	}
+}
+
+// TestDeferredIndexKeepsEveryRowForARepeatedID pins the accumulation.
+//
+// A repeated id is the house convention for sub-items of one finding:
+// `audit 3 / S6` covers three separate deferrals, the way `C4c` and `G1b` do
+// explicitly. The index assigned into a map, so every row but the last was
+// dropped — a coverage claim on S6 resolved against text from whichever row
+// happened to come last, and the other two were unreachable while still sitting
+// in the file.
+//
+// Found by adding a duplicate-id check that reported audit 8's two unrelated
+// `F5`s. Those were a genuine collision and were renumbered; audit 3's were not,
+// which is what showed the index, rather than the ids, was wrong.
+func TestDeferredIndexKeepsEveryRowForARepeatedID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deferred.md")
+	body := "# Deferred items\n\n" +
+		"| audit 3 / S6 | first sub-item | reason one |\n" +
+		"| audit 3 / S6 | second sub-item | reason two |\n" +
+		"| audit 3 / D4 | unrelated | reason three |\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := deferredByAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s6 := got["3/S6"]
+	for _, want := range []string{"reason one", "reason two"} {
+		if !strings.Contains(s6, want) {
+			t.Errorf("3/S6 lost %q — a repeated id drops every row but the last, so the others\n"+
+				"    are unreachable to coverage claims while still in the file.\n    got: %q",
+				want, s6)
+		}
+	}
+	if !strings.Contains(got["3/D4"], "reason three") {
+		t.Errorf("an unrepeated id was mangled: %q", got["3/D4"])
 	}
 }

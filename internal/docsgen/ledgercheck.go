@@ -399,8 +399,19 @@ func deferredByAudit(path string) (map[string]string, error) {
 			continue
 		}
 		for _, id := range strings.Split(m[2], ",") {
-			if id = strings.TrimSpace(id); id != "" {
-				out[m[1]+"/"+id] = m[3]
+			if id = strings.TrimSpace(id); id == "" {
+				continue
+			}
+			key := m[1] + "/" + id
+			// Appended, not overwritten. A repeated id is the house convention
+			// for sub-items of one finding -- `audit 3 / S6` covers three, the
+			// way `C4c` and `G1b` do explicitly -- and a map assignment dropped
+			// every row but the last, so a coverage claim resolved against text
+			// it was not making a claim about.
+			if prev, ok := out[key]; ok {
+				out[key] = prev + " || " + m[3]
+			} else {
+				out[key] = m[3]
 			}
 		}
 	}
