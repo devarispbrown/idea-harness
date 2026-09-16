@@ -259,6 +259,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   rate observed across 33 full runs. This is a test-harness defect, not a
   product one, but it made every other guard's green worth less.
 
+- **The very first `idea init` reports the cause too.** The daemon's stderr is
+  redirected into `daemon.log`, but only if the file opens — and on a first run
+  the state root does not exist yet, so that failed silently and a start failure
+  produced the generic message pointing at `idea logs`, over an empty log. That
+  is the one moment the message most needs to be specific. Measured: 0.1 s with
+  no cause before, 1.3 s with the full bind error after.
+
 - **`idea init` reports a failed daemon start instead of hanging.** With a
   non-daemon process holding the port, it printed *nothing at all* for a
   code-bound ~51 minutes: the health probe used the 60-second data-call timeout,
