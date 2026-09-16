@@ -190,3 +190,45 @@ func TestEnsureDaemonSpawnsAndComesUpHealthy(t *testing.T) {
 		t.Fatalf("ensureDaemon failed on a daemon that started and became healthy: %v", err)
 	}
 }
+
+// TestEnsureDaemonCapturesTheLogOnAVeryFirstRun covers the one moment the
+// failure message most needs to be specific.
+//
+// ensureDaemon redirects the daemon's stderr into daemon.log, but only if it can
+// open the file — and on the very first `idea init` the state root does not
+// exist yet, so OpenFile returned ENOENT, the redirect silently did not happen,
+// and a start failure produced the generic message pointing at `idea logs` over
+// an empty log. Measured: 0.1s with no cause, where a second run gave the full
+// bind error.
+func TestEnsureDaemonCapturesTheLogOnAVeryFirstRun(t *testing.T) {
+	// A state root that does not exist yet — not t.TempDir(), which does.
+	state := filepath.Join(t.TempDir(), "never-created")
+	t.Setenv("IDEA_HARNESS_STATE", state)
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("precondition: %s already exists, so this tests nothing", state)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("IDEA_HARNESS_ADDR", ln.Addr().String())
+
+	helper := filepath.Join(t.TempDir(), "failing-daemon")
+	script := "#!/bin/sh\necho 'idea: listen tcp: bind: address already in use' >&2\nexit 1\n"
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := daemonExecutable
+	daemonExecutable = func() (string, error) { return helper, nil }
+	defer func() { daemonExecutable = orig }()
+
+	err = ensureDaemon()
+	if err == nil {
+		t.Fatal("expected a start failure")
+	}
+	if !strings.Contains(err.Error(), "bind: address already in use") {
+		t.Errorf("the very first run reports no cause, which is when the user has least to go on:\n  %v", err)
+	}
+}

@@ -310,6 +310,13 @@ func ensureDaemon() error {
 	cmd.SysProcAttr = sysProcAttrDetach
 	// Route the detached daemon's output to the log file so its logs are
 	// inspectable with `idea logs`.
+	//
+	// MkdirAll first: on the very first `idea init` the state root does not
+	// exist yet, so OpenFile failed with ENOENT, the child's stderr was never
+	// redirected, and a start failure produced the generic message pointing at
+	// `idea logs` -- over an empty log. That is the one moment the message most
+	// needs to be specific, since the user has nothing else to go on.
+	_ = os.MkdirAll(daemon.DefaultStateRoot(), 0o700)
 	if f, err := os.OpenFile(filepath.Join(daemon.DefaultStateRoot(), "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 		cmd.Stdout = f
 		cmd.Stderr = f
