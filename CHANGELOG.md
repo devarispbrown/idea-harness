@@ -9,507 +9,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
-### Added
-
-- **`make version-check` now proves released changelog sections have not
-  changed.** A released section is immutable — goreleaser ships `CHANGELOG.md`
-  in every archive — so editing one rewrites what shipped, and moving entries
-  out of one re-advertises old work as new. `e53bf2f` did exactly that with 29
-  lines of v0.1.0 history, and nothing saw it: no line was deleted, so a
-  lost-line or line-count check would have passed.
-
-  The baseline is the **newest** tag, not each section's own tag. That
-  distinction is load-bearing: `[0.1.0]` was legitimately corrected between
-  v0.1.0 and v0.2.0, so comparing each section to its own tag fails forever and
-  would force re-introducing a false claim to satisfy a checker. It rides
-  `version-check` rather than adding a tenth target, and `compile-no-node` now
-  checks out with `fetch-depth: 0` — without tags the rule skips, and it says so
-  rather than printing a green line. It also fails closed if the tag-side file
-  parses to no sections at all, rather than reporting success having compared
-  nothing.
-
-  **The cost, stated rather than discovered later:** a deliberate correction to
-  released history is red on every push until the next release moves the
-  baseline. That is the same trade the `[0.1.0]` operation-count fix would have
-  faced. `RELEASING.md` says what to do about it.
-
-- **`idea review <CHG-n> approve --accept-findings`** — a human may accept a
-  change set the adversarial reviewer will not pass, the way `idea approve`
-  already accepts a PRD and `idea approve-plan` a plan.
-
-  This was the **third** live-lock of one shape, and the one that kept the keyed
-  quickstart at 0/3 after the other two were fixed. `idea next` names
-  `idea review CHG-1 approve`; that runs a fresh adversarial review, and a model
-  reviewer is not a fixed point. Worse, the first attempt **persists** its
-  findings, so every later attempt is refused by the `review_open_blocking` deny
-  before the review runs, and `idea apply` answers "needs approval first". Every
-  other command refuses. Measured on `openai/gpt-5.6-luna` and `gpt-4o-mini`
-  alike.
-
-  The accept dispositions the reviewer's open findings on that change set as
-  `accepted_risk` against the human, **re-runs** the deny gate, and does not run
-  a fresh review. Two predicates decide what it may sign off, and both are
-  needed: a finding must carry **no deny code** (`secret_sweep`, `pii`,
-  `host_exec`, `blob_digest_mismatch` — only the reviewer leaves it empty) **and**
-  be undisposed (a failing build check carries no code but is `rejected`, and a
-  failing build is not a judgment to accept away). Anything it declines to touch
-  still denies, naming the code.
-
-  The web UI gets the same affordance, and now renders the error when a verdict
-  is refused rather than swallowing it.
-
-- **`demo.block_change_set_review_cycles`**, and the change-set review has its
-  own fake-provider key. All three adversarial reviews shared the key `review`,
-  so the change-set review could not be made to block on demand — which is why
-  five smoke passes and seven audits never reached the state above. There is a
-  sixth smoke pass now, with a reviewer that blocks 50 times.
-
-### Changed
-
-- **`docs/security-model.md`'s `review_open_blocking` row is conditionally
-  overridable.** It sat beside five codes that genuinely are not, and read as
-  flatly non-overridable. Only this one is a reviewer's judgment.
-
-- **Documented model ids now resolve.** `anthropic/claude-3-7-sonnet-latest`
-  (9 sites) and `openrouter/anthropic/claude-3.7-sonnet` are absent from the live
-  catalogs; the examples move to `anthropic/claude-sonnet-4-5-20250929`,
-  `openai/gpt-5.6-luna` and `openrouter/anthropic/claude-opus-5`. The first two
-  were re-checked against the providers' own `/v1/models` on 2026-09-10 and are
-  live; the undated `anthropic/claude-sonnet-4-5` this entry first named is
-  absent from that listing, which is why the examples now carry the date. A ledger predicate pinned to a model id has
-  a shelf life, so the date is part of the claim — audit 4's own D9 row had to be
-  updated for exactly that reason.
-
-### Fixed
-
-- **`idea retry` waits, and reports what the retry reached.** It posted and
-  returned, so retrying against an unchanged cause — the same 401, the same
-  unreachable `base_url` — printed `✓ retry started` and exited 0 while the
-  operation failed half a second later. The tick said the opposite of what
-  happened, on the command whose whole job is recovering from a failure.
-  `--no-wait` keeps the old behaviour.
-
-- **`idea reopen-phase` exists.** `idea revise` has prescribed it since audit 7,
-  in the two states where revising the PRD would discard work below it, and the
-  verb was never added: the route was registered and `docs/api.md` documented
-  it, so following the advice answered `unknown command "reopen-phase"`. A
-  misspelled phase is now refused locally, naming the three the daemon accepts,
-  instead of being sent on to become a `400 invalid body`.
-
-- **`idea doctor` no longer renders an unreadable store as an empty one.**
-  `resolveInitiative` returned a transport failure and "no initiatives yet"
-  through the same error, so doctor printed `graph audit: no initiative yet —
-  nothing to audit` over a store every other command exited 1 on, and reported
-  "all checks passed".
-
-- **`idea doctor` no longer reports "not running" for a daemon that is
-  running.** Its probe builds a client first, which fails when the token file is
-  gone — so after a state-directory wipe doctor said the daemon was down while
-  `curl` got a 200 from it and `idea daemon status` said running. Three answers
-  to one question, and the designated diagnostic had the wrong one. `/health` is
-  unauthenticated, so it is now asked directly.
-
-- **A long model call reports elapsed time.** The provider client allows five
-  minutes per attempt and the engine retries three times, so an endpoint that
-  accepts and never answers produced ~15 minutes in which `working…` was the
-  only output — no counter, no timeout, nothing to separate a slow call from a
-  dead one, while `idea status` said `running` and `idea watch` needs a TTY.
-
-- **`idea reviews` recommends a `harness.yaml` key that exists.** It said `set
-  tests_cmd in harness.yaml`, built by concatenating the finding category with
-  `_cmd`; the field is `test_cmd`, so following it literally made `idea config
-  validate` exit 1 with `additional properties 'tests_cmd' not allowed`. The
-  category is pinned by the `/checks` filter and could not simply be renamed,
-  so the config key is now passed separately, and a test ties every such
-  recommendation to the schema that validates the file.
-
-- **Six precondition refusals say what to run instead, and whose status they
-  are reporting.** `no plan to approve (status=approved)` was reporting the
-  *PRD's* status and read as though the plan were approved.
-
-- **BREAKING: `idea status` exits non-zero when the newest initiative has
-  failed, and `--json` carries `failure_reason`.** It printed `● failed` with
-  the provider's full error and returned 0, so a script running it as a health
-  check could not tell — and the machine path was strictly less informative
-  than the human one about the only thing that matters. **Any script that
-  branched on `idea status`'s exit code saw success unconditionally, and any
-  script that relied on that will now stop.**
-
-  Two deliberate limits. `needs_human_judgment` is *not* a failure: waiting on a
-  person is the loop working, and treating it as an error would make the whole
-  judgment path exit non-zero. And the code reflects only the **newest**
-  initiative — the one every other command means by "the initiative" — because
-  scanning all of them made the exit sticky: one abandoned experiment gated the
-  project's overview command forever, with nothing a user could do to clear it.
-
-  The full exit-code taxonomy remains deferred (audit 8 / E2).
-
-- **A malformed `harness.yaml` answers 422, not 404, and never with an absolute
-  path.** `config.Load` runs while resolving the project, so its failure reached
-  every project-scoped route as a store miss — neither the kind nor the
-  reference `NotFound` promises — carrying the absolute path of the file, which
-  `InternalError` promises never reaches a client. 500 would be the wrong
-  repair: the request cannot succeed until the user edits the file.
-
-  Both malformations, not just the syntactic one: YAML that does not parse, and
-  YAML that parses and the schema rejects. The second is the likelier — a first
-  version of this fix covered only syntax errors, so `tests_cmd`, literally the
-  key this release's own `idea reviews` fix stopped recommending, still 404'd
-  with raw jsonschema text. Reachable on a cold daemon; a running one caches its
-  config, which is why every "export your key" instruction ends in `idea daemon
-  stop`.
-
-- **`idea retry` and `idea reopen-phase` do not exit 0 with the outcome
-  unknown.** Both waited and then, if reading the next step failed, printed
-  `watch progress:` and returned success — the same "reported a start as a
-  result" they were changed to stop doing, one layer up.
-
-- **`docs/openapi.yaml`'s `updateExecutors` 200 is valid JSON Schema again.**
-  `required: [status]` was indented one level too far, landing inside
-  `properties:` — so it declared a property *named* `required` whose value was a
-  list, and the actual constraint was gone. `make api-check` now walks every
-  `properties` node.
-
-- **The spec declares the statuses its handlers emit.** Ten of thirty-six
-  non-GET operations did not declare 500, though `writeErr` promotes any storage
-  failure to it, and `createInitiative` did not declare 404. `createProject` has
-  no path parameter and genuinely cannot 404, which is the one stated exemption.
-
-- **Every operation declares a `default` response.** `403` (host/origin guard)
-  and `405` (wrong method, with an `Allow` header) are emitted on all 81
-  operations and were declared on none — a deliberate choice the spec argues
-  for, but one that leaves an undeclared status as an unhandled branch in most
-  generated clients. `default` gives them somewhere to go without repeating two
-  responses 81 times. The per-operation `404`, `422` and `500` stay literal: a
-  generator cannot turn a catch-all into "this operation answers 404 for a bad
-  id", and the guard requires the literal keys for that reason.
-
-- **The spec's own operation count is right.** It said 84 as the justification
-  for not declaring 404 and 405 per operation; there are 81. An argument about a
-  set that miscounts its subject is the weakest kind, and prose is exactly what
-  rots — so the number is now checked.
-
-- **The graph endpoints say that human codes do not resolve.** `impact-counts`'
-  worked example was `requirement:req-1`, a form that returns `0` rather than an
-  error — indistinguishable from a node with no edges. `ChangeSetId` promises
-  both forms resolve; `GraphNodeId` said only "Graph node id."
-
-- **Both config `PUT`s say they are not round-trippable from their `GET`.**
-  `GET /providers` carries `demo`, `models` and `git_commit` beside the writable
-  fields, so echoing it back answers `400 json: unknown field "demo"`; and
-  `GET /executors` is a catalog of all four executor kinds rather than a
-  projection of the config, so there is no round trip to perform at all.
-
-- **`--accept-findings` is documented where the magic path is.** It reached the
-  code and both demo guides and neither `README.md` nor `docs/quickstart.md` —
-  the two documents most readers actually follow — so a reader on the keyed path
-  who hit a blocking finding had no documented way past it.
-
-- **`internal/daemon/runtime.go` no longer asserts that a blocking change-set
-  finding cannot be cleared.** It can, and has been able to since audit 7. The
-  ledger row pinning that sentence was green over it, because its predicate
-  contained a two-character `\n` that could never match; `ledger-check` now
-  rejects an escape sequence in a predicate, since an unmatchable `present:` is
-  indistinguishable from a fixed defect.
-
-- **`docs/demo-greenfield.md` shows each command beside its output again.** The
-  `--accept-findings` note had been inserted between the two.
-
-- **`README.md` and `docs/quickstart.md` describe the keyed path as it actually
-  runs.** Both presented the magic-path block as a straight line. Measured on
-  `openai/gpt-5.6-luna`, 2 of 2 runs, it is not: the PRD review does not
-  converge and the plan review raises blocking findings, so it stops for a human
-  twice before reaching `idea review`; `idea review CHG-1 approve` can refuse on
-  an open critical finding; and the requirement is not `REQ-1`, because every
-  review cycle supersedes the requirement set and mints new codes — one run
-  created 34 rows, superseded 22, and ended with `REQ-23`–`REQ-34`.
-
-  Nothing in the product was wrong here: `idea new` and `idea next` name the
-  command that moves it on, and verifying a superseded code answers
-  `requirement "REQ-1" in state "removed" cannot take a human judgment`. The
-  documents were written against the demo provider, where the review converges
-  on the first cycle and `REQ-1` therefore survives, and they did not say so.
-
-- **`idea approve`'s advice line no longer overstates what it does.** `idea next`
-  offered it as "accept the PRD as it stands and move to design", while
-  `cmdApprove` posts, prints `✓ PRD approved` and tells you to run `idea next
-  --until-human` — the command's own output contradicting the advice one step
-  earlier.
-
-- **CI runs `make build`, the way CONTRIBUTING documents it.** It ran a bare
-  `go build ./...`, which compiles every package but skips what the target
-  actually does — embed the web UI, stamp the version through ldflags, write
-  `bin/idea`, restore the placeholder. A contributor following CONTRIBUTING
-  could be green locally on a target CI never ran. A test now asserts every
-  documented `make` target appears in a CI `run:` step, with `test` and `vet`
-  exempt because CI runs their bodies verbatim.
-
-- **`scripts/smoke.sh` no longer fails at random.** Its assertions piped a
-  command into `grep -q` under `set -o pipefail`, which fails *even when the
-  grep matches*: `grep -q` exits on the first match and closes the pipe, the Go
-  binary is usually still writing, the next write gets EPIPE, and Go re-raises
-  SIGPIPE on stdout — so the process dies with 141 and `pipefail` adopts that as
-  the pipeline's status. The `||` branch then printed a message saying the
-  output was wrong when it was not.
-
-  Measured against the real binary on a preserved failing state: 7 failures in
-  150 runs of `idea reviews | grep -q 'Review findings'`, with all three
-  findings present and printed correctly whenever the command ran on its own —
-  and 0 in 150 for the capture-then-grep shape now used. That 4.7% matches the
-  rate observed across 33 full runs. This is a test-harness defect, not a
-  product one, but it made every other guard's green worth less.
-
-- **The very first `idea init` reports the cause too.** The daemon's stderr is
-  redirected into `daemon.log`, but only if the file opens — and on a first run
-  the state root does not exist yet, so that failed silently and a start failure
-  produced the generic message pointing at `idea logs`, over an empty log. That
-  is the one moment the message most needs to be specific. Measured: 0.1 s with
-  no cause before, 1.3 s with the full bind error after.
-
-- **`idea init` reports a failed daemon start instead of hanging.** With a
-  non-daemon process holding the port, it printed *nothing at all* for a
-  code-bound ~51 minutes: the health probe used the 60-second data-call timeout,
-  `ensureDaemon` calls it 51 times, and the loop could not tell "not ready yet"
-  from "already dead". The reason was in `daemon.log` the whole time and the
-  message only named the command that would show it, while `idea doctor`,
-  `idea status` and `idea daemon status` stalled on the same probe — the last
-  answering `daemon is not running` after a full minute.
-
-  The probe now has its own 2-second timeout, the spawned daemon is waited on so
-  an immediate exit ends the loop at once, and the failure quotes the log:
-  `the daemon exited immediately: idea: listen tcp 127.0.0.1:8787: bind: address
-  already in use; run \`idea logs\` for the full output`.
-
-  Observed **4 seconds** when the daemon exits, which is the held-port case. Be
-  precise about the other one: if the spawned daemon *hangs* instead of exiting,
-  the child-watch never fires and the bound is the loop — 50 × (2s + 100ms), or
-  **~107 seconds**. That is 1.8 minutes rather than 51, not 4 seconds.
-
-  Only the log this run produced is quoted. `daemon.log` is opened `O_APPEND`
-  and never rotated, so the last line of the file is whatever failed last —
-  possibly weeks ago, possibly a routine startup line from a run that worked.
-  The offset is recorded before the child starts, and the `idea logs` hint
-  survives, because quoting one line must not remove the route to the rest.
-
-- **An ambiguous `CHG-n` now names the candidates.** `idea next` prescribes
-  `idea apply CHG-1`; with two initiatives in one project each holding a CHG-1,
-  that command always failed with *"use the full change set id"* — and no
-  human-readable command printed one. `idea changes` resolves a single
-  initiative and prints the human id only, while apply/review/change resolve
-  project-wide, so the lister and the resolver disagreed about scope. The id
-  existed solely in `idea changes --json`, which nothing named, and `next` went
-  on exiting 0 and prescribing the same failing command.
-
-  The refusal now lists each candidate's full id with its initiative title, so
-  the message itself carries a command that works. Resolving the ambiguity by
-  preferring the newest initiative was rejected: silently applying a change set
-  from the wrong initiative is worse than refusing.
-
-  `idea next` no longer sends anyone there in the first place: it prints the
-  full id when, and only when, the human one is ambiguous, so its prescription
-  always runs. The readable `CHG-1` is still what you see in the ordinary case,
-  which is almost always.
-
-- **A rejected oversized context doc no longer strands an initiative.**
-  `POST …/initiatives` with a doc over the size cap answered 413 having already
-  committed the initiative as `running`, with no operation row — and nothing
-  could reach it. `reconcileStaleOperations` sweeps operations, `retry` and
-  `resume` both refused, `next` answered `wait` forever, the project's attention
-  list stayed wedged, and there is no DELETE route: recovery meant hand-editing
-  SQLite. The size check now runs with the other two in the pre-validation loop,
-  making true a comment that had promised exactly this since it was written.
-
-  Anything that still fails after the row exists — a blob write, or creating the
-  operation — now marks the initiative `failed` with the reason rather than
-  leaving it `running`, because `idea retry` requires precisely that status.
-
-- **The phase rail derives Define from the judgment reason, not from an
-  artifact.** `phases.ts` used execution-plan artifact presence to tell an
-  M1-review park from an M2-plan park, since both share
-  `needs_human_judgment`. The artifact is a proxy — `runExecutionPlan` writes it
-  before the dependency check — so a park on `prd_review`, or one carrying no
-  reason at all, read as past Define merely because an artifact from an earlier
-  cycle was lying around. `running` and `failed` record no reason and keep the
-  artifact check, because the status is `running` for the whole of every M2 and
-  M3 operation and dropping it would un-complete Define mid-build.
-
-  Fixed on **both** consumers. `ProductHome` reaches `derivePhases` through
-  `rollupPhaseSource`, and `InitiativeRollup` carried no reason in the Go
-  struct, the projection, the OpenAPI schema or the TS mirror — so fixing only
-  `App.tsx` would have left the bug on the page that renders the rail for every
-  initiative at once. A plan review caught that; the first draft named one
-  consumer.
-
-  An empty reason is treated as *not* past Define rather than falling back to
-  the artifact check. Migration 18 backfills nothing, so every pre-migration
-  park carries `''` whichever path parked it — including `plan_dependencies`,
-  whose artifact is present — and the fallback would have re-run the wrong
-  inference on exactly the population it is wrong for.
-
-### Changed
-
-- **An initiative reference that matches nothing is now an error, and two
-  commands stopped ignoring theirs.** `docs/cli.md` promised that every
-  initiative-scoped command takes an optional reference defaulting to the most
-  recently created, and used `idea status` as its worked example.
-
-  | | Was | Now |
-  |---|---|---|
-  | `idea <cmd> <unknown-id>` on the 16 reference-taking commands | `resolveInitiative` returned the argument unchecked; whatever downstream 404 that endpoint gave | exit non-zero, `no initiative matching "…"` |
-  | `idea status <id>` / `idea status ZZZZ` | printed **every** initiative, exit 0 | scoped to that initiative; an unknown id is an error |
-  | `idea changed` | acted on `inis[0]` — the **oldest** initiative | acts on the newest, as documented |
-  | `idea changed <id>` | ignored the argument | scoped to that initiative |
-
-  `idea status --json` stays an **array**, filtered to one element when scoped:
-  `docs/cli.md` documents that shape, ledger row `G4` pins the sentence, and
-  `jq '.[0]'` keeps working.
-
-  `idea explain` was folded into `resolveInitiative` rather than left behind —
-  it re-implemented the resolution by hand, so a fix applied to the shared
-  helper would have skipped one of the commands the docs name.
-
-  `idea prd` is deliberately unaffected: its first positional is an artifact
-  **kind**, not a reference.
-
-### Added
-
-- **A tag now gates on everything CI runs, and the spec's version is checked by
-  a machine.** Audit 7 recorded these as the two longest-lived open findings in
-  the project, the two cheapest to fix, and one shared fix.
-
-  `.github/workflows/release.yml` gated a tag on `go vet` and `go test` on
-  `ubuntu-latest`: **none** of the eight guards, no `scripts/smoke.sh`, no macOS
-  job, no web build or unit tests, and no `needs:` on anything. A red
-  `enum-check` or `check-embed` shipped.
-
-  The audit's own suggested fix — *"two lines: `needs: [compile-no-node,
-  backend, macos, web]`"* — does not work: `needs:` resolves job ids **within one
-  workflow file** and cannot reference a job in another. So the release job moves
-  into `ci.yml`, whose unfiltered `on: push:` already ran every guard on a tag
-  push; they simply did not gate. Copying the guard steps into a separate
-  workflow was the alternative and was rejected — a ninth guard added later
-  would not reach the copy, and that divergence *is* the finding.
-
-  `internal/ciguard` asserts a **completeness** rule: every job in `ci.yml`
-  either gates the release, is the release, or is on an explicit exemption list
-  carrying a reason. A test pinning today's four job names would let the next
-  job diverge exactly as this one did.
-
-  `docs/openapi.yaml`'s `info.version` had said `0.1.0` since the file was
-  created — unchanged across v0.1.0, v0.2.0 and v0.3.0, while the spec gained
-  four response codes, a schema, two properties and an enum in this round alone.
-  `make version-check` reads it on two axes: **every push**, it must not be older
-  than the newest released `CHANGELOG.md` heading (this never predicts the next
-  version, and would have fired the first push after v0.2.0); **at tag time**, it
-  must equal the tag, run before goreleaser so a mismatch costs a deleted tag
-  rather than a published release. `info.version` is now `0.4.0`.
-
-  `RELEASING.md` is new. There was no release checklist anywhere — `CONTRIBUTING.md`
-  contained no occurrence of "release" — and the one instruction that existed
-  (*"Bump `info.version` when you tag"*) lived in a hosting document nobody opens
-  at tag time. `CONTRIBUTING.md` also now names the nine targets CI gates on
-  beyond its four; following it exactly produced a red PR.
-
-### Fixed
-
-- **`scripts/ci-test-summary.py` reported success over a run that never
-  finished.** It failed only on an `action == "fail"` event carrying a `Test`.
-  Measured on go1.25.5, three of the four ways a run dies emit no such event: a
-  compile error, a panic in `TestMain`, and a panic in a background goroutine
-  that takes the binary down mid-test. Only a panic *inside* a test was caught.
-  So the macOS job could go green while printing `All tests passed (0 package(s)
-  with tests).`
-
-  Every failing shape emits a package-scoped `fail` with no `Test`, and the
-  script already discriminated on exactly that shape for the *pass* case and had
-  no `fail` counterpart. It has one now, plus `build-fail`, plus the `go test`
-  exit status for the case no event can describe: an empty file, a non-JSON
-  file, or a stream cut mid-run, each of which the script answered `All tests
-  passed (0 package(s) with tests)`. Five fixtures captured from real runs pin
-  the event shapes, and `ci.yml` passes the status through `|| status=$?` rather
-  than `continue-on-error`, which would swallow it.
-
-  This mattered before the release gated on that job: a gate that can be green
-  on a panic is weaker than it looks.
-
-- **The web UI rendered a frozen `v0.1.0`.** `HealthPage` fell back to that
-  literal whenever `/health` had not resolved, so a page loading against a v0.3.0
-  daemon showed a version three releases old as though it were the running build
-  — `info.version`'s defect, user-visible. It shows an em dash now, which is
-  what is true.
-
-- **The other two judgment reasons are exercised end to end.**
-  `demo.block_plan_review_cycles` and `demo.dangle_plan_dependency` make the
-  demo provider produce a blocked plan review and a plan with a dependency no
-  task provides, so `scripts/smoke.sh` now drives all four `needs_human_judgment`
-  reasons — in one initiative that still reaches `✓ initiative complete`.
-
-  The plan review also got its own fake-provider queue key. All three adversarial
-  reviews shared one, so a queued response could outlive the review it was meant
-  for and land on the **change-set** review, where a blocking finding cannot be
-  cleared by anything the CLI can do. The name is a demo discriminator only —
-  real providers send the schema body — so separating them costs nothing and
-  retires that hazard.
-
-- **The demo provider can be told to block a review, and `scripts/smoke.sh`
-  now drives the human-judgment branch on every push.** `demo.block_review_cycles`
-  in `.idea-harness/harness.yaml` makes the built-in provider's adversarial
-  reviewer emit a blocking finding for that many calls.
-
-  The reviewer returned `{"findings":[]}` unconditionally, so the review loop
-  always converged and `needs_human_judgment` was **structurally unreachable**
-  on the only path CI, the smoke script and six DX audits ever ran. That is how
-  a P0 failing 4/4 runs of the README's own quick start survived six rounds, and
-  why nothing would have caught the `idea approve` defect above — the new smoke
-  pass reproduces it exactly (`initiative has open blocking findings; cannot
-  complete`) when the fix is reverted.
-
-  A count consumed from a queue, not a flag: all three adversarial reviews share
-  one schema name, and a blocking finding on a *change set* cannot be cleared by
-  anything the CLI can do.
-
-- **Two step-by-step demo guides, linked from the README.**
-  [`docs/demo-greenfield.md`](docs/demo-greenfield.md) walks an empty directory to a verified,
-  complete initiative; [`docs/demo-existing-project.md`](docs/demo-existing-project.md) points the
-  same loop at a repository that already has code. Neither needs an API key.
-
-  The existing-project path had never been exercised — no script, test or document ran `idea init`
-  inside a directory that already had files, and both the README quick start and the quickstart
-  begin with `mkdir`. Writing it turned up three things worth stating plainly, all verified by
-  running them: `idea docs add` fails before an initiative exists, so grounding on your own source
-  goes through `idea new --doc`; the default executor writes a placeholder and leaves existing
-  files byte-identical, which the guide has the reader confirm with `md5` rather than assert; and
-  `.idea-harness/` lands untracked, holding portable config worth committing while runtime state
-  stays outside the repo.
-
-- **A response-schema guard.** Three guards already compared routes to the spec, request-body field
-  names to handlers, and spec enums to domain constants; none looked at what a response actually
-  contains. That is why `Coverage.status` was returned for months and documented nowhere,
-  `RequirementStatus` listed four of six values, and `/doctor` and `/diff` answered `null` where the
-  spec says `array` — each found by a human reading, one at a time. A daemon test now parses
-  `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
-  fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
-
-- **`openai/gpt-5.6-luna` and `anthropic/claude-sonnet-4-5-20250929` are in the
-  bundled model catalog**, so `idea model set` no longer warns on either.
-  `gpt-5.6-luna` is the model this project runs on and the one `README.md` and
-  `docs/quickstart.md` put on the front page, and it warned on every run.
-
-  The catalog feeds `GET /providers`'s `models`, `idea model ls`'s fallback list
-  and the `idea model set` warning, so this is a visible response change.
-  `DefaultModelFor("anthropic")` also moves to the dated id: it leads the row
-  deliberately, being the only anthropic entry the provider's own `/v1/models`
-  returns. The openai row is appended to, leaving its default at `gpt-4o` —
-  changing a default that six releases have shipped is a separate decision from
-  fixing a warning, and this entry is the latter.
-
-  Nothing was removed. The four undated anthropic ids are absent from the live
-  listing, but a listing omits aliases by construction and a direct probe could
-  not settle it (every id returned `400 credit balance is too low`, because
-  billing is checked before the model name), so removing them on an unproven
-  claim would also have broken `internal/config/catalog_warning_test.go`. That
-  contradiction is recorded in `docs/plans/deferred.md` as audit 8 / E6.
-
 ### Changed — BREAKING
 
 - **Two API state guards: `revise-plan` refuses a plan whose work has started,
@@ -573,7 +72,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   ("follows anything that writes 409") is worse than the gap: `writeErr` carries
   a literal `StatusConflict` and 75 functions call it, so it would demand a
   spurious 409 on 78 of 81 routes.
-
 
 - **`idea verify` can no longer complete a failed initiative, and it no longer
   discards a requirement you named.** Two defects in one command, both found by
@@ -851,7 +349,500 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   A script treating `idea doctor`'s exit code as "is this install healthy" now
   sees a failure it previously could not, which is the point of it.
 
+### Added
+
+- **`make version-check` now proves released changelog sections have not
+  changed.** A released section is immutable — goreleaser ships `CHANGELOG.md`
+  in every archive — so editing one rewrites what shipped, and moving entries
+  out of one re-advertises old work as new. `e53bf2f` did exactly that with 29
+  lines of v0.1.0 history, and nothing saw it: no line was deleted, so a
+  lost-line or line-count check would have passed.
+
+  The baseline is the **newest** tag, not each section's own tag. That
+  distinction is load-bearing: `[0.1.0]` was legitimately corrected between
+  v0.1.0 and v0.2.0, so comparing each section to its own tag fails forever and
+  would force re-introducing a false claim to satisfy a checker. It rides
+  `version-check` rather than adding a tenth target, and `compile-no-node` now
+  checks out with `fetch-depth: 0` — without tags the rule skips, and it says so
+  rather than printing a green line. It also fails closed if the tag-side file
+  parses to no sections at all, rather than reporting success having compared
+  nothing.
+
+  **The cost, stated rather than discovered later:** a deliberate correction to
+  released history is red on every push until the next release moves the
+  baseline. That is the same trade the `[0.1.0]` operation-count fix would have
+  faced. `RELEASING.md` says what to do about it.
+
+- **`idea review <CHG-n> approve --accept-findings`** — a human may accept a
+  change set the adversarial reviewer will not pass, the way `idea approve`
+  already accepts a PRD and `idea approve-plan` a plan.
+
+  This was the **third** live-lock of one shape, and the one that kept the keyed
+  quickstart at 0/3 after the other two were fixed. `idea next` names
+  `idea review CHG-1 approve`; that runs a fresh adversarial review, and a model
+  reviewer is not a fixed point. Worse, the first attempt **persists** its
+  findings, so every later attempt is refused by the `review_open_blocking` deny
+  before the review runs, and `idea apply` answers "needs approval first". Every
+  other command refuses. Measured on `openai/gpt-5.6-luna` and `gpt-4o-mini`
+  alike.
+
+  The accept dispositions the reviewer's open findings on that change set as
+  `accepted_risk` against the human, **re-runs** the deny gate, and does not run
+  a fresh review. Two predicates decide what it may sign off, and both are
+  needed: a finding must carry **no deny code** (`secret_sweep`, `pii`,
+  `host_exec`, `blob_digest_mismatch` — only the reviewer leaves it empty) **and**
+  be undisposed (a failing build check carries no code but is `rejected`, and a
+  failing build is not a judgment to accept away). Anything it declines to touch
+  still denies, naming the code.
+
+  The web UI gets the same affordance, and now renders the error when a verdict
+  is refused rather than swallowing it.
+
+- **`demo.block_change_set_review_cycles`**, and the change-set review has its
+  own fake-provider key. All three adversarial reviews shared the key `review`,
+  so the change-set review could not be made to block on demand — which is why
+  five smoke passes and seven audits never reached the state above. There is a
+  sixth smoke pass now, with a reviewer that blocks 50 times.
+
+- **A tag now gates on everything CI runs, and the spec's version is checked by
+  a machine.** Audit 7 recorded these as the two longest-lived open findings in
+  the project, the two cheapest to fix, and one shared fix.
+
+  `.github/workflows/release.yml` gated a tag on `go vet` and `go test` on
+  `ubuntu-latest`: **none** of the eight guards, no `scripts/smoke.sh`, no macOS
+  job, no web build or unit tests, and no `needs:` on anything. A red
+  `enum-check` or `check-embed` shipped.
+
+  The audit's own suggested fix — *"two lines: `needs: [compile-no-node,
+  backend, macos, web]`"* — does not work: `needs:` resolves job ids **within one
+  workflow file** and cannot reference a job in another. So the release job moves
+  into `ci.yml`, whose unfiltered `on: push:` already ran every guard on a tag
+  push; they simply did not gate. Copying the guard steps into a separate
+  workflow was the alternative and was rejected — a ninth guard added later
+  would not reach the copy, and that divergence *is* the finding.
+
+  `internal/ciguard` asserts a **completeness** rule: every job in `ci.yml`
+  either gates the release, is the release, or is on an explicit exemption list
+  carrying a reason. A test pinning today's four job names would let the next
+  job diverge exactly as this one did.
+
+  `docs/openapi.yaml`'s `info.version` had said `0.1.0` since the file was
+  created — unchanged across v0.1.0, v0.2.0 and v0.3.0, while the spec gained
+  four response codes, a schema, two properties and an enum in this round alone.
+  `make version-check` reads it on two axes: **every push**, it must not be older
+  than the newest released `CHANGELOG.md` heading (this never predicts the next
+  version, and would have fired the first push after v0.2.0); **at tag time**, it
+  must equal the tag, run before goreleaser so a mismatch costs a deleted tag
+  rather than a published release. `info.version` is now `0.4.0`.
+
+  `RELEASING.md` is new. There was no release checklist anywhere — `CONTRIBUTING.md`
+  contained no occurrence of "release" — and the one instruction that existed
+  (*"Bump `info.version` when you tag"*) lived in a hosting document nobody opens
+  at tag time. `CONTRIBUTING.md` also now names the nine targets CI gates on
+  beyond its four; following it exactly produced a red PR.
+
+### Changed
+
+- **`docs/security-model.md`'s `review_open_blocking` row is conditionally
+  overridable.** It sat beside five codes that genuinely are not, and read as
+  flatly non-overridable. Only this one is a reviewer's judgment.
+
+- **Documented model ids now resolve.** `anthropic/claude-3-7-sonnet-latest`
+  (9 sites) and `openrouter/anthropic/claude-3.7-sonnet` are absent from the live
+  catalogs; the examples move to `anthropic/claude-sonnet-4-5-20250929`,
+  `openai/gpt-5.6-luna` and `openrouter/anthropic/claude-opus-5`. The first two
+  were re-checked against the providers' own `/v1/models` on 2026-09-10 and are
+  live; the undated `anthropic/claude-sonnet-4-5` this entry first named is
+  absent from that listing, which is why the examples now carry the date. A ledger predicate pinned to a model id has
+  a shelf life, so the date is part of the claim — audit 4's own D9 row had to be
+  updated for exactly that reason.
+
+- **An initiative reference that matches nothing is now an error, and two
+  commands stopped ignoring theirs.** `docs/cli.md` promised that every
+  initiative-scoped command takes an optional reference defaulting to the most
+  recently created, and used `idea status` as its worked example.
+
+  | | Was | Now |
+  |---|---|---|
+  | `idea <cmd> <unknown-id>` on the 16 reference-taking commands | `resolveInitiative` returned the argument unchecked; whatever downstream 404 that endpoint gave | exit non-zero, `no initiative matching "…"` |
+  | `idea status <id>` / `idea status ZZZZ` | printed **every** initiative, exit 0 | scoped to that initiative; an unknown id is an error |
+  | `idea changed` | acted on `inis[0]` — the **oldest** initiative | acts on the newest, as documented |
+  | `idea changed <id>` | ignored the argument | scoped to that initiative |
+
+  `idea status --json` stays an **array**, filtered to one element when scoped:
+  `docs/cli.md` documents that shape, ledger row `G4` pins the sentence, and
+  `jq '.[0]'` keeps working.
+
+  `idea explain` was folded into `resolveInitiative` rather than left behind —
+  it re-implemented the resolution by hand, so a fix applied to the shared
+  helper would have skipped one of the commands the docs name.
+
+  `idea prd` is deliberately unaffected: its first positional is an artifact
+  **kind**, not a reference.
+
 ### Fixed
+
+- **`idea retry` waits, and reports what the retry reached.** It posted and
+  returned, so retrying against an unchanged cause — the same 401, the same
+  unreachable `base_url` — printed `✓ retry started` and exited 0 while the
+  operation failed half a second later. The tick said the opposite of what
+  happened, on the command whose whole job is recovering from a failure.
+  `--no-wait` keeps the old behaviour.
+
+- **`idea reopen-phase` exists.** `idea revise` has prescribed it since audit 7,
+  in the two states where revising the PRD would discard work below it, and the
+  verb was never added: the route was registered and `docs/api.md` documented
+  it, so following the advice answered `unknown command "reopen-phase"`. A
+  misspelled phase is now refused locally, naming the three the daemon accepts,
+  instead of being sent on to become a `400 invalid body`.
+
+- **`idea doctor` no longer renders an unreadable store as an empty one.**
+  `resolveInitiative` returned a transport failure and "no initiatives yet"
+  through the same error, so doctor printed `graph audit: no initiative yet —
+  nothing to audit` over a store every other command exited 1 on, and reported
+  "all checks passed".
+
+- **`idea doctor` no longer reports "not running" for a daemon that is
+  running.** Its probe builds a client first, which fails when the token file is
+  gone — so after a state-directory wipe doctor said the daemon was down while
+  `curl` got a 200 from it and `idea daemon status` said running. Three answers
+  to one question, and the designated diagnostic had the wrong one. `/health` is
+  unauthenticated, so it is now asked directly.
+
+- **A long model call reports elapsed time.** The provider client allows five
+  minutes per attempt and the engine retries three times, so an endpoint that
+  accepts and never answers produced ~15 minutes in which `working…` was the
+  only output — no counter, no timeout, nothing to separate a slow call from a
+  dead one, while `idea status` said `running` and `idea watch` needs a TTY.
+
+- **`idea reviews` recommends a `harness.yaml` key that exists.** It said `set
+  tests_cmd in harness.yaml`, built by concatenating the finding category with
+  `_cmd`; the field is `test_cmd`, so following it literally made `idea config
+  validate` exit 1 with `additional properties 'tests_cmd' not allowed`. The
+  category is pinned by the `/checks` filter and could not simply be renamed,
+  so the config key is now passed separately, and a test ties every such
+  recommendation to the schema that validates the file.
+
+- **Six precondition refusals say what to run instead, and whose status they
+  are reporting.** `no plan to approve (status=approved)` was reporting the
+  *PRD's* status and read as though the plan were approved.
+
+- **BREAKING: `idea status` exits non-zero when the newest initiative has
+  failed, and `--json` carries `failure_reason`.** It printed `● failed` with
+  the provider's full error and returned 0, so a script running it as a health
+  check could not tell — and the machine path was strictly less informative
+  than the human one about the only thing that matters. **Any script that
+  branched on `idea status`'s exit code saw success unconditionally, and any
+  script that relied on that will now stop.**
+
+  Two deliberate limits. `needs_human_judgment` is *not* a failure: waiting on a
+  person is the loop working, and treating it as an error would make the whole
+  judgment path exit non-zero. And the code reflects only the **newest**
+  initiative — the one every other command means by "the initiative" — because
+  scanning all of them made the exit sticky: one abandoned experiment gated the
+  project's overview command forever, with nothing a user could do to clear it.
+
+  The full exit-code taxonomy remains deferred (audit 8 / E2).
+
+- **A malformed `harness.yaml` answers 422, not 404, and never with an absolute
+  path.** `config.Load` runs while resolving the project, so its failure reached
+  every project-scoped route as a store miss — neither the kind nor the
+  reference `NotFound` promises — carrying the absolute path of the file, which
+  `InternalError` promises never reaches a client. 500 would be the wrong
+  repair: the request cannot succeed until the user edits the file.
+
+  Both malformations, not just the syntactic one: YAML that does not parse, and
+  YAML that parses and the schema rejects. The second is the likelier — a first
+  version of this fix covered only syntax errors, so `tests_cmd`, literally the
+  key this release's own `idea reviews` fix stopped recommending, still 404'd
+  with raw jsonschema text. Reachable on a cold daemon; a running one caches its
+  config, which is why every "export your key" instruction ends in `idea daemon
+  stop`.
+
+- **`idea retry` and `idea reopen-phase` do not exit 0 with the outcome
+  unknown.** Both waited and then, if reading the next step failed, printed
+  `watch progress:` and returned success — the same "reported a start as a
+  result" they were changed to stop doing, one layer up.
+
+- **`docs/openapi.yaml`'s `updateExecutors` 200 is valid JSON Schema again.**
+  `required: [status]` was indented one level too far, landing inside
+  `properties:` — so it declared a property *named* `required` whose value was a
+  list, and the actual constraint was gone. `make api-check` now walks every
+  `properties` node.
+
+- **The spec declares the statuses its handlers emit.** Ten of thirty-six
+  non-GET operations did not declare 500, though `writeErr` promotes any storage
+  failure to it, and `createInitiative` did not declare 404. `createProject` has
+  no path parameter and genuinely cannot 404, which is the one stated exemption.
+
+- **Every operation declares a `default` response.** `403` (host/origin guard)
+  and `405` (wrong method, with an `Allow` header) are emitted on all 81
+  operations and were declared on none — a deliberate choice the spec argues
+  for, but one that leaves an undeclared status as an unhandled branch in most
+  generated clients. `default` gives them somewhere to go without repeating two
+  responses 81 times. The per-operation `404`, `422` and `500` stay literal: a
+  generator cannot turn a catch-all into "this operation answers 404 for a bad
+  id", and the guard requires the literal keys for that reason.
+
+- **The spec's own operation count is right.** It said 84 as the justification
+  for not declaring 404 and 405 per operation; there are 81. An argument about a
+  set that miscounts its subject is the weakest kind, and prose is exactly what
+  rots — so the number is now checked.
+
+- **The graph endpoints say that human codes do not resolve.** `impact-counts`'
+  worked example was `requirement:req-1`, a form that returns `0` rather than an
+  error — indistinguishable from a node with no edges. `ChangeSetId` promises
+  both forms resolve; `GraphNodeId` said only "Graph node id."
+
+- **Both config `PUT`s say they are not round-trippable from their `GET`.**
+  `GET /providers` carries `demo`, `models` and `git_commit` beside the writable
+  fields, so echoing it back answers `400 json: unknown field "demo"`; and
+  `GET /executors` is a catalog of all four executor kinds rather than a
+  projection of the config, so there is no round trip to perform at all.
+
+- **`--accept-findings` is documented where the magic path is.** It reached the
+  code and both demo guides and neither `README.md` nor `docs/quickstart.md` —
+  the two documents most readers actually follow — so a reader on the keyed path
+  who hit a blocking finding had no documented way past it.
+
+- **`internal/daemon/runtime.go` no longer asserts that a blocking change-set
+  finding cannot be cleared.** It can, and has been able to since audit 7. The
+  ledger row pinning that sentence was green over it, because its predicate
+  contained a two-character `\n` that could never match; `ledger-check` now
+  rejects an escape sequence in a predicate, since an unmatchable `present:` is
+  indistinguishable from a fixed defect.
+
+- **`docs/demo-greenfield.md` shows each command beside its output again.** The
+  `--accept-findings` note had been inserted between the two.
+
+- **`README.md` and `docs/quickstart.md` describe the keyed path as it actually
+  runs.** Both presented the magic-path block as a straight line. Measured on
+  `openai/gpt-5.6-luna`, 2 of 2 runs, it is not: the PRD review does not
+  converge and the plan review raises blocking findings, so it stops for a human
+  twice before reaching `idea review`; `idea review CHG-1 approve` can refuse on
+  an open critical finding; and the requirement is not `REQ-1`, because every
+  review cycle supersedes the requirement set and mints new codes — one run
+  created 34 rows, superseded 22, and ended with `REQ-23`–`REQ-34`.
+
+  Nothing in the product was wrong here: `idea new` and `idea next` name the
+  command that moves it on, and verifying a superseded code answers
+  `requirement "REQ-1" in state "removed" cannot take a human judgment`. The
+  documents were written against the demo provider, where the review converges
+  on the first cycle and `REQ-1` therefore survives, and they did not say so.
+
+- **`idea approve`'s advice line no longer overstates what it does.** `idea next`
+  offered it as "accept the PRD as it stands and move to design", while
+  `cmdApprove` posts, prints `✓ PRD approved` and tells you to run `idea next
+  --until-human` — the command's own output contradicting the advice one step
+  earlier.
+
+- **CI runs `make build`, the way CONTRIBUTING documents it.** It ran a bare
+  `go build ./...`, which compiles every package but skips what the target
+  actually does — embed the web UI, stamp the version through ldflags, write
+  `bin/idea`, restore the placeholder. A contributor following CONTRIBUTING
+  could be green locally on a target CI never ran. A test now asserts every
+  documented `make` target appears in a CI `run:` step, with `test` and `vet`
+  exempt because CI runs their bodies verbatim.
+
+- **`scripts/smoke.sh` no longer fails at random.** Its assertions piped a
+  command into `grep -q` under `set -o pipefail`, which fails *even when the
+  grep matches*: `grep -q` exits on the first match and closes the pipe, the Go
+  binary is usually still writing, the next write gets EPIPE, and Go re-raises
+  SIGPIPE on stdout — so the process dies with 141 and `pipefail` adopts that as
+  the pipeline's status. The `||` branch then printed a message saying the
+  output was wrong when it was not.
+
+  Measured against the real binary on a preserved failing state: 7 failures in
+  150 runs of `idea reviews | grep -q 'Review findings'`, with all three
+  findings present and printed correctly whenever the command ran on its own —
+  and 0 in 150 for the capture-then-grep shape now used. That 4.7% matches the
+  rate observed across 33 full runs. This is a test-harness defect, not a
+  product one, but it made every other guard's green worth less.
+
+- **The very first `idea init` reports the cause too.** The daemon's stderr is
+  redirected into `daemon.log`, but only if the file opens — and on a first run
+  the state root does not exist yet, so that failed silently and a start failure
+  produced the generic message pointing at `idea logs`, over an empty log. That
+  is the one moment the message most needs to be specific. Measured: 0.1 s with
+  no cause before, 1.3 s with the full bind error after.
+
+- **`idea init` reports a failed daemon start instead of hanging.** With a
+  non-daemon process holding the port, it printed *nothing at all* for a
+  code-bound ~51 minutes: the health probe used the 60-second data-call timeout,
+  `ensureDaemon` calls it 51 times, and the loop could not tell "not ready yet"
+  from "already dead". The reason was in `daemon.log` the whole time and the
+  message only named the command that would show it, while `idea doctor`,
+  `idea status` and `idea daemon status` stalled on the same probe — the last
+  answering `daemon is not running` after a full minute.
+
+  The probe now has its own 2-second timeout, the spawned daemon is waited on so
+  an immediate exit ends the loop at once, and the failure quotes the log:
+  `the daemon exited immediately: idea: listen tcp 127.0.0.1:8787: bind: address
+  already in use; run \`idea logs\` for the full output`.
+
+  Observed **4 seconds** when the daemon exits, which is the held-port case. Be
+  precise about the other one: if the spawned daemon *hangs* instead of exiting,
+  the child-watch never fires and the bound is the loop — 50 × (2s + 100ms), or
+  **~107 seconds**. That is 1.8 minutes rather than 51, not 4 seconds.
+
+  Only the log this run produced is quoted. `daemon.log` is opened `O_APPEND`
+  and never rotated, so the last line of the file is whatever failed last —
+  possibly weeks ago, possibly a routine startup line from a run that worked.
+  The offset is recorded before the child starts, and the `idea logs` hint
+  survives, because quoting one line must not remove the route to the rest.
+
+- **An ambiguous `CHG-n` now names the candidates.** `idea next` prescribes
+  `idea apply CHG-1`; with two initiatives in one project each holding a CHG-1,
+  that command always failed with *"use the full change set id"* — and no
+  human-readable command printed one. `idea changes` resolves a single
+  initiative and prints the human id only, while apply/review/change resolve
+  project-wide, so the lister and the resolver disagreed about scope. The id
+  existed solely in `idea changes --json`, which nothing named, and `next` went
+  on exiting 0 and prescribing the same failing command.
+
+  The refusal now lists each candidate's full id with its initiative title, so
+  the message itself carries a command that works. Resolving the ambiguity by
+  preferring the newest initiative was rejected: silently applying a change set
+  from the wrong initiative is worse than refusing.
+
+  `idea next` no longer sends anyone there in the first place: it prints the
+  full id when, and only when, the human one is ambiguous, so its prescription
+  always runs. The readable `CHG-1` is still what you see in the ordinary case,
+  which is almost always.
+
+- **A rejected oversized context doc no longer strands an initiative.**
+  `POST …/initiatives` with a doc over the size cap answered 413 having already
+  committed the initiative as `running`, with no operation row — and nothing
+  could reach it. `reconcileStaleOperations` sweeps operations, `retry` and
+  `resume` both refused, `next` answered `wait` forever, the project's attention
+  list stayed wedged, and there is no DELETE route: recovery meant hand-editing
+  SQLite. The size check now runs with the other two in the pre-validation loop,
+  making true a comment that had promised exactly this since it was written.
+
+  Anything that still fails after the row exists — a blob write, or creating the
+  operation — now marks the initiative `failed` with the reason rather than
+  leaving it `running`, because `idea retry` requires precisely that status.
+
+- **The phase rail derives Define from the judgment reason, not from an
+  artifact.** `phases.ts` used execution-plan artifact presence to tell an
+  M1-review park from an M2-plan park, since both share
+  `needs_human_judgment`. The artifact is a proxy — `runExecutionPlan` writes it
+  before the dependency check — so a park on `prd_review`, or one carrying no
+  reason at all, read as past Define merely because an artifact from an earlier
+  cycle was lying around. `running` and `failed` record no reason and keep the
+  artifact check, because the status is `running` for the whole of every M2 and
+  M3 operation and dropping it would un-complete Define mid-build.
+
+  Fixed on **both** consumers. `ProductHome` reaches `derivePhases` through
+  `rollupPhaseSource`, and `InitiativeRollup` carried no reason in the Go
+  struct, the projection, the OpenAPI schema or the TS mirror — so fixing only
+  `App.tsx` would have left the bug on the page that renders the rail for every
+  initiative at once. A plan review caught that; the first draft named one
+  consumer.
+
+  An empty reason is treated as *not* past Define rather than falling back to
+  the artifact check. Migration 18 backfills nothing, so every pre-migration
+  park carries `''` whichever path parked it — including `plan_dependencies`,
+  whose artifact is present — and the fallback would have re-run the wrong
+  inference on exactly the population it is wrong for.
+
+- **`scripts/ci-test-summary.py` reported success over a run that never
+  finished.** It failed only on an `action == "fail"` event carrying a `Test`.
+  Measured on go1.25.5, three of the four ways a run dies emit no such event: a
+  compile error, a panic in `TestMain`, and a panic in a background goroutine
+  that takes the binary down mid-test. Only a panic *inside* a test was caught.
+  So the macOS job could go green while printing `All tests passed (0 package(s)
+  with tests).`
+
+  Every failing shape emits a package-scoped `fail` with no `Test`, and the
+  script already discriminated on exactly that shape for the *pass* case and had
+  no `fail` counterpart. It has one now, plus `build-fail`, plus the `go test`
+  exit status for the case no event can describe: an empty file, a non-JSON
+  file, or a stream cut mid-run, each of which the script answered `All tests
+  passed (0 package(s) with tests)`. Five fixtures captured from real runs pin
+  the event shapes, and `ci.yml` passes the status through `|| status=$?` rather
+  than `continue-on-error`, which would swallow it.
+
+  This mattered before the release gated on that job: a gate that can be green
+  on a panic is weaker than it looks.
+
+- **The web UI rendered a frozen `v0.1.0`.** `HealthPage` fell back to that
+  literal whenever `/health` had not resolved, so a page loading against a v0.3.0
+  daemon showed a version three releases old as though it were the running build
+  — `info.version`'s defect, user-visible. It shows an em dash now, which is
+  what is true.
+
+- **The other two judgment reasons are exercised end to end.**
+  `demo.block_plan_review_cycles` and `demo.dangle_plan_dependency` make the
+  demo provider produce a blocked plan review and a plan with a dependency no
+  task provides, so `scripts/smoke.sh` now drives all four `needs_human_judgment`
+  reasons — in one initiative that still reaches `✓ initiative complete`.
+
+  The plan review also got its own fake-provider queue key. All three adversarial
+  reviews shared one, so a queued response could outlive the review it was meant
+  for and land on the **change-set** review, where a blocking finding cannot be
+  cleared by anything the CLI can do. The name is a demo discriminator only —
+  real providers send the schema body — so separating them costs nothing and
+  retires that hazard.
+
+- **The demo provider can be told to block a review, and `scripts/smoke.sh`
+  now drives the human-judgment branch on every push.** `demo.block_review_cycles`
+  in `.idea-harness/harness.yaml` makes the built-in provider's adversarial
+  reviewer emit a blocking finding for that many calls.
+
+  The reviewer returned `{"findings":[]}` unconditionally, so the review loop
+  always converged and `needs_human_judgment` was **structurally unreachable**
+  on the only path CI, the smoke script and six DX audits ever ran. That is how
+  a P0 failing 4/4 runs of the README's own quick start survived six rounds, and
+  why nothing would have caught the `idea approve` defect above — the new smoke
+  pass reproduces it exactly (`initiative has open blocking findings; cannot
+  complete`) when the fix is reverted.
+
+  A count consumed from a queue, not a flag: all three adversarial reviews share
+  one schema name, and a blocking finding on a *change set* cannot be cleared by
+  anything the CLI can do.
+
+- **Two step-by-step demo guides, linked from the README.**
+  [`docs/demo-greenfield.md`](docs/demo-greenfield.md) walks an empty directory to a verified,
+  complete initiative; [`docs/demo-existing-project.md`](docs/demo-existing-project.md) points the
+  same loop at a repository that already has code. Neither needs an API key.
+
+  The existing-project path had never been exercised — no script, test or document ran `idea init`
+  inside a directory that already had files, and both the README quick start and the quickstart
+  begin with `mkdir`. Writing it turned up three things worth stating plainly, all verified by
+  running them: `idea docs add` fails before an initiative exists, so grounding on your own source
+  goes through `idea new --doc`; the default executor writes a placeholder and leaves existing
+  files byte-identical, which the guide has the reader confirm with `md5` rather than assert; and
+  `.idea-harness/` lands untracked, holding portable config worth committing while runtime state
+  stays outside the repo.
+
+- **A response-schema guard.** Three guards already compared routes to the spec, request-body field
+  names to handlers, and spec enums to domain constants; none looked at what a response actually
+  contains. That is why `Coverage.status` was returned for months and documented nowhere,
+  `RequirementStatus` listed four of six values, and `/doctor` and `/diff` answered `null` where the
+  spec says `array` — each found by a human reading, one at a time. A daemon test now parses
+  `openapi.yaml` and validates every reachable `GET` response against its declared schema: required
+  fields present, array-typed fields not null. 65 responses across a populated and a bare fixture.
+
+- **`openai/gpt-5.6-luna` and `anthropic/claude-sonnet-4-5-20250929` are in the
+  bundled model catalog**, so `idea model set` no longer warns on either.
+  `gpt-5.6-luna` is the model this project runs on and the one `README.md` and
+  `docs/quickstart.md` put on the front page, and it warned on every run.
+
+  The catalog feeds `GET /providers`'s `models`, `idea model ls`'s fallback list
+  and the `idea model set` warning, so this is a visible response change.
+  `DefaultModelFor("anthropic")` also moves to the dated id: it leads the row
+  deliberately, being the only anthropic entry the provider's own `/v1/models`
+  returns. The openai row is appended to, leaving its default at `gpt-4o` —
+  changing a default that six releases have shipped is a separate decision from
+  fixing a warning, and this entry is the latter.
+
+  Nothing was removed. The four undated anthropic ids are absent from the live
+  listing, but a listing omits aliases by construction and a direct probe could
+  not settle it (every id returned `400 credit balance is too low`, because
+  billing is checked before the model name), so removing them on an unproven
+  claim would also have broken `internal/config/catalog_warning_test.go`. That
+  contradiction is recorded in `docs/plans/deferred.md` as audit 8 / E6.
 
 - **`idea approve-plan` succeeded and left the initiative unable to finish.**
   A plan review that blocked once and passed on a later run kept its blocking
