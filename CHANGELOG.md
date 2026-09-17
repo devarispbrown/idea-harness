@@ -9,7 +9,34 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-17
+
 ### Changed — BREAKING
+
+- **`idea status` exits non-zero when the newest initiative has failed, and
+  `--json` carries `failure_reason`.**
+
+  | | Was | Now |
+  |---|---|---|
+  | `idea status` with a failed newest initiative | printed `● failed` and the provider's full error, exit **0** | same output, exit **1**, the reason on stderr |
+  | `idea status --json` on a failed initiative | `[{"id","title","status"}]` | the same, plus `"failure_reason"` |
+  | `idea status` with an *older* failed initiative and a healthy newest one | exit 0 | exit 0 — unchanged |
+  | `idea status` on `needs_human_judgment` | exit 0 | exit 0 — unchanged |
+
+  **Any script that branched on `idea status`'s exit code saw success
+  unconditionally, and any script that relied on that will now stop.** A script
+  running it as a health check could not previously tell that an initiative had
+  failed, and the machine path was strictly less informative than the human one
+  about the only thing that matters.
+
+  Two deliberate limits. `needs_human_judgment` is *not* a failure: waiting on a
+  person is the loop working, and treating it as an error would make the whole
+  judgment path exit non-zero. And the code reflects only the **newest**
+  initiative — the one every other command means by "the initiative" — because
+  scanning all of them made the exit sticky: one abandoned experiment gated the
+  project's overview command forever, with nothing a user could do to clear it.
+
+  The full exit-code taxonomy remains deferred (audit 8 / E2).
 
 - **Two API state guards: `revise-plan` refuses a plan whose work has started,
   and three endpoints refuse a field they do not declare.** Both are the
@@ -526,23 +553,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **Six precondition refusals say what to run instead, and whose status they
   are reporting.** `no plan to approve (status=approved)` was reporting the
   *PRD's* status and read as though the plan were approved.
-
-- **BREAKING: `idea status` exits non-zero when the newest initiative has
-  failed, and `--json` carries `failure_reason`.** It printed `● failed` with
-  the provider's full error and returned 0, so a script running it as a health
-  check could not tell — and the machine path was strictly less informative
-  than the human one about the only thing that matters. **Any script that
-  branched on `idea status`'s exit code saw success unconditionally, and any
-  script that relied on that will now stop.**
-
-  Two deliberate limits. `needs_human_judgment` is *not* a failure: waiting on a
-  person is the loop working, and treating it as an error would make the whole
-  judgment path exit non-zero. And the code reflects only the **newest**
-  initiative — the one every other command means by "the initiative" — because
-  scanning all of them made the exit sticky: one abandoned experiment gated the
-  project's overview command forever, with nothing a user could do to clear it.
-
-  The full exit-code taxonomy remains deferred (audit 8 / E2).
 
 - **A malformed `harness.yaml` answers 422, not 404, and never with an absolute
   path.** `config.Load` runs while resolving the project, so its failure reached
