@@ -17,6 +17,15 @@ export interface ExecutorStatusInput {
   // Information that does not block a run (e.g. an image the first run will
   // download).
   note?: string;
+  // S2: the project's newest smoke test, for the SELECTED executor only
+  // (omitted for every other row in the list, and for one that has never
+  // run). Settings reads this to show "Last smoke test passed 5 min ago"
+  // on load, surviving a reload that lost track of any in-flight operation.
+  last_smoke?: {
+    status: string;
+    finished_at?: string;
+    error?: string;
+  };
 }
 
 export interface ExecutorStatusLine {

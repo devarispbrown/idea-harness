@@ -2744,3 +2744,34 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   overflow-wrap: anywhere;
 }
 .cs-finding-rec { display: block; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
+
+/* ---- run experience (S3/L3/C3) ---- */
+/* S3: Settings → Executor's smoke-test controls. */
+.smoke-test { margin-top: 14px; }
+.smoke-test .row { margin-bottom: 0; }
+.smoke-test p { margin: 8px 0 0; }
+
+/* L3: the running card's live "Agent output" panel. */
+.agent-output { margin-top: 12px; }
+.agent-output > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.agent-output-note { margin: 6px 0; }
+.agent-output-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  /* ~12 lines: line-height 1.5 * 11.5px * 12 -> a fixed box that scrolls
+     rather than growing the card with the log. */
+  height: 207px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
