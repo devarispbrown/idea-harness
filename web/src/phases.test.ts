@@ -85,6 +85,42 @@ describe("derivePhases and the Define phase", () => {
   });
 });
 
+// K: the rail is one linear source of truth. A phase's own artifact-based
+// `done` flag is not monotonic by itself (design artifacts can exist before
+// the PRD is approved), so the STATE must come from position relative to the
+// first incomplete phase, never from re-checking each phase's flag in
+// isolation -- otherwise a later phase can render "done" while an earlier one
+// hasn't started.
+describe("derivePhases rail ordering", () => {
+  it("never shows a later phase as done while an earlier one is still incomplete", () => {
+    const src: PhaseSource = {
+      status: "running",
+      judgmentReason: undefined,
+      artifacts: [
+        { kind: "idea_brief", version: 1 },
+        { kind: "research_brief", version: 1 },
+        // No PRD -- Define has not been approved -- but the design artifacts
+        // exist anyway (e.g. left over from an earlier cycle).
+        { kind: "technical_design", version: 1 },
+        { kind: "design_spec", version: 1 },
+        { kind: "verification_plan", version: 1 },
+      ],
+      tasks: [],
+      changeSets: [],
+      verifiedRequirements: 0,
+    };
+    const states = derivePhases(src);
+    expect(states.find((p) => p.phase === "define")!.state).toBe("current");
+    expect(states.find((p) => p.phase === "design")!.state).toBe("future");
+  });
+
+  it("only the current phase carries a live note; a phase past current is 'done', never 'current'", () => {
+    const states = derivePhases({ ...base, status: "plan_approved", judgmentReason: undefined });
+    expect(states.find((p) => p.phase === "define")!.state).toBe("done");
+    expect(states.filter((p) => p.state === "current")).toHaveLength(1);
+  });
+});
+
 // ProductHome derives its rail from the rollup, not from App's literal, so a
 // fix applied only to App leaves the bug on the page that renders it for every
 // initiative at once.

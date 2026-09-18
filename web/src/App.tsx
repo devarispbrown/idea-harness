@@ -30,7 +30,9 @@ import {
   type PhaseSource,
   type PhaseState,
 } from "./phases";
-import { currentRoute, navigate, type Route, type PhaseName } from "./router";
+import { PHASES, currentRoute, navigate, phaseHref, type Route, type PhaseName } from "./router";
+import { daemonDownAfterPoll, daemonLostMessage } from "./daemonStatus";
+import { verifiedRequirementCount } from "./verify";
 
 interface Project {
   id: string;
@@ -75,18 +77,27 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const [demo, setDemo] = useState(false);
   const [attention, setAttention] = useState<InitiativeRollup[]>([]);
+  const [verifiedRequirements, setVerifiedRequirements] = useState(0);
+  const [initiativesLoaded, setInitiativesLoaded] = useState(false);
 
   const [daemonDown, setDaemonDown] = useState(false);
 
+  // loadProjects, loadInitiatives, loadAttention and loadInitiativeData each
+  // report their own success/failure into daemonDownAfterPoll (H1) rather
+  // than only the first, one-shot project load. Critically, none of them
+  // ever writes a failure's result into state -- only a successful fetch
+  // updates its piece of state, so a dead daemon can flip `daemonDown` but
+  // can never overwrite the last good data with `[]` (see daemonStatus.ts).
   const loadProjects = useCallback(async () => {
     try {
       const ps = (await get<Project[]>("/projects")) ?? [];
       setProjects(ps);
       if (ps.length > 0) setProjectId((prev) => prev || ps[0].project_id);
-      setDaemonDown(false);
+      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
     } catch {
-      setDaemonDown(true);
+      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
     }
   }, []);
 
@@ -94,8 +105,10 @@ export default function App() {
     try {
       const list = (await get<Initiative[]>(`/projects/${pid}/initiatives`)) ?? [];
       setInitiatives(list);
+      setInitiativesLoaded(true);
+      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
     } catch {
-      /* ignore */
+      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
     }
   }, []);
 
@@ -103,20 +116,28 @@ export default function App() {
     try {
       const res = await get<{ items: InitiativeRollup[] }>(`/projects/${pid}/attention`);
       setAttention(res.items ?? []);
+      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
     } catch {
-      /* ignore */
+      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
     }
   }, []);
 
   const loadInitiativeData = useCallback(async (pid: string, iniId: string) => {
-    const [a, t, c] = await Promise.all([
-      get<Artifact[]>(resource(pid, iniId, "artifacts")).catch(() => []),
-      get<Task[]>(`/projects/${pid}/initiatives/${iniId}/tasks`).catch(() => []),
-      get<ChangeSet[]>(resource(pid, iniId, "change-sets")).catch(() => []),
+    const settled = await Promise.allSettled([
+      get<Artifact[]>(resource(pid, iniId, "artifacts")),
+      get<Task[]>(`/projects/${pid}/initiatives/${iniId}/tasks`),
+      get<ChangeSet[]>(resource(pid, iniId, "change-sets")),
+      get<{ status: string }[]>(resource(pid, iniId, "requirements")),
     ]);
-    setArtifacts(a ?? []);
-    setTasks(t ?? []);
-    setChangeSets(c ?? []);
+    const [a, t, c, r] = settled;
+    if (a.status === "fulfilled") setArtifacts(a.value ?? []);
+    if (t.status === "fulfilled") setTasks(t.value ?? []);
+    if (c.status === "fulfilled") setChangeSets(c.value ?? []);
+    // The sidebar's "N requirements verified" is derived from the same
+    // requirements list, and the same counting function, as the Verify page
+    // itself (K) -- previously this was hard-coded to 0 here and never wired.
+    if (r.status === "fulfilled") setVerifiedRequirements(verifiedRequirementCount(r.value ?? []));
+    setDaemonDown(daemonDownAfterPoll(settled.map((x) => ({ ok: x.status === "fulfilled" }))));
   }, []);
 
   useEffect(() => {
@@ -127,8 +148,11 @@ export default function App() {
     if (!projectId) return;
     loadInitiatives(projectId);
     loadAttention(projectId);
-    get<{ default_model: string }>(`/projects/${projectId}/providers`)
-      .then((v) => setDefaultModel(v.default_model || ""))
+    get<{ default_model: string; demo?: boolean }>(`/projects/${projectId}/providers`)
+      .then((v) => {
+        setDefaultModel(v.default_model || "");
+        setDemo(v.demo ?? false);
+      })
       .catch(() => {});
   }, [projectId, loadInitiatives, loadAttention]);
 
@@ -140,7 +164,9 @@ export default function App() {
   }, []);
 
   const initiativeId =
-    route.name !== "home" && route.name !== "settings" ? route.id : "";
+    route.name !== "home" && route.name !== "settings" && route.name !== "not-found"
+      ? route.id
+      : "";
   const currentInitiative = initiativeId
     ? initiatives.find((i) => i.id === initiativeId) ?? null
     : null;
@@ -169,7 +195,7 @@ export default function App() {
     artifacts,
     tasks,
     changeSets,
-    verifiedRequirements: 0, // wired in the Verify page (step 9)
+    verifiedRequirements,
   };
   const phases = derivePhases(phaseSource);
   const activePhase: PhaseName | "settings" =
@@ -199,9 +225,7 @@ export default function App() {
     return (
       <div className="empty">
         <h1>idea-harness</h1>
-        <p className="error">
-          Lost connection to the daemon at 127.0.0.1:8787.
-        </p>
+        <p className="error">{daemonLostMessage(window.location.host)}</p>
         <p className="muted">Nothing will update until it's back. Run <code>idea daemon</code> to restart it.</p>
       </div>
     );
@@ -237,43 +261,73 @@ export default function App() {
     : [];
 
   return (
-    <div className="app-shell">
-      <PhaseNav
-        initiative={currentInitiative}
-        projectName={project?.name ?? ""}
-        initiativeIndex={initiativeIndex}
-        initiativeCount={initiatives.length}
-        phases={phases}
-        active={activePhase}
-        inbox={inbox}
-        modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
-        onNavigate={navigate}
-      />
+    <div className="app-root">
+      {demo && (
+        <div className="banner banner-app">
+          Demo mode — this project has no model provider configured, so every
+          document, review and change you see here is synthetic.{" "}
+          <a
+            href="#/settings"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate("#/settings");
+            }}
+          >
+            Configure a provider in Settings → Providers
+          </a>
+          .
+        </div>
+      )}
+      <div className="app-shell">
+        <PhaseNav
+          initiative={currentInitiative}
+          projectName={project?.name ?? ""}
+          initiativeIndex={initiativeIndex}
+          initiativeCount={initiatives.length}
+          phases={phases}
+          active={activePhase}
+          inbox={inbox}
+          modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
+          onNavigate={navigate}
+        />
 
-      <main className="phase-main">
-        {currentInitiativeId && currentInitiative?.status === "failed" && (
-          <FailedBanner
-            projectId={projectId}
-            initiativeId={currentInitiativeId}
-            reason={currentInitiative.failure_reason}
-            defaultModel={defaultModel || "idea-harness-default"}
-          />
-        )}
+        <main className="phase-main">
+          {currentInitiativeId && currentInitiative?.status === "failed" && (
+            <FailedBanner
+              projectId={projectId}
+              initiativeId={currentInitiativeId}
+              reason={currentInitiative.failure_reason}
+              defaultModel={defaultModel || "idea-harness-default"}
+            />
+          )}
 
-        {currentInitiativeId && (
-          <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
-        )}
+          {currentInitiativeId && (
+            <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
+          )}
 
-        {route.name === "home" && (
-          <ProductHome
-            initiatives={initiatives}
-            attention={attention}
-            onOpen={(id) => navigate(`#/i/${id}/explore`)}
-            onCreate={createIdea}
-          />
-        )}
+          {route.name === "home" && (
+            <ProductHome
+              initiatives={initiatives}
+              attention={attention}
+              projectName={project?.name ?? ""}
+              onOpen={(id) => navigate(`#/i/${id}/explore`)}
+              onCreate={createIdea}
+              onOpenSettings={() => navigate("#/settings")}
+            />
+          )}
 
         {route.name === "settings" && <Settings projectId={projectId} />}
+
+        {route.name === "phase" && !currentInitiative && initiativesLoaded && (
+          <NotFound
+            title="Initiative not found"
+            detail={`There's no initiative "${route.id}" in this project.`}
+          />
+        )}
+
+        {route.name === "not-found" && (
+          <NotFound title="Page not found" detail={`There's nothing at #/${route.path}.`} />
+        )}
 
         {route.name === "phase" && currentInitiative && route.phase === "define" && (
           <DefinePage
@@ -323,6 +377,30 @@ export default function App() {
           </PhasePage>
         )}
 
+        {route.name === "phase" &&
+          currentInitiative &&
+          (() => {
+            // The handoff link: once the phase being viewed has actually
+            // completed (per the SAME single-source rail as the sidebar, not
+            // a re-derivation), point at the next one. Verify is terminal --
+            // there is nothing after it.
+            const state = phases.find((p) => p.phase === route.phase);
+            if (state?.state !== "done") return null;
+            const idx = PHASES.indexOf(route.phase);
+            const next = PHASES[idx + 1];
+            if (!next) return null;
+            return (
+              <div className="phase-handoff">
+                <button
+                  className="phase-handoff-link"
+                  onClick={() => navigate(phaseHref(currentInitiative.id, next))}
+                >
+                  Next: {PHASE_LABELS[next]} →
+                </button>
+              </div>
+            );
+          })()}
+
         {route.name === "decision" && (
           <DecisionPage projectId={projectId} initiativeId={route.id} decisionId={route.decisionId} />
         )}
@@ -335,9 +413,25 @@ export default function App() {
         {route.name === "diff" && (
           <ArtifactDiffPage projectId={projectId} from={route.from} to={route.to} />
         )}
-      </main>
+        </main>
 
-      <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
+        <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
+      </div>
+    </div>
+  );
+}
+
+// NotFound covers both a bogus route (K: a mistyped or stale hash used to
+// silently resolve to home) and a phase link to an initiative that doesn't
+// exist in this project -- previously a blank main area in both cases.
+function NotFound({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="empty">
+      <h1>{title}</h1>
+      <p className="muted">{detail}</p>
+      <button className="jc-primary" onClick={() => navigate("#/")}>
+        Back to initiatives
+      </button>
     </div>
   );
 }
