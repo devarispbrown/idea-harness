@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { unwrapError } from "./api";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { api, NetworkError, unwrapError } from "./api";
 
 // F2: api.ts must throw an Error whose .message is the server's `error`
 // string when the body is `{"error": "..."}`, and the raw text or status
@@ -38,5 +38,42 @@ describe("unwrapError", () => {
 
   it("does not treat a non-string `error` field as a usable message", () => {
     expect(unwrapError('{"error":404}', 400, "Bad Request")).toBe('{"error":404}');
+  });
+});
+
+// M4: the daemon-down screen must trigger on a network failure (fetch itself
+// rejecting -- no response reached at all), never on an HTTP error response
+// (a 404/500 IS the daemon answering). This pins down which of the two `api`
+// throws in each case.
+describe("api / NetworkError", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("throws NetworkError when fetch itself rejects", async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(api("GET", "/whatever")).rejects.toBeInstanceOf(NetworkError);
+  });
+
+  it("keeps the underlying message on a NetworkError", async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(api("GET", "/whatever")).rejects.toThrow("Failed to fetch");
+  });
+
+  it("throws a plain Error, not NetworkError, for an HTTP error response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response('{"error":"provider refused the request"}', {
+        status: 500,
+        statusText: "Internal Server Error",
+      }),
+    );
+    try {
+      await api("GET", "/whatever");
+      throw new Error("expected api() to throw");
+    } catch (e) {
+      expect(e).not.toBeInstanceOf(NetworkError);
+      expect(e instanceof Error ? e.message : String(e)).toBe("provider refused the request");
+    }
   });
 });

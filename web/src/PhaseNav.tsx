@@ -1,6 +1,6 @@
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
-import type { PhaseState } from "./phases";
+import { currentPill, type PhaseState } from "./phases";
 
 interface InboxItem {
   initiativeId: string;
@@ -18,25 +18,6 @@ interface Props {
   modelChip: string;
   modelDot?: "ready" | "warn";
   onNavigate: (href: string) => void;
-}
-
-function currentPill(status: string): { pill: string; note: string } {
-  switch (status) {
-    case "running":
-      return { pill: "▶", note: "working…" };
-    case "needs_human_judgment":
-      return { pill: "!", note: "waiting on you" };
-    case "approved":
-      return { pill: "✓", note: "approved" };
-    case "plan_approved":
-      return { pill: "✓", note: "plan approved" };
-    case "complete":
-      return { pill: "✓", note: "shipped" };
-    case "failed":
-      return { pill: "✕", note: "failed" };
-    default:
-      return { pill: "▶", note: "" };
-  }
 }
 
 export default function PhaseNav({

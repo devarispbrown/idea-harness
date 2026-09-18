@@ -4,13 +4,18 @@ import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import {
   appliedOutcomeLabel,
+  approveErrorMessage,
   buildFailure,
   buildHeaderMeta,
   conflictCause,
   diffChangeTypeLabel,
   errMessage,
+  findingCategoryLabel,
+  hasNoFilesChanged,
   isOperationInFlight,
   isWholeFileRewrite,
+  noDiffMessage,
+  patchLines,
   runButtonState,
   type NextTask,
 } from "./buildLogic";
@@ -31,6 +36,10 @@ interface ChangeSet {
   // set (G3: a demo-model change set never reads SHIPPED, whatever executor
   // ran it). Absent from an older daemon -- treated as "not demo" then.
   model?: string;
+  // executor is the executor KIND that actually produced this change set
+  // (backend contract addition). appliedOutcomeLabel must read this, not the
+  // page's currently-selected executor -- see buildLogic.ts.
+  executor?: string;
 }
 interface Finding {
   id: string;
@@ -50,11 +59,17 @@ interface DiffFile {
   digest?: string;
   size?: number;
   content?: string;
-  // patch is the file's own unified diff. B6: rendering the final `content`
+  // patch is the file's own unified diff (H1: git-style hunks, ' '/'-'/'+'
+  // prefixed lines, no ---/+++ headers). B6: rendering the final `content`
   // alone can't show what was removed, which is exactly how a deleted route
   // hid inside a modified file that looked ADDED. Falls back to `content`
-  // against a daemon that hasn't shipped per-file patches yet.
+  // against a daemon that hasn't shipped per-file patches yet, or that left
+  // `patch` empty because the file was too large/binary to diff.
   patch?: string;
+  // patch_note explains why `patch` is empty (too large, binary) -- H1.
+  // Shown above the `content` fallback so an empty diff area doesn't read as
+  // "nothing changed" when really "this couldn't be diffed".
+  patch_note?: string;
 }
 // Initiative is the slice BuildPage needs off the initiative resource. Both
 // fields are optional so this page works against a daemon that hasn't shipped
@@ -154,7 +169,10 @@ export default function BuildPage({
     try {
       await fn();
     } catch (e) {
-      setCsError((prev) => ({ ...prev, [cs.id]: errMessage(e) }));
+      // approveErrorMessage rewrites the workflow engine's raw "approval
+      // blocked: open HIGH finding: ..." refusal into plain language
+      // pointing at the finding -- it's a no-op for any other message.
+      setCsError((prev) => ({ ...prev, [cs.id]: approveErrorMessage(errMessage(e)) }));
     } finally {
       setCsBusy((b) => {
         const next = { ...b };
@@ -304,10 +322,6 @@ export default function BuildPage({
         }
         const busyAction = csBusy[cs.id];
         const actionError = csError[cs.id];
-        const pillLabel =
-          cs.status === "applied"
-            ? appliedOutcomeLabel(executorName, cs.model)
-            : STATUS_PILL[cs.status]?.label ?? cs.status;
         // Stale-base conflicts (Track A): a stale_base finding means retrying
         // would fail identically, so "Reject and re-run" must outrank
         // "Retry" rather than sit beside it as an equal option.
@@ -315,9 +329,17 @@ export default function BuildPage({
           (f) => f.target_type === "change_set" && f.target_id === cs.id,
         );
         const cause = conflictCause(csFindings);
-        const contextFindings = csFindings.filter(
-          (f) => f.category === "workspace_copy" || f.category === "agent_output",
-        );
+        // An agent that hit a 401 (or otherwise wrote nothing) is not
+        // SHIPPED just because its executor/model both look real -- an
+        // agent_output finding means the diff is genuinely empty, which
+        // appliedOutcomeLabel alone has no way to know.
+        const noFiles = hasNoFilesChanged(csFindings);
+        const pillLabel =
+          cs.status === "applied"
+            ? noFiles
+              ? "No changes"
+              : appliedOutcomeLabel(cs.executor, cs.model)
+            : STATUS_PILL[cs.status]?.label ?? cs.status;
         return (
           <section key={cs.id} className="cs-card">
             <div className="cs-row">
@@ -336,11 +358,15 @@ export default function BuildPage({
             {openDiff === cs.id && (
               <div className="cs-files">
                 {diffFiles.length === 0 ? (
-                  <pre className="cs-diff">{diffText || "(no diff)"}</pre>
+                  <pre className="cs-diff">{diffText || noDiffMessage(noFiles)}</pre>
                 ) : (
                   diffFiles.map((f) => {
-                    const patch = f.patch ?? f.content ?? "";
                     const rewrite = isWholeFileRewrite(f.change_type, f.patch ?? "");
+                    // H1: patch is empty when the backend couldn't diff the
+                    // file (too large, binary) -- patch_note says why, and
+                    // the raw new content is shown underneath it rather than
+                    // silently falling back with no explanation.
+                    const lines = f.patch ? patchLines(f.patch) : [];
                     return (
                       <div key={f.path} className="cs-file">
                         <div className="cs-file-head">
@@ -362,8 +388,19 @@ export default function BuildPage({
                         </div>
                         {f.change_type === "delete" ? (
                           <div className="cs-file-deleted">file deleted</div>
+                        ) : lines.length > 0 ? (
+                          <pre className="cs-file-content">
+                            {lines.map((line, i) => (
+                              <div key={i} className={`cs-diff-line cs-diff-${line.kind}`}>
+                                {line.text}
+                              </div>
+                            ))}
+                          </pre>
                         ) : (
-                          <pre className="cs-file-content">{patch || "(no diff)"}</pre>
+                          <>
+                            {f.patch_note && <p className="muted cs-patch-note">{f.patch_note}</p>}
+                            <pre className="cs-file-content">{f.content || "(no diff)"}</pre>
+                          </>
                         )}
                       </div>
                     );
@@ -371,13 +408,17 @@ export default function BuildPage({
                 )}
               </div>
             )}
-            {cs.status === "conflicted" && contextFindings.length > 0 && (
+            {/* H6: every finding targeting this change set, near the diff,
+                in every status -- not only "conflicted" and not only
+                workspace_copy/agent_output. Before this, an agent that hit a
+                401 and changed nothing showed a bare "(no diff)" next to an
+                Approve button with no explanation: the finding that said why
+                existed but was never rendered outside a conflict. */}
+            {csFindings.length > 0 && (
               <div className="cs-conflict-findings">
-                {contextFindings.map((f) => (
+                {csFindings.map((f) => (
                   <div key={f.id} className={`cs-conflict-finding cs-conflict-${f.category}`}>
-                    <span className="cs-conflict-cat">
-                      {f.category === "workspace_copy" ? "workspace copy" : "agent output"}
-                    </span>
+                    <span className="cs-conflict-cat">{findingCategoryLabel(f.category)}</span>
                     <span className="cs-conflict-text">{f.finding}</span>
                   </div>
                 ))}

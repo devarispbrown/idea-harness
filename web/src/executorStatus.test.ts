@@ -3,6 +3,7 @@ import {
   executorImagePlaceholder,
   executorReady,
   executorStatusLines,
+  isModelFieldError,
   type ExecutorStatusInput,
 } from "./executorStatus";
 
@@ -77,5 +78,21 @@ describe("executorImagePlaceholder", () => {
 
   it("falls back to a generic example when there is no default", () => {
     expect(executorImagePlaceholder(undefined)).toContain("e.g.");
+  });
+});
+
+// Low: saveExecutor used to route every PUT .../executors failure to the
+// Model field, even ones that had nothing to do with it. Only a message
+// naming the model belongs there.
+describe("isModelFieldError", () => {
+  it("claims a message naming the model", () => {
+    expect(isModelFieldError('unknown provider for model "bogus/x"')).toBe(true);
+    expect(isModelFieldError("no Model configured for this executor")).toBe(true);
+  });
+
+  it("does not claim an unrelated failure — the reported defect", () => {
+    expect(isModelFieldError("image lacks a hermes CLI")).toBe(false);
+    expect(isModelFieldError("500 Internal Server Error")).toBe(false);
+    expect(isModelFieldError("unknown executor kind \"bogus\"")).toBe(false);
   });
 });

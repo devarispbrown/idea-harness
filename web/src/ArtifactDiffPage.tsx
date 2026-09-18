@@ -29,7 +29,7 @@ export default function ArtifactDiffPage({
         if (!cancelled) setResp(v);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;

@@ -115,6 +115,31 @@ export function runningTitle(
   return opLabels[opType] ?? opType;
 }
 
+export interface OperationTaskFields {
+  task_id?: string;
+  task_human_id?: string;
+  task_title?: string;
+}
+
+// resolveRunningTask picks which task RunningCard names for a running
+// execute_initiative operation. An operation that carries its own task
+// fields (stamped on it the moment it started) is authoritative and
+// correct even after guidance's "next" pointer has already moved on to a
+// different task; `guidanceNextTask` is the fallback for a daemon that
+// doesn't stamp operations with them yet, which is also the ONLY source
+// RunningCard used to read (H4's other half) -- fetched via an extra
+// request that this function lets the caller skip entirely once the
+// operation itself has the answer.
+export function resolveRunningTask(
+  op: OperationTaskFields,
+  guidanceNextTask: NextTask | null | undefined,
+): NextTask | null {
+  if (op.task_id && op.task_human_id) {
+    return { id: op.task_id, human_id: op.task_human_id, title: op.task_title ?? "" };
+  }
+  return guidanceNextTask ?? null;
+}
+
 const DIFF_CHANGE_LABEL: Record<string, string> = {
   add: "added",
   modify: "modified",
@@ -134,6 +159,13 @@ export function diffChangeTypeLabel(changeType: string): string {
 // BuildPage.tsx:204-228): rendering the final content alone can't distinguish
 // "this route never existed" from "this route was just removed". A patch
 // with zero context lines is the caller's cue to show that warning.
+//
+// H1: the backend's patch is a plain unified diff with NO ---/+++ file
+// headers -- just `@@ -oldStart,oldCount +newStart,newCount @@` hunk headers
+// followed by lines each prefixed with exactly one of ' ' (context), '-', or
+// '+'. This used to also skip lines starting with "+++"/"---" defensively;
+// that defense matched invented fixtures the backend never actually
+// produced, so it's dropped rather than carried forward as dead code.
 export function isWholeFileRewrite(changeType: string, patch: string): boolean {
   if (changeType !== "modify" || !patch) return false;
   let sawHunk = false;
@@ -145,7 +177,6 @@ export function isWholeFileRewrite(changeType: string, patch: string): boolean {
       continue;
     }
     if (!sawHunk) continue;
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
     if (line.startsWith("+") || line.startsWith("-")) {
       sawChangedLine = true;
     } else if (line.startsWith(" ")) {
@@ -153,6 +184,89 @@ export function isWholeFileRewrite(changeType: string, patch: string): boolean {
     }
   }
   return sawHunk && sawChangedLine && !sawContext;
+}
+
+export type PatchLineKind = "hunk" | "add" | "remove" | "context";
+
+export interface PatchLine {
+  kind: PatchLineKind;
+  // The line's text with its one-character prefix stripped (for "add",
+  // "remove", "context"); the hunk header is kept whole since it has no
+  // per-character prefix to strip.
+  text: string;
+}
+
+// patchLines (H1) turns the backend's unified-diff patch into a render-ready
+// list, so BuildPage can style each line by what it is (+/- coloring) instead
+// of dumping the raw text into a flat <pre> where an added and a removed line
+// look identical. Pure and independent of the DOM so the parsing itself is
+// unit-testable.
+export function patchLines(patch: string): PatchLine[] {
+  if (!patch) return [];
+  return patch.split("\n").map((line) => {
+    if (line.startsWith("@@")) return { kind: "hunk", text: line };
+    if (line.startsWith("+")) return { kind: "add", text: line.slice(1) };
+    if (line.startsWith("-")) return { kind: "remove", text: line.slice(1) };
+    if (line.startsWith(" ")) return { kind: "context", text: line.slice(1) };
+    // Malformed/blank line -- render as context rather than dropping it.
+    return { kind: "context", text: line };
+  });
+}
+
+const FINDING_CATEGORY_LABEL: Record<string, string> = {
+  workspace_copy: "workspace copy",
+  agent_output: "agent output",
+  stale_base: "stale base",
+};
+
+// findingCategoryLabel (H6) is the display label for a change-set finding's
+// category. BuildPage used to hard-code a workspace_copy/agent_output-only
+// ternary and only rendered it while the change set was "conflicted" --
+// every other category (stale_base, and whatever else a reviewer emits) and
+// every other status showed nothing, so an agent that hit a 401 and changed
+// nothing rendered as a bare "(no diff)" next to an Approve button with no
+// explanation at all. Falls back to the raw category, not a guess, for
+// anything not named above.
+export function findingCategoryLabel(category: string): string {
+  return FINDING_CATEGORY_LABEL[category] ?? category;
+}
+
+// hasNoFilesChanged is true when the change set carries an agent_output
+// finding -- H6's contract for that category is specifically "the agent
+// changed nothing, and why" (e.g. it hit a 401 and produced no diff at all).
+// Two things key off this: the pill must never call that outcome SHIPPED
+// (appliedOutcomeLabel has no way to know this on its own, since executor
+// and model both look perfectly real), and the diff area should say plainly
+// that nothing changed instead of a bare, unexplained "(no diff)".
+export function hasNoFilesChanged(findings: { category: string }[]): boolean {
+  return findings.some((f) => f.category === "agent_output");
+}
+
+// noDiffMessage is the diff area's placeholder when there is nothing to
+// render. An agent_output finding means the agent produced no diff for a
+// known reason (already shown alongside it via findingCategoryLabel above),
+// so the placeholder says that plainly instead of the generic "(no diff)",
+// which read as if the UI just failed to load something.
+export function noDiffMessage(noFilesChanged: boolean): string {
+  return noFilesChanged ? "The agent changed no files." : "(no diff)";
+}
+
+// APPROVAL_BLOCKED matches the workflow engine's raw refusal from POST
+// .../review — "workflow: approval blocked: open <severity> finding: <text>"
+// — internal error-chain phrasing, not something a reviewer should have to
+// parse. The finding itself is already listed next to the diff (H6); this
+// just makes the button's own refusal point at it in plain language instead
+// of surfacing the wrapped error verbatim.
+const APPROVAL_BLOCKED = /^workflow:\s*approval blocked:\s*open (\w+) finding:?\s*(.*)$/i;
+
+export function approveErrorMessage(raw: string): string {
+  const m = APPROVAL_BLOCKED.exec(raw.trim());
+  if (!m) return raw;
+  const [, severity, text] = m;
+  const detail = text.trim();
+  return detail
+    ? `Can't approve: an open ${severity.toUpperCase()} finding needs to be resolved first — "${detail}"`
+    : `Can't approve: an open ${severity.toUpperCase()} finding needs to be resolved first.`;
 }
 
 export type ConflictCause = "stale_base" | "other";
@@ -170,8 +284,19 @@ export function conflictCause(findings: { category: string }[]): ConflictCause {
 // executor, or built under the demo model, never earned the word "SHIPPED" --
 // nothing real happened. Labeling it "Placeholder change (demo)" instead is
 // what stops a demo run from reading as a real deploy.
-export function appliedOutcomeLabel(executorKind: string, model: string | undefined): string {
-  if (executorKind === "internal" || model === "demo") return "Placeholder change (demo)";
+//
+// `executor` must be the CHANGE SET's own executor (`cs.executor`, the kind
+// that actually produced it -- a backend contract addition), not the page's
+// currently-selected executor. The page-level value used to be passed here,
+// which relabeled every already-applied change set's history the moment
+// someone switched the dropdown, and read "internal" for everything before
+// the page's own executor fetch resolved. A change set predating that field
+// carries `executor: undefined`; the function falls back to the model check
+// alone for it rather than assuming "internal" (which would mislabel a real
+// SHIPPED change made under a real executor and a real model).
+export function appliedOutcomeLabel(executor: string | undefined, model: string | undefined): string {
+  if (executor === "internal") return "Placeholder change (demo)";
+  if (model === "demo") return "Placeholder change (demo)";
   return "SHIPPED";
 }
 
