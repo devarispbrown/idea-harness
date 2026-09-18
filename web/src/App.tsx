@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
+import { providerDotState, type ProviderDotState, type ProviderStatusInput } from "./providerStatus";
 import PhasePage from "./PhasePage";
 import DefinePage from "./DefinePage";
 import ExplorePage from "./ExplorePage";
@@ -78,6 +79,7 @@ export default function App() {
   const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [demo, setDemo] = useState(false);
+  const [modelDot, setModelDot] = useState<ProviderDotState>("ready");
   const [attention, setAttention] = useState<InitiativeRollup[]>([]);
   const [verifiedRequirements, setVerifiedRequirements] = useState(0);
   const [initiativesLoaded, setInitiativesLoaded] = useState(false);
@@ -148,10 +150,17 @@ export default function App() {
     if (!projectId) return;
     loadInitiatives(projectId);
     loadAttention(projectId);
-    get<{ default_model: string; demo?: boolean }>(`/projects/${projectId}/providers`)
+    get<{ default_model: string; demo?: boolean; providers?: (ProviderStatusInput & { name: string })[] }>(
+      `/projects/${projectId}/providers`,
+    )
       .then((v) => {
         setDefaultModel(v.default_model || "");
         setDemo(v.demo ?? false);
+        // The dot was always green, even with the default provider's key
+        // missing -- the one state it exists to show.
+        const name = (v.default_model || "").split("/")[0];
+        const p = v.providers?.find((x) => x.name === name);
+        setModelDot(!v.demo && p ? providerDotState(p) : "warn");
       })
       .catch(() => {});
   }, [projectId, loadInitiatives, loadAttention]);
@@ -288,6 +297,7 @@ export default function App() {
           active={activePhase}
           inbox={inbox}
           modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
+          modelDot={modelDot}
           onNavigate={navigate}
         />
 
