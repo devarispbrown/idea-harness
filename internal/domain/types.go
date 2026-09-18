@@ -356,6 +356,9 @@ type ChangeSet struct {
 	// Executor is the executor kind that produced the change set ("internal"
 	// output is a placeholder whatever the model).
 	Executor string `json:"executor,omitempty"`
+	// AgentOutput is the end of the coding agent's own output for the run
+	// that produced this change set: redacted, sanitized, at most 100 lines.
+	AgentOutput string `json:"agent_output,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

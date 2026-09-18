@@ -513,6 +513,12 @@ ALTER TABLE change_sets ADD COLUMN model TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE change_sets ADD COLUMN executor TEXT NOT NULL DEFAULT '';
 `,
+	// 22: keep the coding agent's final output with the change set it
+	// produced. The running card showed it live and disappeared with it when
+	// the run finished, so nothing the agent printed could be read afterwards.
+	`
+ALTER TABLE change_sets ADD COLUMN agent_output TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
