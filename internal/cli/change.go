@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/executor"
 )
 
@@ -352,7 +357,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	// "produced no files".
 	var provider executor.AgentProvider
 	if model != "" {
-		if provider, err = checkAgentProvider(c, projectID, model); err != nil {
+		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
 			return err
 		}
 	}
@@ -386,7 +391,21 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	if smoke {
 		fmt.Fprintln(stdout, muted("smoke: running a trivial "+kind+" task to verify the CLI contract…"))
-		if err := executor.SmokeAgent(context.Background(), kind, image, model, provider); err != nil {
+		// Ctrl-C cancels the context rather than killing the process, so the
+		// smoke's deferred Cancel still removes the agent container, which
+		// holds the key. Bounded like a real run.
+		sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		sctx, cancel := context.WithTimeout(sctx, 15*time.Minute)
+		defer cancel()
+		dotEnv := config.LoadDotEnv(".")
+		lookup := func(name string) string {
+			if v := os.Getenv(name); v != "" {
+				return v
+			}
+			return dotEnv[name]
+		}
+		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup); err != nil {
 			return fmt.Errorf("smoke failed: %w", err)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
@@ -616,7 +635,7 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 // It returns the provider as the daemon resolved it -- endpoint and key
 // variable after harness.yaml overrides -- so --smoke calls what the real
 // executor will, custom providers included.
-func checkAgentProvider(c *client, projectID, model string) (executor.AgentProvider, error) {
+func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (executor.AgentProvider, error) {
 	i := strings.Index(model, "/")
 	if i <= 0 || i == len(model)-1 {
 		return executor.AgentProvider{}, fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
@@ -632,7 +651,19 @@ func checkAgentProvider(c *client, projectID, model string) (executor.AgentProvi
 			if p.Problem != "" {
 				return executor.AgentProvider{}, fmt.Errorf("provider %q is not usable: %s", name, p.Problem)
 			}
-			return executor.AgentProvider{Name: p.Name, KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}, nil
+			ap := executor.AgentProvider{Name: p.Name, Type: config.ProviderType(p.Type), KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}
+			if err := ap.Validate(); err != nil {
+				return executor.AgentProvider{}, err
+			}
+			// models.implementer outranks executor.model when the engine picks
+			// the agent's model, so the model set here -- and smoked -- would
+			// not be the one that runs.
+			if impl := view.Models["implementer"]; impl != "" && impl != model {
+				fmt.Fprintln(stderr, warn("⚠ ")+"models.implementer is "+code(impl)+
+					", which the coding agent uses instead of "+code(model)+
+					". To run "+code(model)+", also run "+code("idea model set --role implementer "+model)+".")
+			}
+			return ap, nil
 		}
 		names = append(names, p.Name)
 	}

@@ -54,3 +54,27 @@ func TestExecutorSetupRejectsAProviderWithAProblem(t *testing.T) {
 	}
 }
 
+// The provider's name and type are checked before the image pull, not at
+// the agent's Start several gigabytes later.
+func TestExecutorSetupRejectsAProviderTheAgentCannotUse(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers.Providers = []cliProvider{{Name: "claude-proxy", Type: "anthropic", BaseURL: "https://proxy.example/v1"}}
+	_, _, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "claude-proxy/x",
+		"--image", "example/does-not-exist:never", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "OpenAI chat completions") {
+		t.Errorf("an anthropic-type proxy was accepted for the agent: %v", err)
+	}
+}
+
+// models.implementer outranks executor.model, so setting (and smoking) one
+// model while another runs must be said out loud.
+func TestExecutorSetupWarnsWhenTheImplementerRoleOverrides(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers.Providers = []cliProvider{{Name: "openai", Type: "openai", BaseURL: "https://api.openai.com/v1"}}
+	f.providers.Models = map[string]string{"implementer": "anthropic/claude-sonnet-5"}
+	_, stderr, _ := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-5.6-luna",
+		"--image", "example/does-not-exist:never", "--yes")
+	if !strings.Contains(stderr, "models.implementer") || !strings.Contains(stderr, "anthropic/claude-sonnet-5") {
+		t.Errorf("no warning that models.implementer overrides --model:\n%s", stderr)
+	}
+}

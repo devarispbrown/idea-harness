@@ -128,14 +128,14 @@ func containerBaseURL(raw string) (rewritten string, needsHostGateway bool) {
 // agentBaseURL is the OpenAI-compatible endpoint for a provider, which is what a
 // Hermes custom provider speaks (transport openai_chat).
 //
-// It differs from the preset base URL in exactly one case. The preset for
-// Gemini is the native API (…/v1beta), which idea-harness's own Gemini client
-// uses; the agent posts to {base}/chat/completions, which the native API does
-// not serve. Google publishes the OpenAI-compatible surface under /openai.
-// Anthropic's preset base already serves OpenAI-compatible chat completions,
-// and the other four are OpenAI-compatible natively.
-func agentBaseURL(provider, baseURL string) string {
-	if provider == "gemini" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/openai") {
+// It differs from the configured base URL for a Gemini-type provider, preset
+// or custom: that base is the native API (…/v1beta), which idea-harness's own
+// Gemini client uses, and the agent posts to {base}/chat/completions, which the
+// native API does not serve. Google publishes the OpenAI-compatible surface
+// under /openai. Anthropic's preset base already serves OpenAI-compatible chat
+// completions, and the other presets are OpenAI-compatible natively.
+func agentBaseURL(p AgentProvider, baseURL string) string {
+	if p.Type == config.ProviderGemini && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/openai") {
 		return strings.TrimRight(baseURL, "/") + "/openai"
 	}
 	return baseURL

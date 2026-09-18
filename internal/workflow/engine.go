@@ -153,9 +153,12 @@ func (e *Engine) chargeUSD(cost float64) error {
 // engine's mutex continues to serialize execute/apply/revert across a reload. It
 // is guarded by e.mu, which ALL entry points now hold (see below), so no field
 // read races the swap.
-func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store) {
+func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store, dotEnv map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Swapped under the same lock as cfg, so an Execute never pairs a new
+	// config with the old .env.
+	e.dotEnv = dotEnv
 	if cfg.Review.MaxCycles <= 0 {
 		cfg.Review.MaxCycles = 3
 	}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,10 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/web"
 )
@@ -32,11 +37,19 @@ func DefaultStateRoot() string {
 // Run starts the daemon HTTP server on addr (loopback) and blocks until the
 // server exits.
 func Run(addr, stateRoot string, log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	rt, err := NewRuntime(stateRoot, log)
 	if err != nil {
 		return err
 	}
 	defer rt.Close()
+
+	// Before serving, so no attempt of this daemon's can be running: whatever
+	// an agent left under the state root belongs to a daemon that was killed
+	// mid-run.
+	executor.SweepAgentLeftovers(ctx, stateRoot)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -51,7 +64,31 @@ func Run(addr, stateRoot string, log *slog.Logger) error {
 		return fmt.Errorf("daemon: refusing to bind %s: must bind to a loopback address only", addr)
 	}
 	log.Info("idea-harness daemon listening", "addr", ln.Addr().String())
-	return http.Serve(ln, NewServer(rt).Handler())
+
+	srv := &http.Server{Handler: NewServer(rt).Handler()}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+
+	// Stop taking requests, then cancel what is running and let it clean up:
+	// a cancelled execute removes its agent container. Bounded, because a
+	// stop that never returns is worse than a leftover the next start sweeps.
+	log.Info("idea-harness daemon stopping")
+	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	hctx, hcancel := context.WithTimeout(sctx, 5*time.Second)
+	defer hcancel()
+	if err := srv.Shutdown(hctx); err != nil {
+		srv.Close()
+	}
+	if err := rt.Shutdown(sctx); err != nil {
+		log.Warn("stopped with operations still running; the next start removes their containers", "err", err)
+	}
+	return nil
 }
 
 // Server is the localhost HTTP API.

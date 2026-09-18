@@ -18,7 +18,6 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
-	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/project"
 	"github.com/devarispbrown/idea-harness/internal/security"
@@ -45,6 +44,9 @@ type Runtime struct {
 	// asynchronous operations, keyed by operation id (M3 cancel, §16).
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc
+	// ops counts running operations, so Shutdown can wait for them to unwind
+	// -- and remove their agent containers -- before the process exits.
+	ops sync.WaitGroup
 }
 
 type projectRuntime struct {
@@ -174,14 +176,6 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// project root (the user's real source tree).
 	engine.SetWorkspaceRoot(rec.RootPath)
 	engine.SetDotEnv(dotEnv)
-	// Nothing of this project's can be running yet, so anything an agent
-	// left in its work directory is a leftover from a daemon that died
-	// mid-run: a container with the provider key in its config, or an agent
-	// home. Only when an agent executor is configured -- otherwise there is
-	// nothing to sweep, and no reason to call Docker.
-	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP {
-		executor.SweepAgentLeftovers(context.Background(), filepath.Join(projDir, "work"))
-	}
 
 	pr := &projectRuntime{db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
 
@@ -235,8 +229,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	// Rebuild config-derived components in place on the SAME engine (its mutex
 	// keeps serializing execute/apply/revert across the reload); then publish the
 	// pr fields under r.mu.
-	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
-	pr.engine.SetDotEnv(dotEnv)
+	pr.engine.Reload(cfg.Harness, registry, redactor, blobs, dotEnv)
 	r.mu.Lock()
 	pr.cfg = cfg
 	pr.dotEnv = dotEnv
@@ -245,6 +238,33 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	pr.redactor = redactor
 	r.mu.Unlock()
 	return pr, nil
+}
+
+// Shutdown cancels every running operation and waits, until ctx expires, for
+// them to finish.
+//
+// Go exits at once on SIGTERM, which is what `idea daemon stop` sends, so no
+// deferred cleanup ran: an agent container kept running with the provider key,
+// network access and auto-approve, writing into the work root, until something
+// happened to load the project again. Cancelling an operation's context is what
+// makes the engine remove its container.
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.cancelMu.Lock()
+	for _, cancel := range r.cancels {
+		cancel()
+	}
+	r.cancelMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		r.ops.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("daemon: operations still running at shutdown: %w", ctx.Err())
+	}
 }
 
 // registerCancel records a live cancellation handle for opID.
@@ -268,7 +288,9 @@ func (r *Runtime) unregisterCancel(opID string) {
 func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.registerCancel(opID, cancel)
+	r.ops.Add(1)
 	go func() {
+		defer r.ops.Done()
 		defer cancel()
 		defer r.unregisterCancel(opID)
 		// These goroutines are detached, so net/http's per-request recovery does

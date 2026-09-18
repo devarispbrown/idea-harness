@@ -111,12 +111,19 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 // provider is resolved by the caller from the project's provider view, so the
 // smoke calls the endpoint the real executor will -- including a custom
 // provider or an Ollama moved to another port -- rather than a preset's.
-func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentProvider) error {
-	if provider.Name == "" || provider.BaseURL == "" {
-		return fmt.Errorf("executor: smoke needs a resolved provider for model %q", model)
+//
+// lookupKey reads the provider key; the CLI passes one that falls back to the
+// project's .env, as the daemon does, so a key `idea execute` would accept is
+// not refused here.
+func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentProvider, lookupKey func(string) string) error {
+	if err := provider.Validate(); err != nil {
+		return fmt.Errorf("executor: smoke: %w", err)
 	}
-	if provider.KeyEnv != "" && os.Getenv(provider.KeyEnv) == "" {
-		return fmt.Errorf("executor: smoke requires %s in the environment", provider.KeyEnv)
+	if lookupKey == nil {
+		lookupKey = os.Getenv
+	}
+	if provider.KeyEnv != "" && lookupKey(provider.KeyEnv) == "" {
+		return fmt.Errorf("executor: smoke requires %s, in the environment or the project's .env", provider.KeyEnv)
 	}
 
 	work, err := os.MkdirTemp("", "idea-smoke-*")
@@ -134,6 +141,7 @@ func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentPr
 	default:
 		return fmt.Errorf("executor: unsupported smoke kind %q", kind)
 	}
+	e.SetKeyLookup(lookupKey)
 
 	attempt, err := e.Start(ctx, Request{TaskTitle: "smoke", TaskStatement: "write a single file named smoke.txt containing the text 'smoke ok'", WorkRoot: work})
 	if err != nil {

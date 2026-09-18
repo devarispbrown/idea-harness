@@ -200,6 +200,24 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
+	// Select the executor before anything is spent or changed. It is where a
+	// missing provider key or an unresolvable provider is refused, and it ran
+	// after the planner's model call and after superseding the previous change
+	// set -- so a refusal cost money and discarded the change set being redone.
+	exec, err := e.selectExecutor()
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	// The capability gate is the deterministic trust-tier policy, not the
+	// executor's self-declared capability list: the engine authorizes the
+	// selected executor's engine-assigned trust tier (§49).
+	// The engine assigns the trust tier from the selected executor's kind, never
+	// from the executor's self-declared Capabilities().Trust (system-deny).
+	trust := executor.TrustTierFor(exec.Name())
+	if !executor.TrustAllows(trust, "write_file") {
+		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	}
+
 	// Supersede any prior changes_requested change set for this task so a
 	// re-execute cleanly replaces it (full-platform review: changes_requested
 	// was a terminal dead end with no producer of the superseded transition).
@@ -233,20 +251,6 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		TaskStatement: task.Statement,
 		Brief:         brief,
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
-	}
-
-	exec, err := e.selectExecutor()
-	if err != nil {
-		return domain.ChangeSet{}, err
-	}
-	// The capability gate is the deterministic trust-tier policy, not the
-	// executor's self-declared capability list: the engine authorizes the
-	// selected executor's engine-assigned trust tier (§49).
-	// The engine assigns the trust tier from the selected executor's kind, never
-	// from the executor's self-declared Capabilities().Trust (system-deny).
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
 	}
 
 	// Record a durable run for the implementer step (review B7). The run is

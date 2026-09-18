@@ -144,15 +144,15 @@ func TestGeminiUsesItsOpenAICompatibleEndpoint(t *testing.T) {
 	if p == nil {
 		t.Fatal("no gemini preset")
 	}
-	if got := agentBaseURL("gemini", p.BaseURL); !strings.HasSuffix(got, "/openai") {
+	if got := agentBaseURL(AgentProvider{Type: p.Type}, p.BaseURL); !strings.HasSuffix(got, "/openai") {
 		t.Errorf("gemini agent endpoint %q is the native API, which does not serve /chat/completions", got)
 	}
-	if got := agentBaseURL("gemini", p.BaseURL+"/openai"); strings.Count(got, "/openai") != 1 {
+	if got := agentBaseURL(AgentProvider{Type: p.Type}, p.BaseURL+"/openai"); strings.Count(got, "/openai") != 1 {
 		t.Errorf("an already-compatible URL was rewritten again: %q", got)
 	}
 	for _, other := range []string{"openai", "anthropic", "deepseek", "openrouter", "ollama"} {
 		o := config.PresetFor(other)
-		if got := agentBaseURL(other, o.BaseURL); got != o.BaseURL {
+		if got := agentBaseURL(AgentProvider{Type: o.Type}, o.BaseURL); got != o.BaseURL {
 			t.Errorf("%s endpoint changed: %q -> %q", other, o.BaseURL, got)
 		}
 	}

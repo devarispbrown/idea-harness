@@ -21,7 +21,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   | Invocation | `hermes --in /work --yolo chat --query … --model …` — Hermes has no `--in` flag, printed its usage and exited | `hermes chat --yolo -q … -m <model> --provider <slug>` |
   | Container start | `--read-only` with a host `--user` left the entrypoint unable to create its home: `mkdir: cannot create directory '/opt/data': Permission denied`, and nothing ran | a per-attempt agent home, mounted read-write, named by `HERMES_HOME` |
   | `idea executors setup` | reported `"hermes" CLI not found in image` for the image it had just downloaded, because the probe bypassed the entrypoint that puts `hermes` on `PATH` | the probe runs through the entrypoint |
-  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is named and labelled, and removed when the attempt is collected or cancelled, when `docker run` fails after creating it, and the next time a daemon loads the project after a crash |
+  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is named, and removed when the attempt is collected or cancelled, when `docker run` fails after creating it, when the daemon is stopped, and at the next daemon start after a crash |
 
   `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
   now passes for all six providers — OpenAI, Anthropic, Gemini, DeepSeek,
@@ -62,6 +62,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   only the environment. Before, the agent started keyless, got a 401, exited 0,
   and the run produced an empty change set with no reason given.
 
+- **`idea daemon stop` no longer strands running agents.** The daemon exited at
+  once on SIGTERM, so a running agent container kept going with the provider key,
+  network access and auto-approve. The daemon now stops accepting requests,
+  cancels running operations, and waits up to 30 seconds for them to remove
+  their containers; `idea daemon stop` waits for it to exit. It also removes its
+  pidfile, which a stop used to leave behind. The next daemon start removes
+  anything a killed daemon left, before serving, and calls Docker only if
+  something was left. Ctrl-C during `idea executors setup --smoke` now removes
+  the smoke's container too.
+
+- **`idea execute` checks the provider before it spends.** The key and provider
+  checks ran after the planner's model call and after the previous change set
+  was superseded, so a refused run cost money and discarded the change set being
+  redone.
+
 - **A failed agent says why, in `--smoke` and in `idea execute`.** Hermes exits
   0 even when the model call fails, so a failure surfaced as `produced no files
   (CLI contract mismatch?)` in the smoke, and in a real run as `attempt failed`
@@ -81,7 +96,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
   and lists the providers it accepts. It also refuses a provider the daemon
   reports a problem with, and `--smoke` now calls the provider as the daemon
-  resolved it, so a custom provider can be smoked.
+  resolved it, so a custom provider can be smoked. It reads the key from the
+  project's `.env` as the daemon does, refuses a provider name or type the agent
+  cannot use (an uppercase name, an Anthropic-type proxy), and warns when
+  `models.implementer` would run a different model than the one set.
 
 ### Changed
 
@@ -90,7 +108,9 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `claude-sonnet-5` (was `claude-sonnet-4-5-20250929`), `gpt-5.6-luna` (was
   `gpt-4o`), `deepseek-v4-pro` (was `deepseek-chat`),
   `anthropic/claude-sonnet-5` on OpenRouter (was `openai/gpt-4o`), and `qwen3.8`
-  on Ollama (was `llama3.1`). Newer models were added to each provider's
+  on Ollama (was `llama3.1`). **If you use Ollama without a `default_model`**,
+  the harness now asks for `qwen3.8`: pull it (`ollama pull qwen3.8`), or set
+  `default_model: ollama/llama3.1` to keep the old one. Newer models were added to each provider's
   catalog: Claude Opus 5 and Fable 5.1, GPT-5.6 and 5.5, Gemini 3.5 to 3.8,
   DeepSeek V4, and Qwen 3.8, Kimi K3 and GLM 5.3 on OpenRouter.
 
