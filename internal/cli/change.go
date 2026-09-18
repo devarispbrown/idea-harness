@@ -350,8 +350,9 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	// unsupported provider used to download the image, verify it, write the
 	// config and only then fail -- or, with --smoke, surface as an agent that
 	// "produced no files".
+	var provider executor.AgentProvider
 	if model != "" {
-		if err := checkAgentProvider(c, projectID, model); err != nil {
+		if provider, err = checkAgentProvider(c, projectID, model); err != nil {
 			return err
 		}
 	}
@@ -385,7 +386,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	if smoke {
 		fmt.Fprintln(stdout, muted("smoke: running a trivial "+kind+" task to verify the CLI contract…"))
-		if err := executor.SmokeAgent(context.Background(), kind, image, model); err != nil {
+		if err := executor.SmokeAgent(context.Background(), kind, image, model, provider); err != nil {
 			return fmt.Errorf("smoke failed: %w", err)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
@@ -611,23 +612,30 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 // project can reach: one of the presets, or one configured under providers: in
 // harness.yaml. The message lists them, because the valid set is short and the
 // user is choosing from it.
-func checkAgentProvider(c *client, projectID, model string) error {
+//
+// It returns the provider as the daemon resolved it -- endpoint and key
+// variable after harness.yaml overrides -- so --smoke calls what the real
+// executor will, custom providers included.
+func checkAgentProvider(c *client, projectID, model string) (executor.AgentProvider, error) {
 	i := strings.Index(model, "/")
 	if i <= 0 || i == len(model)-1 {
-		return fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/llama3.1", model)
+		return executor.AgentProvider{}, fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
 	}
-	provider := model[:i]
+	name := model[:i]
 	var view cliProvidersView
 	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
-		return err
+		return executor.AgentProvider{}, err
 	}
 	names := make([]string, 0, len(view.Providers))
 	for _, p := range view.Providers {
-		if p.Name == provider {
-			return nil
+		if p.Name == name {
+			if p.Problem != "" {
+				return executor.AgentProvider{}, fmt.Errorf("provider %q is not usable: %s", name, p.Problem)
+			}
+			return executor.AgentProvider{Name: p.Name, KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}, nil
 		}
 		names = append(names, p.Name)
 	}
 	sort.Strings(names)
-	return fmt.Errorf("unknown provider %q in --model; use one of: %s", provider, strings.Join(names, ", "))
+	return executor.AgentProvider{}, fmt.Errorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
 }

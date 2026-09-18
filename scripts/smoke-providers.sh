@@ -30,7 +30,7 @@ echo "--- MODEL LIST (defaults) ---"
 "$ROOT/bin/idea" model list
 
 echo "--- MODEL SET ---"
-"$ROOT/bin/idea" model set openrouter/anthropic/claude-3.7-sonnet
+"$ROOT/bin/idea" model set openrouter/anthropic/claude-sonnet-5
 
 echo "--- harness.yaml ---"
 cat .idea-harness/harness.yaml

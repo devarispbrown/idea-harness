@@ -2300,8 +2300,8 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		executor.NewContainerExecutor(pr.blobs, pr.cfg.Harness.Executor.Image),
 		// Capability listing only: these are never Start()ed here, so the
 		// credential and endpoint are deliberately empty rather than resolved.
-		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, "", "", ""),
-		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, "", "", ""),
+		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
+		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 	}
 	list := make([]map[string]any, 0, len(execs))
 	for _, exec := range execs {

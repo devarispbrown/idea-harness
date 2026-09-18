@@ -660,59 +660,68 @@ func TestKeylessProviderIsNotTreatedAsUnresolvable(t *testing.T) {
 	e := &Engine{cfg: config.HarnessConfig{
 		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "ollama/llama3.1"},
 	}}
-	provider, keyEnv, baseURL, resolved := e.implementerProvider()
-	if !resolved {
-		t.Fatal("ollama did not resolve, though it is a preset")
+	p, err := e.implementerProvider()
+	if err != nil {
+		t.Fatalf("ollama did not resolve, though it is a preset: %v", err)
 	}
-	if provider != "ollama" {
-		t.Errorf("provider = %q, want ollama", provider)
+	if p.Name != "ollama" || p.KeyEnv != "" || p.BaseURL == "" {
+		t.Errorf("ollama resolved to %+v", p)
 	}
-	if keyEnv != "" {
-		t.Errorf("keyEnv = %q, want empty — ollama needs no key", keyEnv)
-	}
-	if baseURL == "" {
-		t.Error("no base URL, so the agent would have no endpoint to call")
-	}
-
 	if _, err := e.selectExecutor(); err != nil {
 		t.Errorf("selectExecutor refused a keyless provider: %v", err)
 	}
 }
 
 // An unresolvable provider must still fail closed: the agent runs with network
-// egress, so it must never be launched with a credential nobody chose.
+// egress, so it must never be launched with a credential nobody chose. With a
+// default model set too, which is the case the fallback used to swallow.
 func TestUnresolvableProviderStillFailsClosed(t *testing.T) {
-	e := &Engine{cfg: config.HarnessConfig{
-		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "typo-provider/some-model"},
-	}}
-	if _, resolved := func() (string, bool) {
-		p, _, _, r := e.implementerProvider()
-		return p, r
-	}(); resolved {
-		t.Fatal("a nonexistent provider resolved")
+	for _, dm := range []string{"", "openai/gpt-5.6-luna"} {
+		e := &Engine{cfg: config.HarnessConfig{
+			DefaultModel: dm,
+			Executor:     config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "typo-provider/some-model"},
+		}}
+		_, err := e.selectExecutor()
+		if err == nil {
+			t.Fatalf("default_model %q: selectExecutor accepted an unresolvable provider", dm)
+		}
+		if !strings.Contains(err.Error(), "typo-provider") {
+			t.Errorf("the refusal does not name what could not be resolved: %v", err)
+		}
 	}
+}
+
+// A keyed provider whose key is set nowhere is refused before launch. Hermes
+// exits 0 after a 401, so the run otherwise produced an empty change set and
+// no reason.
+func TestKeyedProviderWithoutAKeyIsRefused(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-5.6-luna"},
+	}}
 	_, err := e.selectExecutor()
 	if err == nil {
-		t.Fatal("selectExecutor accepted an unresolvable provider")
+		t.Fatal("a keyed provider launched with no key")
 	}
-	if !strings.Contains(err.Error(), "typo-provider") {
-		t.Errorf("the refusal does not name what could not be resolved: %v", err)
+	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Errorf("the refusal does not name the missing variable: %v", err)
+	}
+	// The project's .env counts, as it does for every other model call.
+	e.SetDotEnv(map[string]string{"OPENAI_API_KEY": "sk-from-dotenv"})
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("a key in .env was not found: %v", err)
 	}
 }
 
 // Every provider this project presets must reach the coding agent.
 func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
 	for _, p := range config.Presets {
+		if p.DefaultKeyEnv != "" {
+			t.Setenv(p.DefaultKeyEnv, "test-key")
+		}
 		e := &Engine{cfg: config.HarnessConfig{
 			Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: p.Key + "/some-model"},
 		}}
-		if p.NeedsKey {
-			// A keyed provider resolves its env var from the preset; the value
-			// need not be set for selection to succeed.
-			if _, keyEnv, _, _ := e.implementerProvider(); keyEnv == "" {
-				t.Errorf("%s needs a key but resolves none", p.Key)
-			}
-		}
 		if _, err := e.selectExecutor(); err != nil {
 			t.Errorf("%s cannot launch the coding agent: %v", p.Key, err)
 		}

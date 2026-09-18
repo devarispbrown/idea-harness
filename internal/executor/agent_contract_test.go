@@ -41,7 +41,7 @@ func TestAgentContractAgainstThePinnedImage(t *testing.T) {
 	}
 
 	// Keyless, loopback: exercises the host-gateway rewrite and needs no secret.
-	e := NewHermesExecutor(nil, "ollama/contract-probe", image, "", "ollama", "http://127.0.0.1:9/v1")
+	e := NewHermesExecutor(nil, "ollama/contract-probe", image, AgentProvider{Name: "ollama", BaseURL: "http://127.0.0.1:9/v1"})
 	work := t.TempDir()
 	attempt, err := e.Start(ctx, Request{TaskStatement: "write a file named probe.txt", WorkRoot: work})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestAgentContractAgainstThePinnedImage(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("the agent did not exit within five minutes against a refused endpoint")
+			t.Fatal("the agent did not exit within the test timeout against a refused endpoint")
 		case <-time.After(500 * time.Millisecond):
 		}
 	}

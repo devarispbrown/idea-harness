@@ -262,7 +262,7 @@ leaves the reasoning synthetic. **The real path needs both.**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-…        # or OPENAI_API_KEY, GOOGLE_API_KEY, …
 idea daemon stop                         # it started at `idea init`, without the key
-idea model set anthropic/claude-sonnet-4-5-20250929
+idea model set anthropic/claude-sonnet-5
 idea doctor                              # asks the DAEMON whether it has the key; non-zero if not
 ```
 
@@ -297,10 +297,10 @@ and tells you to run `idea daemon stop`.
 
 ```bash
 # Hermes — downloads the pinned official image and prints its digest
-idea executors setup --model anthropic/claude-sonnet-4-5-20250929 --yes
+idea executors setup --model anthropic/claude-sonnet-5 --yes
 
 # OMP — bring your own image
-idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-sonnet-4-5-20250929 --yes
+idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-sonnet-5 --yes
 ```
 
 This verifies the agent CLI exists in the image, prints the security tradeoff, and writes

@@ -185,9 +185,9 @@ The model is a `provider/model` string. Examples:
 
 ```text
 openai/gpt-5.6-luna
-anthropic/claude-sonnet-4-5-20250929
+anthropic/claude-sonnet-5
 gemini/gemini-3.6-flash
-deepseek/deepseek-chat
+deepseek/deepseek-v4-pro
 openrouter/anthropic/claude-opus-5   # note: OpenRouter model ids contain slashes
 ollama/llama3.1
 groq/llama-3.3-70b-versatile

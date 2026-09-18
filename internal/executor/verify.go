@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/devarispbrown/idea-harness/internal/config"
 )
 
 // defaultHermesImage is the pinned, known-good Hermes Agent image. It is a
@@ -63,6 +61,8 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
+	}
+	if cli == "hermes" {
 		// Through the image's entrypoint, NOT `--entrypoint ""`.
 		//
 		// The pinned Hermes image installs its CLI at
@@ -75,10 +75,16 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 		// HERMES_HOME for the same reason the executor sets it: the entrypoint
 		// creates and writes its home, and under --read-only with a host --user
 		// the default /opt/data is not writable.
-		"-e", "HERMES_HOME=" + containerAgentHome,
-		"-e", "HOME=" + containerAgentHome,
-		image, cli, "--version",
+		args = append(args,
+			"-e", "HERMES_HOME="+containerAgentHome,
+			"-e", "HOME="+containerAgentHome)
+	} else {
+		// Any other agent image is probed as before, entrypoint cleared, so an
+		// image whose ENTRYPOINT is the CLI itself does not run `omp omp
+		// --version`.
+		args = append(args, "--entrypoint", "")
 	}
+	args = append(args, image, cli, "--version")
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err == nil {
 		return nil
@@ -96,42 +102,21 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 	return fmt.Errorf("executor: docker unavailable: %w", err)
 }
 
-// KeyEnvForModel maps a "provider/model" spec to its provider API-key env var
-// name (built-in presets only; custom providers are resolved by the engine at
-// runtime). Used by the smoke check to confirm the required key is present.
-func KeyEnvForModel(model string) string {
-	_, keyEnv, _ := ProviderForModel(model)
-	return keyEnv
-}
-
-// ProviderForModel splits a `provider/model` spec and returns the provider key,
-// its API-key env var (empty for a keyless provider such as Ollama) and its
-// base URL, from config.Presets.
-//
-// This used to be a switch here duplicating that table, which meant two places
-// had to agree about six providers and only one of them was checked. It also
-// silently omitted Ollama, so a keyless provider looked identical to an
-// unresolvable one -- the distinction the executor now turns on.
-func ProviderForModel(model string) (provider, keyEnv, baseURL string) {
-	provider = model
-	if i := strings.Index(model, "/"); i > 0 {
-		provider = model[:i]
-	}
-	if p := config.PresetFor(provider); p != nil {
-		return provider, p.DefaultKeyEnv, p.BaseURL
-	}
-	return provider, "", ""
-}
-
 // SmokeAgent runs a trivial coding task through the agent in an isolated
 // container and asserts it produced at least one file in the work root. It
 // verifies the full CLI contract end-to-end (the exact agent invocation), not
 // just that the binary exists. It requires the provider API key for model to be
 // present in the environment (the agent needs it to call its model).
-func SmokeAgent(ctx context.Context, kind, image, model string) error {
-	provider, keyEnv, baseURL := ProviderForModel(model)
-	if keyEnv != "" && os.Getenv(keyEnv) == "" {
-		return fmt.Errorf("executor: smoke requires %s in the environment", keyEnv)
+//
+// provider is resolved by the caller from the project's provider view, so the
+// smoke calls the endpoint the real executor will -- including a custom
+// provider or an Ollama moved to another port -- rather than a preset's.
+func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentProvider) error {
+	if provider.Name == "" || provider.BaseURL == "" {
+		return fmt.Errorf("executor: smoke needs a resolved provider for model %q", model)
+	}
+	if provider.KeyEnv != "" && os.Getenv(provider.KeyEnv) == "" {
+		return fmt.Errorf("executor: smoke requires %s in the environment", provider.KeyEnv)
 	}
 
 	work, err := os.MkdirTemp("", "idea-smoke-*")
@@ -143,9 +128,9 @@ func SmokeAgent(ctx context.Context, kind, image, model string) error {
 	var e *SandboxedAgentExecutor
 	switch kind {
 	case "hermes":
-		e = NewHermesExecutor(nil, model, image, keyEnv, provider, baseURL)
+		e = NewHermesExecutor(nil, model, image, provider)
 	case "omp":
-		e = NewOMPExecutor(nil, model, image, keyEnv, provider, baseURL)
+		e = NewOMPExecutor(nil, model, image, provider)
 	default:
 		return fmt.Errorf("executor: unsupported smoke kind %q", kind)
 	}
@@ -183,7 +168,9 @@ done:
 	// and without the agent's own output the only message was "produced no
 	// files (CLI contract mismatch?)", which is wrong about the cause.
 	tail := e.tailLogs(ctx, attempt.ID, 40)
-	_, _ = e.Collect(ctx, attempt.ID)
+	if _, err := e.Collect(ctx, attempt.ID); err != nil {
+		return fmt.Errorf("executor: smoke agent %s finished but its container could not be removed: %w", kind, err)
+	}
 
 	entries, err := os.ReadDir(work)
 	if err != nil {

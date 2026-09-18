@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func recordedArgs(t *testing.T, record string) string {
 }
 
 func TestSandboxedAgentCapabilities(t *testing.T) {
-	e := NewOMPExecutor(nil, "", "", "", "", "")
+	e := NewOMPExecutor(nil, "", "", AgentProvider{})
 	if got := e.Name(); got != "omp" {
 		t.Fatalf("Name() = %q, want omp", got)
 	}
@@ -36,7 +37,7 @@ func TestSandboxedAgentCapabilities(t *testing.T) {
 		t.Error("Network = false, want true (agent needs model egress)")
 	}
 
-	h := NewHermesExecutor(nil, "", "", "", "", "")
+	h := NewHermesExecutor(nil, "", "", AgentProvider{})
 	if h.Name() != "hermes" {
 		t.Errorf("Name() = %q, want hermes", h.Name())
 	}
@@ -50,7 +51,8 @@ func TestSandboxedOMPArgs(t *testing.T) {
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
-	e := NewOMPExecutor(newTestBlobStore(t), "anthropic/opus", "alpine:3.20", "ANTHROPIC_API_KEY", "anthropic", "https://api.anthropic.com/v1")
+	e := NewOMPExecutor(newTestBlobStore(t), "anthropic/opus", "alpine:3.20",
+		AgentProvider{Name: "anthropic", KeyEnv: "ANTHROPIC_API_KEY", BaseURL: "https://api.anthropic.com/v1"})
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -100,7 +102,7 @@ func TestSandboxedHermesArgs(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
-	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", "", "", "")
+	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", AgentProvider{})
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -143,16 +145,23 @@ func TestSandboxedHermesGetsAWritableHome(t *testing.T) {
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
 	e := NewHermesExecutor(newTestBlobStore(t), "openai/gpt-5.6-luna", "alpine:3.20",
-		"OPENAI_API_KEY", "openai", "https://api.openai.com/v1")
+		AgentProvider{Name: "openai", KeyEnv: "OPENAI_API_KEY", BaseURL: "https://api.openai.com/v1"})
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
-	if _, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: t.TempDir()}); err != nil {
+	work := t.TempDir()
+	a, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: work})
+	if err != nil {
 		t.Fatal(err)
 	}
+	home := filepath.Join(filepath.Dir(work), agentHomePrefix+a.ID)
 	args := recordedArgs(t, record)
 	for _, want := range []string{
 		"HERMES_HOME=" + containerAgentHome,
-		containerAgentHome,
+		// The mount itself, not just the path: HERMES_HOME alone names a
+		// directory the read-only root does not let the entrypoint create.
+		"-v " + home + ":" + containerAgentHome,
+		// What SweepAgentLeftovers finds a crashed daemon's containers by.
+		"--label " + agentLabel + "=" + filepath.Dir(work),
 		"--provider idea-openai",
 		"-m gpt-5.6-luna",
 	} {
@@ -172,7 +181,7 @@ func TestSandboxedHermesMapsTheHostForOllama(t *testing.T) {
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
 	e := NewHermesExecutor(newTestBlobStore(t), "ollama/llama3.1", "alpine:3.20",
-		"", "ollama", "http://localhost:11434/v1")
+		AgentProvider{Name: "ollama", BaseURL: "http://localhost:11434/v1"})
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	if _, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: t.TempDir()}); err != nil {
@@ -192,7 +201,7 @@ func TestSandboxedAgentUsesBrief(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 
-	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", "", "", "")
+	e := NewHermesExecutor(newTestBlobStore(t), "opus", "alpine:3.20", AgentProvider{})
 	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
 
 	work := t.TempDir()
@@ -206,5 +215,210 @@ func TestSandboxedAgentUsesBrief(t *testing.T) {
 	}
 	if strings.Contains(args, "Build the core") {
 		t.Errorf("agent argv %q should not fall back to the task statement when a brief is present", args)
+	}
+}
+
+// OMP is not Hermes. Replacing its HOME with an empty directory hid whatever
+// config or auth an OMP image bakes in, so only Hermes gets an agent home.
+func TestOMPKeepsItsOwnHome(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+
+	e := NewOMPExecutor(newTestBlobStore(t), "openai/gpt-5.6-luna", "alpine:3.20",
+		AgentProvider{Name: "openai", KeyEnv: "OPENAI_API_KEY", BaseURL: "https://api.openai.com/v1"})
+	e.dockerPath = writeExecutable(t, "docker", fakeDockerScript)
+	if _, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	args := recordedArgs(t, record)
+	for _, bad := range []string{"HOME=", containerAgentHome} {
+		if strings.Contains(args, bad) {
+			t.Errorf("omp was given a Hermes home (%q):\n%s", bad, args)
+		}
+	}
+}
+
+// fakeDockerLog records each call's subcommand as well as its arguments, one
+// call per line, so a test can tell `rm -f x` from `run ... x`.
+const fakeDockerLog = `#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DOCKER_RECORD"
+case "$1" in
+  run) [ -n "$FAKE_DOCKER_RUN_FAIL" ] && exit 125; echo "cid-123" ;;
+  inspect) echo "exited 0" ;;
+  rm) [ -n "$FAKE_DOCKER_RM_FAIL" ] && exit 1; exit 0 ;;
+  ps) echo "leftover-1" ;;
+  *) exit 1 ;;
+esac
+`
+
+func dockerCalls(t *testing.T, record string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+func hasCall(calls []string, prefix string) bool {
+	for _, c := range calls {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func newHermesForLifecycle(t *testing.T) (*SandboxedAgentExecutor, string) {
+	t.Helper()
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	e := NewHermesExecutor(newTestBlobStore(t), "openai/gpt-5.6-luna", "alpine:3.20",
+		AgentProvider{Name: "openai", BaseURL: "https://api.openai.com/v1"})
+	e.dockerPath = writeExecutable(t, "docker", fakeDockerLog)
+	return e, record
+}
+
+// Without --rm, removing the container is the executor's job on every path.
+// A container left behind keeps the provider key in its config.
+func TestCollectRemovesTheContainerAndTheHome(t *testing.T) {
+	e, record := newHermesForLifecycle(t)
+	work := t.TempDir()
+	a, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(filepath.Dir(work), agentHomePrefix+a.ID)
+	if _, err := os.Stat(home); err != nil {
+		t.Fatalf("no agent home during the run: %v", err)
+	}
+	if _, err := e.Collect(t.Context(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(dockerCalls(t, record), "rm -f cid-123") {
+		t.Error("Collect did not remove the container")
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Errorf("the agent home outlived the attempt: %v", err)
+	}
+	// And the attempt is forgotten, so the map does not grow for the life of
+	// the daemon holding every request.
+	if _, err := e.Status(t.Context(), a.ID); err == nil {
+		t.Error("a collected attempt is still tracked")
+	}
+}
+
+// Collect used to drop the rm error and report success, so the engine skipped
+// the Cancel that would have retried, and the container stayed.
+func TestCollectReportsAFailedRemoval(t *testing.T) {
+	e, _ := newHermesForLifecycle(t)
+	work := t.TempDir()
+	a, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_DOCKER_RM_FAIL", "1")
+	if _, err := e.Collect(t.Context(), a.ID); err == nil {
+		t.Fatal("Collect reported success although the container is still there")
+	}
+	// The attempt is kept so Cancel can retry, and the home with it, which the
+	// container may still be using.
+	t.Setenv("FAKE_DOCKER_RM_FAIL", "")
+	if err := e.Cancel(t.Context(), a.ID); err != nil {
+		t.Fatalf("the retry could not find the attempt: %v", err)
+	}
+}
+
+// A cancelled run is exactly when cleanup must happen, so it must not use the
+// cancelled context.
+func TestCollectRemovesEvenWithACancelledContext(t *testing.T) {
+	e, record := newHermesForLifecycle(t)
+	a, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := e.Collect(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(dockerCalls(t, record), "rm -f cid-123") {
+		t.Error("a cancelled context skipped the removal")
+	}
+}
+
+// `docker run -d` can create the container and then fail to start it. No
+// attempt is recorded, so Start itself must remove it -- by the name it chose
+// before the container existed.
+func TestFailedStartRemovesWhatItCreated(t *testing.T) {
+	e, record := newHermesForLifecycle(t)
+	t.Setenv("FAKE_DOCKER_RUN_FAIL", "1")
+	work := t.TempDir()
+	if _, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: work}); err == nil {
+		t.Fatal("Start succeeded although docker run failed")
+	}
+	calls := dockerCalls(t, record)
+	var name string
+	for _, c := range calls {
+		f := strings.Fields(c)
+		for i := range f {
+			if f[i] == "--name" && i+1 < len(f) {
+				name = f[i+1]
+			}
+		}
+	}
+	if name == "" {
+		t.Fatal("the container was not named before it was created")
+	}
+	if !hasCall(calls, "rm -f "+name) {
+		t.Errorf("the half-created container %s was not removed:\n%s", name, strings.Join(calls, "\n"))
+	}
+	entries, _ := os.ReadDir(filepath.Dir(work))
+	for _, ent := range entries {
+		if strings.HasPrefix(ent.Name(), agentHomePrefix) {
+			t.Errorf("a failed Start left %s behind", ent.Name())
+		}
+	}
+}
+
+// What a crashed daemon leaves behind is found by label and removed, and so is
+// any agent home.
+func TestSweepRemovesLeftovers(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	bin := writeExecutable(t, "docker", fakeDockerLog)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workDir := t.TempDir()
+	stale := filepath.Join(workDir, agentHomePrefix+"dead")
+	if err := os.MkdirAll(filepath.Join(stale, "locked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "locked", "state.db"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The agent runs as the host uid with auto-approve and can do this.
+	if err := os.Chmod(filepath.Join(stale, "locked"), 0); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(workDir, "initiative-1")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	SweepAgentLeftovers(t.Context(), workDir)
+
+	calls := dockerCalls(t, record)
+	if !hasCall(calls, "ps -aq --filter label="+agentLabel+"="+workDir) {
+		t.Errorf("the sweep did not look for this project's containers:\n%s", strings.Join(calls, "\n"))
+	}
+	if !hasCall(calls, "rm -f leftover-1") {
+		t.Error("a leftover container was not removed")
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a stale agent home survived the sweep: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("the sweep removed a work root: %v", err)
 	}
 }

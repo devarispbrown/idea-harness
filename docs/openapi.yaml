@@ -1117,7 +1117,7 @@ paths:
               properties:
                 model:
                   type: string
-                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-4-5-20250929`."
+                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-5`."
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }

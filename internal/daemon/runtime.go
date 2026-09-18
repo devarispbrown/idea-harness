@@ -18,6 +18,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/project"
 	"github.com/devarispbrown/idea-harness/internal/security"
@@ -172,6 +173,15 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// The canonical workspace that apply writes into and revert restores is the
 	// project root (the user's real source tree).
 	engine.SetWorkspaceRoot(rec.RootPath)
+	engine.SetDotEnv(dotEnv)
+	// Nothing of this project's can be running yet, so anything an agent
+	// left in its work directory is a leftover from a daemon that died
+	// mid-run: a container with the provider key in its config, or an agent
+	// home. Only when an agent executor is configured -- otherwise there is
+	// nothing to sweep, and no reason to call Docker.
+	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP {
+		executor.SweepAgentLeftovers(context.Background(), filepath.Join(projDir, "work"))
+	}
 
 	pr := &projectRuntime{db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
 
@@ -226,6 +236,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	// keeps serializing execute/apply/revert across the reload); then publish the
 	// pr fields under r.mu.
 	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
+	pr.engine.SetDotEnv(dotEnv)
 	r.mu.Lock()
 	pr.cfg = cfg
 	pr.dotEnv = dotEnv
