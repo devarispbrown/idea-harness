@@ -448,7 +448,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	if len(unresolved) > 0 {
 		if err := e.db.CreateFinding(ctx, &domain.Finding{
 			InitiativeID:   initiativeID,
-			TargetType:     "initiative",
+			TargetType:     PlanFindingTarget,
 			TargetID:       initiativeID,
 			Severity:       domain.SeverityHigh,
 			Confidence:     domain.ConfidenceHigh,
@@ -473,6 +473,10 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 // different, so the two sets cannot be confused.
 const DeterministicPlanCheckRun = "deterministic-plan-check"
 
+// PlanFindingTarget is the target type of every finding raised against the
+// execution plan. The UI shows these on the Plan page, where approval happens.
+const PlanFindingTarget = "execution_plan"
+
 func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	det := e.deterministicPlanChecks(ctx, initiativeID)
 	adv, err := e.runPlanAdversarialReview(ctx, initiativeID)
@@ -484,6 +488,15 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		all[i].InitiativeID = initiativeID
 		if all[i].ReviewRunID == "" {
 			all[i].ReviewRunID = DeterministicPlanCheckRun
+		}
+		// Every finding of the plan review targets the plan. The deterministic
+		// ones had no target at all, and the adversarial reviewer's defaulted
+		// to "requirement", so the UI -- which places a finding by its target
+		// -- showed plan findings on the PRD page and a CRITICAL dependency
+		// cycle, the one finding that blocks approve-plan, on no page at all.
+		all[i].TargetType = PlanFindingTarget
+		if all[i].TargetID == "" {
+			all[i].TargetID = initiativeID
 		}
 		all[i].Finding = e.redact(all[i].Finding)
 		all[i].Evidence = e.redact(all[i].Evidence)

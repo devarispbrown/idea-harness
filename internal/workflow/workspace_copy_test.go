@@ -245,3 +245,53 @@ func TestEachAttemptStartsFromTheWorkspace(t *testing.T) {
 		t.Error("an earlier attempt's file survived into the next attempt")
 	}
 }
+
+// The review diff shows the change as hunks against the file the agent
+// started from.
+func TestReviewDiffIsAHunkAgainstTheBase(t *testing.T) {
+	eng, db, iniID, ws := newWorkspaceFixture(t)
+	addTask(t, db, iniID, "add /health")
+	cs, err := eng.Execute(context.Background(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sf StructuredFile
+	for _, f := range eng.StructuredDiff(&cs) {
+		if f.Path == "server.js" {
+			sf = f
+		}
+	}
+	want := "@@ -1,1 +1,2 @@\n app.get('/', hello)\n+app.get('/health', ok)"
+	if sf.Patch != want {
+		t.Errorf("patch:\n%s\nwant:\n%s", sf.Patch, want)
+	}
+	// Edited after the agent ran: the workspace file is no longer the base,
+	// and diffing against it would show the user's edit, reversed, as the
+	// agent's. Say so instead.
+	writeFile(t, filepath.Join(ws, "server.js"), "app.get('/', hello)\napp.get('/users', list)\n")
+	for _, f := range eng.StructuredDiff(&cs) {
+		if f.Path == "server.js" {
+			if f.Patch != "" || f.PatchNote == "" {
+				t.Errorf("diffed against a file edited after the run: patch=%q note=%q", f.Patch, f.PatchNote)
+			}
+		}
+	}
+}
+
+// A change set records the executor that made it, so the UI labels it by what
+// produced it, not by whatever executor is selected today.
+func TestChangeSetRecordsItsExecutor(t *testing.T) {
+	eng, db, iniID, _ := newWorkspaceFixture(t)
+	addTask(t, db, iniID, "add /health")
+	cs, err := eng.Execute(context.Background(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetChangeSet(context.Background(), cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Executor != "hermes" {
+		t.Errorf("executor = %q, want hermes", got.Executor)
+	}
+}

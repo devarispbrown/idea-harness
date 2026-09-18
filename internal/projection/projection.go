@@ -203,6 +203,10 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 // workflow: the store stays the single source of truth and this is a
 // display-only rule, so projection must not gain a dependency on workflow to
 // get it.
+// SameQuestion reports whether two decision questions are the same question
+// for display: equal after normalizeDecisionQuestion.
+func SameQuestion(a, b string) bool { return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b) }
+
 func normalizeDecisionQuestion(text string) string {
 	s := strings.TrimSpace(text)
 	for strings.HasPrefix(s, "[") {
@@ -234,6 +238,13 @@ func normalizeDecisionQuestion(text string) string {
 // track "newest" without a separate timestamp compare, and callers other than
 // BuildUnderstanding must preserve it too.
 func dedupDecisionsForDisplay(decs []domain.Decision) []domain.Decision {
+	return DedupDecisions(decs)
+}
+
+// DedupDecisions is dedupDecisionsForDisplay for callers outside the package:
+// the decisions endpoint the UI reads applies it too, so the page and the
+// guidance agree on how many decisions there are.
+func DedupDecisions(decs []domain.Decision) []domain.Decision {
 	chosen := map[string]domain.Decision{}
 	order := make([]string, 0, len(decs))
 	for _, d := range decs {

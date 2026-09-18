@@ -18,6 +18,7 @@ import (
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/docparse"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/review"
 	"github.com/devarispbrown/idea-harness/internal/roles"
@@ -406,17 +407,21 @@ func (e *Engine) storeBlob(content string) string {
 // default_model, then the registry default with a catalog-default model, then
 // the demo default.
 func (e *Engine) resolveModelSpec(roleName string) string {
-	if m := e.cfg.Models[roleName]; m != "" {
+	return resolveModelSpecFor(e.cfg, e.registry, roleName)
+}
+
+func resolveModelSpecFor(cfg config.HarnessConfig, registry *model.Registry, roleName string) string {
+	if m := cfg.Models[roleName]; m != "" {
 		return m
 	}
 	if rc, err := roles.Load(roleName); err == nil && rc.Model != "" {
 		return rc.Model
 	}
-	if e.cfg.DefaultModel != "" {
-		return e.cfg.DefaultModel
+	if cfg.DefaultModel != "" {
+		return cfg.DefaultModel
 	}
-	if e.registry != nil {
-		if d := e.registry.Default(); d != "" && d != "idea-harness-default" {
+	if registry != nil {
+		if d := registry.Default(); d != "" && d != "idea-harness-default" {
 			return d + "/" + model.DefaultModelFor(d)
 		}
 	}
@@ -460,13 +465,28 @@ func (e *Engine) modelSpecFor(initiativeID, roleName string) string {
 // ("implementer") wins, then the executor-level model, then the default chain.
 // This is how OMP and Hermes get different models per role.
 func (e *Engine) implementerModel() string {
-	if m := e.cfg.Models["implementer"]; m != "" {
+	return ImplementerModelSpec(e.cfg, e.registry)
+}
+
+// ImplementerModelSpec is the model the coding agent runs: models.implementer,
+// then executor.model, then the implementer role's usual resolution. Exported
+// so the daemon's "can a run start" check resolves exactly what Execute will;
+// it checked executor.model alone and so blocked runs Execute would accept,
+// and passed ones it would refuse.
+func ImplementerModelSpec(cfg config.HarnessConfig, registry *model.Registry) string {
+	if m := cfg.Models["implementer"]; m != "" {
 		return m
 	}
-	if m := e.cfg.Executor.Model; m != "" {
+	if m := cfg.Executor.Model; m != "" {
 		return m
 	}
-	return e.resolveModelSpec("implementer")
+	return resolveModelSpecFor(cfg, registry, "implementer")
+}
+
+// ImplementerProvider resolves the provider the coding agent will use, as
+// Execute does.
+func ImplementerProvider(cfg config.HarnessConfig, registry *model.Registry) (executor.AgentProvider, error) {
+	return executor.ResolveAgentProvider(ImplementerModelSpec(cfg, registry), cfg.DefaultModel, cfg.Providers)
 }
 
 // demoModelSpec is the internal registry key resolveModelSpec falls back to

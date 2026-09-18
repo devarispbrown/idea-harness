@@ -1703,6 +1703,11 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/decisions?initiative_id=`.
         The mutations stay flat under the project, addressed by decision id.
+
+        Decisions asking the same question (compared after stripping leading `[...]` tags, case and
+        trailing punctuation) are returned once: the newest open one, or the newest decided one if
+        none is open. `?all=true` returns every row. Resolving a decision also resolves every other
+        open decision in the initiative that asks the same question.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3517,6 +3522,12 @@ components:
             string `demo` when no real provider was configured (the internal registry key is never
             exposed as a model id). The UI keys `model === "demo"` to label the change "Shipped
             (demo)" / "Placeholder change" rather than real agent output.
+        executor:
+          type: string
+          description: |
+            The executor kind that produced this change set (`internal`, `container`, `omp`,
+            `hermes`). `internal` output is a placeholder whatever the model. Empty for change sets
+            made before this field existed.
         created_at: { type: string, format: date-time }
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
@@ -3544,13 +3555,19 @@ components:
         patch:
           type: string
           description: |
-            A unified diff of the file against its base: an added file is all `+` lines, a
-            deleted file is all `-` lines, a modified file diffs the base against the new content.
-            The base is read from the raw blob store when available (after apply, where it was
-            persisted for revert) and falls back to the live workspace file otherwise (before
-            apply, where the file at that path is still exactly what the agent started from).
-            Omitted when there is nothing to diff. This is what lets the diff view render a real
-            change instead of a full-file dump for a whole-file rewrite of an existing file.
+            A git-style unified diff of the file against the version the agent started from, without
+            file headers: hunks headed `@@ -a,b +c,d @@`, each line prefixed with one character
+            (` ` context, `-` removed, `+` added), three lines of context. An added file is one hunk
+            `@@ -0,0 +1,N @@`; a deleted file is `@@ -1,N +0,0 @@`. The base comes from the raw blob
+            store after apply, or from the workspace file before apply - only while that file still
+            matches the recorded base digest. Omitted when there is no change to show, or when
+            `patch_note` explains why there is no diff.
+        patch_note:
+          type: string
+          description: |
+            Why `patch` is absent although the file changed: binary, too large to diff, content not
+            kept, or the base no longer recoverable because the workspace file was edited after the
+            agent ran. Clients show it and fall back to `content`.
       required: [path, change_type, size, content]
 
     OperationStatus:
@@ -3752,10 +3769,11 @@ components:
             otherwise a user-facing sentence naming the fix: another change set is still open
             (e.g. "CHG-1 is still review required; apply or reject it before running the next
             task"), an operation is already running ("An operation is already running"), the
-            plan is not approved yet ("The plan is not approved yet"), or the executor is not
-            ready (the same `problem` sentence `GET /executors`' `status` reports, e.g. "Image
-            nousresearch/hermes-agent:v2026.5.16 is not pulled. Run: idea executors setup --kind
-            hermes --model <model> --yes").
+            plan is not approved yet ("The plan is not approved yet"), the initiative failed or is
+            complete, or the executor is not ready (the same `problem` sentence `GET /executors`'
+            `status` reports, e.g. "ANTHROPIC_API_KEY is not set in the daemon's environment or the
+            project's .env; set it and run idea daemon stop"). A coding-agent image that is not
+            pulled yet does not block: the first run pulls it.
       required: [action, why, affected]
 
     NextTaskRef:
@@ -4066,8 +4084,16 @@ components:
         problem:
           type: string
           description: |
-            Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Image
-            nousresearch/hermes-agent:v2026.5.16 is not pulled. Run: idea executors setup --kind
-            hermes --model <model> --yes" or "ANTHROPIC_API_KEY is not set in the daemon's
-            environment or the project's .env; set it and run idea daemon stop".
+            Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Docker is not
+            running or not installed; ..." or "ANTHROPIC_API_KEY is not set in the daemon's
+            environment or the project's .env; set it and run idea daemon stop". A missing image is
+            not a problem: `docker run` pulls it on first use; see `note`. Docker being unreachable is.
+            Resolves the model exactly as execution does (`models.implementer`, then
+            `executor.model`, then the implementer role's default).
+        note:
+          type: string
+          description: |
+            Information that does not block a run, e.g. "Image nousresearch/hermes-agent:v2026.5.16
+            is not pulled yet; the first run downloads it, which can take several minutes. To pull
+            it now: idea executors setup --kind hermes --model <model> --yes".
       required: [image, image_present, key_env, key_set]

@@ -12,6 +12,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
+	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/fsdiff"
@@ -41,7 +42,7 @@ func (e *Engine) SetWorkspaceRoot(dir string) { e.workspaceRoot = dir }
 // Wired through config rather than a model-prefix switch, so bare and custom
 // model specs get their key (review: v1 security boundary).
 func (e *Engine) implementerProvider() (executor.AgentProvider, error) {
-	return executor.ResolveAgentProvider(e.implementerModel(), e.cfg.DefaultModel, e.cfg.Providers)
+	return ImplementerProvider(e.cfg, e.registry)
 }
 
 // SetDotEnv supplies the project's .env, which the daemon's model registry
@@ -71,6 +72,13 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 		provider, err := e.implementerProvider()
 		if err != nil {
 			return nil, err
+		}
+		// OMP has no published image to default to. Without one, docker run
+		// failed with "invalid reference format" -- after the planner's model
+		// call had already been paid for.
+		if e.cfg.Executor.Image == "" && executor.DefaultAgentImage(string(e.cfg.Executor.Kind)) == "" {
+			return nil, fmt.Errorf("executor: %s has no default image; set one with idea executors setup --kind %s --image <image> --model %s --yes",
+				e.cfg.Executor.Kind, e.cfg.Executor.Kind, model)
 		}
 		// A key variable that resolves to nothing is refused here, not left to
 		// the agent. Hermes exits 0 after a 401, so a keyless start of a keyed
@@ -352,6 +360,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		PatchDigest:    patchDigest,
 		CreatedByRunID: attempt.ID,
 		Model:          displayModel(modelSpec),
+		Executor:       exec.Name(),
 	}
 	// CreateChangeSet forces status=draft and assigns CHG-N.
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
@@ -658,21 +667,26 @@ type StructuredFile struct {
 	// lets the diff view render a change instead of a full-file dump for a
 	// whole-file rewrite of an existing file.
 	Patch string `json:"patch,omitempty"`
+	// PatchNote says why Patch is empty when there was a change to show: the
+	// file is binary, too large to diff, its content was never kept, or its
+	// base can no longer be recovered. The UI shows it and falls back to
+	// Content.
+	PatchNote string `json:"patch_note,omitempty"`
 }
 
-// baseContent returns fc's REDACTED pre-change content, or "" when there is
-// none (an added file, or a base that cannot be recovered).
+// baseContent returns fc's REDACTED pre-change content. ok is false when the
+// base cannot be recovered exactly.
 //
 // The base is read from the content blob store first -- fsdiff.Prepare
 // persists the workspace's pre-image there keyed by digest, at apply time, for
-// revert -- and falls back to the live workspace file otherwise. That fallback
-// is what makes a diff available at REVIEW time, before any apply has
-// happened: the work root the agent edited is a fresh copy (Track A), so the
-// file at this path in the actual workspace is still exactly what the agent
-// started from.
-func (e *Engine) baseContent(fc domain.FileChange) string {
+// revert -- and falls back to the live workspace file otherwise, which is what
+// makes a diff available at review time. The fallback is used only if the file
+// still hashes to BaseDigest: a file the user edited after the agent ran would
+// otherwise be diffed as the base, and the user's own edits would appear,
+// reversed, as the agent's.
+func (e *Engine) baseContent(fc domain.FileChange) (string, bool) {
 	if fc.BaseDigest == "" {
-		return ""
+		return "", true
 	}
 	var data []byte
 	if e.contentBlobs() != nil {
@@ -681,32 +695,47 @@ func (e *Engine) baseContent(fc domain.FileChange) string {
 		}
 	}
 	if data == nil && e.workspaceRoot != "" {
-		if d, err := os.ReadFile(filepath.Join(e.workspaceRoot, filepath.FromSlash(fc.Path))); err == nil {
+		if d, err := os.ReadFile(filepath.Join(e.workspaceRoot, filepath.FromSlash(fc.Path))); err == nil && blob.Digest(d) == fc.BaseDigest {
 			data = d
 		}
 	}
 	if data == nil {
-		return ""
+		return "", false
 	}
 	raw := string(data)
 	if e.redactor != nil {
-		return e.redactor.RedactString(raw)
+		return e.redactor.RedactString(raw), true
 	}
-	return security.Redact(raw)
+	return security.Redact(raw), true
 }
 
-// patchFor renders fc's unified diff against its base. newContent is fc's
-// already-redacted post-image content (StructuredDiff's sf.Content); a delete
-// has none.
-func (e *Engine) patchFor(fc domain.FileChange, newContent string) string {
-	old := e.baseContent(fc)
+// patchFor renders fc's diff against its base as hunks, or explains why it
+// cannot. sf carries fc's already-redacted post-image content and its size
+// (Size is 0 when the content was never persisted, e.g. after the secret
+// sweep).
+func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note string) {
+	newContent := sf.Content
 	if fc.IsDelete() {
 		newContent = ""
+	} else if sf.Size == 0 && fc.Digest != "" && sf.Content == "" {
+		return "", "The new content of this file was not kept, so there is no diff to show."
+	}
+	old, ok := e.baseContent(fc)
+	if !ok {
+		return "", "The file has changed in the workspace since the agent ran, so its original version is not available to diff; showing the new content."
+	}
+	if strings.ContainsRune(old, 0) || strings.ContainsRune(newContent, 0) {
+		return "", "Binary file; no text diff."
 	}
 	if old == "" && newContent == "" {
-		return ""
+		return "", ""
 	}
-	return textdiff.Unified(old, newContent)
+	p, ok := textdiff.Hunks(old, newContent)
+	if !ok {
+		return "", fmt.Sprintf("Too large to diff (%d lines); showing the new content.",
+			strings.Count(newContent, "\n")+1)
+	}
+	return p, ""
 }
 
 // StructuredDiff renders a change set as a per-file list (path + kind + redacted
@@ -746,7 +775,7 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 				sf.Content = raw
 			}
 		}
-		sf.Patch = e.patchFor(fc, sf.Content)
+		sf.Patch, sf.PatchNote = e.patchFor(fc, sf)
 		out = append(out, sf)
 	}
 	return out
