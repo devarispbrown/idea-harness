@@ -354,6 +354,17 @@ func writeAtomic(dest string, content []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	// CreateTemp makes the file 0600, and the rename carried that over the
+	// user's file: applying a change turned a 0644 source file private and
+	// took the executable bit off a script. Keep the mode of the file being
+	// replaced; a new file gets the ordinary 0644.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(dest); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
 	if err := os.Rename(tmpName, dest); err != nil {
 		return err
 	}

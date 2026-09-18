@@ -344,7 +344,11 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 		return fmt.Errorf("daemon is not running (it auto-starts on the first command that needs it)")
 	case "stop":
-		return stopDaemon()
+		pid, err := stopDaemon()
+		if err == nil {
+			fmt.Fprintf(stdout, "daemon stopped (pid %d)\n", pid)
+		}
+		return err
 	}
 	log := newDaemonLogger(stderr)
 	defer removePID()
@@ -392,7 +396,7 @@ func removePID() {
 	}
 }
 
-func stopDaemon() error {
+func stopDaemon() (int, error) {
 	data, err := os.ReadFile(pidPath())
 	if err != nil {
 		// The pidfile lives in the state directory, so removing that directory
@@ -404,20 +408,20 @@ func stopDaemon() error {
 		// solve a token problem would be a worse trade than this message. So
 		// say precisely what is true and what will work.
 		if healthy() {
-			return fmt.Errorf("a daemon is answering on %s but its pidfile is gone, "+
+			return 0, fmt.Errorf("a daemon is answering on %s but its pidfile is gone, "+
 				"so it cannot be stopped from here -- this is what happens when the state "+
 				"directory is removed while it runs. Stop it with: %s",
 				daemonAddr(), stopHint())
 		}
-		return fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
+		return 0, fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
 			daemonAddr())
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		return err
+		return 0, err
 	}
 	// Wait for it to go. The daemon now cancels running operations on SIGTERM
 	// and removes their agent containers before exiting, which takes a moment;
@@ -426,11 +430,11 @@ func stopDaemon() error {
 	deadline := time.Now().Add(35 * time.Second)
 	for time.Now().Before(deadline) {
 		if syscall.Kill(pid, 0) != nil {
-			return nil
+			return pid, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("the daemon (pid %d) is still stopping after 35 s; check `idea logs`", pid)
+	return pid, fmt.Errorf("the daemon (pid %d) is still stopping after 35 s; check `idea logs`", pid)
 }
 
 // ---------- init / new ----------
