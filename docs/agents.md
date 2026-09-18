@@ -49,6 +49,44 @@ binary exists:
 idea executors setup --kind hermes --model anthropic/claude-sonnet-4-5-20250929 --smoke --yes
 ```
 
+### Choose a provider and model
+
+Hermes works with all six providers. Pass the model as `provider/model`. The agent receives only
+that provider's key, read from the environment of the process that starts it.
+
+| Provider | `--model` example | Key the agent receives | Verified |
+|---|---|---|---|
+| OpenAI | `openai/gpt-5.6-luna` | `OPENAI_API_KEY` | smoke passed, 16 s |
+| Anthropic | `anthropic/claude-sonnet-4-5-20250929` | `ANTHROPIC_API_KEY` | smoke passed, 15 s |
+| Google Gemini | `gemini/gemini-3.6-flash` | `GOOGLE_API_KEY` | smoke passed |
+| DeepSeek | `deepseek/deepseek-chat` | `DEEPSEEK_API_KEY` | smoke passed, 13 s |
+| OpenRouter | `openrouter/openai/gpt-4o-mini` | `OPENROUTER_API_KEY` | smoke passed, 47 s |
+| Ollama (local) | `ollama/qwen3.8:latest` | none | smoke passed, 46 s |
+
+"Verified" means `idea executors setup --kind hermes --model <that> --smoke --yes` produced a
+real file on 2026-09-17, against the pinned image `nousresearch/hermes-agent:v2026.5.16`. Any
+model the provider serves works; these are the ones measured.
+
+How each provider reaches the agent. idea-harness writes a Hermes config that pins the agent to one
+endpoint, instead of relying on Hermes's own provider names. Those names do not match: Hermes maps
+`openai` to OpenRouter and does not know `ollama`, so an OpenAI key would go unused while
+OpenRouter was billed. Each provider is declared explicitly, with the base URL from
+`.idea-harness/harness.yaml` and the name of its key variable.
+
+Two providers need more than a base URL:
+
+- **Gemini.** Its configured base URL is Google's native API. The agent speaks the
+  OpenAI-compatible protocol, so it uses Google's compatible endpoint (`…/v1beta/openai`).
+- **Ollama.** Its base URL is `localhost:11434`, and inside a container `localhost` is the
+  container. The agent uses `host.docker.internal` instead, and the container gets a mapping for
+  that name. Ollama must be running on the host, with the model already pulled. A small local model
+  can be slow and weak at tool use: `qwen3.8` passed the smoke in 46 s; larger tasks take longer.
+
+**Model ids go stale.** On 2026-09-17 Google returned 404 for `gemini-2.5-flash` and
+`gemini-2.5-pro` ("no longer available to new users"), while its model listing still showed them.
+A dead model id makes the agent exit without writing anything, and `--smoke` prints the provider's
+own error when that happens. Run `--smoke` whenever you change the model.
+
 ### Manual (equivalent)
 
 Edit `.idea-harness/harness.yaml`:

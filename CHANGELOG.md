@@ -9,6 +9,64 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Hermes coding agent generates real code.** It never could against the
+  pinned image `nousresearch/hermes-agent:v2026.5.16`, for three independent
+  reasons, and nothing noticed because the only CI job that exercised the path
+  runs on manual dispatch only.
+
+  | | Was | Now |
+  |---|---|---|
+  | Invocation | `hermes --in /work --yolo chat --query … --model …` — Hermes has no `--in` flag, printed its usage and exited | `hermes chat --yolo -q … -m <model> --provider <slug>` |
+  | Container start | `--read-only` with a host `--user` left the entrypoint unable to create its home: `mkdir: cannot create directory '/opt/data': Permission denied`, and nothing ran | a per-attempt agent home, mounted read-write, named by `HERMES_HOME` |
+  | `idea executors setup` | reported `"hermes" CLI not found in image` for the image it had just downloaded, because the probe bypassed the entrypoint that puts `hermes` on `PATH` | the probe runs through the entrypoint |
+  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is removed by `Collect`/`Cancel` |
+
+  `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
+  now passes for all six providers — OpenAI, Anthropic, Gemini, DeepSeek,
+  OpenRouter and Ollama — each producing a real file on 2026-09-17.
+
+- **The agent talks to the provider you configured.** Hermes's own provider
+  names do not match this project's: it maps `openai` to OpenRouter and does not
+  know `ollama`, so an OpenAI key would have gone unused while OpenRouter was
+  billed. The agent now receives a generated config declaring the provider
+  explicitly, with the base URL from `harness.yaml` and the name of its key
+  variable. Without the key variable, Hermes sent the literal placeholder
+  `no-key-required`, which is why Anthropic, Gemini and DeepSeek were rejected
+  with keys that were valid on the host.
+
+- **Keyless providers can run the coding agent.** The executor refused any
+  provider without a key variable, which could not distinguish Ollama — a preset
+  that needs no key — from a typo. An unresolvable provider still fails closed.
+  Ollama is reached through `host.docker.internal`, because inside a container
+  `localhost` is the container.
+
+- **Gemini's agent endpoint and default model.** The agent speaks the
+  OpenAI-compatible protocol, so it uses Google's compatible endpoint rather
+  than the native API idea-harness itself calls. And `gemini-2.5-flash`, the
+  catalog's Gemini default, now answers 404 "no longer available to new users"
+  on both APIs while still appearing in Google's model listing. The default is
+  `gemini-3.6-flash`, verified on both. The engine falls back to that default
+  when a user has only `GOOGLE_API_KEY` set, so every model call had been failing
+  for a new Gemini user.
+
+- **A failed agent says why.** Hermes exits 0 even when the model call fails, so
+  a failure surfaced as `produced no files (CLI contract mismatch?)` — wrong
+  about the cause. `--smoke` now prints the agent's own output, which names the
+  401 or the dead model id.
+
+- **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
+  and lists the providers it accepts.
+
+### Added
+
+- **A CI job that runs the real agent path without an API key.** It starts the
+  pinned image through the real executor against a refused endpoint and asserts
+  Hermes accepted the query. Both startup defects above fail it; neither needed
+  a key to detect. It runs on pushes rather than every pull request because the
+  image is 5.4 GB, and releases now wait for it.
+
 ## [0.4.0] - 2026-09-17
 
 ### Changed — BREAKING

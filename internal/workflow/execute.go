@@ -32,29 +32,37 @@ func (e *Engine) SetWorkRoot(dir string) { e.workRoot = dir }
 // and RevertChangeSet restores. The daemon points this at the project root.
 func (e *Engine) SetWorkspaceRoot(dir string) { e.workspaceRoot = dir }
 
-// implementerKeyEnv resolves the provider API-key env var for the coding agent's
-// model, wired through config (presets + custom providers + default-model
-// fallback) rather than a model-prefix switch, so bare/custom model specs get
-// their key (review: v1 security boundary). Empty for keyless providers.
-func (e *Engine) implementerKeyEnv() string {
+// implementerProvider resolves the coding agent's provider: its key, its API
+// base URL, and whether it was resolved at all.
+//
+// Wired through config (presets + custom providers + default-model fallback)
+// rather than a model-prefix switch, so bare and custom model specs get their
+// key (review: v1 security boundary).
+//
+// `resolved` is the distinction that matters, and it used to be conflated with
+// "has a key". Ollama is a first-class preset with DefaultKeyEnv "" and
+// NeedsKey false, so an empty key env was indistinguishable from an
+// unresolvable provider -- and the executor refused both. That blocked every
+// keyless provider from the coding-agent path entirely.
+func (e *Engine) implementerProvider() (provider, keyEnv, baseURL string, resolved bool) {
 	model := e.implementerModel()
-	provider := model
+	provider = model
 	if i := strings.Index(model, "/"); i > 0 {
 		provider = model[:i]
 	}
 	if p := config.PresetFor(provider); p != nil {
-		return p.DefaultKeyEnv
+		return provider, p.DefaultKeyEnv, p.BaseURL, true
 	}
 	if pc, ok := e.cfg.Providers[provider]; ok {
-		_, _, keyEnv := config.ResolveProvider(provider, pc)
-		return keyEnv
+		_, base, key := config.ResolveProvider(provider, pc)
+		return provider, key, base, true
 	}
 	// Bare provider: fall back to the provider of the configured default model,
 	// which the operator chose explicitly.
 	if dm := e.cfg.DefaultModel; dm != "" {
 		if i := strings.Index(dm, "/"); i > 0 {
 			if p := config.PresetFor(dm[:i]); p != nil {
-				return p.DefaultKeyEnv
+				return dm[:i], p.DefaultKeyEnv, p.BaseURL, true
 			}
 		}
 	}
@@ -64,10 +72,17 @@ func (e *Engine) implementerKeyEnv() string {
 	// be set in the environment. A typo in executor.model therefore handed some
 	// other provider's real API key to the coding agent -- which runs in a
 	// container with deliberate network egress (internal/executor/agent.go), so
-	// the key leaves the machine. An unresolvable provider now yields no key and
+	// the key leaves the machine. An unresolvable provider now yields nothing and
 	// the run fails with a message naming it, rather than silently spending a
 	// credential the operator did not choose.
-	return ""
+	return provider, "", "", false
+}
+
+// implementerKeyEnv is the key half of implementerProvider, kept for callers
+// that only need the credential.
+func (e *Engine) implementerKeyEnv() string {
+	_, keyEnv, _, _ := e.implementerProvider()
+	return keyEnv
 }
 
 // selectExecutor returns the executor selected by harness.executor.kind. The
@@ -79,18 +94,24 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image), nil
 	case config.ExecutorOMP, config.ExecutorHermes:
 		model := e.implementerModel()
-		keyEnv := e.implementerKeyEnv()
+		provider, keyEnv, baseURL, resolved := e.implementerProvider()
 		// A coding agent runs with network egress, so it must not be launched
-		// with a credential nobody chose. An unresolvable provider stops the run
-		// here, naming what could not be resolved.
-		if keyEnv == "" {
+		// with a credential nobody chose. An UNRESOLVABLE provider stops the run
+		// here, naming what could not be resolved -- but a provider that resolved
+		// and legitimately needs no key (Ollama) is not that, and used to be
+		// refused by the same check.
+		if !resolved {
 			return nil, fmt.Errorf("executor: cannot resolve a provider for model %q; "+
 				"set harness.executor.model (or default_model) to a configured provider, or add the provider under providers: in .idea-harness/harness.yaml", model)
 		}
-		if e.cfg.Executor.Kind == config.ExecutorOMP {
-			return executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
+		if p := config.PresetFor(provider); p != nil && p.NeedsKey && keyEnv == "" {
+			return nil, fmt.Errorf("executor: provider %q needs an API key and none is configured; "+
+				"set its key_env under providers: in .idea-harness/harness.yaml", provider)
 		}
-		return executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
+		if e.cfg.Executor.Kind == config.ExecutorOMP {
+			return executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv, provider, baseURL), nil
+		}
+		return executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv, provider, baseURL), nil
 	default:
 		return executor.NewInternalExecutor(e.contentBlobs()), nil
 	}

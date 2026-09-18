@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/executor"
@@ -341,6 +342,20 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
 	}
 
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	// Checked before the pull, which is several gigabytes. A misspelled or
+	// unsupported provider used to download the image, verify it, write the
+	// config and only then fail -- or, with --smoke, surface as an agent that
+	// "produced no files".
+	if model != "" {
+		if err := checkAgentProvider(c, projectID, model); err != nil {
+			return err
+		}
+	}
+
 	digest, err := executor.PullImage(context.Background(), image)
 	if err != nil {
 		return fmt.Errorf("pull failed: %w", err)
@@ -349,10 +364,6 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
-	c, projectID, err := connect()
-	if err != nil {
-		return err
-	}
 	body := map[string]string{"kind": kind, "image": image}
 	if model != "" {
 		body["model"] = model
@@ -594,4 +605,29 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 	}
 	// renderNextAction already turns a `failed` action into failedInitiativeError.
 	return renderNextAction(step, stdout)
+}
+
+// checkAgentProvider confirms a coding-agent model names a provider this
+// project can reach: one of the presets, or one configured under providers: in
+// harness.yaml. The message lists them, because the valid set is short and the
+// user is choosing from it.
+func checkAgentProvider(c *client, projectID, model string) error {
+	i := strings.Index(model, "/")
+	if i <= 0 || i == len(model)-1 {
+		return fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/llama3.1", model)
+	}
+	provider := model[:i]
+	var view cliProvidersView
+	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(view.Providers))
+	for _, p := range view.Providers {
+		if p.Name == provider {
+			return nil
+		}
+		names = append(names, p.Name)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("unknown provider %q in --model; use one of: %s", provider, strings.Join(names, ", "))
 }
