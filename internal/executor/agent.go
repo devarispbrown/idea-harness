@@ -47,7 +47,15 @@ type agentAttempt struct {
 
 func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, provider AgentProvider, buildArgs func(Request, string, string) []string) *SandboxedAgentExecutor {
 	if image == "" {
-		image = "alpine:3.20"
+		// C1: an empty image here used to fall back to alpine:3.20, which has
+		// no agent CLI at all -- `docker run` exited 127, and the message
+		// looked exactly like a broken PATH rather than "no agent image was
+		// ever configured". This is reachable from an existing or hand-edited
+		// harness.yaml even after PUT /executors starts writing the pinned
+		// default (C1's other half): DefaultAgentImage(name) is "" for a kind
+		// with no canonical image (OMP today), and that empty stays empty here
+		// rather than becoming alpine.
+		image = DefaultAgentImage(name)
 	}
 	return &SandboxedAgentExecutor{
 		attempts:   make(map[string]*agentAttempt),

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -74,6 +75,111 @@ func TestNextAction(t *testing.T) {
 	setStatus(domain.InitiativeRunning)
 	if a, _ := eng.NextAction(ctx, iniID); a != "wait" {
 		t.Errorf("running -> %q, want wait", a)
+	}
+}
+
+// TestNextReadyTaskReportsTheTaskExecuteWouldRun is the Build contract's
+// `next_task` (B1/backend-2): the UI names the task a "Run next task" button
+// would start, without a second round trip, and gets nil when there is none.
+func TestNextReadyTaskReportsTheTaskExecuteWouldRun(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+	if err := db.SetInitiativeStatus(ctx, iniID, domain.InitiativePlanApproved, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := eng.NextReadyTask(ctx, iniID); err != nil || got != nil {
+		t.Fatalf("NextReadyTask with no tasks = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add /health endpoint", Statement: "s", Priority: domain.PriorityMust, Status: domain.TaskReady}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := eng.NextReadyTask(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("NextReadyTask = nil, want the ready task")
+	}
+	if got.ID != task.ID || got.HumanID != task.Code || got.Title != task.Title {
+		t.Errorf("NextReadyTask = %+v, want id=%s human_id=%s title=%s", got, task.ID, task.Code, task.Title)
+	}
+}
+
+// TestRunBlockedReasonNamesEachRefusal is the Build contract's
+// `run_blocked_reason`: it must name the SAME reasons Execute itself refuses
+// for, read-only, so the UI can grey out the button and say why instead of
+// letting the click land on an error.
+func TestRunBlockedReasonNamesEachRefusal(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	// Plan not approved.
+	if err := db.SetInitiativeStatus(ctx, iniID, domain.InitiativeApproved, ""); err != nil {
+		t.Fatal(err)
+	}
+	reason, err := eng.RunBlockedReason(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reason, "not approved") {
+		t.Errorf("approved status: reason = %q, want it to name the plan not being approved", reason)
+	}
+
+	// An operation already running.
+	if err := db.SetInitiativeStatus(ctx, iniID, domain.InitiativeRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	reason, err = eng.RunBlockedReason(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reason, "already running") {
+		t.Errorf("running status: reason = %q, want it to name an operation already running", reason)
+	}
+
+	// Ready, but nothing to run: not a blocked run.
+	if err := db.SetInitiativeStatus(ctx, iniID, domain.InitiativePlanApproved, ""); err != nil {
+		t.Fatal(err)
+	}
+	reason, err = eng.RunBlockedReason(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Errorf("no ready task: reason = %q, want empty (next_task=nil already conveys this)", reason)
+	}
+
+	// A ready task, but another task's change set is still open (A5).
+	blocked := &domain.Task{InitiativeID: iniID, Title: "blocked task", Statement: "s", Priority: domain.PriorityMust, Status: domain.TaskReady}
+	if err := db.CreateTask(ctx, blocked, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	other := &domain.Task{InitiativeID: iniID, Title: "other task", Statement: "s", Priority: domain.PriorityMust, Status: domain.TaskDone}
+	if err := db.CreateTask(ctx, other, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{InitiativeID: iniID, TaskID: other.ID}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, ""); err != nil {
+		t.Fatal(err)
+	}
+	reason, err = eng.RunBlockedReason(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reason, cs.HumanID) {
+		t.Errorf("open change set: reason = %q, want it to name %s", reason, cs.HumanID)
+	}
+	if strings.HasPrefix(reason, "workflow: execute:") {
+		t.Errorf("reason leaks the internal error prefix: %q", reason)
 	}
 }
 

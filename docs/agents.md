@@ -148,15 +148,18 @@ The per-role model map `models.implementer` overrides `executor.model` if both a
 
 The executor resolves the *name* of the key's environment variable from the model's provider — a
 built-in preset (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or a custom
-`providers.<name>.api_key_env`. It then reads that variable **from the daemon's own process
-environment only** (`os.Getenv`, `internal/executor/agent.go`). The value is forwarded into the
-container via a `0600` env-file, so the secret never appears in the `docker run` argv and is never
-written to state.
+`providers.<name>.api_key_env`. It then reads that variable the same way the model registry does for
+every other model call: **the daemon's own process environment first, then the project's `.env`**
+(`internal/workflow/execute.go`'s `lookupKey`, wired into the executor via `SetKeyLookup`). The value
+is forwarded into the container via a `0600` env-file, so the secret never appears in the `docker
+run` argv and is never written to state.
 
-> **The project `.env` does not reach the agent.** `.env` is a fallback for the *harness's* own
-> model calls and for redaction (`docs/configuration.md`, Secrets) — the executor does not consult
-> it. A key that exists only in `.env` yields no env-file and no key inside the container, and the
-> agent fails against its provider. Export it into the daemon's environment instead:
+> An earlier revision of this page said `.env` **does not reach the agent** — true before
+> `979e0d0`, and stale ever since: since that commit, a key that lives only in `.env` is enough,
+> with no separate step for the agent. If a keyed provider's key is set in neither the daemon's
+> environment nor `.env`, the run stops before the container starts, naming the variable. If you
+> set or change the environment variable itself (rather than `.env`), the daemon still needs a
+> restart to pick it up:
 >
 > ```bash
 > export ANTHROPIC_API_KEY=...   # before the daemon starts
