@@ -491,6 +491,21 @@ CREATE INDEX IF NOT EXISTS idx_doc_comments_artifact ON doc_comments(artifact_ve
 	`
 ALTER TABLE initiatives ADD COLUMN judgment_reason TEXT NOT NULL DEFAULT '';
 `,
+	// 19: record a failed operation's own reason (B2). Before this, a failed
+	// execute left the initiative at plan_approved, the Build page's running
+	// card vanished with no replacement, and the only record of why was a line
+	// in daemon.log -- invisible to anyone not tailing it.
+	`
+ALTER TABLE operations ADD COLUMN error TEXT NOT NULL DEFAULT '';
+`,
+	// 20: record the actual model that produced a change set, so the UI can
+	// label demo/placeholder output distinctly from a real agent's without a
+	// second round trip to the run manifest (whose id space does not even
+	// match change_sets.created_by_run_id -- that column holds the executor
+	// attempt id, not the domain Run id CreateRunManifest keys on).
+	`
+ALTER TABLE change_sets ADD COLUMN model TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

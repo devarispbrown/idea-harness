@@ -2711,6 +2711,15 @@ paths:
         Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
         config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
         and `model` are nullable pointers: omit to leave alone, send `""` to clear.
+
+        For `kind` `hermes`/`omp` with the resulting `image` empty, the pinned default
+        (`executor.DefaultAgentImage`) is stored instead of leaving it empty — reload shows what is
+        actually stored, and the daemon's own runtime fallback for an empty image is the same
+        pinned default, never `alpine:3.20` (which has no agent CLI). For `hermes`/`omp` with a
+        non-empty `model`, the model must resolve to a provider through
+        `executor.ResolveAgentProvider` (the project's `providers:` entries plus `default_model`);
+        an unresolvable model is rejected with `400` naming the reason, rather than being written
+        and failing later inside the agent container.
       requestBody:
         required: true
         content:
@@ -3501,6 +3510,13 @@ components:
           type: string
           description: Set when the harness is configured to commit applied change sets.
         created_by_run_id: { type: string }
+        model:
+          type: string
+          description: |
+            The actual model that produced this change set, e.g. `openai/gpt-5`, or the literal
+            string `demo` when no real provider was configured (the internal registry key is never
+            exposed as a model id). The UI keys `model === "demo"` to label the change "Shipped
+            (demo)" / "Placeholder change" rather than real agent output.
         created_at: { type: string, format: date-time }
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
@@ -3525,6 +3541,16 @@ components:
         content:
           type: string
           description: Redacted file content; empty for a deletion.
+        patch:
+          type: string
+          description: |
+            A unified diff of the file against its base: an added file is all `+` lines, a
+            deleted file is all `-` lines, a modified file diffs the base against the new content.
+            The base is read from the raw blob store when available (after apply, where it was
+            persisted for revert) and falls back to the live workspace file otherwise (before
+            apply, where the file at that path is still exactly what the agent started from).
+            Omitted when there is nothing to diff. This is what lets the diff view render a real
+            change instead of a full-file dump for a whole-file rewrite of an existing file.
       required: [path, change_type, size, content]
 
     OperationStatus:
@@ -3547,6 +3573,13 @@ components:
           description: Which pipeline this operation runs, e.g. `advance`, `execute`, `apply`.
         status: { $ref: "#/components/schemas/OperationStatus" }
         result_ref: { type: string }
+        error:
+          type: string
+          description: |
+            Why a `failed` or `cancelled` operation ended that way, redacted and capped around
+            8 KB. Omitted (never an empty string) on a `succeeded`, `pending` or `running`
+            operation. Before this field existed, a failed execute left the running card with
+            nothing to show and the only record of why was a line in daemon.log.
         created_at: { type: string, format: date-time }
         finished_at:
           type: [string, "null"]
@@ -3705,7 +3738,37 @@ components:
           type: array
           items: { type: string }
           description: The areas the move touches, e.g. ["Product Definition"].
+        next_task:
+          allOf: [{ $ref: "#/components/schemas/NextTaskRef" }]
+          description: |
+            The task `Execute` would run next, reusing the workflow's own task-readiness check.
+            Omitted (never `null`) when there is no ready task - every other field on this
+            endpoint's contract is "omit rather than emit null", and this is that same rule for a
+            single optional object.
+        run_blocked_reason:
+          type: string
+          description: |
+            Empty (and so omitted) when `Execute` could start right now for this initiative,
+            otherwise a user-facing sentence naming the fix: another change set is still open
+            (e.g. "CHG-1 is still review required; apply or reject it before running the next
+            task"), an operation is already running ("An operation is already running"), the
+            plan is not approved yet ("The plan is not approved yet"), or the executor is not
+            ready (the same `problem` sentence `GET /executors`' `status` reports, e.g. "Image
+            nousresearch/hermes-agent:v2026.5.16 is not pulled. Run: idea executors setup --kind
+            hermes --model <model> --yes").
       required: [action, why, affected]
+
+    NextTaskRef:
+      type: object
+      title: NextTaskRef
+      description: The task `Execute` would run next, named without exposing the full Task.
+      properties:
+        id: { type: string }
+        human_id:
+          type: string
+          description: The task's human-readable code, e.g. `TASK-2`.
+        title: { type: string }
+      required: [id, human_id, title]
 
     Changed:
       type: object
@@ -3973,4 +4036,38 @@ components:
         default_image:
           type: string
           description: The image this executor would use if none were configured.
-      required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image]
+        status: { $ref: "#/components/schemas/ExecutorStatus" }
+      required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image, status]
+
+    ExecutorStatus:
+      type: object
+      title: ExecutorStatus
+      description: |
+        Whether this executor is actually ready to run right now: image present, key set, and the
+        one sentence to show instead of guessing when it is not. Only meaningful for `hermes`/`omp`
+        (the coding agents run in a container against a keyed provider); `internal`/`container`
+        always report ready, since neither pulls an agent image or forwards a provider key. Image
+        presence is cached for about 30s so a poll never calls Docker more than once per interval.
+      properties:
+        image:
+          type: string
+          description: The image this executor would check (empty for internal/container).
+        image_present:
+          type: boolean
+          description: Whether `image` is present locally. Always true for internal/container.
+        key_env:
+          type: string
+          description: The provider key's environment variable name, empty for a keyless provider.
+        key_set:
+          type: boolean
+          description: |
+            Whether the key is set in the daemon's own environment or the project's `.env`.
+            Always true for internal/container.
+        problem:
+          type: string
+          description: |
+            Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Image
+            nousresearch/hermes-agent:v2026.5.16 is not pulled. Run: idea executors setup --kind
+            hermes --model <model> --yes" or "ANTHROPIC_API_KEY is not set in the daemon's
+            environment or the project's .env; set it and run idea daemon stop".
+      required: [image, image_present, key_env, key_set]
