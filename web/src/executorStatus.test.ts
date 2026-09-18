@@ -23,10 +23,18 @@ describe("executorStatusLines", () => {
     expect(lines.problemLine).toBeUndefined();
   });
 
-  it("names the setup command when the image is not pulled", () => {
-    const lines = executorStatusLines({ ...ready, image_present: false });
+  // A missing image does not block a run: the first run pulls it. The
+  // command to pull it now comes from the daemon's note.
+  it("says the first run downloads an image that is not pulled", () => {
+    const lines = executorStatusLines({ ...ready, image_present: false, note: "To pull it now: idea executors setup" });
     expect(lines.imageLine.ok).toBe(false);
-    expect(lines.imageLine.text).toContain("idea executors setup");
+    expect(lines.imageLine.text).toContain("first run downloads it");
+    expect(lines.noteLine).toContain("idea executors setup");
+  });
+
+  it("does not claim the image is missing when Docker cannot be asked", () => {
+    const lines = executorStatusLines({ ...ready, image_present: false, problem: "Docker is not running or not installed; ..." });
+    expect(lines.imageLine.text).not.toContain("not pulled");
   });
 
   it("falls back to naming the default image when none is configured", () => {

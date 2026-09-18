@@ -95,15 +95,20 @@ export default function App() {
   // depending purely on resolution order. `outcomesRef` keeps every loader's
   // most recent network-failure verdict, keyed by name, and every report
   // recomputes `daemonDown` from the combined set -- one decision, not four
-  // independent ones -- so it only reads "down" while every tracked poller's
-  // latest attempt agrees, and a fresh success from any one of them can't by
-  // itself paper over another that is still failing.
+  // independent ones. It reads "down" while ANY active poller's latest
+  // attempt was a network failure; a poller that stops is removed
+  // (forgetOutcome), so a stale failure cannot hold the banner up.
   const outcomesRef = useRef<Record<string, boolean>>({});
   const reportOutcome = useCallback((key: string, networkError: boolean) => {
     outcomesRef.current = { ...outcomesRef.current, [key]: networkError };
     setDaemonDown(
       daemonDownAfterPoll(Object.values(outcomesRef.current).map((networkError) => ({ networkError }))),
     );
+  }, []);
+  const forgetOutcome = useCallback((key: string) => {
+    const { [key]: _gone, ...rest } = outcomesRef.current;
+    outcomesRef.current = rest;
+    setDaemonDown(daemonDownAfterPoll(Object.values(rest).map((networkError) => ({ networkError }))));
   }, []);
 
   // loadProjects, loadInitiatives, loadAttention and loadInitiativeData each
@@ -213,7 +218,11 @@ export default function App() {
     if (projectId && currentInitiativeId) {
       loadInitiativeData(projectId, currentInitiativeId);
     }
-  }, [projectId, currentInitiativeId, loadInitiativeData]);
+    // A poller that stops must stop voting. Leaving the initiative kept its
+    // last "network error" in the combined decision, so after the daemon came
+    // back the banner stayed up until the initiative was opened again.
+    return () => forgetOutcome("initiative-data");
+  }, [projectId, currentInitiativeId, loadInitiativeData, forgetOutcome]);
 
   // Poll for freshness (SSE live-update arrives with the running-state work).
   useEffect(() => {

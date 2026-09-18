@@ -295,3 +295,29 @@ func TestChangeSetRecordsItsExecutor(t *testing.T) {
 		t.Errorf("executor = %q, want hermes", got.Executor)
 	}
 }
+
+func TestPatchNotesForEdgeCases(t *testing.T) {
+	eng, _, _ := newExecuteFixture(t)
+	put := func(s string) string {
+		d, err := eng.contentBlobs().Put([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	base := put("a\nb\n")
+	// A file emptied by the change is a diff of deletions, not "not kept".
+	empty := put("")
+	p, note := eng.patchFor(domain.FileChange{Path: "f", Digest: empty, ChangeType: domain.FileModified, BaseDigest: base},
+		StructuredFile{contentKept: true})
+	if p != "@@ -1,2 +0,0 @@\n-a\n-b" || note != "" {
+		t.Errorf("emptied file: patch=%q note=%q", p, note)
+	}
+	// Only line endings changed: no hunk, so say so.
+	crlf := put("a\r\nb\r\n")
+	_, note = eng.patchFor(domain.FileChange{Path: "f", Digest: crlf, ChangeType: domain.FileModified, BaseDigest: base},
+		StructuredFile{Content: "a\r\nb\r\n", Size: 6, contentKept: true})
+	if !strings.Contains(note, "line endings") {
+		t.Errorf("a line-ending-only change gave note %q", note)
+	}
+}

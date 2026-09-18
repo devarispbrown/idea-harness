@@ -11,6 +11,46 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **The web UI can run the whole loop.** The UI walkthrough rated it 3/10:
+  nothing in the browser could start Build, and a failed run left no trace.
+  - **Build** has a "Run TASK-n: title" button, disabled with the reason when a
+    run cannot start (another change set is still open, Docker is not running,
+    the provider's key is not set). A failed run shows the agent's own error
+    with Retry. The running card names the task; Stop offers to run again.
+  - **Diffs** show only the changed lines, with context, labelled added,
+    modified or deleted, or say why there is no diff (binary, too large, or
+    the file was edited after the agent ran). Every finding on a change set is
+    shown before you approve, including why a change set conflicted, with
+    "Reject and re-run" first when retrying cannot work.
+  - **Approve, Apply, Revert** show that they are working and report errors
+    inline; approving finishes even if you close the tab.
+  - **Settings** shows whether the agent's image is pulled and its key is set,
+    stores the Hermes image when you leave it empty (an empty image had run
+    `alpine:3.20`, which has no agent), and rejects a model it cannot use with
+    the reason. The model picker loads on open, leads with current models and
+    hides speech, image and embedding models. The page no longer re-renders in
+    a loop, which had called the provider's model API several times a second.
+  - **Define** shows PRD decisions and findings; **Plan** shows the plan's,
+    including a dependency cycle that blocks approval and had shown nowhere.
+    "Revise PRD" appears only when the PRD is what is waiting. The same
+    question asked twice shows once, and answering it answers both.
+  - **Demo mode** has a banner on every page, its output is labelled a
+    placeholder, and nothing demo-made is called "SHIPPED".
+  - **Errors** read as the server's message, not raw JSON; a missing key names
+    the variable and turns the sidebar dot amber. The lost-connection banner
+    appears only for a real network failure and keeps the page visible.
+  - **Phone widths** keep the navigation and wrap Plan and Settings rows;
+    dark mode covers form fields; unknown links show a not-found page.
+  - `idea dev`, `idea init` and `idea daemon status` print the UI address;
+    `idea daemon stop` prints the pid it stopped.
+
+- **Applying a change keeps file permissions.** It wrote through a private
+  temporary file, so a 0644 file became 0600 and a script lost its executable
+  bit.
+
+- **A provider's model list is fetched at most every five minutes** instead of
+  on every page poll, each of which called the provider's API with your key.
+
 - **The coding agent no longer overwrites your files.** Its working directory
   started empty, so the agent never saw the project: asked to add a route to
   `server.js`, it wrote a new `server.js` from nothing, the change set called

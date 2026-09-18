@@ -193,6 +193,12 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 	return u, nil
 }
 
+// SameQuestion reports whether two decision questions are the same question
+// for display: equal after normalizeDecisionQuestion.
+func SameQuestion(a, b string) bool {
+	return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b)
+}
+
 // normalizeDecisionQuestion returns a canonical form for comparing decision
 // questions across revise cycles (D3): a model re-listing a prior decision
 // verbatim often prefixes it with "[Source: ...]", and casing/whitespace
@@ -203,12 +209,6 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 // workflow: the store stays the single source of truth and this is a
 // display-only rule, so projection must not gain a dependency on workflow to
 // get it.
-// SameQuestion reports whether two decision questions are the same question
-// for display: equal after normalizeDecisionQuestion.
-func SameQuestion(a, b string) bool {
-	return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b)
-}
-
 func normalizeDecisionQuestion(text string) string {
 	s := strings.TrimSpace(text)
 	for strings.HasPrefix(s, "[") {

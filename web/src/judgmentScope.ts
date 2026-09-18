@@ -56,10 +56,14 @@ export function findingsForPlan(findings: FindingItem[]): FindingItem[] {
 // or future. Rendered as Define's "Other open items" list, so nothing a
 // reviewer needs to see can be silently dropped by an incomplete allowlist
 // the way the reported CRITICAL finding was.
+//
+// change_set findings are excluded: the Build page shows every one of them
+// on its change set, and listing them here too read as "didn't match a known
+// phase", which was not true.
 export function otherOpenFindings(findings: FindingItem[]): FindingItem[] {
   return findings.filter((f) => {
     const target = f.target_type ?? "";
-    return !DEFINE_FINDING_TARGETS.has(target) && !isPlanFinding(f);
+    return target !== "change_set" && !DEFINE_FINDING_TARGETS.has(target) && !isPlanFinding(f);
   });
 }
 

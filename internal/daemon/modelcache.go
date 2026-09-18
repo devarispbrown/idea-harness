@@ -44,6 +44,14 @@ func listModelsCached(ctx context.Context, reg *model.Registry, name string) ([]
 	models, err := reg.ListModels(ctx, name)
 	if err == nil && len(models) > 0 {
 		liveModelMu.Lock()
+		// Expired entries go on every insert: keys hold a registry, and a
+		// config reload builds a new one, so an entry never swept kept every
+		// old registry alive for the life of the daemon.
+		for k, e := range liveModelCache {
+			if time.Since(e.at) >= liveModelTTL {
+				delete(liveModelCache, k)
+			}
+		}
 		liveModelCache[key] = liveModelEntry{models, time.Now()}
 		liveModelMu.Unlock()
 	}

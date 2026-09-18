@@ -672,6 +672,10 @@ type StructuredFile struct {
 	// base can no longer be recovered. The UI shows it and falls back to
 	// Content.
 	PatchNote string `json:"patch_note,omitempty"`
+
+	// contentKept is whether the post-image was read from the store; an empty
+	// file that was kept is not the same as content that never was.
+	contentKept bool
 }
 
 // baseContent returns fc's REDACTED pre-change content. ok is false when the
@@ -717,7 +721,7 @@ func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note 
 	newContent := sf.Content
 	if fc.IsDelete() {
 		newContent = ""
-	} else if sf.Size == 0 && fc.Digest != "" && sf.Content == "" {
+	} else if !sf.contentKept {
 		return "", "The new content of this file was not kept, so there is no diff to show."
 	}
 	old, ok := e.baseContent(fc)
@@ -731,6 +735,12 @@ func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note 
 		return "", ""
 	}
 	p, ok := textdiff.Hunks(old, newContent)
+	if ok && p == "" && old != newContent {
+		// splitLines ignores line endings and the final newline, so a change
+		// to only those has no hunk -- and without a note the UI showed the
+		// whole file with nothing to say why.
+		return "", "Only line endings or the final newline changed."
+	}
 	if !ok {
 		return "", fmt.Sprintf("Too large to diff (%d lines); showing the new content.",
 			strings.Count(newContent, "\n")+1)
@@ -765,6 +775,7 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 		sf := StructuredFile{Path: fc.Path, ChangeType: ct}
 		if !fc.IsDelete() && e.contentBlobs() != nil {
 			if content, err := e.contentBlobs().Get(fc.Digest); err == nil {
+				sf.contentKept = true
 				sf.Size = len(content)
 				raw := string(content)
 				if e.redactor != nil {

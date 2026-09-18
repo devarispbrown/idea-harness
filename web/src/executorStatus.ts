@@ -13,6 +13,9 @@ export interface ExecutorStatusInput {
   key_env: string;
   key_set: boolean;
   problem: string;
+  // Information that does not block a run (e.g. an image the first run will
+  // download).
+  note?: string;
 }
 
 export interface ExecutorStatusLine {
@@ -27,16 +30,22 @@ export interface ExecutorStatusLines {
   keyLine?: ExecutorStatusLine;
   // Omitted when the executor is ready.
   problemLine?: string;
+  noteLine?: string;
 }
 
 export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatusLines {
   const imageName = status.image || "the pinned default image";
+  // When Docker itself is unreachable the image cannot be checked, and saying
+  // it "is not pulled" under a "Docker is not running" problem contradicted it.
+  const dockerDown = /docker is not running/i.test(status.problem || "");
   const imageLine: ExecutorStatusLine = status.image_present
     ? { text: `${imageName} is pulled.`, ok: true }
-    : {
-        text: `${imageName} is not pulled locally — run \`idea executors setup\` to pull it.`,
-        ok: false,
-      };
+    : dockerDown
+      ? { text: `${imageName}: cannot check while Docker is unavailable.`, ok: false }
+      : {
+          text: `${imageName} is not pulled yet; the first run downloads it.`,
+          ok: false,
+        };
 
   const keyLine: ExecutorStatusLine | undefined = status.key_env
     ? status.key_set
@@ -51,6 +60,7 @@ export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatus
     imageLine,
     keyLine,
     problemLine: status.problem || undefined,
+    noteLine: status.note || undefined,
   };
 }
 

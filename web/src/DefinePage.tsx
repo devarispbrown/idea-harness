@@ -35,9 +35,8 @@ export default function DefinePage({
   projectId: string;
   initiativeId: string;
   status: string;
-  // Optional because App.tsx does not thread it here yet — undefined is the
-  // same legacy case showsRevisePrd already treats as prd_review, so this
-  // page degrades to its pre-D2 behaviour until that one-line wiring lands.
+  // Why the initiative is waiting, from App. Undefined never shows "Revise
+  // PRD": showsRevisePrd fails closed to anything but prd_review.
   judgmentReason?: string;
 }) {
   const [decisions, setDecisions] = useState<DecisionItem[]>([]);

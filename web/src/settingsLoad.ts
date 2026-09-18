@@ -30,16 +30,3 @@ export interface ProvidersViewLike {
 export function resolveInitialProvider(defaultModel: string): string {
   return defaultModel?.includes("/") ? defaultModel.split("/")[0] : "openai";
 }
-
-// loadSettingsOnce is the mount sequence itself: fetch the providers view,
-// derive its provider, fetch that provider's models -- each call made
-// exactly once, in that order, with no dependency on anything but its own
-// arguments and no re-entrant call back into itself.
-export async function loadSettingsOnce<V extends ProvidersViewLike>(
-  fetchProviders: () => Promise<V>,
-  fetchModelsForProvider: (provider: string) => Promise<void>,
-): Promise<V> {
-  const view = await fetchProviders();
-  await fetchModelsForProvider(resolveInitialProvider(view.default_model));
-  return view;
-}
