@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
-	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/fsdiff"
