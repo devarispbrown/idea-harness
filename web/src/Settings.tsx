@@ -463,6 +463,16 @@ export default function Settings({ projectId }: { projectId: string }) {
   // POST .../executors/smoke reads pr.cfg.Harness.Executor.Kind, not
   // anything pending in this form.
   const selectedExecutor = executors.find((e) => e.selected);
+  // A smoke started before a reload (or in another tab) has no id here. Keep
+  // refreshing the executors until its last_smoke leaves "running", so the
+  // result appears instead of "A smoke test is running." forever.
+  const otherSmokeRunning =
+    !smokeOpId && ["running", "pending"].includes(selectedExecutor?.status?.last_smoke?.status ?? "");
+  useEffect(() => {
+    if (!otherSmokeRunning) return;
+    const id = setInterval(() => loadExecutors(), 3000);
+    return () => clearInterval(id);
+  }, [otherSmokeRunning, loadExecutors]);
   const smokeState = smokeButtonState(selectedExecutor?.name ?? "", selectedExecutor?.status);
   const smokeRunning = smokeOpId !== null;
   const lastSmokeLine = lastSmokeMessage(selectedExecutor?.status?.last_smoke, smokeNow);

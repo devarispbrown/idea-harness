@@ -97,6 +97,7 @@ func (s *Server) handleExecutorSmoke(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	signature := smokeSignature(kind, image, model)
 	// Under the daemon's state root, which Docker can see; the system temp
 	// directory is not visible to snap-installed Docker or Colima.
 	workDir := filepath.Join(s.rt.stateRoot, "projects", projectID, "smoke")
@@ -113,18 +114,36 @@ func (s *Server) handleExecutorSmoke(w http.ResponseWriter, r *http.Request) {
 				status = domain.OperationCancelled
 			}
 			_ = pr.db.SetOperationFailed(bg, opID, status, operationErrorMessage(pr, err.Error()))
+			_ = pr.db.SetOperationResultRef(bg, opID, signature)
 			return
 		}
-		_ = pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, "")
+		_ = pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, signature)
 	})
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 }
 
-// lastSmoke is the project's newest smoke test, or nil.
+// smokeSignature is what a smoke test tested, stored on its operation.
+func smokeSignature(kind, image, model string) string {
+	return kind + "|" + image + "|" + model
+}
+
+// lastSmoke is the project's newest smoke test, or nil -- and nil too when it
+// tested something other than the current setup. "Passed 5 min ago" after the
+// model or image changed described a configuration that no longer runs.
 func lastSmoke(ctx context.Context, pr *projectRuntime, projectID string) *smokeResult {
 	op, err := pr.db.LatestOperationOfType(ctx, projectID, opExecutorSmoke)
 	if err != nil || op == nil {
 		return nil
+	}
+	if op.Status == domain.OperationSucceeded || op.Status == domain.OperationFailed || op.Status == domain.OperationCancelled {
+		kind := string(pr.cfg.Harness.Executor.Kind)
+		image := pr.cfg.Harness.Executor.Image
+		if image == "" {
+			image = executor.DefaultAgentImage(kind)
+		}
+		if op.ResultRef != smokeSignature(kind, image, workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry)) {
+			return nil
+		}
 	}
 	return &smokeResult{Status: op.Status, FinishedAt: op.FinishedAt, Error: op.Error}
 }
@@ -137,8 +156,12 @@ func (s *Server) handleAgentOutput(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	running, output := pr.engine.AgentOutput(r.Context(), ini.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"running": running, "output": output})
+	state, output := pr.engine.AgentOutput(r.Context(), ini.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"state":   state,
+		"running": state == workflow.LiveRunning,
+		"output":  output,
+	})
 }
 
 // handleDiscardPartialWork is "Start over": the next run begins from the

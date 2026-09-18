@@ -460,3 +460,10 @@ func (db *DB) LatestOperationOfType(ctx context.Context, projectID, opType strin
 	}
 	return &op, nil
 }
+
+// SetOperationResultRef records a reference on a finished operation, e.g.
+// what a smoke test tested, which the failure path has no other place for.
+func (db *DB) SetOperationResultRef(ctx context.Context, opID, ref string) error {
+	_, err := db.SQL().ExecContext(ctx, `UPDATE operations SET result_ref = ? WHERE id = ?`, ref, opID)
+	return err
+}

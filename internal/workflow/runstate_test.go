@@ -18,6 +18,7 @@ import (
 const scriptedAgentDocker = `#!/usr/bin/env bash
 case "$1" in
   run)
+    [ -n "$FAKE_RUN_FAIL" ] && exit 125
     prev=""
     for a in "$@"; do
       if [ "$prev" = "-v" ] && [ "${a%:/work}" != "$a" ]; then work="${a%:/work}"; fi
@@ -216,23 +217,23 @@ func TestLiveAgentOutputDuringARun(t *testing.T) {
 	go func() { _, err := eng.Execute(context.Background(), iniID); done <- err }()
 
 	deadline := time.Now().Add(10 * time.Second)
-	var running bool
+	var state string
 	var out string
 	for time.Now().Before(deadline) {
 		got := make(chan struct{})
-		go func() { running, out = eng.AgentOutput(context.Background(), iniID); close(got) }()
+		go func() { state, out = eng.AgentOutput(context.Background(), iniID); close(got) }()
 		select {
 		case <-got:
 		case <-time.After(3 * time.Second):
 			t.Fatal("reading the agent's output blocked on the running Execute")
 		}
-		if running && out != "" {
+		if state == LiveRunning && out != "" {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !running || !strings.Contains(out, "planning the change") {
-		t.Fatalf("no live output while running: running=%v out=%q", running, out)
+	if state != LiveRunning || !strings.Contains(out, "planning the change") {
+		t.Fatalf("no live output while running: state=%v out=%q", state, out)
 	}
 	if strings.Contains(out, "sk-test-leaked-value-123456") {
 		t.Errorf("the key reached the live output: %q", out)
@@ -242,7 +243,75 @@ func TestLiveAgentOutputDuringARun(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if running, out := eng.AgentOutput(context.Background(), iniID); running || out != "" {
-		t.Errorf("output still reported after the run: running=%v out=%q", running, out)
+	if state, out := eng.AgentOutput(context.Background(), iniID); state != LiveIdle || out != "" {
+		t.Errorf("output still reported after the run: state=%v out=%q", state, out)
+	}
+}
+
+// A Continue that fails before producing a change set -- Docker down, an image
+// pull failing, Stop during start -- must not lose the kept files.
+func TestAContinueThatFailsToStartKeepsTheFiles(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	stopMidRun(t, eng, iniID, "a.txt", "x\n")
+	t.Setenv("FAKE_RUN_FAIL", "1")
+	if _, err := eng.Execute(context.Background(), iniID); err == nil {
+		t.Fatal("a run whose container never started succeeded")
+	}
+	t.Setenv("FAKE_RUN_FAIL", "")
+	if pw := eng.PartialWork(iniID); pw == nil || pw.Files != 1 {
+		t.Fatalf("the kept files were lost when the Continue failed to start: %+v", pw)
+	}
+	cs := finishRun(t, eng, iniID, "b.txt", "y\n")
+	if !changeSetPaths(t, eng, cs)["a.txt"] {
+		t.Error("the next run did not carry the kept file")
+	}
+}
+
+// A Continue in which the agent does nothing still says so: the carried files
+// alone must not read as a finished task.
+func TestACarriedOnlyRunStillSaysTheAgentDidNothing(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	stopMidRun(t, eng, iniID, "a.txt", "x\n")
+	cs := finishRun(t, eng, iniID, "", "")
+	if !changeSetPaths(t, eng, cs)["a.txt"] {
+		t.Fatal("the carried file is missing")
+	}
+	if findingOf(t, eng, cs, "agent_output") == nil {
+		t.Error("an agent that changed nothing was hidden behind the carried files")
+	}
+}
+
+// A modified file is carried too, where the workspace still matches.
+func TestAModifiedFileIsCarried(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	stopMidRun(t, eng, iniID, "server.js", "app.get('/', hello)\napp.get('/half', done)\n")
+	cs := finishRun(t, eng, iniID, "b.txt", "y\n")
+	f := fileChange(t, eng, cs, "server.js")
+	if f.ChangeType != domain.FileModified {
+		t.Errorf("server.js carried as %q, want modified", f.ChangeType)
+	}
+}
+
+// Once the agent's container is gone the view says finished, with its final
+// output -- not "running" with an empty log through the build checks.
+func TestLiveStateAfterTheAgentFinishes(t *testing.T) {
+	eng, _, _ := newScriptedFixture(t)
+	eng.setLiveStarting("ini")
+	if st, _ := eng.AgentOutput(context.Background(), "ini"); st != LiveStarting {
+		t.Errorf("before the agent starts: %s, want starting", st)
+	}
+	eng.markLiveDone("ini", "last line from the agent")
+	st, out := eng.AgentOutput(context.Background(), "ini")
+	if st != LiveFinished || out != "last line from the agent" {
+		t.Errorf("after the agent: %s %q, want finished with its final output", st, out)
+	}
+}
+
+// Reopen and revise discard kept files; so, in the daemon, does editing the
+// task's wording. Here: the engine side of that contract.
+func TestDiscardIsIdempotent(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	if err := eng.DiscardPartial(iniID); err != nil {
+		t.Errorf("discarding with nothing kept failed: %v", err)
 	}
 }

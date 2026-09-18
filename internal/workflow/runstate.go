@@ -35,31 +35,81 @@ type liveAttempt struct {
 	attemptID string
 	redactor  *security.Redactor
 
-	mu       sync.Mutex
-	done     bool // the agent has finished; the run is in its checks
-	cached   string
+	mu       sync.Mutex // serialises refreshes and the state flags
+	started  bool       // the agent's container is running
+	done     bool       // the agent has finished; the run is in its checks
 	cachedAt time.Time
+
+	// cacheMu guards cached alone, so a reader can take the last output
+	// while another reader's refresh is waiting on docker.
+	cacheMu sync.Mutex
+	cached  string
 }
 
-func (e *Engine) setLive(initiativeID string, t executor.OutputTailer, attemptID string) {
+func (a *liveAttempt) getCached() string {
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	return a.cached
+}
+
+func (a *liveAttempt) setCached(s string) {
+	a.cacheMu.Lock()
+	a.cached = s
+	a.cacheMu.Unlock()
+}
+
+// Live output states, as reported to clients.
+const (
+	LiveIdle     = "idle"     // no run in progress
+	LiveStarting = "starting" // a run is preparing: planning, copying the workspace
+	LiveRunning  = "running"  // the agent is running
+	LiveFinished = "finished" // the agent is done; the run is in its checks
+)
+
+// setLiveStarting registers a run that has not started its agent yet, so the
+// UI does not read "nothing registered" as "the agent finished" through the
+// planner call and the workspace copy.
+func (e *Engine) setLiveStarting(initiativeID string) {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
 	if e.live == nil {
 		e.live = map[string]*liveAttempt{}
 	}
-	e.live[initiativeID] = &liveAttempt{tailer: t, attemptID: attemptID, redactor: e.redactor}
+	e.live[initiativeID] = &liveAttempt{redactor: e.redactor}
+}
+
+func (e *Engine) setLive(initiativeID string, t executor.OutputTailer, attemptID string) {
+	e.liveMu.Lock()
+	a := e.live[initiativeID]
+	if a == nil {
+		if e.live == nil {
+			e.live = map[string]*liveAttempt{}
+		}
+		a = &liveAttempt{redactor: e.redactor}
+		e.live[initiativeID] = a
+	}
+	e.liveMu.Unlock()
+	a.mu.Lock()
+	a.tailer, a.attemptID, a.started = t, attemptID, true
+	a.mu.Unlock()
 }
 
 // markLiveDone records that the agent has finished. Collect has removed its
 // container, so there is no more output; saying "running" with an empty log
 // for the length of the build and test checks read as a hang.
-func (e *Engine) markLiveDone(initiativeID string) {
+//
+// final is the agent's last output, read before Collect removed it, so the
+// view keeps the end of the log rather than a cache up to 1.5 s old.
+func (e *Engine) markLiveDone(initiativeID, final string) {
 	e.liveMu.Lock()
 	a := e.live[initiativeID]
 	e.liveMu.Unlock()
 	if a != nil {
 		a.mu.Lock()
 		a.done = true
+		if final != "" {
+			a.setCached(final)
+		}
 		a.mu.Unlock()
 	}
 }
@@ -73,29 +123,39 @@ func (e *Engine) clearLive(initiativeID string) {
 // AgentOutput returns the end of a running agent's output for an initiative,
 // redacted and sanitized, and whether the agent is still running. It never
 // takes e.mu.
-func (e *Engine) AgentOutput(ctx context.Context, initiativeID string) (running bool, output string) {
+func (e *Engine) AgentOutput(ctx context.Context, initiativeID string) (state string, output string) {
 	e.liveMu.Lock()
 	a := e.live[initiativeID]
 	e.liveMu.Unlock()
 	if a == nil {
-		return false, ""
+		return LiveIdle, ""
 	}
-	a.mu.Lock()
+	// One reader refreshes; anyone arriving meanwhile gets the cache rather
+	// than queueing behind a slow `docker logs`. Queued readers tied up the
+	// browser's connections to the daemon, Stop's included.
+	if !a.mu.TryLock() {
+		return LiveRunning, a.getCached()
+	}
 	defer a.mu.Unlock()
-	if a.done {
-		return false, a.cached
+	switch {
+	case a.done:
+		return LiveFinished, a.getCached()
+	case !a.started:
+		return LiveStarting, ""
+	case time.Since(a.cachedAt) < liveOutputTTL:
+		return LiveRunning, a.getCached()
 	}
-	if time.Since(a.cachedAt) < liveOutputTTL {
-		return true, a.cached
-	}
-	out := a.tailer.OutputTail(ctx, a.attemptID, liveOutputLines)
+	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out := a.tailer.OutputTail(tctx, a.attemptID, liveOutputLines)
 	if a.redactor != nil {
 		out = a.redactor.RedactString(out)
 	} else {
 		out = security.Redact(out)
 	}
-	a.cached, a.cachedAt = out, time.Now()
-	return true, out
+	a.setCached(out)
+	a.cachedAt = time.Now()
+	return LiveRunning, out
 }
 
 // ---------- resumable runs ----------
@@ -202,6 +262,9 @@ func (e *Engine) DiscardPartial(initiativeID string) error {
 
 // carryResult is what resumePartial did, for the change set's finding.
 type carryResult struct {
+	// digests is each carried path's content digest ("" for a delete), so
+	// Execute can tell what the agent itself changed from what it carried.
+	digests map[string]string
 	carried []string
 	skipped []string // "path: reason"
 	note    string
@@ -218,12 +281,16 @@ func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResu
 	if pw == nil {
 		return nil
 	}
-	_ = os.Remove(e.partialPath(initiativeID))
+	// The record is NOT removed here. A run that fails before it produces a
+	// change set -- Docker down, an image pull failing, Stop during start --
+	// would otherwise lose the kept files for good. Execute removes it once
+	// the change set that carries them exists.
 	if pw.TaskID != taskID {
+		_ = os.Remove(e.partialPath(initiativeID))
 		e.log.Info("discarded a stopped run's files kept for a different task", "initiative", initiativeID, "task", pw.TaskID)
 		return nil
 	}
-	res := &carryResult{note: pw.Dropped}
+	res := &carryResult{note: pw.Dropped, digests: map[string]string{}}
 	for _, fc := range pw.Files {
 		if stale := fsdiff.StaleBase(workRoot, []domain.FileChange{fc}); len(stale) > 0 {
 			res.skipped = append(res.skipped, stale[0])
@@ -240,6 +307,7 @@ func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResu
 				continue
 			}
 			res.carried = append(res.carried, fc.Path+" (deleted)")
+			res.digests[fc.Path] = ""
 			continue
 		}
 		content, err := e.contentBlobs().Get(fc.Digest)
@@ -254,8 +322,25 @@ func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResu
 			continue
 		}
 		res.carried = append(res.carried, fc.Path)
+		res.digests[fc.Path] = fc.Digest
 	}
 	return res
+}
+
+// agentChanged is files minus the carried ones the agent left exactly as
+// carried: what the agent itself did in this run.
+func (r *carryResult) agentChanged(files []domain.FileChange) []domain.FileChange {
+	if r == nil || len(r.digests) == 0 {
+		return files
+	}
+	var out []domain.FileChange
+	for _, f := range files {
+		if d, ok := r.digests[f.Path]; ok && d == f.Digest {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // carriedFinding records on the change set what was carried from the stopped

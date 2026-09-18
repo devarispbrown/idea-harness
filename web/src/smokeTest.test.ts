@@ -112,3 +112,11 @@ describe("formatSmokeElapsed", () => {
     expect(formatSmokeElapsed(-500)).toBe("0s");
   });
 });
+
+describe("smokeButtonState while a smoke is already running", () => {
+  it("is disabled, so a click is not a 409", () => {
+    const st = smokeButtonState("hermes", { problem: "", last_smoke: { status: "running" } });
+    expect(st.enabled).toBe(false);
+    expect(st.reason).toContain("running");
+  });
+});

@@ -211,6 +211,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
 		return domain.ChangeSet{}, err
 	}
+	// Visible to the running card from here, as "starting", until the agent
+	// runs (runstate.go).
+	e.setLiveStarting(initiativeID)
+	defer e.clearLive(initiativeID)
 
 	// Select the executor before anything is spent or changed. It is where a
 	// missing provider key or an unresolvable provider is refused, and it ran
@@ -302,7 +306,6 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	if t, ok := exec.(executor.OutputTailer); ok {
 		e.setLive(initiativeID, t, attempt.ID)
-		defer e.clearLive(initiativeID)
 	}
 	// Cancel the attempt on any early-exit path so a hung agent never leaks a
 	// running container/subprocess (review B6). Collect already cleans up on the
@@ -321,7 +324,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// then Cancel reports the attempt unknown; any other Cancel error
 		// means it may still be running, and nothing is kept.
 		cerr := exec.Cancel(context.WithoutCancel(ctx), attempt.ID)
-		completed = cerr == nil || strings.Contains(cerr.Error(), "unknown attempt")
+		completed = cerr == nil || errors.Is(cerr, executor.ErrUnknownAttempt)
 		if completed {
 			e.capturePartial(ctx, initiativeID, task.ID, req.WorkRoot, before)
 		}
@@ -335,7 +338,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	completed = true
-	e.markLiveDone(initiativeID)
+	e.markLiveDone(initiativeID, agentOutput)
 
 	// Snapshot AFTER and compute the orchestrator-authored diff.
 	after, err := fsdiff.Snapshot(req.WorkRoot)
@@ -427,7 +430,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// initiatives: the work root carries every earlier attempt, so an agent
 	// that correctly finds a task already done has nothing to change, and
 	// failing it made the task impossible to get past.
-	if _, isAgent := exec.(executor.OutputTailer); isAgent && len(files) == 0 {
+	// What the agent itself changed, not counting files carried from a
+	// stopped run and left as carried: a Continue whose model call failed
+	// would otherwise show only the carried files, with no warning, and read
+	// as a finished task.
+	if _, isAgent := exec.(executor.OutputTailer); isAgent && len(carried.agentChanged(files)) == 0 {
 		evidence := agentOutput
 		if evidence == "" {
 			evidence = "(the agent printed nothing)"
@@ -449,6 +456,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
+	// The change set now carries the kept files, so the record can go.
+	if carried != nil {
+		_ = os.Remove(e.partialPath(initiativeID))
+	}
 	if f := e.carriedFinding(cs, carried); f != nil {
 		if err := e.db.CreateFinding(ctx, f); err != nil {
 			return domain.ChangeSet{}, err

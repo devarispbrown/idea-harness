@@ -176,3 +176,32 @@ func TestAgentOutputAndPartialWorkEndpoints(t *testing.T) {
 		t.Errorf("DELETE partial-work with nothing kept = %d, want 200", resp.StatusCode)
 	}
 }
+
+// "Last smoke test passed" describes the setup it tested. After the model
+// changes it no longer applies, and is not shown.
+func TestLastSmokeIsForTheCurrentSetupOnly(t *testing.T) {
+	t.Setenv("FAKE_WRITES", "1")
+	_, base, token, projectID := smokeProject(t)
+	_, opID := startSmoke(t, base, token, projectID)
+	waitOperation(t, base, token, opID)
+	resp := doReq(t, http.MethodPut, base+"/api/v1/projects/"+projectID+"/executors", token, "",
+		`{"model":"openai/gpt-5.6-sol"}`)
+	resp.Body.Close()
+
+	resp = doReq(t, http.MethodGet, base+"/api/v1/projects/"+projectID+"/executors", token, "", "")
+	defer resp.Body.Close()
+	var list []struct {
+		Name   string `json:"name"`
+		Status struct {
+			LastSmoke *smokeResult `json:"last_smoke"`
+		} `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range list {
+		if e.Name == "hermes" && e.Status.LastSmoke != nil {
+			t.Errorf("a smoke of the old model is reported for the new one: %+v", e.Status.LastSmoke)
+		}
+	}
+}
