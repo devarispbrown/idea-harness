@@ -170,10 +170,17 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		actual = req.Model
 	}
 	in, out := int64(parsed.Usage.PromptTokens), int64(parsed.Usage.CompletionTokens)
+	cost := CostUSD(actual, in, out)
+	if p.name == "ollama" {
+		// A local model costs nothing per token. At the default rate every
+		// Ollama call spent max_cost_usd budget, and a long local run stopped
+		// on a ceiling it had not reached.
+		cost = 0
+	}
 	return Response{
 		Text:        content,
 		RawJSON:     content,
-		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: CostUSD(actual, in, out)},
+		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: cost},
 		ActualModel: actual,
 	}, nil
 }

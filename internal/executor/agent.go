@@ -446,6 +446,15 @@ func (e *SandboxedAgentExecutor) tailLogs(ctx context.Context, id string, n int)
 	return strings.TrimSpace(scrubAgentLog(string(out)))
 }
 
+// agentOutputLines is how much of an agent's output a failure message carries:
+// enough for the provider's error and the lines around it.
+const agentOutputLines = 40
+
+// OutputTail implements OutputTailer.
+func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string) string {
+	return e.tailLogs(ctx, id, agentOutputLines)
+}
+
 // scrubAgentLog drops the image's per-start skill-sync noise and blank lines,
 // which otherwise fill the tail and push the actual error out of it.
 func scrubAgentLog(s string) string {

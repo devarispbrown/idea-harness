@@ -83,3 +83,27 @@ func TestGeminiVisionRendersInlineData(t *testing.T) {
 		t.Fatalf("Gemini request missing inline_data part: %s", s)
 	}
 }
+
+// A local model costs nothing per token. At the default rate every Ollama call
+// spent max_cost_usd budget, so a long local run stopped on a ceiling it had
+// not reached.
+func TestOllamaCallsCostNothing(t *testing.T) {
+	var body []byte
+	resp := `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1000000,"completion_tokens":1000000},"model":"qwen3.8"}`
+	for _, c := range []struct {
+		name string
+		free bool
+	}{{"ollama", true}, {"openai", false}} {
+		ts := captureBody(t, resp, &body)
+		got, err := NewOpenAICompat(c.name, "k", ts.URL).Complete(t.Context(), Request{
+			Model:    "qwen3.8",
+			Messages: []Message{{Role: "user", Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if free := got.Usage.CostUSD == 0; free != c.free {
+			t.Errorf("%s: cost %f, want free=%v", c.name, got.Usage.CostUSD, c.free)
+		}
+	}
+}
