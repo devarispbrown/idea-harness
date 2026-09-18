@@ -7,7 +7,7 @@ import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import { FindingCard, type FindingItem } from "./JudgmentCard";
 import { findingsForPlan } from "./judgmentScope";
-import { planTaskEditable } from "./judgmentCopy";
+import { planTaskActions } from "./judgmentCopy";
 
 interface Task {
   id: string;
@@ -110,30 +110,39 @@ export default function PlanPage({
     await post(`/projects/${projectId}/findings/${id}/disposition`, { disposition });
     await load();
   };
-  const cancel = async (id: string) => {
-    await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}/cancel`, {});
+  // Every mutation reports its refusal instead of throwing into the void: a
+  // 409 from a state this page did not rule out was an unhandled error and
+  // a click that did nothing.
+  const guarded = async (fn: () => Promise<unknown>) => {
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     await load();
   };
-  const add = async () => {
-    await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks`, {
-      title: draft.title,
-      statement: draft.statement,
-      priority: draft.priority,
-      estimate: draft.estimate,
+  const cancel = (id: string) =>
+    guarded(() => post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}/cancel`, {}));
+  const add = () =>
+    guarded(async () => {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks`, {
+        title: draft.title,
+        statement: draft.statement,
+        priority: draft.priority,
+        estimate: draft.estimate,
+      });
+      setDraft({ title: "", statement: "", priority: "should", estimate: "" });
+      setAdding(false);
     });
-    setDraft({ title: "", statement: "", priority: "should", estimate: "" });
-    setAdding(false);
-    await load();
-  };
-  const move = async (index: number, dir: -1 | 1) => {
+  const move = (index: number, dir: -1 | 1) => {
     const next = [...tasks];
     const j = index + dir;
-    if (j < 0 || j >= next.length) return;
+    if (j < 0 || j >= next.length) return Promise.resolve();
     [next[index], next[j]] = [next[j], next[index]];
-    await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/reorder`, {
-      task_ids: next.map((t) => t.id),
-    });
-    await load();
+    return guarded(() =>
+      post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/reorder`, { task_ids: next.map((t) => t.id) }),
+    );
   };
   // Both of these refuse with a 409 in states this page cannot always rule out,
   // and `post` throws on any non-2xx. Without the catch the rejection was
@@ -237,7 +246,8 @@ export default function PlanPage({
   // D2: once approved, the plan is the fixed input to Build — Edit/Delete are
   // hidden so the approved document cannot be silently rewritten out from
   // under it. Reorder/Cancel are left alone; only D2 asked for these two.
-  const tasksEditable = planTaskEditable(status);
+  const can = planTaskActions(status);
+  const tasksEditable = can.edit;
 
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
@@ -277,7 +287,11 @@ export default function PlanPage({
             {openPlanFindings.length} thing{openPlanFindings.length === 1 ? "" : "s"} need
             {openPlanFindings.length === 1 ? "s" : ""} your judgment
           </h2>
-          <span className="muted">the plan review raised these before it can be approved</span>
+          <span className="muted">
+            {status === "needs_human_judgment"
+              ? "the plan review raised these before it can be approved"
+              : "raised by the plan review"}
+          </span>
         </div>
       )}
       {openPlanFindings.length > 0 && (
@@ -350,8 +364,12 @@ export default function PlanPage({
                 // below (flat above 600px, in a "⋯" menu under it) so the
                 // wiring can't drift between the two layouts.
                 const actions: { key: string; label: string; onClick: () => void }[] = [
-                  { key: "up", label: "↑", onClick: () => move(i, -1) },
-                  { key: "down", label: "↓", onClick: () => move(i, 1) },
+                  ...(can.reorder
+                    ? [
+                        { key: "up", label: "↑", onClick: () => move(i, -1) },
+                        { key: "down", label: "↓", onClick: () => move(i, 1) },
+                      ]
+                    : []),
                   ...(tasksEditable
                     ? [
                         {
@@ -365,7 +383,7 @@ export default function PlanPage({
                         { key: "delete", label: "Delete", onClick: () => remove(t.id, t.title) },
                       ]
                     : []),
-                  ...(t.status !== "cancelled"
+                  ...(can.cancel && t.status !== "cancelled" && t.status !== "done"
                     ? [{ key: "cancel", label: "Cancel", onClick: () => cancel(t.id) }]
                     : []),
                 ];
@@ -394,7 +412,7 @@ export default function PlanPage({
             </div>
           ),
         )}
-        {adding ? (
+        {!can.add ? null : adding ? (
           <div className="plan-row editing">
             <input
               className="text-input"

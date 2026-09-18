@@ -134,3 +134,23 @@ func TestOMPWithoutAnImageIsRefusedUpFront(t *testing.T) {
 		t.Errorf("OMP without an image was accepted: %v", err)
 	}
 }
+
+// Parked before the plan is approved, nothing may run. Running from a
+// plan-review park executed an unapproved plan and left the initiative where
+// approve-plan and revise-plan were both refused; the Build page offered it.
+func TestNothingRunsWhileThePlanAwaitsApproval(t *testing.T) {
+	for _, reason := range []domain.JudgmentReason{domain.JudgmentPlanReview, domain.JudgmentPlanDependencies, domain.JudgmentPRDReview} {
+		ini := domain.Initiative{Status: domain.InitiativeNeedsHumanJudgment, JudgmentReason: reason}
+		if PlanNotReadyForExecution(ini) == "" {
+			t.Errorf("%s: execution allowed before the plan was approved", reason)
+		}
+	}
+	for _, ini := range []domain.Initiative{
+		{Status: domain.InitiativeNeedsHumanJudgment, JudgmentReason: domain.JudgmentVerification},
+		{Status: domain.InitiativePlanApproved},
+	} {
+		if r := PlanNotReadyForExecution(ini); r != "" {
+			t.Errorf("%s/%s refused: %s", ini.Status, ini.JudgmentReason, r)
+		}
+	}
+}

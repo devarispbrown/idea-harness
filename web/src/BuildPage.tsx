@@ -8,6 +8,7 @@ import {
   buildFailure,
   buildHeaderMeta,
   conflictCause,
+  sortFindingsForCard,
   diffChangeTypeLabel,
   errMessage,
   findingCategoryLabel,
@@ -120,6 +121,15 @@ export default function BuildPage({
   const [initiative, setInitiative] = useState<Initiative | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
   const [runBusy, setRunBusy] = useState(false);
+  // Set when a run is accepted, cleared once the running card has had a poll
+  // to appear. The Run button vanished on accept and the card only arrived on
+  // its next poll, so for a few seconds the click looked ignored.
+  const [startedTask, setStartedTask] = useState<string | null>(null);
+  useEffect(() => {
+    if (!startedTask) return;
+    const id = setTimeout(() => setStartedTask(null), 6000);
+    return () => clearTimeout(id);
+  }, [startedTask]);
   const [runError, setRunError] = useState("");
   // Per-change-set busy/error (E2): every action button here disables its own
   // buttons in flight and catches its own failure inline, without freezing or
@@ -210,6 +220,13 @@ export default function BuildPage({
     runAction(cs, `resolve-${resolution}`, async () => {
       await post(`/projects/${projectId}/change-sets/${cs.id}/resolve-conflict`, { resolution });
     });
+  // "Reject and re-run" did only the first half; the user then had to find
+  // the Run button. It rejects, then starts the task again from the current
+  // workspace.
+  const rejectAndRerun = async (cs: ChangeSet) => {
+    await resolveConflict(cs, "reject");
+    await runNext();
+  };
 
   const runNext = async () => {
     if (runBusy) return;
@@ -217,6 +234,7 @@ export default function BuildPage({
     setRunError("");
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, {});
+      setStartedTask(initiative?.next_task?.human_id ?? "the next task");
     } catch (e) {
       setRunError(errMessage(e));
     } finally {
@@ -286,6 +304,11 @@ export default function BuildPage({
         />
       )}
 
+      {!runState.visible && startedTask && (
+        <div className="run-next-row">
+          <span className="run-next-reason">Starting {startedTask}…</span>
+        </div>
+      )}
       {runState.visible && (
         <div className="run-next-row">
           <button className="cs-green" disabled={runState.disabled || runBusy} onClick={runNext}>
@@ -416,10 +439,25 @@ export default function BuildPage({
                 existed but was never rendered outside a conflict. */}
             {csFindings.length > 0 && (
               <div className="cs-conflict-findings">
-                {csFindings.map((f) => (
+                {sortFindingsForCard(csFindings).map((f) => (
                   <div key={f.id} className={`cs-conflict-finding cs-conflict-${f.category}`}>
                     <span className="cs-conflict-cat">{findingCategoryLabel(f.category)}</span>
-                    <span className="cs-conflict-text">{f.finding}</span>
+                    <span className="cs-conflict-text">
+                      {f.finding}
+                      {/* The finding alone said something changed but not what:
+                          the file names are in the evidence. Short evidence
+                          shows inline; long (agent output) folds. */}
+                      {f.evidence &&
+                        (f.evidence.length <= 400 ? (
+                          <pre className="cs-finding-evidence">{f.evidence}</pre>
+                        ) : (
+                          <details>
+                            <summary>Details</summary>
+                            <pre className="cs-finding-evidence">{f.evidence}</pre>
+                          </details>
+                        ))}
+                      {f.recommendation && <span className="cs-finding-rec">{f.recommendation}</span>}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -469,16 +507,17 @@ export default function BuildPage({
                     <button
                       className="cs-danger"
                       disabled={!!busyAction}
-                      onClick={() => resolveConflict(cs, "reject")}
+                      onClick={() => rejectAndRerun(cs)}
                     >
                       {busyAction === "resolve-reject" ? "Rejecting…" : "Reject and re-run"}
                     </button>
                     <button
                       className="cs-secondary"
                       disabled={!!busyAction}
+                      title="Applies only if the files named above are back to how they were when the agent ran"
                       onClick={() => resolveConflict(cs, "retry")}
                     >
-                      {busyAction === "resolve-retry" ? "Retrying…" : "Retry"}
+                      {busyAction === "resolve-retry" ? "Retrying…" : "Retry after undoing my edits"}
                     </button>
                   </>
                 ) : (

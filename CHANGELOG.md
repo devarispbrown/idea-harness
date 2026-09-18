@@ -14,6 +14,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 | | Was | Now |
 |---|---|---|
 | `PUT …/executors` with a model the coding agent cannot use (unknown provider, a provider name Hermes rejects, an Anthropic-type proxy) | stored; the run failed later | `400` with the reason |
+| `POST …/execute` while the PRD or the plan is waiting for review (`needs_human_judgment` with `prd_review`, `plan_review` or `plan_dependencies`) | ran tasks from an unapproved plan, leaving approve-plan and revise-plan both refused | refused: approve the PRD and plan first |
 | `POST …/execute` while another task's change set in the initiative is open (`checks_running`, `review_required`, `approved`, `applying`, `changes_requested`, `conflicted`) | ran, on a copy that lacked the open change set's work | refused, naming the open change set |
 | `GET …/initiatives/{id}/decisions` | every row | one row per question (newest open, else newest decided); `?all=true` returns every row |
 | `POST …/decisions/{id}/resolve` | resolved that decision | also resolves open decisions of the same type asking the same question, when they offer the same answer |

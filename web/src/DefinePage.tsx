@@ -182,7 +182,7 @@ export default function DefinePage({
           <h2 className="section-title">
             {openCount} thing{openCount === 1 ? "" : "s"} need{openCount === 1 ? "s" : ""} your judgment
           </h2>
-          <span className="muted">{openItemsNote(status, nextVersion)}</span>
+          <span className="muted">{openItemsNote(status, nextVersion, judgmentReason)}</span>
         </div>
       )}
       <div className="judgment-list">

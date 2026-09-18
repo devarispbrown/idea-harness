@@ -129,6 +129,28 @@ func (e *Engine) NextReadyTask(ctx context.Context, initiativeID string) (*NextT
 	return &NextTask{ID: t.ID, HumanID: t.Code, Title: t.Title}, nil
 }
 
+// PlanNotReadyForExecution returns why an initiative waiting on a human
+// cannot have its tasks run yet, or "".
+//
+// needs_human_judgment covers parks before the plan is approved (the PRD or
+// the plan under review) as well as after (verification). Execution was
+// allowed from all of them, so from a plan-review park it ran tasks from an
+// unapproved plan -- and left the initiative where approve-plan and
+// revise-plan were both refused. The Build page then offered that one click
+// away.
+func PlanNotReadyForExecution(ini domain.Initiative) string {
+	if ini.Status != domain.InitiativeNeedsHumanJudgment {
+		return ""
+	}
+	switch ini.JudgmentReason {
+	case domain.JudgmentPRDReview:
+		return "The PRD is waiting for your review; approve it and the plan first"
+	case domain.JudgmentPlanReview, domain.JudgmentPlanDependencies:
+		return "The plan is waiting for your approval; approve it on the Plan page first"
+	}
+	return ""
+}
+
 // RunBlockedReason reports why Execute would refuse to run right now for
 // initiativeID, or "" when it would not (the Build contract's
 // `run_blocked_reason`).
@@ -145,6 +167,9 @@ func (e *Engine) RunBlockedReason(ctx context.Context, initiativeID string) (str
 	}
 	if ini.Status == domain.InitiativeRunning {
 		return "An operation is already running", nil
+	}
+	if reason := PlanNotReadyForExecution(ini); reason != "" {
+		return reason, nil
 	}
 	switch ini.Status {
 	case domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment:
