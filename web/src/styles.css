@@ -1499,7 +1499,7 @@ button.ghost.small {
 }
 .doc-read.dark {
   background: var(--text);
-  color: #fff;
+  color: var(--surface);
   border: none;
   border-radius: 7px;
   padding: 6px 13px;
@@ -2732,3 +2732,15 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 
 /* B3: the running card's post-Stop state, instead of vanishing. */
 .running-card-stopped { border-color: var(--line); }
+
+/* ---- final walkthrough ---- */
+.cs-finding-evidence {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--sunken);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cs-finding-rec { display: block; margin-top: 4px; font-size: 12px; color: var(--text-muted); }

@@ -1,3 +1,4 @@
+import { phaseHref } from "./router";
 import { useState } from "react";
 import { post } from "./api";
 import PhasePage from "./PhasePage";
@@ -54,9 +55,10 @@ export default function DesignPage({
       {docs.length === 0 && !canReopen && (
         <div className="empty">
           <p className="muted">
-            Design hasn't run yet. Once the PRD is approved, it generates the technical design,
-            design spec, and verification plan automatically — this page fills in when that
-            finishes, and the plan unlocks right after.
+            Design hasn't run yet. It produces the technical design, design spec, and
+            verification plan, and starts when you choose "Proceed to design & plan" on the{" "}
+            <a href={phaseHref(initiativeId, "define")}>Define page</a> after
+            approving the PRD. The plan follows it.
           </p>
         </div>
       )}

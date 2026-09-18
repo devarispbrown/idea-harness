@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { openItemsNote, planTaskEditable, showsRevisePrd } from "./judgmentCopy";
+import { openItemsNote, planTaskActions, planTaskEditable, showsRevisePrd } from "./judgmentCopy";
 
 describe("showsRevisePrd", () => {
   it("shows only for prd_review", () => {
@@ -29,8 +29,27 @@ describe("openItemsNote", () => {
     expect(note).not.toContain("revises");
   });
 
-  it("names the next version while still under review", () => {
-    expect(openItemsNote("needs_human_judgment", 3)).toContain("v3");
+  it("names the next version only while the PRD itself is under review", () => {
+    expect(openItemsNote("needs_human_judgment", 3, "prd_review")).toContain("v3");
+  });
+
+  it("never promises a PRD revision once the PRD is past review", () => {
+    for (const [status, reason] of [
+      ["plan_approved", undefined],
+      ["complete", undefined],
+      ["needs_human_judgment", "plan_review"],
+      ["needs_human_judgment", "verification"],
+    ] as const) {
+      expect(openItemsNote(status, 2, reason)).not.toContain("revises");
+    }
+  });
+});
+
+describe("planTaskActions", () => {
+  it("offers everything before approval, only cancel once approved, nothing when complete", () => {
+    expect(planTaskActions("needs_human_judgment")).toEqual({ reorder: true, edit: true, cancel: true, add: true });
+    expect(planTaskActions("plan_approved")).toEqual({ reorder: false, edit: false, cancel: true, add: false });
+    expect(planTaskActions("complete")).toEqual({ reorder: false, edit: false, cancel: false, add: false });
   });
 });
 
