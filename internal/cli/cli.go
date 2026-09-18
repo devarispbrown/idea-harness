@@ -332,9 +332,11 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 		return stopDaemon()
 	}
 	log := newDaemonLogger(stderr)
-	writePID()
 	defer removePID()
-	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log)
+	// Written only once this process owns the address and the state dir. A
+	// second `idea daemon` wrote it first and then failed on the port, leaving
+	// the running daemon with a pidfile naming a dead process.
+	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log, writePID)
 }
 
 func pidPath() string {
@@ -364,7 +366,16 @@ func writePID() {
 	_ = os.WriteFile(pidPath(), []byte(strconv.Itoa(os.Getpid())), 0o600)
 }
 
-func removePID() { _ = os.Remove(pidPath()) }
+// removePID removes the pidfile only if it is still ours. A stop now takes up
+// to 30 s, and a command in that window starts a new daemon that writes its own
+// pid; removing the file unconditionally on the way out left that daemon with
+// no pidfile, so it could not be stopped.
+func removePID() {
+	data, err := os.ReadFile(pidPath())
+	if err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(os.Getpid()) {
+		_ = os.Remove(pidPath())
+	}
+}
 
 func stopDaemon() error {
 	data, err := os.ReadFile(pidPath())

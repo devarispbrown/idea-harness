@@ -35,22 +35,18 @@ func DefaultStateRoot() string {
 }
 
 // Run starts the daemon HTTP server on addr (loopback) and blocks until the
-// server exits.
-func Run(addr, stateRoot string, log *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+// server exits. onReady, if set, runs once this process owns the address and
+// the state directory -- the point at which it is THE daemon -- and is where
+// the caller records its pid.
+func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
-	rt, err := NewRuntime(stateRoot, log)
-	if err != nil {
-		return err
-	}
-	defer rt.Close()
-
-	// Before serving, so no attempt of this daemon's can be running: whatever
-	// an agent left under the state root belongs to a daemon that was killed
-	// mid-run.
-	executor.SweepAgentLeftovers(ctx, stateRoot)
-
+	// Claim the address and the state directory FIRST, before anything that
+	// assumes this process is the only daemon. The startup sweep removes agent
+	// containers it believes a dead daemon left; run by a second process that
+	// was about to fail on "address already in use", it removed the live
+	// daemon's running agents instead.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -63,9 +59,47 @@ func Run(addr, stateRoot string, log *slog.Logger) error {
 		ln.Close()
 		return fmt.Errorf("daemon: refusing to bind %s: must bind to a loopback address only", addr)
 	}
+	// The port is a lock only per address; two daemons on different addresses
+	// can share one state directory. This covers that.
+	unlock, err := lockStateDir(stateRoot)
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	defer unlock()
+
+	rt, err := NewRuntime(stateRoot, log)
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	defer rt.Close()
+	if onReady != nil {
+		onReady()
+	}
+
+	// Whatever an agent left under the state root now belongs to a daemon that
+	// is gone. Swept in the background so a slow Docker cannot hold up serving,
+	// but before any operation starts (launchOperation waits for it), so the
+	// sweep can never touch an attempt of this daemon's.
+	rt.holdOperationsUntilSwept()
+	go func() {
+		executor.SweepAgentLeftovers(ctx, stateRoot)
+		rt.markSwept()
+	}()
+
 	log.Info("idea-harness daemon listening", "addr", ln.Addr().String())
 
-	srv := &http.Server{Handler: NewServer(rt).Handler()}
+	// Request contexts derive from base, which is cancelled when shutdown
+	// begins. http.Server.Shutdown never cancels them itself, so an open UI
+	// tab's event stream held every stop for the full grace period.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+	srv := &http.Server{
+		Handler:     NewServer(rt).Handler(),
+		BaseContext: func(net.Listener) context.Context { return base },
+	}
+	srv.RegisterOnShutdown(cancelBase)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	select {
@@ -73,13 +107,18 @@ func Run(addr, stateRoot string, log *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 	}
+	// A second Ctrl-C now kills the process outright, as users expect.
+	stop()
 
-	// Stop taking requests, then cancel what is running and let it clean up:
-	// a cancelled execute removes its agent container. Bounded, because a
-	// stop that never returns is worse than a leftover the next start sweeps.
+	// Cancel what is running at the same moment requests stop being taken: a
+	// cancelled execute removes its agent container, and every second spent
+	// first draining HTTP is a second the agent keeps running with the key.
+	// Bounded, because a stop that never returns is worse than a leftover the
+	// next start sweeps.
 	log.Info("idea-harness daemon stopping")
 	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	rt.beginShutdown()
 	hctx, hcancel := context.WithTimeout(sctx, 5*time.Second)
 	defer hcancel()
 	if err := srv.Shutdown(hctx); err != nil {

@@ -158,7 +158,7 @@ func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentPr
 		case "succeeded":
 			goto done
 		case "failed":
-			if tail := e.tailLogs(ctx, attempt.ID, 40); tail != "" {
+			if tail := redactKey(e.tailLogs(ctx, attempt.ID, 40), provider.KeyEnv, lookupKey); tail != "" {
 				return fmt.Errorf("executor: smoke agent %s failed (%s); agent output:\n%s", kind, st.Action, tail)
 			}
 			return fmt.Errorf("executor: smoke agent %s failed (%s)", kind, st.Action)
@@ -175,7 +175,7 @@ done:
 	// session "normally" -- so a clean exit with no file is the common failure,
 	// and without the agent's own output the only message was "produced no
 	// files (CLI contract mismatch?)", which is wrong about the cause.
-	tail := e.tailLogs(ctx, attempt.ID, 40)
+	tail := redactKey(e.tailLogs(ctx, attempt.ID, 40), provider.KeyEnv, lookupKey)
 	if _, err := e.Collect(ctx, attempt.ID); err != nil {
 		return fmt.Errorf("executor: smoke agent %s finished but its container could not be removed: %w", kind, err)
 	}
@@ -191,4 +191,16 @@ done:
 		return fmt.Errorf("executor: smoke agent %s produced no files (CLI contract mismatch?)", kind)
 	}
 	return nil
+}
+
+// redactKey hides the provider key in agent output the smoke prints. An agent
+// can echo its own environment, and this goes straight to a terminal.
+func redactKey(s, keyEnv string, lookupKey func(string) string) string {
+	if keyEnv == "" {
+		return s
+	}
+	if v := lookupKey(keyEnv); len(v) >= 8 {
+		s = strings.ReplaceAll(s, v, "[redacted "+keyEnv+"]")
+	}
+	return s
 }

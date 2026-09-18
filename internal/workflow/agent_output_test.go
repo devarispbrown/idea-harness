@@ -68,16 +68,31 @@ func TestFailedAgentRunCarriesItsOutput(t *testing.T) {
 
 // Hermes exits 0 even when every model call failed, so a clean exit that
 // changed nothing is the common failure. It must not become an empty change
-// set with no reason given.
+// set with no reason given -- and it must not be a hard failure either: the
+// work root carries earlier attempts, so a task already done has nothing to
+// change, and failing it stranded the initiative.
 func TestAgentThatChangedNothingSaysWhy(t *testing.T) {
 	eng, iniID := newAgentExecuteFixture(t, "0")
-	_, err := eng.Execute(context.Background(), iniID)
-	if err == nil {
-		t.Fatal("an agent run that changed nothing produced a change set")
+	cs, err := eng.Execute(context.Background(), iniID)
+	if err != nil {
+		t.Fatalf("an agent that changed nothing failed the run, which strands the task: %v", err)
 	}
-	if !strings.Contains(err.Error(), "without changing any file") || !strings.Contains(err.Error(), "HTTP 401") {
-		t.Errorf("the error does not say why nothing changed: %v", err)
+	findings, err := eng.db.ListFindingsByTarget(context.Background(), "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, f := range findings {
+		if f.Category == "agent_output" {
+			if !strings.Contains(f.Evidence, "HTTP 401") {
+				t.Errorf("the finding does not carry the agent's output: %q", f.Evidence)
+			}
+			if f.Severity.Blocking() {
+				t.Error("the finding blocks, so an already-done task could never be approved")
+			}
+			return
+		}
+	}
+	t.Errorf("no finding says the agent changed nothing: %+v", findings)
 }
 
 // A refusal to launch the agent must come before the planner's model call, or

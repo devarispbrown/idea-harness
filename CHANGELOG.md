@@ -67,9 +67,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   network access and auto-approve. The daemon now stops accepting requests,
   cancels running operations, and waits up to 30 seconds for them to remove
   their containers; `idea daemon stop` waits for it to exit. It also removes its
-  pidfile, which a stop used to leave behind. The next daemon start removes
-  anything a killed daemon left, before serving, and calls Docker only if
-  something was left. Ctrl-C during `idea executors setup --smoke` now removes
+  pidfile, which a stop used to leave behind, and only if it is still its own.
+  The next daemon start removes anything a killed daemon left before it starts
+  any run; if Docker cannot be reached yet, the record is kept for the start
+  after. A second `idea daemon` now fails on the taken address before touching
+  anything, and two daemons can no longer share one state directory. Ctrl-C during `idea executors setup --smoke` now removes
   the smoke's container too.
 
 - **`idea execute` checks the provider before it spends.** The key and provider
@@ -82,16 +84,23 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   (CLI contract mismatch?)` in the smoke, and in a real run as `attempt failed`
   or as an empty change set with no reason. Both now carry the last 40 lines of
   the agent's own output, which name the 401 or the dead model id, with known
-  secrets redacted. A run in which the agent changed no file now fails with that
-  output instead of producing an empty change set.
+  secrets redacted, escape sequences stripped and the size capped. A run in
+  which the agent changed no file still produces its (empty) change set, but now
+  with a finding that says so and carries the agent's output, so the review
+  shows why. It is not a hard failure, because a task the agent finds already
+  done legitimately changes nothing.
 
 - **`max_cost_usd` is enforced at current prices.** Every current model was
   missing from the price table and was budgeted at the $0.50/$2.00 default:
   `claude-sonnet-5` at a quarter of its rate, `claude-fable-5-1` at a twentieth.
   Every catalog model now has a price, taken from OpenRouter's published rates on
-  2026-09-17, and a test fails when a catalog model has none. A model called
-  through OpenRouter now costs the same as the same model called directly. Ollama
-  calls cost nothing; they had been charged at the default rate.
+  2026-09-17, and a test fails when a catalog model has none. A model is priced
+  by its own row, or a row plus a date or release suffix, never by a family
+  prefix: `gpt-5.4-pro` had been charged as `gpt-5`, eighteen times under, and
+  `o3-pro` at the default, forty times under. A model called through OpenRouter
+  now costs the same as the same model called directly. Calls to a local model
+  (Ollama, or any provider on `localhost`) cost nothing; they had been charged
+  at the default rate.
 
 - **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
   and lists the providers it accepts. It also refuses a provider the daemon
