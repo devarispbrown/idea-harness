@@ -111,7 +111,7 @@ describe("stoppedMessage", () => {
 
   it("singularizes one file", () => {
     expect(stoppedMessage({ task_id: "t1", files: 1 })).toBe(
-      "Stopped. The agent had written 1 file; running the task again continues from them.",
+      "Stopped. The agent had written 1 file; running the task again continues from it.",
     );
   });
 

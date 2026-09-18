@@ -377,6 +377,16 @@ func newDaemonLogger(stderr io.Writer) *slog.Logger {
 	if err != nil {
 		return slog.New(slog.NewTextHandler(stderr, nil))
 	}
+	// An auto-started daemon's stderr IS daemon.log (ensureDaemon redirects
+	// it there), so writing to both put every line in the file twice.
+	if sf, ok := stderr.(*os.File); ok {
+		a, aerr := sf.Stat()
+		b, berr := f.Stat()
+		if aerr == nil && berr == nil && os.SameFile(a, b) {
+			f.Close()
+			return slog.New(slog.NewTextHandler(stderr, nil))
+		}
+	}
 	return slog.New(slog.NewTextHandler(io.MultiWriter(stderr, f), nil))
 }
 

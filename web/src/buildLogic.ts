@@ -359,7 +359,9 @@ export function sortFindingsForCard<T extends { category: string; severity: stri
 export function stoppedMessage(partial: PartialWork | null | undefined): string {
   if (!partial) return "Stopped.";
   if (partial.files > 0) {
-    return `Stopped. The agent had written ${partial.files} file${partial.files === 1 ? "" : "s"}; running the task again continues from them.`;
+    return partial.files === 1
+      ? "Stopped. The agent had written 1 file; running the task again continues from it."
+      : `Stopped. The agent had written ${partial.files} files; running the task again continues from them.`;
   }
   if (partial.note) {
     return `Stopped. ${partial.note[0].toUpperCase()}${partial.note.slice(1)}.`;

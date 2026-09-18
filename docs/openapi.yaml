@@ -759,7 +759,23 @@ paths:
       tags: [initiatives]
       operationId: executeInitiative
       summary: Run the next ready task through the executor
-      description: Produces a change set. The response names the executor the run will use.
+      description: |
+        Produces a change set. The response names the executor the run will use.
+
+        If a stopped run of the same task left files (`partial_work` on guidance), this run
+        continues from them. Send `{"fresh": true}` to discard them and start from the workspace
+        instead ("Start over"); they are discarded only once the run is accepted. The body is
+        optional and decoded leniently.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fresh:
+                  type: boolean
+                  description: Discard a stopped run's kept files, once this run is accepted.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202":
@@ -3875,7 +3891,7 @@ components:
             plan is not approved yet ("The plan is not approved yet"), the initiative failed or is
             complete, or the executor is not ready (the same `problem` sentence `GET /executors`'
             `status` reports, e.g. "ANTHROPIC_API_KEY is not set in the daemon's environment or the
-            project's .env; set it and run idea daemon stop"). A coding-agent image that is not
+            project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again)"). A coding-agent image that is not
             pulled yet does not block: the first run pulls it.
         partial_work:
           type: object
@@ -4211,7 +4227,7 @@ components:
           description: |
             Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Docker is not
             running or not installed; ..." or "ANTHROPIC_API_KEY is not set in the daemon's
-            environment or the project's .env; set it and run idea daemon stop". A missing image is
+            environment or the project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again)". A missing image is
             not a problem: `docker run` pulls it on first use; see `note`. Docker being unreachable is.
             Resolves the model exactly as execution does (`models.implementer`, then
             `executor.model`, then the implementer role's default).

@@ -324,6 +324,8 @@ func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResu
 		res.carried = append(res.carried, fc.Path)
 		res.digests[fc.Path] = fc.Digest
 	}
+	e.log.Info("carried a stopped run's files into this run", "initiative", initiativeID, "task", taskID,
+		"carried", len(res.carried), "skipped", len(res.skipped))
 	return res
 }
 
@@ -366,7 +368,7 @@ func (e *Engine) carriedFinding(cs *domain.ChangeSet, res *carryResult) *domain.
 		Severity:       domain.SeverityObservation,
 		Confidence:     domain.ConfidenceHigh,
 		Category:       "carried_over",
-		Finding:        fmt.Sprintf("This run continued from the stopped run: %d file(s) carried over.", len(res.carried)),
+		Finding:        fmt.Sprintf("This run continued from the stopped run: %s carried over.", countFiles(len(res.carried))),
 		Evidence:       strings.TrimSpace(ev.String()),
 		Impact:         "The carried files are part of this change set.",
 		Recommendation: "Review them with the rest of the diff; use Start over next time to begin from the workspace instead.",
@@ -396,4 +398,11 @@ func writeJSONAtomic(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+func countFiles(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
 }
