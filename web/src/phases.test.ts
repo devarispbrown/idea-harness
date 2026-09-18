@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { derivePhases, rollupPhaseSource, type PhaseSource } from "./phases";
+import { attentionCount, currentPill, derivePhases, rollupPhaseSource, type PhaseSource } from "./phases";
 
 // The Define phase used to be derived from the presence of the execution-plan
 // ARTIFACT, as the disambiguator between an M1-review park and an M2-plan park,
@@ -118,6 +118,62 @@ describe("derivePhases rail ordering", () => {
     const states = derivePhases({ ...base, status: "plan_approved", judgmentReason: undefined });
     expect(states.find((p) => p.phase === "define")!.state).toBe("done");
     expect(states.filter((p) => p.state === "current")).toHaveLength(1);
+  });
+});
+
+// Reported defect: the rail said "2 tasks approved" while one of those tasks
+// was still `proposed` -- tasks have no "approved" status of their own
+// (proposed/ready/blocked/done/cancelled), only the PLAN does.
+describe("derivePhases and the Plan phase", () => {
+  it("is not done on plan_approved status alone -- it also needs the plan's own artifact", () => {
+    const src: PhaseSource = { ...base, status: "plan_approved", artifacts: [] };
+    const planState = derivePhases(src).find((p) => p.phase === "plan")!;
+    expect(planState.state).not.toBe("done");
+  });
+
+  it("summarizes the plan as approved, not each task as individually approved", () => {
+    const src: PhaseSource = {
+      ...base,
+      status: "plan_approved",
+      tasks: [{ status: "done" }, { status: "proposed" }],
+    };
+    const planState = derivePhases(src).find((p) => p.phase === "plan")!;
+    expect(planState.summary).toBe("plan approved · 2 tasks");
+    expect(planState.summary).not.toContain("tasks approved");
+  });
+});
+
+// Reported defect: PhaseNav attached a stale "✓ approved"/"✓ plan approved"
+// live badge to whatever phase the rail considered current NEXT (Design,
+// even Verify) -- those statuses announce a PREVIOUS phase's completion,
+// already shown as that phase's own done-summary, not a live condition of
+// whatever comes after it.
+describe("currentPill", () => {
+  it("shows a live badge only for an actually-active current-phase condition", () => {
+    expect(currentPill("running")).toEqual({ pill: "▶", note: "working…" });
+    expect(currentPill("needs_human_judgment")).toEqual({ pill: "!", note: "waiting on you" });
+    expect(currentPill("failed")).toEqual({ pill: "✕", note: "failed" });
+  });
+
+  it("shows nothing live for a just-completed-previous-phase status — the reported defect", () => {
+    expect(currentPill("approved")).toEqual({ pill: "", note: "" });
+    expect(currentPill("plan_approved")).toEqual({ pill: "", note: "" });
+    expect(currentPill("complete")).toEqual({ pill: "", note: "" });
+  });
+});
+
+// Reported defect: a complete initiative's stray unanswered question/decision
+// still counted toward "Needs you elsewhere" as if it were genuinely blocking
+// something.
+describe("attentionCount", () => {
+  const rollup = { open_decisions: 1, open_questions: 2, open_findings: 3 };
+
+  it("sums every open item for an initiative still in progress", () => {
+    expect(attentionCount({ ...rollup, status: "needs_human_judgment" })).toBe(6);
+  });
+
+  it("is zero for a complete initiative regardless of open items", () => {
+    expect(attentionCount({ ...rollup, status: "complete" })).toBe(0);
   });
 });
 

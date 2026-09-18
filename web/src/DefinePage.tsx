@@ -13,7 +13,7 @@ import {
   type FindingItem,
   type QuestionItem,
 } from "./JudgmentCard";
-import { decisionsForDefine, findingsForDefine } from "./judgmentScope";
+import { decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings } from "./judgmentScope";
 import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
 
 interface Artifact {
@@ -75,6 +75,11 @@ export default function DefinePage({
   // on Plan, where approval actually happens (see PlanPage.tsx).
   const prdDecisions = decisionsForDefine(decisions);
   const prdFindings = findingsForDefine(findings);
+  // C2: the catch-all — a finding whose target_type matches neither Define's
+  // nor Plan's allowlist still has to land somewhere, so it shows here rather
+  // than being silently dropped (the reported incident: a hidden CRITICAL
+  // finding that blocked plan approval with no visible reason).
+  const otherFindings = otherOpenFindings(findings).filter((f) => !f.disposition);
 
   const openDecisions = prdDecisions.filter((d) => d.status === "open");
   const openFindings = prdFindings.filter((f) => !f.disposition);
@@ -183,7 +188,7 @@ export default function DefinePage({
       )}
       <div className="judgment-list">
         {openDecisions.map((d) => (
-          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
+          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
         ))}
         {openFindings.map((f) => (
           <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
@@ -199,10 +204,28 @@ export default function DefinePage({
           </div>
           <div className="judgment-list">
             {resolvedDecisions.map((d) => (
-              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
+              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
             ))}
             {resolvedFindings.map((f) => (
               <FindingCard key={f.id} f={f} onDisposition={() => {}} />
+            ))}
+          </div>
+        </>
+      )}
+      {/* C2: nothing may be silently unshown. A finding whose target_type is
+          not yet recognized by either page's allowlist still shows up here,
+          rather than vanishing the way the reported CRITICAL finding did. */}
+      {otherFindings.length > 0 && (
+        <>
+          <div className="judgment-head">
+            <h2 className="section-title">Other open items</h2>
+            <span className="muted">
+              didn't match a known phase — shown here so nothing is hidden
+            </span>
+          </div>
+          <div className="judgment-list">
+            {otherFindings.map((f) => (
+              <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
             ))}
           </div>
         </>

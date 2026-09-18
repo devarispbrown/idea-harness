@@ -1,5 +1,5 @@
-// Pure daemon-down decision logic (H1), kept separate from the fetch calls so
-// it is testable without mocking fetch/timers.
+// Pure daemon-down decision logic (H1/M4), kept separate from the fetch calls
+// so it is testable without mocking fetch/timers.
 //
 // Before this, the recurring 2.5s poll never flipped `daemonDown` at all --
 // only the one-shot initial project load did -- and each poller that DID fail
@@ -12,16 +12,29 @@
 // down, and the callers in App.tsx only ever apply a poll's result on
 // success, so a failure can flip `daemonDown` but never clobbers the last
 // good data.
+//
+// M4: "down" used to mean "any HTTP error at all", so a single 404 or 500 --
+// the daemon answering just fine, about something else -- put up the
+// full-page daemon-lost screen. Only a network failure (fetch never got a
+// response; see api.ts's NetworkError) is evidence the daemon itself is gone,
+// so each outcome now reports THAT specifically, not generic ok/fail.
 
 export interface PollOutcome {
-  ok: boolean;
+  // True when this request never got an HTTP response at all (fetch itself
+  // rejected -- api.ts's NetworkError). False for a request that got a
+  // response, even an error one (404, 500, ...): that is the daemon
+  // answering, not the daemon being down.
+  networkError: boolean;
 }
 
 // A round of polling (one or more requests fired together) marks the daemon
-// down if any of them failed. An empty round (nothing was polled) is not
-// evidence of anything, so it reports "up".
+// down only if one of them was a genuine network failure. An empty round
+// (nothing was polled) is not evidence of anything, so it reports "up", and
+// a round of ordinary HTTP errors (wrong project id, a 500 from a single
+// endpoint, ...) reports "up" too -- those are answered requests, not a lost
+// daemon.
 export function daemonDownAfterPoll(results: PollOutcome[]): boolean {
-  return results.length > 0 && results.some((r) => !r.ok);
+  return results.length > 0 && results.some((r) => r.networkError);
 }
 
 // The lost-connection message used to hard-code 127.0.0.1:8787, which is

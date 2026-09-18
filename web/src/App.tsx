@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { get, post, resource } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { get, NetworkError, post, resource } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import { providerDotState, type ProviderDotState, type ProviderStatusInput } from "./providerStatus";
@@ -25,6 +25,7 @@ import {
   ARTIFACT_TITLES,
   PHASE_LABELS,
   PHASE_PURPOSE,
+  attentionCount,
   currentPhase,
   derivePhases,
   type InitiativeRollup,
@@ -86,43 +87,64 @@ export default function App() {
 
   const [daemonDown, setDaemonDown] = useState(false);
 
+  // M4: `daemonDown` used to be set independently by each of the four loaders
+  // below, from just its own single request's outcome -- so whichever one
+  // happened to resolve LAST in a given tick decided the flag, regardless of
+  // what the others had just found. Two loaders firing together (a success
+  // and a network failure) would flicker the daemon-lost screen on and off
+  // depending purely on resolution order. `outcomesRef` keeps every loader's
+  // most recent network-failure verdict, keyed by name, and every report
+  // recomputes `daemonDown` from the combined set -- one decision, not four
+  // independent ones -- so it only reads "down" while every tracked poller's
+  // latest attempt agrees, and a fresh success from any one of them can't by
+  // itself paper over another that is still failing.
+  const outcomesRef = useRef<Record<string, boolean>>({});
+  const reportOutcome = useCallback((key: string, networkError: boolean) => {
+    outcomesRef.current = { ...outcomesRef.current, [key]: networkError };
+    setDaemonDown(
+      daemonDownAfterPoll(Object.values(outcomesRef.current).map((networkError) => ({ networkError }))),
+    );
+  }, []);
+
   // loadProjects, loadInitiatives, loadAttention and loadInitiativeData each
-  // report their own success/failure into daemonDownAfterPoll (H1) rather
-  // than only the first, one-shot project load. Critically, none of them
-  // ever writes a failure's result into state -- only a successful fetch
+  // report their own success/failure into the combined decision above (H1)
+  // rather than only the first, one-shot project load. Critically, none of
+  // them ever writes a failure's result into state -- only a successful fetch
   // updates its piece of state, so a dead daemon can flip `daemonDown` but
   // can never overwrite the last good data with `[]` (see daemonStatus.ts).
+  // Only a NetworkError (fetch got no response at all) counts as "down"; an
+  // ordinary HTTP error response does not (M4).
   const loadProjects = useCallback(async () => {
     try {
       const ps = (await get<Project[]>("/projects")) ?? [];
       setProjects(ps);
       if (ps.length > 0) setProjectId((prev) => prev || ps[0].project_id);
-      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
-    } catch {
-      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
+      reportOutcome("projects", false);
+    } catch (e) {
+      reportOutcome("projects", e instanceof NetworkError);
     }
-  }, []);
+  }, [reportOutcome]);
 
   const loadInitiatives = useCallback(async (pid: string) => {
     try {
       const list = (await get<Initiative[]>(`/projects/${pid}/initiatives`)) ?? [];
       setInitiatives(list);
       setInitiativesLoaded(true);
-      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
-    } catch {
-      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
+      reportOutcome("initiatives", false);
+    } catch (e) {
+      reportOutcome("initiatives", e instanceof NetworkError);
     }
-  }, []);
+  }, [reportOutcome]);
 
   const loadAttention = useCallback(async (pid: string) => {
     try {
       const res = await get<{ items: InitiativeRollup[] }>(`/projects/${pid}/attention`);
       setAttention(res.items ?? []);
-      setDaemonDown(daemonDownAfterPoll([{ ok: true }]));
-    } catch {
-      setDaemonDown(daemonDownAfterPoll([{ ok: false }]));
+      reportOutcome("attention", false);
+    } catch (e) {
+      reportOutcome("attention", e instanceof NetworkError);
     }
-  }, []);
+  }, [reportOutcome]);
 
   const loadInitiativeData = useCallback(async (pid: string, iniId: string) => {
     const settled = await Promise.allSettled([
@@ -139,8 +161,14 @@ export default function App() {
     // requirements list, and the same counting function, as the Verify page
     // itself (K) -- previously this was hard-coded to 0 here and never wired.
     if (r.status === "fulfilled") setVerifiedRequirements(verifiedRequirementCount(r.value ?? []));
-    setDaemonDown(daemonDownAfterPoll(settled.map((x) => ({ ok: x.status === "fulfilled" }))));
-  }, []);
+    // A round counts as a network failure only if one of ITS OWN rejections
+    // was a NetworkError -- an ordinary HTTP error on one of the four
+    // sub-requests is not evidence the daemon is gone (M4).
+    reportOutcome(
+      "initiative-data",
+      settled.some((x) => x.status === "rejected" && x.reason instanceof NetworkError),
+    );
+  }, [reportOutcome]);
 
   useEffect(() => {
     loadProjects();
@@ -230,26 +258,33 @@ export default function App() {
 
   // ---------- render ----------
 
-  if (daemonDown) {
-    return (
-      <div className="empty">
-        <h1>idea-harness</h1>
-        <p className="error">{daemonLostMessage(window.location.host)}</p>
-        <p className="muted">Nothing will update until it's back. Run <code>idea daemon</code> to restart it.</p>
-      </div>
-    );
-  }
-
+  // M4/H1: with no projects loaded yet there is no "last good page" to keep
+  // showing underneath a banner, so this is the one place daemonDown still
+  // replaces the whole screen -- and even then, only to say WHY there's
+  // nothing (unreachable daemon) rather than the misleading "no projects
+  // yet" a brand-new install would otherwise show for the same blank state.
   if (projects.length === 0) {
     return (
       <div className="empty">
         <h1>idea-harness</h1>
-        <p className="muted">
-          No projects yet. Run <code>idea init</code> in a project directory to get started.
-        </p>
+        {daemonDown ? (
+          <>
+            <p className="error">{daemonLostMessage(window.location.host)}</p>
+            <p className="muted">Nothing will update until it's back. Run <code>idea daemon</code> to restart it.</p>
+          </>
+        ) : (
+          <p className="muted">
+            No projects yet. Run <code>idea init</code> in a project directory to get started.
+          </p>
+        )}
       </div>
     );
   }
+
+  // From here on there IS a last-good page to preserve: a network failure
+  // renders as a banner overlaid on top of it (below), never a full-page
+  // replacement that would throw away every initiative/phase/artifact
+  // already on screen the moment a single poll fails.
 
   const project = projects.find((p) => p.project_id === projectId);
   const initiativeIndex = currentInitiative
@@ -258,19 +293,27 @@ export default function App() {
 
   // Sidebar inbox: open items in initiatives OTHER than the one being viewed.
   // Only shown when a specific initiative is focused ("elsewhere" is meaningless
-  // on the home/settings screens).
+  // on the home/settings screens). attentionCount excludes a COMPLETE
+  // initiative's open items -- once shipped they're optional cleanup, not
+  // something waiting on the person (see phases.ts).
   const inbox = currentInitiativeId
     ? attention
         .filter((r) => r.id !== currentInitiativeId)
         .map((r) => ({
           initiativeId: r.id,
-          count: r.open_decisions + r.open_questions + r.open_findings,
+          count: attentionCount(r),
         }))
         .filter((i) => i.count > 0)
     : [];
 
   return (
     <div className="app-root">
+      {daemonDown && (
+        <div className="daemon-down-banner" role="alert">
+          {daemonLostMessage(window.location.host)} Nothing will update until it's back — run{" "}
+          <code>idea daemon</code> to restart it.
+        </div>
+      )}
       {demo && (
         <div className="banner banner-app">
           Demo mode — this project has no model provider configured, so every
@@ -344,6 +387,7 @@ export default function App() {
             projectId={projectId}
             initiativeId={currentInitiative.id}
             status={currentInitiative.status}
+            judgmentReason={currentInitiative.judgment_reason}
           />
         )}
         {route.name === "phase" && currentInitiative && route.phase === "explore" && (

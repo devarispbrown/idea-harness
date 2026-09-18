@@ -145,7 +145,7 @@ export default function PlanPage({
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/approve-plan`, {});
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
       return;
     }
     await load();
@@ -155,7 +155,7 @@ export default function PlanPage({
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/revise-plan`, {});
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
       return;
     }
     await load();

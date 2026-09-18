@@ -26,3 +26,22 @@ export interface ChangeSetStatus {
 export function hasBuiltSomething(changeSets: ChangeSetStatus[]): boolean {
   return changeSets.some((c) => c.status === "applied");
 }
+
+// stripSourceTag removes a leading "[...]" attribution prefix -- e.g.
+// "[Source: human_approved task]" -- that the model prepends when
+// re-listing a requirement across revise cycles. internal/workflow/dedup.go's
+// normalizeJudgment strips the same prefix, but only for COMPARISON
+// (dedup), lower-casing and stripping punctuation along the way; the stored
+// text itself keeps the tag, so it showed up verbatim in VerifyPage's
+// requirement statement. This is the display-only equivalent: it strips
+// every leading bracketed tag but leaves the rest of the text exactly as
+// written, casing and punctuation included.
+export function stripSourceTag(text: string): string {
+  let s = text.trimStart();
+  while (s.startsWith("[")) {
+    const end = s.indexOf("]");
+    if (end < 0) break;
+    s = s.slice(end + 1).trimStart();
+  }
+  return s;
+}

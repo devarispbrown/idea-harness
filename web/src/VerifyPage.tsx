@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
-import { hasBuiltSomething, verifiedRequirementCount } from "./verify";
+import { hasBuiltSomething, stripSourceTag, verifiedRequirementCount } from "./verify";
 
 interface Criterion {
   metric: string;
@@ -59,7 +59,7 @@ export default function VerifyPage({
       setNote((p) => ({ ...p, [code]: "" }));
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -72,7 +72,7 @@ export default function VerifyPage({
       );
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -125,7 +125,7 @@ export default function VerifyPage({
               <div className="verify-head">
                 <span className="verify-mark">{verified ? "✓" : waived ? "—" : "▶"}</span>
                 <span className="verify-code">{r.code}</span>
-                <span className="verify-statement">{r.statement}</span>
+                <span className="verify-statement">{stripSourceTag(r.statement)}</span>
                 {verified && <span className="phase-pill pill-verified">verified</span>}
                 {failed && <span className="phase-pill pill-failing">failed</span>}
                 {waived && <span className="phase-pill pill-inactive">waived</span>}
