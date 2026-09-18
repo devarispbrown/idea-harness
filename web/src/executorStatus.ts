@@ -13,6 +13,7 @@ export interface ExecutorStatusInput {
   key_env: string;
   key_set: boolean;
   problem: string;
+  image_state?: "present" | "absent" | "unknown" | "docker_unavailable";
   // Information that does not block a run (e.g. an image the first run will
   // download).
   note?: string;
@@ -37,12 +38,15 @@ export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatus
   const imageName = status.image || "the pinned default image";
   // When Docker itself is unreachable the image cannot be checked, and saying
   // it "is not pulled" under a "Docker is not running" problem contradicted it.
-  const dockerDown = /docker is not running/i.test(status.problem || "");
+  const dockerDown =
+    status.image_state === "docker_unavailable" || /docker is not running/i.test(status.problem || "");
   const imageLine: ExecutorStatusLine = status.image_present
     ? { text: `${imageName} is pulled.`, ok: true }
     : dockerDown
       ? { text: `${imageName}: cannot check while Docker is unavailable.`, ok: false }
-      : {
+      : status.image_state === "unknown"
+        ? { text: `${imageName}: could not be checked just now.`, ok: false }
+        : {
           text: `${imageName} is not pulled yet; the first run downloads it.`,
           ok: false,
         };

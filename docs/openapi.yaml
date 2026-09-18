@@ -4073,6 +4073,13 @@ components:
         image_present:
           type: boolean
           description: Whether `image` is present locally. Always true for internal/container.
+        image_state:
+          type: string
+          enum: [present, absent, unknown, docker_unavailable]
+          description: |
+            Why `image_present` is what it is. `unknown` means Docker answered slowly or with
+            something unrecognised; it does not block a run. `docker_unavailable` does. Omitted for
+            executors with no image.
         key_env:
           type: string
           description: The provider key's environment variable name, empty for a keyless provider.

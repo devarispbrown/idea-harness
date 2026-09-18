@@ -32,6 +32,11 @@ describe("executorStatusLines", () => {
     expect(lines.noteLine).toContain("idea executors setup");
   });
 
+  it("does not claim the image is missing when the check was inconclusive", () => {
+    const lines = executorStatusLines({ ...ready, image_present: false, image_state: "unknown" });
+    expect(lines.imageLine.text).not.toContain("not pulled");
+  });
+
   it("does not claim the image is missing when Docker cannot be asked", () => {
     const lines = executorStatusLines({ ...ready, image_present: false, problem: "Docker is not running or not installed; ..." });
     expect(lines.imageLine.text).not.toContain("not pulled");
