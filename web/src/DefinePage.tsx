@@ -13,6 +13,8 @@ import {
   type FindingItem,
   type QuestionItem,
 } from "./JudgmentCard";
+import { decisionsForDefine, findingsForDefine } from "./judgmentScope";
+import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
 
 interface Artifact {
   id: string;
@@ -28,10 +30,15 @@ export default function DefinePage({
   projectId,
   initiativeId,
   status,
+  judgmentReason,
 }: {
   projectId: string;
   initiativeId: string;
   status: string;
+  // Optional because App.tsx does not thread it here yet — undefined is the
+  // same legacy case showsRevisePrd already treats as prd_review, so this
+  // page degrades to its pre-D2 behaviour until that one-line wiring lands.
+  judgmentReason?: string;
 }) {
   const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [findings, setFindings] = useState<FindingItem[]>([]);
@@ -62,13 +69,20 @@ export default function DefinePage({
     return () => clearInterval(id);
   }, [load]);
 
-  const openDecisions = decisions.filter((d) => d.status === "open");
-  const openFindings = findings.filter((f) => !f.disposition);
+  // D1: Define is the PRD phase, so it shows PRD decisions and PRD-review
+  // (+ deterministic requirement-check) findings only. Plan-review findings
+  // — including HIGH ones like "No execution plan ... was provided" — belong
+  // on Plan, where approval actually happens (see PlanPage.tsx).
+  const prdDecisions = decisionsForDefine(decisions);
+  const prdFindings = findingsForDefine(findings);
+
+  const openDecisions = prdDecisions.filter((d) => d.status === "open");
+  const openFindings = prdFindings.filter((f) => !f.disposition);
   const openQuestions = questions.filter((q) => q.status === "open");
   const openCount = openDecisions.length + openFindings.length + openQuestions.length;
 
-  const resolvedDecisions = decisions.filter((d) => d.status !== "open");
-  const resolvedFindings = findings.filter((f) => !!f.disposition);
+  const resolvedDecisions = prdDecisions.filter((d) => d.status !== "open");
+  const resolvedFindings = prdFindings.filter((f) => !!f.disposition);
 
   // The current (latest) PRD version; /artifacts returns oldest-first.
   const prdVersions = artifacts.filter((a) => a.kind === "prd");
@@ -142,7 +156,11 @@ export default function DefinePage({
       actionLabel: "Proceed to design & plan →",
       onAction: advance,
     };
-  } else if (status === "needs_human_judgment") {
+  } else if (status === "needs_human_judgment" && showsRevisePrd(judgmentReason)) {
+    // D2: the four judgment reasons share this one status, and only
+    // prd_review (or the undefined legacy case) is Define's to resolve — a
+    // plan_review/plan_dependencies/verification park shows no commit bar
+    // here at all, because "Revise PRD" would not be the right action.
     commit = {
       explanation:
         openCount > 0
@@ -160,7 +178,7 @@ export default function DefinePage({
           <h2 className="section-title">
             {openCount} thing{openCount === 1 ? "" : "s"} need{openCount === 1 ? "s" : ""} your judgment
           </h2>
-          <span className="muted">then the PRD revises to v{nextVersion} and Design unlocks</span>
+          <span className="muted">{openItemsNote(status, nextVersion)}</span>
         </div>
       )}
       <div className="judgment-list">

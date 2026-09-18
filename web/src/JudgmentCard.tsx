@@ -9,6 +9,10 @@ export interface DecisionItem {
   options: string[];
   status: string;
   resolution?: string;
+  // "product" | "architecture" | "design" | "security" | "operations" (§19).
+  // Only "product" decisions are PRD decisions; the rest are raised during
+  // Design and are scoped there, not onto Define (D1/judgmentScope.ts).
+  type?: string;
 }
 export interface FindingItem {
   id: string;
@@ -16,6 +20,11 @@ export interface FindingItem {
   finding: string;
   recommendation: string;
   disposition?: string;
+  // What the review that produced this finding looked at: "prd" or
+  // "requirement" for the PRD review, "execution_plan" for the plan review,
+  // "change_set" for Build's per-task review. Used to scope findings to the
+  // right phase (D1/judgmentScope.ts).
+  target_type?: string;
 }
 export interface QuestionItem {
   id: string;
