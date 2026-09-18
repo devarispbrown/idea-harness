@@ -1,6 +1,6 @@
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
-import type { PhaseState } from "./phases";
+import { currentPill, type PhaseState } from "./phases";
 
 interface InboxItem {
   initiativeId: string;
@@ -16,26 +16,8 @@ interface Props {
   active: PhaseName | "settings";
   inbox: InboxItem[]; // empty → hidden
   modelChip: string;
+  modelDot?: "ready" | "warn";
   onNavigate: (href: string) => void;
-}
-
-function currentPill(status: string): { pill: string; note: string } {
-  switch (status) {
-    case "running":
-      return { pill: "▶", note: "working…" };
-    case "needs_human_judgment":
-      return { pill: "!", note: "waiting on you" };
-    case "approved":
-      return { pill: "✓", note: "approved" };
-    case "plan_approved":
-      return { pill: "✓", note: "plan approved" };
-    case "complete":
-      return { pill: "✓", note: "shipped" };
-    case "failed":
-      return { pill: "✕", note: "failed" };
-    default:
-      return { pill: "▶", note: "" };
-  }
 }
 
 export default function PhaseNav({
@@ -47,6 +29,7 @@ export default function PhaseNav({
   active,
   inbox,
   modelChip,
+  modelDot = "ready",
   onNavigate,
 }: Props) {
   const cur = initiative ? currentPill(initiative.status) : { pill: "", note: "" };
@@ -115,11 +98,24 @@ export default function PhaseNav({
       )}
 
       <div className="pn-footer">
-        <button className="pn-model" onClick={() => onNavigate("#/settings")}>
-          <span className="pn-model-dot" />
-          <span className="pn-model-name">{modelChip}</span>
-          <span className="pn-model-more">Activity ↗</span>
-        </button>
+        <div className="pn-model">
+          <button className="pn-model-btn" onClick={() => onNavigate("#/settings")}>
+            <span
+              className={modelDot === "warn" ? "pn-model-dot pn-model-dot--warn" : "pn-model-dot"}
+              title={modelDot === "warn" ? "The default model's provider is not ready (demo output)" : "Provider ready"}
+            />
+            <span className="pn-model-name">{modelChip}</span>
+          </button>
+          {/* "Activity" used to sit inside the model button and navigate to
+              Settings regardless -- a label with no destination of its own.
+              It now goes to this initiative's health/activity trace, and
+              only appears when there is one. */}
+          {initiative && (
+            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/health`)}>
+              Activity ↗
+            </button>
+          )}
+        </div>
         <button
           className={`pn-settings ${active === "settings" ? "on" : ""}`}
           onClick={() => onNavigate("#/settings")}

@@ -39,20 +39,108 @@
   --verified-pill: #dcfce7;
   --failing-pill: #fee2e2;
   --inactive-pill: #f5f4f1;
+
+  /* Explore "grounding" doc-kind chips. Their own tokens, not reused from the
+     state palette above, so a dark-mode override here doesn't ripple into
+     unrelated status pills. */
+  --kind-prd-bg: #eef2ff;
+  --kind-prd-fg: #4338ca;
+  --kind-design-bg: #dcfce7;
+  --kind-design-fg: #166534;
+  --kind-tech-bg: #fef3c7;
+  --kind-tech-fg: #92400e;
+  --kind-market-bg: #fee2e2;
+  --kind-market-fg: #991b1b;
+  --kind-other-bg: #f5f4f1;
+  --kind-other-fg: #78716c;
+}
+
+/* Emulated dark mode (L): every rule above reads colour through a custom
+   property, so redefining the tokens here is enough to re-theme the whole
+   app -- as long as call sites use var(--...) instead of a literal hex
+   value. This was previously not possible at all: nothing redefined these
+   tokens for a dark scheme, and a few call sites (Explore's doc-kind chips)
+   bypassed the token system with inline hex, which this can't reach. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #17161a;
+    --surface: #201f24;
+    --sunken: #26252b;
+    --line: #34333a;
+    --line-soft: #2b2a30;
+    --text: #f2f1ee;
+    --text-body: #d6d3ce;
+    --text-muted: #a29d97;
+    --text-faint: #726d68;
+    --accent: #818cf8;
+    --accent-bg: #262a4a;
+    --accent-line: #3f4470;
+
+    --needs-you-fg: #fbbf24;
+    --needs-you-bg: #3a2f13;
+    --needs-you-line: #6b551d;
+    --running-fg: #a5b4fc;
+    --running-bg: #23223a;
+    --running-line: #3f4470;
+    --verified-fg: #4ade80;
+    --verified-bg: #16241c;
+    --verified-line: #23532f;
+    --failing-fg: #f87171;
+    --failing-bg: #331515;
+    --failing-line: #5c2323;
+    --unverified-fg: #fbbf24;
+    --unverified-bg: #201f24;
+    --unverified-line: #5c4a1a;
+    --inactive-fg: #a29d97;
+    --inactive-bg: #201f24;
+    --inactive-line: #34333a;
+
+    --needs-you-pill: #453a17;
+    --running-pill: #23223a;
+    --verified-pill: #16241c;
+    --failing-pill: #331515;
+    --inactive-pill: #26252b;
+
+    --kind-prd-bg: #23264a;
+    --kind-prd-fg: #a5b4fc;
+    --kind-design-bg: #163826;
+    --kind-design-fg: #6ee7a3;
+    --kind-tech-bg: #3a2f13;
+    --kind-tech-fg: #fbbf24;
+    --kind-market-bg: #3a1c1c;
+    --kind-market-fg: #fca5a5;
+    --kind-other-bg: #26252b;
+    --kind-other-fg: #a29d97;
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  /* J: stop page-level horizontal scroll on narrow viewports. Any element
+     that still needs to scroll sideways (the diff pane, the mobile phase
+     rail) declares its own overflow-x: auto rather than relying on the
+     whole page growing wider than the viewport. */
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
+  max-width: 100vw;
+  overflow-x: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   background: var(--canvas);
   color: var(--text);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  /* Re-themes the browser's OWN chrome for native controls this stylesheet
+     can't otherwise reach -- a checkbox's tick colour, scrollbars, the
+     select/date-picker popup -- to match whichever scheme is active, dark
+     or light. */
+  color-scheme: light dark;
 }
 
 code {
@@ -310,6 +398,21 @@ button.ghost {
   border: 1px solid var(--line);
   border-radius: 7px;
   font-family: inherit;
+  /* Dark mode (L continued): every rule in this file re-themes through the
+     custom properties above, but a form control (input/select/textarea) has
+     its own UA-supplied background/text colour baseline that does NOT come
+     from the page's colours by default -- without setting these explicitly,
+     .text-input inherited only border/spacing from the dark tokens and every
+     field stayed a plain white box with black text on an otherwise dark
+     page. (body's `color-scheme: light dark` handles the controls that
+     don't use this class, e.g. the checkbox in Settings' "git commit on
+     apply".) */
+  background: var(--surface);
+  color: var(--text);
+}
+
+.text-input::placeholder {
+  color: var(--text-faint);
 }
 
 .provider-row {
@@ -361,6 +464,33 @@ button.ghost {
 .banner a {
   color: var(--needs-you-fg);
   font-weight: 600;
+}
+
+/* G1: the same banner, spanning the whole app shell (sidebar included) so
+   demo mode is visible from every screen, not only Settings. */
+.banner-app {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+}
+
+/* M4/H1: a network failure overlays this banner on top of the last good
+   page instead of replacing the whole app with a blank "lost connection"
+   screen (App.tsx's daemonDown branch used to do exactly that, discarding
+   every initiative/phase/artifact already on screen the moment a single
+   poll failed). Sticky so it stays visible while scrolling a long page, and
+   uses the failing tokens (not needs-you's amber) since this is not
+   something the person did — the daemon itself is unreachable. */
+.daemon-down-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--failing-bg);
+  border-bottom: 1px solid var(--failing-line);
+  color: var(--failing-fg);
+  padding: 8px 24px;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .palette-trigger {
@@ -1000,9 +1130,16 @@ button.ghost.small {
 }
 
 /* ---------- phase-nav sidebar ---------- */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .phase-nav {
@@ -1197,21 +1334,36 @@ button.ghost.small {
   align-items: center;
   gap: 7px;
   padding: 0 6px;
+}
+.pn-model-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11.5px;
   color: var(--text-muted);
   cursor: pointer;
   background: none;
   border: none;
+  padding: 0;
   text-align: left;
 }
 .pn-model-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #16a34a;
+  background: var(--verified-fg);
 }
+.pn-model-dot--warn { background: var(--needs-you-fg); }
 .pn-model-name { font-family: ui-monospace, Menlo, monospace; }
-.pn-model-more { margin-left: auto; }
+.pn-model-more {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
 .pn-settings {
   display: flex;
   gap: 6px;
@@ -1250,6 +1402,24 @@ button.ghost.small {
   display: flex;
   flex-direction: column;
   min-height: calc(100vh - 68px);
+}
+
+/* K: "Next: <phase> →" handoff, shown once the phase being viewed has
+   completed. Rendered by App.tsx alongside whichever phase page is active,
+   so it applies uniformly rather than being wired into each page. */
+.phase-handoff {
+  max-width: 860px;
+  margin-top: 18px;
+}
+.phase-handoff-link {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .phase-header {
@@ -1850,6 +2020,16 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   color: var(--text-body);
 }
 .cs-file-deleted { padding: 10px 12px; font-size: 11.5px; color: var(--failing-fg); font-style: italic; }
+/* H1: per-line +/- styling for a patch's ' '/'-'/'+' prefixed lines
+   (buildLogic.ts's patchLines), inside .cs-file-content -- the same
+   add/remove/context palette ArtifactDiffPage's .diff-line uses, so a patch
+   reads the same way everywhere it's shown. */
+.cs-diff-line { padding: 0 4px; border-radius: 3px; }
+.cs-diff-hunk { color: var(--text-faint); }
+.cs-diff-add { color: var(--verified-fg); background: var(--verified-pill); }
+.cs-diff-remove { color: var(--failing-fg); background: var(--failing-pill); }
+.cs-diff-context { color: var(--text-body); }
+.cs-patch-note { margin: 0 0 6px; padding: 0 12px; }
 .cs-actions { display: flex; gap: 7px; margin-top: 10px; }
 .cs-green { background: #16a34a; color: #fff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .cs-secondary { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 11px; font-size: 12px; color: var(--text-body); cursor: pointer; }
@@ -1943,7 +2123,18 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   background: var(--surface);
 }
 .ph-project { font-weight: 600; font-size: 13px; color: var(--text); }
-.ph-settings { font-size: 12px; color: var(--text-muted); margin-left: auto; cursor: pointer; }
+.ph-settings {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  cursor: pointer;
+  /* Was a plain <span> (not focusable, not clickable); now a real <button>,
+     reset back to the same look (K). */
+  background: none;
+  border: none;
+  font-family: inherit;
+  padding: 0;
+}
 .ph-new {
   background: var(--accent);
   color: #fff;
@@ -1968,7 +2159,57 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   padding: 3px 11px;
 }
 .ph-create { margin-top: 16px; }
+.ph-create-hint {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--needs-you-fg);
+}
 .ph-list { display: flex; flex-direction: column; gap: 11px; margin-top: 18px; }
+
+/* G4: first-run explainer, shown instead of the list when there are no
+   initiatives yet. Previously this was a single muted line with no
+   explanation of what the phases mean. */
+.ph-empty {
+  margin-top: 22px;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.ph-empty-lead {
+  margin: 0 0 14px;
+  color: var(--text-body);
+  font-size: 13.5px;
+}
+.ph-empty-phases {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ph-empty-phase {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ph-empty-phase:last-child { border-bottom: none; padding-bottom: 0; }
+.ph-empty-phase-name {
+  flex: none;
+  width: 64px;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ph-empty-phase-purpose { font-size: 12.5px; color: var(--text-muted); }
+.ph-empty-next {
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--text-body);
+}
 .ph-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -2118,8 +2359,10 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 /* ---------- verify page ---------- */
 .verify-meter { display: flex; gap: 9px; margin-top: 16px; align-items: center; }
 .verify-track { flex: 1; height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--line); }
-.verify-fill { height: 100%; background: #16a34a; }
+.verify-fill { height: 100%; background: var(--verified-fg); }
 .verify-meta { font-size: 11.5px; color: var(--text-muted); font-family: ui-monospace, Menlo, monospace; flex: none; }
+/* K: reason shown above the list while Pass/Fail is disabled. */
+.verify-gate-note { margin-top: 12px; }
 .verify-list { display: flex; flex-direction: column; gap: 11px; margin-top: 18px; }
 .verify-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 17px; }
 .verify-card.current { border: 2px solid var(--accent); }
@@ -2291,6 +2534,23 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
     overflow-x: auto;
   }
   .pn-logo, .pn-initiative, .pn-inbox, .pn-eyebrow, .pn-footer { display: none; }
+  /* J: on Home and Settings there is no initiative, so `.pn-rail` doesn't
+     render at all -- hiding the logo and footer alongside it left the whole
+     nav empty but for its own padding ("collapsed to 13 px, leaving no way
+     home"). Bring the logo (home) and footer (Settings) back whenever the
+     rail isn't there to take their place. */
+  .phase-nav:not(:has(.pn-rail)) .pn-logo,
+  .phase-nav:not(:has(.pn-rail)) .pn-footer {
+    display: flex;
+  }
+  .phase-nav:not(:has(.pn-rail)) {
+    align-items: center;
+  }
+  .phase-nav:not(:has(.pn-rail)) .pn-footer {
+    margin-top: 0;
+    margin-left: auto;
+    padding-top: 0;
+  }
   .pn-rail { flex-direction: row; gap: 0; width: 100%; }
   .pn-phase { flex-direction: column; align-items: center; gap: 0; flex: 1; min-width: 0; padding: 6px 0; }
   .pn-dot-wrap { width: auto; flex-direction: row; }
@@ -2311,3 +2571,164 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   button { min-height: 44px; }
   .jc-actions button, .cs-actions button, .discussion-resolve button { min-height: 44px; }
 }
+
+/* ---- web-settings ---- */
+
+/* J: Gemini's "type · endpoint · key: VAR" line is long enough to overflow
+   the card at 390px. These are new rules layered after .provider-row's
+   original definition (never edited), so the row wraps instead of clipping. */
+.provider-row {
+  flex-wrap: wrap;
+}
+.provider-row > div {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* J: on Plan, seven possible inline buttons (↑ ↓ Edit Delete Cancel) squeeze
+   the task title to one word per line at narrow widths. Below 600px they
+   collapse into a "⋯" menu — a native <details>, so no JS state is needed —
+   and .plan-body gets its room back. */
+.plan-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.plan-actions-menu {
+  display: none;
+  flex: none;
+  position: relative;
+}
+.plan-actions-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-faint);
+  padding: 4px 6px;
+}
+.plan-actions-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.plan-actions-menu[open] > summary {
+  color: var(--text);
+}
+.plan-actions-menu-list {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.plan-actions-menu-list .plan-act {
+  text-align: left;
+  padding: 4px 6px;
+}
+@media (max-width: 600px) {
+  .plan-row-actions {
+    display: none;
+  }
+  .plan-actions-menu {
+    display: block;
+  }
+}
+
+/* L: token-based warning banner, replacing Settings.tsx's hard-coded light
+   colours (#fffbeb/#fde68a/#92400e) so emulated dark mode isn't stuck light.
+   Shares .error's shape with the amber "needs-you" tokens instead of red —
+   used for the executor security tradeoff and the F4 not-ready nudges. */
+.warn-text {
+  color: var(--needs-you-fg);
+  background: var(--needs-you-bg);
+  border: 1px solid var(--needs-you-line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  margin-top: 12px;
+}
+
+/* C3: the executor image/key/problem status panel. */
+.executor-status {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.executor-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.executor-status-line + .executor-status-line {
+  margin-top: 4px;
+}
+.executor-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+}
+.executor-status-line.ok .executor-status-dot {
+  background: var(--verified-fg);
+}
+.executor-status-line.warn .executor-status-dot {
+  background: var(--needs-you-fg);
+}
+.executor-status-problem {
+  margin-top: 6px;
+  color: var(--needs-you-fg);
+}
+/* ---- web-build ---- */
+/* B1: the primary "Run next task" action and its blocked-reason note. */
+.run-next-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.run-next-reason { font-size: 12px; color: var(--text-muted); }
+
+/* B6: flags a modified file whose patch preserves no context lines -- a
+   whole-file rewrite rather than an incremental edit. */
+.cs-file-rewrite {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--needs-you-fg);
+  background: var(--needs-you-pill);
+  border-radius: 5px;
+  padding: 2px 6px;
+  flex: none;
+}
+
+/* Stale-base conflicts: workspace_copy / agent_output findings shown next to
+   a conflicted change set's diff, above the resolve actions. */
+.cs-conflict-findings { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cs-conflict-finding {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--text-body);
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 6px 10px;
+}
+.cs-conflict-cat {
+  flex: none;
+  font: 600 10px ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.cs-conflict-text { flex: 1; min-width: 0; }
+
+/* B3: the running card's post-Stop state, instead of vanishing. */
+.running-card-stopped { border-color: var(--line); }

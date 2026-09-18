@@ -1,0 +1,373 @@
+import { describe, expect, it } from "vitest";
+import {
+  appliedOutcomeLabel,
+  approveErrorMessage,
+  buildFailure,
+  buildHeaderMeta,
+  conflictCause,
+  diffChangeTypeLabel,
+  errMessage,
+  findingCategoryLabel,
+  hasNoFilesChanged,
+  isOperationInFlight,
+  isWholeFileRewrite,
+  latestOperationOfType,
+  noDiffMessage,
+  patchLines,
+  resolveRunningTask,
+  runButtonState,
+  runningTitle,
+  shouldResetRetryBusy,
+} from "./buildLogic";
+
+describe("isOperationInFlight", () => {
+  it("is in flight while running or pending", () => {
+    expect(isOperationInFlight("running")).toBe(true);
+    expect(isOperationInFlight("pending")).toBe(true);
+  });
+
+  it("is settled once succeeded, failed, or cancelled", () => {
+    expect(isOperationInFlight("succeeded")).toBe(false);
+    expect(isOperationInFlight("failed")).toBe(false);
+    expect(isOperationInFlight("cancelled")).toBe(false);
+  });
+});
+
+describe("errMessage", () => {
+  it("unwraps an Error to its message, without the 'Error:' prefix", () => {
+    expect(errMessage(new Error("provider refused the request"))).toBe(
+      "provider refused the request",
+    );
+  });
+
+  it("stringifies anything that isn't an Error", () => {
+    expect(errMessage("plain string")).toBe("plain string");
+  });
+});
+
+describe("runButtonState", () => {
+  const task = { id: "t1", human_id: "TASK-2", title: "Add the retry button" };
+
+  it("shows the run button named after the next task", () => {
+    const s = runButtonState(task, "", false);
+    expect(s.visible).toBe(true);
+    expect(s.label).toBe("Run TASK-2: Add the retry button");
+    expect(s.disabled).toBe(false);
+  });
+
+  it("disables the button and keeps it visible when blocked", () => {
+    const s = runButtonState(task, "a checks_running change set is open", false);
+    expect(s.visible).toBe(true);
+    expect(s.disabled).toBe(true);
+  });
+
+  it("hides the button entirely while something is running, not just disables it", () => {
+    const s = runButtonState(task, "", true);
+    expect(s.visible).toBe(false);
+  });
+
+  it("hides the button when there is no next task", () => {
+    expect(runButtonState(null, "", false).visible).toBe(false);
+    expect(runButtonState(undefined, "", false).visible).toBe(false);
+  });
+});
+
+describe("latestOperationOfType", () => {
+  it("picks the newest by created_at, not array order", () => {
+    const ops = [
+      { type: "execute_initiative", created_at: "2026-01-01T00:00:00Z" },
+      { type: "execute_initiative", created_at: "2026-01-03T00:00:00Z" },
+      { type: "apply_change_set", created_at: "2026-01-05T00:00:00Z" },
+      { type: "execute_initiative", created_at: "2026-01-02T00:00:00Z" },
+    ];
+    expect(latestOperationOfType(ops, "execute_initiative")?.created_at).toBe(
+      "2026-01-03T00:00:00Z",
+    );
+  });
+
+  it("returns undefined when no operation of that type exists", () => {
+    expect(latestOperationOfType([], "execute_initiative")).toBeUndefined();
+  });
+});
+
+describe("buildFailure", () => {
+  const failed = { id: "op1", type: "execute_initiative", status: "failed", created_at: "2026-01-01T00:00:00Z", error: "boom" };
+
+  it("surfaces the latest failed execute operation", () => {
+    expect(buildFailure([failed])).toBe(failed);
+  });
+
+  it("stays quiet while anything is running, even a stale failure", () => {
+    const running = { id: "op2", type: "retry_initiative", status: "running", created_at: "2026-01-02T00:00:00Z" };
+    expect(buildFailure([failed, running])).toBeNull();
+  });
+
+  it("stays quiet when the latest execute succeeded", () => {
+    const ok = { id: "op3", type: "execute_initiative", status: "succeeded", created_at: "2026-01-02T00:00:00Z" };
+    expect(buildFailure([failed, ok])).toBeNull();
+  });
+
+  it("stays quiet with no execute operations at all", () => {
+    expect(buildFailure([])).toBeNull();
+  });
+});
+
+describe("shouldResetRetryBusy", () => {
+  it("resets once the retried operation settles", () => {
+    expect(shouldResetRetryBusy("failed", "x", "x")).toBe(true);
+    expect(shouldResetRetryBusy("succeeded", "x", "x")).toBe(true);
+  });
+
+  it("stays busy while the retried operation is still running", () => {
+    expect(shouldResetRetryBusy("running", "x", "x")).toBe(false);
+  });
+
+  it("resets when the failure text changes even with no operation status yet", () => {
+    expect(shouldResetRetryBusy(undefined, "first failure", "second failure")).toBe(true);
+  });
+
+  it("does not reset on the initial mount (no previous reason to compare)", () => {
+    expect(shouldResetRetryBusy(undefined, undefined, "first failure")).toBe(false);
+  });
+
+  it("does not fire on an unchanged reason with no settled operation", () => {
+    expect(shouldResetRetryBusy(undefined, "same", "same")).toBe(false);
+  });
+});
+
+describe("runningTitle", () => {
+  const labels = { execute_initiative: "Executing the plan", apply_change_set: "Applying change set" };
+  const task = { id: "t1", human_id: "TASK-2", title: "Add the retry button" };
+
+  it("names the task for a running execute", () => {
+    expect(runningTitle("execute_initiative", labels, task)).toBe("Running TASK-2: Add the retry button");
+  });
+
+  it("falls back to the generic label when the task isn't known yet", () => {
+    expect(runningTitle("execute_initiative", labels, null)).toBe("Executing the plan");
+  });
+
+  it("leaves every other operation type on its generic label", () => {
+    expect(runningTitle("apply_change_set", labels, task)).toBe("Applying change set");
+  });
+
+  it("falls back to the raw type for an unlabeled operation", () => {
+    expect(runningTitle("mystery_op", labels, task)).toBe("mystery_op");
+  });
+});
+
+describe("resolveRunningTask", () => {
+  it("prefers the operation's own task fields when it carries them", () => {
+    const op = { task_id: "t2", task_human_id: "TASK-2", task_title: "Add the retry button" };
+    const guidance = { id: "t9", human_id: "TASK-9", title: "A stale next task" };
+    expect(resolveRunningTask(op, guidance)).toEqual({
+      id: "t2",
+      human_id: "TASK-2",
+      title: "Add the retry button",
+    });
+  });
+
+  it("falls back to guidance's next_task when the operation has no task fields", () => {
+    const guidance = { id: "t9", human_id: "TASK-9", title: "A stale next task" };
+    expect(resolveRunningTask({}, guidance)).toEqual(guidance);
+  });
+
+  it("is null when neither the operation nor guidance names a task", () => {
+    expect(resolveRunningTask({}, null)).toBeNull();
+    expect(resolveRunningTask({}, undefined)).toBeNull();
+  });
+
+  it("requires both task_id and task_human_id before trusting the operation", () => {
+    const guidance = { id: "t9", human_id: "TASK-9", title: "fallback" };
+    expect(resolveRunningTask({ task_id: "t2" }, guidance)).toEqual(guidance);
+  });
+});
+
+describe("diffChangeTypeLabel", () => {
+  it("maps the three known change types", () => {
+    expect(diffChangeTypeLabel("add")).toBe("added");
+    expect(diffChangeTypeLabel("modify")).toBe("modified");
+    expect(diffChangeTypeLabel("delete")).toBe("deleted");
+  });
+
+  it("passes through anything unrecognized rather than hiding it", () => {
+    expect(diffChangeTypeLabel("rename")).toBe("rename");
+  });
+});
+
+// H1: the backend's patch is a plain unified diff with NO ---/+++ file
+// headers -- just `@@ -oldStart,oldCount +newStart,newCount @@` hunks
+// followed by ' '/'-'/'+' prefixed lines (an added file is one hunk
+// `@@ -0,0 +1,N @@` all '+'; a deleted file is one hunk `@@ -1,N +0,0 @@`
+// all '-'). These fixtures use exactly that shape -- the tests they replaced
+// fed invented git patches with ---/+++ headers the backend never produces.
+describe("isWholeFileRewrite", () => {
+  it("flags a modify patch with no preserved context lines", () => {
+    const patch = [
+      "@@ -1,3 +1,2 @@",
+      "-old line one",
+      "-old line two",
+      "-old line three",
+      "+new line one",
+      "+new line two",
+    ].join("\n");
+    expect(isWholeFileRewrite("modify", patch)).toBe(true);
+  });
+
+  it("does not flag an incremental patch that keeps context lines", () => {
+    const patch = [
+      "@@ -10,3 +10,3 @@",
+      " unchanged before",
+      "-removed route",
+      "+added route",
+      " unchanged after",
+    ].join("\n");
+    expect(isWholeFileRewrite("modify", patch)).toBe(false);
+  });
+
+  it("never flags an add or a delete, only a modify", () => {
+    const addPatch = "@@ -0,0 +1,1 @@\n+a";
+    const deletePatch = "@@ -1,1 +0,0 @@\n-a";
+    expect(isWholeFileRewrite("add", addPatch)).toBe(false);
+    expect(isWholeFileRewrite("delete", deletePatch)).toBe(false);
+  });
+
+  it("is false with no patch text", () => {
+    expect(isWholeFileRewrite("modify", "")).toBe(false);
+  });
+});
+
+describe("patchLines", () => {
+  it("parses a hunk header and context/removed/added lines from the exact backend format", () => {
+    const patch = ["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"].join("\n");
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -1,3 +1,3 @@" },
+      { kind: "context", text: "a" },
+      { kind: "remove", text: "b" },
+      { kind: "add", text: "B" },
+      { kind: "context", text: "c" },
+    ]);
+  });
+
+  it("parses an added file's single all-plus hunk", () => {
+    const patch = "@@ -0,0 +1,2 @@\n+line one\n+line two";
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -0,0 +1,2 @@" },
+      { kind: "add", text: "line one" },
+      { kind: "add", text: "line two" },
+    ]);
+  });
+
+  it("parses a deleted file's single all-minus hunk", () => {
+    const patch = "@@ -1,2 +0,0 @@\n-line one\n-line two";
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -1,2 +0,0 @@" },
+      { kind: "remove", text: "line one" },
+      { kind: "remove", text: "line two" },
+    ]);
+  });
+
+  it("is empty for an empty patch (the patch_note/content fallback case)", () => {
+    expect(patchLines("")).toEqual([]);
+  });
+});
+
+describe("hasNoFilesChanged", () => {
+  it("is true when an agent_output finding is present", () => {
+    expect(hasNoFilesChanged([{ category: "agent_output" }])).toBe(true);
+  });
+
+  it("is false without one — a stale_base or workspace_copy finding doesn't mean an empty diff", () => {
+    expect(hasNoFilesChanged([{ category: "stale_base" }, { category: "workspace_copy" }])).toBe(false);
+    expect(hasNoFilesChanged([])).toBe(false);
+  });
+});
+
+describe("noDiffMessage", () => {
+  it("explains an empty diff instead of a bare, unexplained placeholder", () => {
+    expect(noDiffMessage(true)).toBe("The agent changed no files.");
+  });
+
+  it("keeps the generic placeholder when nothing explains the empty diff", () => {
+    expect(noDiffMessage(false)).toBe("(no diff)");
+  });
+});
+
+describe("approveErrorMessage", () => {
+  it("rewrites the workflow engine's raw approval-blocked refusal", () => {
+    expect(
+      approveErrorMessage("workflow: approval blocked: open high finding: SQL injection in query builder"),
+    ).toBe('Can\'t approve: an open HIGH finding needs to be resolved first — "SQL injection in query builder"');
+  });
+
+  it("still produces a message with no finding text", () => {
+    expect(approveErrorMessage("workflow: approval blocked: open critical finding:")).toBe(
+      "Can't approve: an open CRITICAL finding needs to be resolved first.",
+    );
+  });
+
+  it("passes through any other error unchanged", () => {
+    expect(approveErrorMessage("network timeout")).toBe("network timeout");
+  });
+});
+
+describe("findingCategoryLabel", () => {
+  it("labels the known change-set finding categories", () => {
+    expect(findingCategoryLabel("workspace_copy")).toBe("workspace copy");
+    expect(findingCategoryLabel("agent_output")).toBe("agent output");
+    expect(findingCategoryLabel("stale_base")).toBe("stale base");
+  });
+
+  it("passes through an unrecognized category rather than hiding it", () => {
+    expect(findingCategoryLabel("some_new_category")).toBe("some_new_category");
+  });
+});
+
+describe("conflictCause", () => {
+  it("calls out stale_base so re-run can be foregrounded over retry", () => {
+    expect(conflictCause([{ category: "stale_base" }])).toBe("stale_base");
+    expect(conflictCause([{ category: "workspace_copy" }, { category: "stale_base" }])).toBe(
+      "stale_base",
+    );
+  });
+
+  it("defaults to other when nothing names a stale base", () => {
+    expect(conflictCause([{ category: "workspace_copy" }])).toBe("other");
+    expect(conflictCause([])).toBe("other");
+  });
+});
+
+describe("appliedOutcomeLabel", () => {
+  it("never calls a placeholder executor's output SHIPPED", () => {
+    expect(appliedOutcomeLabel("internal", undefined)).toBe("Placeholder change (demo)");
+  });
+
+  it("never calls a demo-model change set SHIPPED, even on a real executor", () => {
+    expect(appliedOutcomeLabel("container", "demo")).toBe("Placeholder change (demo)");
+  });
+
+  it("calls a real executor with a real model SHIPPED", () => {
+    expect(appliedOutcomeLabel("container", "anthropic/claude-sonnet-4"))
+      .toBe("SHIPPED");
+  });
+
+  // Low: this must be the CHANGE SET's own executor, not the page's
+  // currently-selected one -- an older change set predating the `executor`
+  // field carries `undefined` and falls back to the model check alone,
+  // rather than assuming "internal" the way the page-level default used to.
+  it("falls back to the model check for a change set with no recorded executor", () => {
+    expect(appliedOutcomeLabel(undefined, "demo")).toBe("Placeholder change (demo)");
+    expect(appliedOutcomeLabel(undefined, "anthropic/claude-sonnet-4")).toBe("SHIPPED");
+  });
+});
+
+describe("buildHeaderMeta", () => {
+  it("says placeholder code only for the internal executor", () => {
+    expect(buildHeaderMeta("internal")).toBe("internal executor · placeholder code");
+  });
+
+  it("says nothing about placeholder code for a real executor", () => {
+    expect(buildHeaderMeta("container")).toBe("container executor");
+    expect(buildHeaderMeta("hermes")).toBe("hermes executor");
+  });
+});

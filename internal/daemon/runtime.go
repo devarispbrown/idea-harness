@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -44,6 +45,27 @@ type Runtime struct {
 	// asynchronous operations, keyed by operation id (M3 cancel, §16).
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc
+	// ops counts running operations, so Shutdown can wait for them to unwind
+	// -- and remove their agent containers -- before the process exits.
+	// closing (under cancelMu) is set once shutdown begins: an operation
+	// launched after that starts already cancelled, and is still counted, so
+	// nothing runs uncancelled past the stop and Add never races Wait.
+	ops     sync.WaitGroup
+	closing bool
+	// swept is closed once the startup sweep of a dead daemon's leftovers has
+	// finished. Operations wait for it, so the sweep cannot remove one of
+	// this daemon's own agents.
+	swept     chan struct{}
+	sweptOnce sync.Once
+	// lifetime is cancelled when shutdown begins. Work that must survive its
+	// HTTP client going away, but not the daemon stopping, derives from it.
+	lifetime    context.Context
+	endLifetime context.CancelFunc
+
+	// images caches docker image presence (C3), so GET /executors and the
+	// Build page's run_blocked_reason poll never call Docker more than once
+	// every 30s per image.
+	images *imagePresenceCache
 }
 
 type projectRuntime struct {
@@ -75,14 +97,19 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		global.Close()
 		return nil, err
 	}
+	lifetime, endLifetime := context.WithCancel(context.Background())
 	return &Runtime{
-		stateRoot:  stateRoot,
-		token:      token,
-		global:     global,
-		log:        log,
-		projects:   map[string]*projectRuntime{},
-		reconciled: map[string]bool{},
-		cancels:    map[string]context.CancelFunc{},
+		lifetime:    lifetime,
+		endLifetime: endLifetime,
+		stateRoot:   stateRoot,
+		token:       token,
+		global:      global,
+		log:         log,
+		projects:    map[string]*projectRuntime{},
+		reconciled:  map[string]bool{},
+		cancels:     map[string]context.CancelFunc{},
+		swept:       closedChan(),
+		images:      newImagePresenceCache(),
 	}, nil
 }
 
@@ -172,6 +199,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// The canonical workspace that apply writes into and revert restores is the
 	// project root (the user's real source tree).
 	engine.SetWorkspaceRoot(rec.RootPath)
+	engine.SetDotEnv(dotEnv)
 
 	pr := &projectRuntime{db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
 
@@ -225,7 +253,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	// Rebuild config-derived components in place on the SAME engine (its mutex
 	// keeps serializing execute/apply/revert across the reload); then publish the
 	// pr fields under r.mu.
-	pr.engine.Reload(cfg.Harness, registry, redactor, blobs)
+	pr.engine.Reload(cfg.Harness, registry, redactor, blobs, dotEnv)
 	r.mu.Lock()
 	pr.cfg = cfg
 	pr.dotEnv = dotEnv
@@ -234,6 +262,73 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	pr.redactor = redactor
 	r.mu.Unlock()
 	return pr, nil
+}
+
+// Shutdown cancels every running operation and waits, until ctx expires, for
+// them to finish.
+//
+// Go exits at once on SIGTERM, which is what `idea daemon stop` sends, so no
+// deferred cleanup ran: an agent container kept running with the provider key,
+// network access and auto-approve, writing into the work root, until something
+// happened to load the project again. Cancelling an operation's context is what
+// makes the engine remove its container.
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.beginShutdown()
+	done := make(chan struct{})
+	go func() {
+		r.ops.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("daemon: operations still running at shutdown: %w", ctx.Err())
+	}
+}
+
+// beginShutdown cancels every running operation and makes any launched from
+// now on start cancelled. Safe to call more than once.
+func (r *Runtime) beginShutdown() {
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	r.closing = true
+	if r.endLifetime != nil {
+		r.endLifetime()
+	}
+	for _, cancel := range r.cancels {
+		cancel()
+	}
+}
+
+// holdOperationsUntilSwept makes operations wait for markSwept. Run calls it
+// before serving; a Runtime built any other way (tests) never sweeps and does
+// not wait.
+func (r *Runtime) holdOperationsUntilSwept() { r.swept = make(chan struct{}) }
+
+// lifetimeContext is cancelled when the daemon begins shutting down. A Runtime
+// not built by NewRuntime has none, and gets a background context.
+func (r *Runtime) lifetimeContext() context.Context {
+	if r.lifetime == nil {
+		return context.Background()
+	}
+	return r.lifetime
+}
+
+// detachedContext is for work a request starts that must finish even if the
+// client goes away (approving a change set runs a model review), bounded, and
+// cancelled when the daemon stops.
+func (r *Runtime) detachedContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.lifetimeContext(), 5*time.Minute)
+}
+
+// markSwept records that the startup sweep is done.
+func (r *Runtime) markSwept() { r.sweptOnce.Do(func() { close(r.swept) }) }
+
+func closedChan() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
 }
 
 // registerCancel records a live cancellation handle for opID.
@@ -256,9 +351,20 @@ func (r *Runtime) unregisterCancel(opID string) {
 // and released when fn returns.
 func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r.registerCancel(opID, cancel)
+	r.cancelMu.Lock()
+	r.cancels[opID] = cancel
+	r.ops.Add(1)
+	if r.closing {
+		cancel()
+	}
+	r.cancelMu.Unlock()
 	go func() {
+		defer r.ops.Done()
 		defer cancel()
+		select {
+		case <-r.swept:
+		case <-ctx.Done():
+		}
 		defer r.unregisterCancel(opID)
 		// These goroutines are detached, so net/http's per-request recovery does
 		// not reach them: one panic in a pipeline took the whole daemon down,
@@ -277,6 +383,24 @@ func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 		}()
 		fn(ctx)
 	}()
+}
+
+// operationErrorMessage redacts msg with the project's own redactor (nil-safe:
+// falls back to pattern-only redaction) before it is persisted on the
+// operation (B2), so a credential the agent's own output happened to echo
+// never lands in the operations table. store.SetOperationFailed caps the
+// length; this only redacts.
+func operationErrorMessage(pr *projectRuntime, msg string) string {
+	var redactor *security.Redactor
+	if pr != nil {
+		redactor = pr.redactor
+	}
+	if redactor != nil {
+		msg = redactor.RedactString(msg)
+	} else {
+		msg = security.Redact(msg)
+	}
+	return msg
 }
 
 // failOperationAfterPanic records a panicked operation as failed and releases
@@ -314,7 +438,8 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 				"operation_id", opID, "status", op.Status, "panic", p)
 			return
 		}
-		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
+		if err := pr.db.SetOperationFailed(ctx, opID, domain.OperationFailed,
+			operationErrorMessage(pr, fmt.Sprintf("internal error: %v", p))); err != nil {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
 			return
 		}
@@ -339,7 +464,7 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 	if opCtx.Err() != nil {
 		status = domain.OperationCancelled
 	}
-	_ = pr.db.SetOperationStatus(sctx, opID, status, "")
+	_ = pr.db.SetOperationFailed(sctx, opID, status, operationErrorMessage(pr, runErr.Error()))
 
 	// Release the initiative on cancellation too, not only on failure.
 	//
@@ -355,7 +480,9 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 	// `failed` is the right resting state for both: it is honest about the work
 	// not completing, and `idea retry` runs from exactly there.
 	if failInitiative && (status == domain.OperationFailed || status == domain.OperationCancelled) {
-		reason := runErr.Error()
+		// Redacted like the operation's own error: both are shown in the UI,
+		// and a provider error can echo request material.
+		reason := operationErrorMessage(pr, runErr.Error())
 		if status == domain.OperationCancelled {
 			reason = "cancelled: " + reason
 		}
@@ -512,7 +639,7 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	// too, deterministically, leaving exactly the stranded row this function was
 	// changed to prevent.
 	fail := func(err error) (string, string, error) {
-		if ferr := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID, err.Error()); ferr != nil {
+		if ferr := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID, operationErrorMessage(pr, err.Error())); ferr != nil {
 			r.log.Error("could not fail a half-created initiative", "initiative", ini.ID, "err", ferr)
 		}
 		return "", "", err
@@ -544,7 +671,7 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 			r.failOperation(opID, ini.ID, "initiative run failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, ini.ID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, ini.ID)
 		r.log.Info("initiative run complete", "initiative", ini.ID, "status", status)
 	})
 
@@ -650,7 +777,7 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 			r.failOperation(opID, initiativeID, "advance failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("advance complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -755,7 +882,7 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 			return
 		}
 		release()
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, cs.ID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, cs.ID)
 		r.log.Info("execute complete", "initiative", initiativeID, "change_set", cs.HumanID)
 	})
 	return opID, nil
@@ -815,7 +942,7 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 			return
 		}
 		release()
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("apply complete", "change_set", changeSetID)
 	})
 	return opID, nil
@@ -887,7 +1014,7 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 		// released even if the engine's own write failed (it discards its
 		// error).
 		release(domain.InitiativePlanApproved)
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})
 	return opID, nil
@@ -945,7 +1072,7 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 			r.failOperation(opID, initiativeID, "revise failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("revise complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1007,7 +1134,7 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 			r.failOperation(opID, initiativeID, "retry failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("retry complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1091,7 +1218,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 			r.failOperation(opID, initiativeID, "reopen phase failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("reopen phase complete", "initiative", initiativeID, "phase", phase, "status", status)
 	})
 	return opID, nil
@@ -1182,7 +1309,7 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 			r.failOperation(opID, initiativeID, "plan revision failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("plan revision complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1417,7 +1544,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 			r.failOperation(opID, initiativeID, "plan approval failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("plan approval complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1483,7 +1610,7 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 			r.failOperation(opID, initiativeID, "suggest answers failed", bg, pr, runErr, false)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("suggest answers complete", "initiative", initiativeID, "count", total)
 	})
 	return opID, nil
@@ -1503,7 +1630,8 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 	ops, err := pr.db.ListUnfinishedOperations(ctx)
 	if err == nil {
 		for _, op := range ops {
-			_ = pr.db.SetOperationStatus(ctx, op.ID, domain.OperationFailed, "")
+			_ = pr.db.SetOperationFailed(ctx, op.ID, domain.OperationFailed,
+				"the daemon restarted while this operation was running, so it could not finish")
 			if op.InitiativeID == "" {
 				continue
 			}
@@ -1677,7 +1805,7 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 	// model listing works even before a provider is explicitly configured.
 	for _, p := range config.Presets {
 		key := lookupEnv(p.DefaultKeyEnv, dotEnv)
-		reg.Add(p.Key, providerFor(p.Key, p.Type, key, p.BaseURL))
+		reg.Add(p.Key, providerFor(p.Key, p.Type, key, p.BaseURL, p.DefaultKeyEnv))
 	}
 
 	// Configured providers override preset defaults (custom base URLs/types) —
@@ -1700,7 +1828,7 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 			"provider", e.Name, "reason", e.Err)
 	}
 	for _, e := range accepted {
-		reg.Add(e.Name, providerFor(e.Name, e.Type, lookupEnv(e.KeyEnv, dotEnv), e.BaseURL))
+		reg.Add(e.Name, providerFor(e.Name, e.Type, lookupEnv(e.KeyEnv, dotEnv), e.BaseURL, e.KeyEnv))
 	}
 
 	if isDemo(cfg, dotEnv) {
@@ -1792,7 +1920,18 @@ func resolveProviderEntries(providers map[string]config.ProviderConfig) ([]resol
 }
 
 // providerFor constructs a provider from a resolved type/key/base URL.
-func providerFor(name string, typ config.ProviderType, key, baseURL string) model.Provider {
+//
+// keyEnv is the variable name key was (or should have been) read from. When
+// the provider is keyed (keyEnv != "") and no value was found, this registers
+// a MissingKeyProvider instead of the real client (F1): the real client would
+// otherwise run and let the provider's own 401 JSON reach the UI verbatim,
+// with no daemon-side indication that the actual problem is a missing key
+// rather than a live provider failure. Ollama and other keyless providers
+// pass keyEnv == "" and are never affected.
+func providerFor(name string, typ config.ProviderType, key, baseURL, keyEnv string) model.Provider {
+	if keyEnv != "" && key == "" {
+		return model.NewMissingKeyProvider(name, keyEnv)
+	}
 	switch typ {
 	case config.ProviderAnthropic:
 		return model.NewAnthropic(key, baseURL)

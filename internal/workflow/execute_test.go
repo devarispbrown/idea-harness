@@ -68,6 +68,108 @@ func TestExecuteCreatesReviewRequiredChangeSet(t *testing.T) {
 	}
 }
 
+// TestChangeSetRecordsDemoModelWhenNoProviderIsConfigured pins the ChangeSet.Model
+// contract the web-build worker codes against: the UI labels output
+// "Shipped (demo)" / "Placeholder change" by checking model === "demo", so a
+// change set produced with no real provider configured (newExecuteFixture's
+// fixture: fake provider, no executor.model) must report that literal string,
+// not the registry's internal key ("idea-harness-default").
+func TestChangeSetRecordsDemoModelWhenNoProviderIsConfigured(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+	task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Model != "demo" {
+		t.Fatalf("Model = %q, want %q", cs.Model, "demo")
+	}
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "demo" {
+		t.Fatalf("persisted Model = %q, want %q", got.Model, "demo")
+	}
+}
+
+// TestChangeSetRecordsTheConfiguredModel is the other half: a real
+// executor.model must be reported as-is, not folded into "demo".
+func TestChangeSetRecordsTheConfiguredModel(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Executor: config.ExecutorConfig{Model: "openai/gpt-4o-mini"},
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Model != "openai/gpt-4o-mini" {
+		t.Fatalf("Model = %q, want %q", cs.Model, "openai/gpt-4o-mini")
+	}
+}
+
+// TestStructuredDiffCarriesAUnifiedPatch is B6's backend half: the diff view
+// renders the unified patch, not a full-file dump, for every change kind.
+// Before this, StructuredFile carried only the post-image `content`, so an
+// existing file rewritten wholesale looked identical to a brand-new file with
+// no way to tell "this replaced 40 lines" from "this added 40 lines".
+func TestStructuredDiffCarriesAUnifiedPatch(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	// Seed the workspace with a file execute will modify, so BaseDigest and
+	// the pre-image both resolve from the live workspace at review time
+	// (before any apply has run fsdiff.Prepare to persist a pre-image blob).
+	if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "server.js"), []byte("route /\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := eng.StructuredDiff(&cs)
+	if len(files) == 0 {
+		t.Fatal("expected at least one changed file")
+	}
+	for _, f := range files {
+		if f.Patch == "" {
+			t.Errorf("file %q (%s) carries no patch", f.Path, f.ChangeType)
+			continue
+		}
+		switch f.ChangeType {
+		case "add":
+			if strings.Contains(f.Patch, "\n- ") || strings.HasPrefix(f.Patch, "- ") {
+				t.Errorf("added file %q patch has a removed line: %q", f.Path, f.Patch)
+			}
+		case "delete":
+			if strings.Contains(f.Patch, "\n+ ") || strings.HasPrefix(f.Patch, "+ ") {
+				t.Errorf("deleted file %q patch has an added line: %q", f.Path, f.Patch)
+			}
+		}
+	}
+}
+
 func TestExecuteRejectsOnSecretMarker(t *testing.T) {
 	eng, db, iniID := newExecuteFixture(t)
 	ctx := context.Background()
@@ -647,4 +749,83 @@ func stringLit(e ast.Expr) (string, bool) {
 	}
 	v, err := strconv.Unquote(lit.Value)
 	return v, err == nil
+}
+
+// A keyless provider is not an unresolvable one, and the executor used to
+// refuse both with the same check.
+//
+// Ollama is a first-class preset with DefaultKeyEnv "" and NeedsKey false. The
+// guard was `keyEnv == ""`, so it was indistinguishable from a typo in
+// executor.model — and every keyless provider was locked out of the
+// coding-agent path entirely.
+func TestKeylessProviderIsNotTreatedAsUnresolvable(t *testing.T) {
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "ollama/llama3.1"},
+	}}
+	p, err := e.implementerProvider()
+	if err != nil {
+		t.Fatalf("ollama did not resolve, though it is a preset: %v", err)
+	}
+	if p.Name != "ollama" || p.KeyEnv != "" || p.BaseURL == "" {
+		t.Errorf("ollama resolved to %+v", p)
+	}
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("selectExecutor refused a keyless provider: %v", err)
+	}
+}
+
+// An unresolvable provider must still fail closed: the agent runs with network
+// egress, so it must never be launched with a credential nobody chose. With a
+// default model set too, which is the case the fallback used to swallow.
+func TestUnresolvableProviderStillFailsClosed(t *testing.T) {
+	for _, dm := range []string{"", "openai/gpt-5.6-luna"} {
+		e := &Engine{cfg: config.HarnessConfig{
+			DefaultModel: dm,
+			Executor:     config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "typo-provider/some-model"},
+		}}
+		_, err := e.selectExecutor()
+		if err == nil {
+			t.Fatalf("default_model %q: selectExecutor accepted an unresolvable provider", dm)
+		}
+		if !strings.Contains(err.Error(), "typo-provider") {
+			t.Errorf("the refusal does not name what could not be resolved: %v", err)
+		}
+	}
+}
+
+// A keyed provider whose key is set nowhere is refused before launch. Hermes
+// exits 0 after a 401, so the run otherwise produced an empty change set and
+// no reason.
+func TestKeyedProviderWithoutAKeyIsRefused(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-5.6-luna"},
+	}}
+	_, err := e.selectExecutor()
+	if err == nil {
+		t.Fatal("a keyed provider launched with no key")
+	}
+	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Errorf("the refusal does not name the missing variable: %v", err)
+	}
+	// The project's .env counts, as it does for every other model call.
+	e.SetDotEnv(map[string]string{"OPENAI_API_KEY": "sk-from-dotenv"})
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("a key in .env was not found: %v", err)
+	}
+}
+
+// Every provider this project presets must reach the coding agent.
+func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
+	for _, p := range config.Presets {
+		if p.DefaultKeyEnv != "" {
+			t.Setenv(p.DefaultKeyEnv, "test-key")
+		}
+		e := &Engine{cfg: config.HarnessConfig{
+			Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: p.Key + "/some-model"},
+		}}
+		if _, err := e.selectExecutor(); err != nil {
+			t.Errorf("%s cannot launch the coding agent: %v", p.Key, err)
+		}
+	}
 }

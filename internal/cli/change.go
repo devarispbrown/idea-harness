@@ -5,8 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"os/signal"
+	"sort"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/executor"
 )
 
@@ -341,6 +347,21 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
 	}
 
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	// Checked before the pull, which is several gigabytes. A misspelled or
+	// unsupported provider used to download the image, verify it, write the
+	// config and only then fail -- or, with --smoke, surface as an agent that
+	// "produced no files".
+	var provider executor.AgentProvider
+	if model != "" {
+		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
+			return err
+		}
+	}
+
 	digest, err := executor.PullImage(context.Background(), image)
 	if err != nil {
 		return fmt.Errorf("pull failed: %w", err)
@@ -349,10 +370,6 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
-	c, projectID, err := connect()
-	if err != nil {
-		return err
-	}
 	body := map[string]string{"kind": kind, "image": image}
 	if model != "" {
 		body["model"] = model
@@ -374,7 +391,21 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	if smoke {
 		fmt.Fprintln(stdout, muted("smoke: running a trivial "+kind+" task to verify the CLI contract…"))
-		if err := executor.SmokeAgent(context.Background(), kind, image, model); err != nil {
+		// Ctrl-C cancels the context rather than killing the process, so the
+		// smoke's deferred Cancel still removes the agent container, which
+		// holds the key. Bounded like a real run.
+		sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		sctx, cancel := context.WithTimeout(sctx, 15*time.Minute)
+		defer cancel()
+		dotEnv := config.LoadDotEnv(".")
+		lookup := func(name string) string {
+			if v := os.Getenv(name); v != "" {
+				return v
+			}
+			return dotEnv[name]
+		}
+		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup); err != nil {
 			return fmt.Errorf("smoke failed: %w", err)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
@@ -594,4 +625,48 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 	}
 	// renderNextAction already turns a `failed` action into failedInitiativeError.
 	return renderNextAction(step, stdout)
+}
+
+// checkAgentProvider confirms a coding-agent model names a provider this
+// project can reach: one of the presets, or one configured under providers: in
+// harness.yaml. The message lists them, because the valid set is short and the
+// user is choosing from it.
+//
+// It returns the provider as the daemon resolved it -- endpoint and key
+// variable after harness.yaml overrides -- so --smoke calls what the real
+// executor will, custom providers included.
+func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (executor.AgentProvider, error) {
+	i := strings.Index(model, "/")
+	if i <= 0 || i == len(model)-1 {
+		return executor.AgentProvider{}, fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
+	}
+	name := model[:i]
+	var view cliProvidersView
+	if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
+		return executor.AgentProvider{}, err
+	}
+	names := make([]string, 0, len(view.Providers))
+	for _, p := range view.Providers {
+		if p.Name == name {
+			if p.Problem != "" {
+				return executor.AgentProvider{}, fmt.Errorf("provider %q is not usable: %s", name, p.Problem)
+			}
+			ap := executor.AgentProvider{Name: p.Name, Type: config.ProviderType(p.Type), KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}
+			if err := ap.Validate(); err != nil {
+				return executor.AgentProvider{}, err
+			}
+			// models.implementer outranks executor.model when the engine picks
+			// the agent's model, so the model set here -- and smoked -- would
+			// not be the one that runs.
+			if impl := view.Models["implementer"]; impl != "" && impl != model {
+				fmt.Fprintln(stderr, warn("⚠ ")+"models.implementer is "+code(impl)+
+					", which the coding agent uses instead of "+code(model)+
+					". To run "+code(model)+", also run "+code("idea model set --role implementer "+model)+".")
+			}
+			return ap, nil
+		}
+		names = append(names, p.Name)
+	}
+	sort.Strings(names)
+	return executor.AgentProvider{}, fmt.Errorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
 }

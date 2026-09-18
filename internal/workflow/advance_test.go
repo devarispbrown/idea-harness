@@ -414,3 +414,36 @@ func TestCreateVerificationTaskWiresVerifiesEdge(t *testing.T) {
 		t.Fatalf("expected a verifies edge task->requirement, got %+v", impact)
 	}
 }
+
+// Every plan-review finding targets the plan. The deterministic ones had no
+// target and the reviewer's defaulted to "requirement", so the UI showed plan
+// findings on the PRD page and a CRITICAL cycle -- which blocks approve-plan --
+// on no page at all.
+func TestPlanReviewFindingsTargetThePlan(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "untraced", Statement: "no req", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.runExecutionPlanReview(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("no findings; this check proves nothing")
+	}
+	for _, f := range findings {
+		if f.TargetType != PlanFindingTarget {
+			t.Errorf("%s finding targets %q, not the plan", f.Category, f.TargetType)
+		}
+	}
+}

@@ -229,8 +229,14 @@ type Operation struct {
 	Type         string          `json:"type"`
 	Status       OperationStatus `json:"status"`
 	ResultRef    string          `json:"result_ref,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
+	// Error is the reason a failed or cancelled operation ended that way,
+	// redacted and length-capped before it is persisted (B2). Before this
+	// field existed, a failed execute left the initiative at plan_approved,
+	// the Build page's running card simply vanished, and the only record of
+	// why was a line in daemon.log — invisible to anyone not tailing it.
+	Error      string     `json:"error,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 // RunManifest records immutable provenance for a Run (§36).
@@ -321,6 +327,10 @@ type FileChange struct {
 	Digest     string         `json:"digest"`
 	Mode       string         `json:"mode,omitempty"`
 	ChangeType FileChangeKind `json:"change_type,omitempty"`
+	// BaseDigest is the digest of the file this change was made against, for a
+	// modified or deleted file. Apply refuses when the workspace file no longer
+	// matches it, rather than overwriting an edit made after the agent ran.
+	BaseDigest string `json:"base_digest,omitempty"`
 }
 
 // IsDelete reports whether this change removes the file at Path.
@@ -338,7 +348,15 @@ type ChangeSet struct {
 	ReviewID       string          `json:"review_id,omitempty"`
 	GitCommitSHA   string          `json:"git_commit_sha,omitempty"`
 	CreatedByRunID string          `json:"created_by_run_id,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
+	// Model is the actual model spec that produced this change set (e.g.
+	// "openai/gpt-5"), or "demo" when no real provider was configured. The UI
+	// keys model=="demo" to label the change "Shipped (demo)" / "Placeholder
+	// change" rather than real agent output.
+	Model     string    `json:"model,omitempty"`
+	// Executor is the executor kind that produced the change set ("internal"
+	// output is a placeholder whatever the model).
+	Executor string `json:"executor,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ApplyJournalEntry is one durable apply-journal record (§39).

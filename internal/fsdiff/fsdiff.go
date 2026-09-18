@@ -178,14 +178,63 @@ func Diff(before, after Manifest) []domain.FileChange {
 		a, aok := afterBy[p]
 		switch {
 		case bok && !aok:
-			out = append(out, domain.FileChange{Path: p, Mode: "file", ChangeType: domain.FileDeleted})
+			out = append(out, domain.FileChange{Path: p, Mode: "file", ChangeType: domain.FileDeleted, BaseDigest: b})
 		case aok && !bok:
 			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file", ChangeType: domain.FileAdded})
 		case aok && bok && a != b:
-			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file", ChangeType: domain.FileModified})
+			out = append(out, domain.FileChange{Path: p, Digest: a, Mode: "file", ChangeType: domain.FileModified, BaseDigest: b})
 		}
 	}
 	return out
+}
+
+// StaleBase reports every change whose base no longer matches root, one line
+// per file. An empty result means the patch can be applied without
+// overwriting anything the change was not made against.
+//
+// Keyed on ChangeType, not on BaseDigest being empty: an all-adds patch has no
+// base digests at all and must still be checked, because "add a file" over a
+// file that now exists is exactly how an agent that never saw the workspace
+// deleted a user's code. A change with no ChangeType predates this check and
+// is applied as before.
+func StaleBase(root string, changes []domain.FileChange) []string {
+	var stale []string
+	for _, c := range changes {
+		if c.ChangeType == "" {
+			continue
+		}
+		dest, err := security.ResolveWithin(root, c.Path)
+		if err != nil {
+			stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+			continue
+		}
+		fi, err := os.Lstat(dest)
+		exists := err == nil
+		switch c.ChangeType {
+		case domain.FileAdded:
+			if exists {
+				stale = append(stale, c.Path+": the change adds it, but it now exists in the workspace")
+			}
+		case domain.FileModified, domain.FileDeleted:
+			if !exists {
+				stale = append(stale, c.Path+": the change edits it, but it no longer exists in the workspace")
+				continue
+			}
+			if !fi.Mode().IsRegular() {
+				stale = append(stale, c.Path+": it is no longer a regular file in the workspace")
+				continue
+			}
+			data, err := os.ReadFile(dest)
+			if err != nil {
+				stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+				continue
+			}
+			if c.BaseDigest == "" || blob.Digest(data) != c.BaseDigest {
+				stale = append(stale, c.Path+": it was changed in the workspace after the agent ran")
+			}
+		}
+	}
+	return stale
 }
 
 // Prepare captures the pre-image of every touched path (persisting each via put)
@@ -303,6 +352,17 @@ func writeAtomic(dest string, content []byte) error {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600, and the rename carried that over the
+	// user's file: applying a change turned a 0644 source file private and
+	// took the executable bit off a script. Keep the mode of the file being
+	// replaced; a new file gets the ordinary 0644.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(dest); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpName, dest); err != nil {

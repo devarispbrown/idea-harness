@@ -13,13 +13,13 @@ import (
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.
-const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, created_at`
+const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, created_at`
 
 // scanChangeSet scans one change_sets row into cs. createdMS receives the raw
 // unix-ms timestamp so the caller can convert it.
 func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64) error {
 	return row.Scan(&cs.ID, &cs.HumanID, &cs.InitiativeID, &cs.TaskID, &cs.BaseSnapshotID,
-		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, createdMS)
+		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, createdMS)
 }
 
 // CreateChangeSet inserts a change set, assigning its HumanID "CHG-N" from the
@@ -50,10 +50,10 @@ func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
 		}
 		_, err := tx.Exec(`
 			INSERT INTO change_sets
-				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			cs.ID, cs.HumanID, cs.InitiativeID, cs.TaskID, cs.BaseSnapshotID, cs.Status,
-			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.CreatedAt.UnixMilli())
+			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.Model, cs.Executor, cs.CreatedAt.UnixMilli())
 		return err
 	})
 }

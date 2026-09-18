@@ -304,7 +304,7 @@ jobs:
   # make that choice rather than have it made by omission.
   release:
     name: Publish release binaries
-    needs: [compile-no-node, macos, backend, web]
+    needs: [compile-no-node, macos, backend, web, agent-contract]
     # `github.event_name == 'push'` is load-bearing, not decoration: this
     # workflow accepts workflow_dispatch, a dispatch can select a tag ref, and a
     # ref test alone would open a publishing path release.yml never had.
@@ -371,6 +371,39 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The coding-agent path shipped broken twice over and nothing noticed: the
+  # Hermes argv used a flag the image does not have, and the hardened container
+  # could not boot the image at all. Neither needs an API key to detect, and the
+  # only job that exercised the path is the opt-in tier below, which had never
+  # run. This one runs the REAL executor against the pinned image with a
+  # refused endpoint and asserts Hermes accepted the query.
+  #
+  # Push-only rather than every PR because the image is 5.4 GB. It gates the
+  # release, so a tag cannot ship an agent path that does not start.
+  agent-contract:
+    name: Agent contract (pinned Hermes image, no key)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # `pinned` makes the test resolve and pull executor.DefaultAgentImage
+      # itself, so the tag lives in one place and cannot drift from what
+      # `idea executors setup` downloads.
+      - name: Run the executor against the pinned image
+        run: go test ./internal/executor/ -run TestAgentContractAgainstThePinnedImage -v -timeout 15m
+        env:
+          IDEA_AGENT_CONTRACT_IMAGE: pinned
 
   agent:
     name: Agent integration (opt-in — real Hermes + model)

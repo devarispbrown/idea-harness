@@ -9,6 +9,187 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The web UI can run the whole loop.** The UI walkthrough rated it 3/10:
+  nothing in the browser could start Build, and a failed run left no trace.
+  - **Build** has a "Run TASK-n: title" button, disabled with the reason when a
+    run cannot start (another change set is still open, Docker is not running,
+    the provider's key is not set). A failed run shows the agent's own error
+    with Retry. The running card names the task; Stop offers to run again.
+  - **Diffs** show only the changed lines, with context, labelled added,
+    modified or deleted, or say why there is no diff (binary, too large, or
+    the file was edited after the agent ran). Every finding on a change set is
+    shown before you approve, including why a change set conflicted, with
+    "Reject and re-run" first when retrying cannot work.
+  - **Approve, Apply, Revert** show that they are working and report errors
+    inline; approving finishes even if you close the tab.
+  - **Settings** shows whether the agent's image is pulled and its key is set,
+    stores the Hermes image when you leave it empty (an empty image had run
+    `alpine:3.20`, which has no agent), and rejects a model it cannot use with
+    the reason. The model picker loads on open, leads with current models and
+    hides speech, image and embedding models. The page no longer re-renders in
+    a loop, which had called the provider's model API several times a second.
+  - **Define** shows PRD decisions and findings; **Plan** shows the plan's,
+    including a dependency cycle that blocks approval and had shown nowhere.
+    "Revise PRD" appears only when the PRD is what is waiting. The same
+    question asked twice shows once, and answering it answers both.
+  - **Demo mode** has a banner on every page, its output is labelled a
+    placeholder, and nothing demo-made is called "SHIPPED".
+  - **Errors** read as the server's message, not raw JSON; a missing key names
+    the variable and turns the sidebar dot amber. The lost-connection banner
+    appears only for a real network failure and keeps the page visible.
+  - **Phone widths** keep the navigation and wrap Plan and Settings rows;
+    dark mode covers form fields; unknown links show a not-found page.
+  - `idea dev`, `idea init` and `idea daemon status` print the UI address;
+    `idea daemon stop` prints the pid it stopped.
+
+- **Applying a change keeps file permissions.** It wrote through a private
+  temporary file, so a 0644 file became 0600 and a script lost its executable
+  bit.
+
+- **A provider's model list is fetched at most every five minutes** instead of
+  on every page poll, each of which called the provider's API with your key.
+
+- **The coding agent no longer overwrites your files.** Its working directory
+  started empty, so the agent never saw the project: asked to add a route to
+  `server.js`, it wrote a new `server.js` from nothing, the change set called
+  the file "added", and applying it deleted the routes that were there. Each
+  run now starts from a fresh copy of the project (git's tracked and untracked,
+  non-ignored files). `.env` files and any file that looks like it holds a
+  credential are never copied, because the agent runs with network access;
+  everything left out is listed on the change set. Applying now refuses, and
+  marks the change set conflicted, when a file it changes was edited after the
+  agent ran or a file it adds now exists. The next task in an initiative waits
+  until the previous task's change set is applied or rejected, so it starts
+  from those changes.
+
+- **The Hermes coding agent generates real code.** It never could against the
+  pinned image `nousresearch/hermes-agent:v2026.5.16`, for three independent
+  reasons, and nothing noticed because the only CI job that exercised the path
+  runs on manual dispatch only.
+
+  | | Was | Now |
+  |---|---|---|
+  | Invocation | `hermes --in /work --yolo chat --query … --model …` — Hermes has no `--in` flag, printed its usage and exited | `hermes chat --yolo -q … -m <model> --provider <slug>` |
+  | Container start | `--read-only` with a host `--user` left the entrypoint unable to create its home: `mkdir: cannot create directory '/opt/data': Permission denied`, and nothing ran | a per-attempt agent home, mounted read-write, named by `HERMES_HOME` |
+  | `idea executors setup` | reported `"hermes" CLI not found in image` for the image it had just downloaded, because the probe bypassed the entrypoint that puts `hermes` on `PATH` | the probe runs through the entrypoint |
+  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is named, and removed when the attempt is collected or cancelled, when `docker run` fails after creating it, when the daemon is stopped, and at the next daemon start after a crash |
+
+  `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
+  now passes for all six providers — OpenAI, Anthropic, Gemini, DeepSeek,
+  OpenRouter and Ollama — each producing a real file on 2026-09-17 with the new
+  default models below.
+
+- **The agent talks to the provider you configured.** Hermes's own provider
+  names do not match this project's: it maps `openai` to OpenRouter and does not
+  know `ollama`, so an OpenAI key would have gone unused while OpenRouter was
+  billed. The agent now receives a generated config declaring the provider
+  explicitly, with the base URL and the name of its key variable. Both are
+  resolved the way every other model call resolves them: a `providers:` entry
+  in `harness.yaml` first, then the built-in preset. So an Ollama on another
+  port, or a key in a project-specific variable, reaches the agent too. Without the key variable, Hermes sent the literal placeholder
+  `no-key-required`, which is why Anthropic, Gemini and DeepSeek were rejected
+  with keys that were valid on the host.
+
+- **Keyless providers can run the coding agent.** The executor refused any
+  provider without a key variable, which could not distinguish Ollama — a preset
+  that needs no key — from a typo. An unresolvable provider still fails closed,
+  including when `default_model` is set: only a bare model id takes the default
+  model's provider, so `opneai/gpt-x` is refused rather than sent to OpenAI.
+  Ollama is reached through `host.docker.internal`, because inside a container
+  `localhost` is the container.
+
+- **Gemini's agent endpoint and default model.** The agent speaks the
+  OpenAI-compatible protocol, so it uses Google's compatible endpoint rather
+  than the native API idea-harness itself calls. And `gemini-2.5-flash`, the
+  catalog's Gemini default, now answers 404 "no longer available to new users"
+  on both APIs while still appearing in Google's model listing. The default is
+  `gemini-3.6-flash`, verified on both. The engine falls back to that default
+  when a user has only `GOOGLE_API_KEY` set, so every model call had been failing
+  for a new Gemini user.
+
+- **A keyed provider with no key stops before the agent starts**, naming the
+  variable. The key is read from the daemon's environment and then the
+  project's `.env`, as every other model call reads it; the agent used to read
+  only the environment. Before, the agent started keyless, got a 401, exited 0,
+  and the run produced an empty change set with no reason given.
+
+- **`idea daemon stop` no longer strands running agents.** The daemon exited at
+  once on SIGTERM, so a running agent container kept going with the provider key,
+  network access and auto-approve. The daemon now stops accepting requests,
+  cancels running operations, and waits up to 30 seconds for them to remove
+  their containers; `idea daemon stop` waits for it to exit. It also removes its
+  pidfile, which a stop used to leave behind, and only if it is still its own.
+  The next daemon start removes anything a killed daemon left before it starts
+  any run; if Docker cannot be reached yet, the record is kept for the start
+  after. A second `idea daemon` now fails on the taken address before touching
+  anything, and two daemons can no longer share one state directory. Ctrl-C during `idea executors setup --smoke` now removes
+  the smoke's container too.
+
+- **`idea execute` checks the provider before it spends.** The key and provider
+  checks ran after the planner's model call and after the previous change set
+  was superseded, so a refused run cost money and discarded the change set being
+  redone.
+
+- **A failed agent says why, in `--smoke` and in `idea execute`.** Hermes exits
+  0 even when the model call fails, so a failure surfaced as `produced no files
+  (CLI contract mismatch?)` in the smoke, and in a real run as `attempt failed`
+  or as an empty change set with no reason. Both now carry the last 40 lines of
+  the agent's own output, which name the 401 or the dead model id, with known
+  secrets redacted, escape sequences stripped and the size capped. A run in
+  which the agent changed no file still produces its (empty) change set, but now
+  with a finding that says so and carries the agent's output, so the review
+  shows why. It is not a hard failure, because a task the agent finds already
+  done legitimately changes nothing.
+
+- **`max_cost_usd` is enforced at current prices.** Every current model was
+  missing from the price table and was budgeted at the $0.50/$2.00 default:
+  `claude-sonnet-5` at a quarter of its rate, `claude-fable-5-1` at a twentieth.
+  Every catalog model now has a price, taken from OpenRouter's published rates on
+  2026-09-17, and a test fails when a catalog model has none. A model is priced
+  by its own row, or a row plus a date or release suffix, never by a family
+  prefix: `gpt-5.4-pro` had been charged as `gpt-5`, eighteen times under, and
+  `o3-pro` at the default, forty times under. A model called through OpenRouter
+  now costs the same as the same model called directly. Calls to a local model
+  (Ollama, or any provider on `localhost`) cost nothing; they had been charged
+  at the default rate.
+
+- **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
+  and lists the providers it accepts. It also refuses a provider the daemon
+  reports a problem with, and `--smoke` now calls the provider as the daemon
+  resolved it, so a custom provider can be smoked. It reads the key from the
+  project's `.env` as the daemon does, refuses a provider name or type the agent
+  cannot use (an uppercase name, an Anthropic-type proxy), and warns when
+  `models.implementer` would run a different model than the one set.
+
+### Changed
+
+- **Current default models.** The model a provider defaults to when you set only
+  its key is now one that answered a real call on 2026-09-17:
+  `claude-sonnet-5` (was `claude-sonnet-4-5-20250929`), `gpt-5.6-luna` (was
+  `gpt-4o`), `deepseek-v4-pro` (was `deepseek-chat`),
+  `anthropic/claude-sonnet-5` on OpenRouter (was `openai/gpt-4o`), and `qwen3.8`
+  on Ollama (was `llama3.1`). **If you use Ollama without a `default_model`**,
+  the harness now asks for `qwen3.8`: pull it (`ollama pull qwen3.8`), or set
+  `default_model: ollama/llama3.1` to keep the old one. Newer models were added to each provider's
+  catalog: Claude Opus 5 and Fable 5.1, GPT-5.6 and 5.5, Gemini 3.5 to 3.8,
+  DeepSeek V4, and Qwen 3.8, Kimi K3 and GLM 5.3 on OpenRouter.
+
+- **Retired model ids were removed from the catalog**, because each returned 404
+  on 2026-09-17: `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`,
+  `claude-opus-4-1`, `gemini-2.0-flash`, `gemini-1.5-pro` and OpenRouter's
+  `anthropic/claude-3.7-sonnet`. Setting one now prints the catalog warning,
+  which lists the current ids. The model is still accepted.
+
+### Added
+
+- **A CI job that runs the real agent path without an API key.** It starts the
+  pinned image through the real executor against a refused endpoint and asserts
+  Hermes accepted the query. Both startup defects above fail it; neither needed
+  a key to detect. It runs on pushes rather than every pull request because the
+  image is 5.4 GB, and releases now wait for it.
+
 ## [0.4.0] - 2026-09-17
 
 ### Changed — BREAKING

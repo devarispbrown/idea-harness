@@ -92,8 +92,15 @@ export default function HealthPage({
               file was written, so a daemon that had not answered yet rendered a
               version three releases old as though it were the running build --
               the same defect as docs/openapi.yaml's info.version, in the UI. An
-              em dash says "not known yet", which is what is true. */}
-          127.0.0.1:8787 · {health?.version ?? "—"} · state in ~/.local/share/idea-harness
+              em dash says "not known yet", which is what is true.
+              The address used to be hard-coded to 127.0.0.1:8787, wrong
+              whenever the UI is reached through a different host/port (a
+              tunnel, --addr, a reverse proxy) -- location.host is what's
+              actually true here. The state path is also dropped rather than
+              asserted: this UI has no endpoint that reports it, and
+              ~/.local/share/idea-harness is only the default, not a
+              guarantee. */}
+          {window.location.host} · {health?.version ?? "—"}
         </span>
       </section>
     </div>

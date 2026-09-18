@@ -1117,7 +1117,7 @@ paths:
               properties:
                 model:
                   type: string
-                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-4-5-20250929`."
+                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-5`."
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -1703,6 +1703,11 @@ paths:
       description: |
         **Moved in this release.** Was `GET /api/v1/projects/{projectId}/decisions?initiative_id=`.
         The mutations stay flat under the project, addressed by decision id.
+
+        Decisions asking the same question (compared after stripping leading `[...]` tags, case and
+        trailing punctuation) are returned once: the newest open one, or the newest decided one if
+        none is open. `?all=true` returns every row. Resolving a decision also resolves every other
+        open decision in the initiative that asks the same question.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -2711,6 +2716,15 @@ paths:
         Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
         config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
         and `model` are nullable pointers: omit to leave alone, send `""` to clear.
+
+        For `kind` `hermes`/`omp` with the resulting `image` empty, the pinned default
+        (`executor.DefaultAgentImage`) is stored instead of leaving it empty — reload shows what is
+        actually stored, and the daemon's own runtime fallback for an empty image is the same
+        pinned default, never `alpine:3.20` (which has no agent CLI). For `hermes`/`omp` with a
+        non-empty `model`, the model must resolve to a provider through
+        `executor.ResolveAgentProvider` (the project's `providers:` entries plus `default_model`);
+        an unresolvable model is rejected with `400` naming the reason, rather than being written
+        and failing later inside the agent container.
       requestBody:
         required: true
         content:
@@ -3501,6 +3515,19 @@ components:
           type: string
           description: Set when the harness is configured to commit applied change sets.
         created_by_run_id: { type: string }
+        model:
+          type: string
+          description: |
+            The actual model that produced this change set, e.g. `openai/gpt-5`, or the literal
+            string `demo` when no real provider was configured (the internal registry key is never
+            exposed as a model id). The UI keys `model === "demo"` to label the change "Shipped
+            (demo)" / "Placeholder change" rather than real agent output.
+        executor:
+          type: string
+          description: |
+            The executor kind that produced this change set (`internal`, `container`, `omp`,
+            `hermes`). `internal` output is a placeholder whatever the model. Empty for change sets
+            made before this field existed.
         created_at: { type: string, format: date-time }
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
@@ -3525,6 +3552,22 @@ components:
         content:
           type: string
           description: Redacted file content; empty for a deletion.
+        patch:
+          type: string
+          description: |
+            A git-style unified diff of the file against the version the agent started from, without
+            file headers: hunks headed `@@ -a,b +c,d @@`, each line prefixed with one character
+            (` ` context, `-` removed, `+` added), three lines of context. An added file is one hunk
+            `@@ -0,0 +1,N @@`; a deleted file is `@@ -1,N +0,0 @@`. The base comes from the raw blob
+            store after apply, or from the workspace file before apply - only while that file still
+            matches the recorded base digest. Omitted when there is no change to show, or when
+            `patch_note` explains why there is no diff.
+        patch_note:
+          type: string
+          description: |
+            Why `patch` is absent although the file changed: binary, too large to diff, content not
+            kept, or the base no longer recoverable because the workspace file was edited after the
+            agent ran. Clients show it and fall back to `content`.
       required: [path, change_type, size, content]
 
     OperationStatus:
@@ -3547,6 +3590,13 @@ components:
           description: Which pipeline this operation runs, e.g. `advance`, `execute`, `apply`.
         status: { $ref: "#/components/schemas/OperationStatus" }
         result_ref: { type: string }
+        error:
+          type: string
+          description: |
+            Why a `failed` or `cancelled` operation ended that way, redacted and capped around
+            8 KB. Omitted (never an empty string) on a `succeeded`, `pending` or `running`
+            operation. Before this field existed, a failed execute left the running card with
+            nothing to show and the only record of why was a line in daemon.log.
         created_at: { type: string, format: date-time }
         finished_at:
           type: [string, "null"]
@@ -3705,7 +3755,38 @@ components:
           type: array
           items: { type: string }
           description: The areas the move touches, e.g. ["Product Definition"].
+        next_task:
+          allOf: [{ $ref: "#/components/schemas/NextTaskRef" }]
+          description: |
+            The task `Execute` would run next, reusing the workflow's own task-readiness check.
+            Omitted (never `null`) when there is no ready task - every other field on this
+            endpoint's contract is "omit rather than emit null", and this is that same rule for a
+            single optional object.
+        run_blocked_reason:
+          type: string
+          description: |
+            Empty (and so omitted) when `Execute` could start right now for this initiative,
+            otherwise a user-facing sentence naming the fix: another change set is still open
+            (e.g. "CHG-1 is still review required; apply or reject it before running the next
+            task"), an operation is already running ("An operation is already running"), the
+            plan is not approved yet ("The plan is not approved yet"), the initiative failed or is
+            complete, or the executor is not ready (the same `problem` sentence `GET /executors`'
+            `status` reports, e.g. "ANTHROPIC_API_KEY is not set in the daemon's environment or the
+            project's .env; set it and run idea daemon stop"). A coding-agent image that is not
+            pulled yet does not block: the first run pulls it.
       required: [action, why, affected]
+
+    NextTaskRef:
+      type: object
+      title: NextTaskRef
+      description: The task `Execute` would run next, named without exposing the full Task.
+      properties:
+        id: { type: string }
+        human_id:
+          type: string
+          description: The task's human-readable code, e.g. `TASK-2`.
+        title: { type: string }
+      required: [id, human_id, title]
 
     Changed:
       type: object
@@ -3973,4 +4054,46 @@ components:
         default_image:
           type: string
           description: The image this executor would use if none were configured.
-      required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image]
+        status: { $ref: "#/components/schemas/ExecutorStatus" }
+      required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image, status]
+
+    ExecutorStatus:
+      type: object
+      title: ExecutorStatus
+      description: |
+        Whether this executor is actually ready to run right now: image present, key set, and the
+        one sentence to show instead of guessing when it is not. Only meaningful for `hermes`/`omp`
+        (the coding agents run in a container against a keyed provider); `internal`/`container`
+        always report ready, since neither pulls an agent image or forwards a provider key. Image
+        presence is cached for about 30s so a poll never calls Docker more than once per interval.
+      properties:
+        image:
+          type: string
+          description: The image this executor would check (empty for internal/container).
+        image_present:
+          type: boolean
+          description: Whether `image` is present locally. Always true for internal/container.
+        key_env:
+          type: string
+          description: The provider key's environment variable name, empty for a keyless provider.
+        key_set:
+          type: boolean
+          description: |
+            Whether the key is set in the daemon's own environment or the project's `.env`.
+            Always true for internal/container.
+        problem:
+          type: string
+          description: |
+            Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Docker is not
+            running or not installed; ..." or "ANTHROPIC_API_KEY is not set in the daemon's
+            environment or the project's .env; set it and run idea daemon stop". A missing image is
+            not a problem: `docker run` pulls it on first use; see `note`. Docker being unreachable is.
+            Resolves the model exactly as execution does (`models.implementer`, then
+            `executor.model`, then the implementer role's default).
+        note:
+          type: string
+          description: |
+            Information that does not block a run, e.g. "Image nousresearch/hermes-agent:v2026.5.16
+            is not pulled yet; the first run downloads it, which can take several minutes. To pull
+            it now: idea executors setup --kind hermes --model <model> --yes".
+      required: [image, image_present, key_env, key_set]

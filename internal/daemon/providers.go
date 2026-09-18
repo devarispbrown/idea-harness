@@ -126,7 +126,7 @@ func providerModels(ctx context.Context, reg *model.Registry, name string, catal
 	if ready && reg != nil {
 		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
-		if live, err := reg.ListModels(listCtx, name); err == nil && len(live) > 0 {
+		if live, err := listModelsCached(listCtx, reg, name); err == nil && len(live) > 0 {
 			return mergeModels(live, configured)
 		}
 	}

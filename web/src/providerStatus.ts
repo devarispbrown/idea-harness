@@ -66,3 +66,51 @@ export function providerDetail(p: ProviderStatusInput): string {
       return "";
   }
 }
+
+// providerReadinessWarning is what Settings shows when the user saves a model
+// or an executor pointed at a provider that is not actually ready (F4). It
+// says which variable to set — the F1 pre-flight check names the same
+// variable, so a user who sees this before running and F1's failure after
+// running are reading the same fact — and that a daemon already running
+// needs restarting to pick up an env change made after it started (`idea
+// daemon stop`; the supervisor brings it back).
+export function providerReadinessWarning(p: ProviderStatusInput): string | undefined {
+  switch (providerState(p)) {
+    case "ready":
+      return undefined;
+    case "refused":
+      return p.problem
+        ? `${p.problem} Fix it in harness.yaml, then run \`idea daemon stop\` to pick it up.`
+        : undefined;
+    default:
+      // key-missing and not-configured are both fixed the same way: set the
+      // key, then restart the daemon so it re-reads the environment.
+      return `${p.key_env || "its API key"} is not set in the daemon's environment or the project's .env; set it and run \`idea daemon stop\`.`;
+  }
+}
+
+// modelsLoadedMessage is the Settings model-picker status line. A provider
+// that cannot actually be called should never be told "loaded 0 models" —
+// that reads as a transient glitch worth retrying, when the fix is
+// configuration (I3).
+export function modelsLoadedMessage(
+  p: ProviderStatusInput & { name: string },
+  count: number,
+): string {
+  if (providerState(p) !== "ready") {
+    return providerReadinessWarning(p) ?? `${p.name} is not ready.`;
+  }
+  return `Loaded ${count} model${count === 1 ? "" : "s"} from ${p.name}.`;
+}
+
+// providerDotState is what the sidebar's provider dot (PhaseNav's
+// `.pn-model-dot`) renders as. Only "ready" is a clean bill of health — a
+// refused entry, a missing key, and an unconfigured preset all mean "this
+// will not actually answer a call," so all three read the same amber, not
+// the green a merely-absent-key case used to get (F4). App.tsx renders the
+// dot; this is the derivation it renders from.
+export type ProviderDotState = "ready" | "warn";
+
+export function providerDotState(p: ProviderStatusInput): ProviderDotState {
+  return providerState(p) === "ready" ? "ready" : "warn";
+}

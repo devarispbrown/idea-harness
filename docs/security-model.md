@@ -86,6 +86,32 @@ So for `omp` and `hermes` specifically:
   and passed with `--env-file`.
 - **The workspace is mounted read-write** at `/work`. It is not the read-only
   `/repo` mount described above; that belongs to `ContainerSandbox`.
+- **A second read-write mount holds the Hermes agent's home**, at
+  `/tmp/agent-home`. It is a fresh directory per attempt, created next to the
+  work root. idea-harness writes one file into it, the generated agent config:
+  provider name, base URL, model, and the *name* of the key variable, never the
+  key itself. The agent then writes its own state and the image's bundled skills
+  there. It exists because the image's own home is not writable under
+  `--read-only` with a host `--user`, and the agent cannot start without one.
+  OMP gets no such mount and keeps its image's home.
+- **The container is not started with `--rm`**, because a fast agent deleted
+  itself before its status was read. The container keeps the forwarded key in
+  its configuration until it is removed, visible to anyone who can run
+  `docker inspect`. idea-harness removes the container and the agent home when
+  the attempt is collected or cancelled, and when `docker run` fails after
+  creating the container. `idea daemon stop` cancels running attempts and
+  waits up to 30 seconds for their containers to be removed. A daemon that is
+  killed or crashes mid-run leaves both behind; the next daemon start removes
+  them before it starts any run, finding them by the agent home and by
+  container label. If Docker cannot be reached at that moment, the record is
+  kept and the removal is retried at the following start. The `idea executors setup --smoke` container
+  is removed on Ctrl-C, but not if the CLI itself is killed.
+- **A loopback provider gets a route to the host.** When the configured base URL
+  is a loopback host (`localhost`, `127.0.0.0/8` or `[::1]`), which is Ollama by
+  default, the container gets
+  `--add-host host.docker.internal:host-gateway` so it can reach that service.
+  On Linux this is a route the agent did not otherwise have; on Docker Desktop
+  the name already exists. No other provider gets it.
 
 <!-- /claim -->
 
@@ -99,6 +125,11 @@ page had was an unscoped generalisation, not a typo.
   `/work`, write to it, use the forwarded provider key, and send both anywhere on
   the network. Filesystem isolation bounds *what it can reach*; nothing bounds
   *what it can send*.
+- **With a loopback provider, "anywhere" includes the host.** An agent pointed at
+  Ollama can open connections to other services on the host through
+  `host.docker.internal`, not only to Ollama. The daemon's own API requires a
+  token the container never sees, but anything on the host that trusts local
+  connections without authentication is reachable.
 - **The raw blob store is deliberately redaction-free.** For *that* store — the
   one holding file content and uploaded bytes, which must round-trip
   byte-for-byte — redaction happens at the read/display surface rather than at

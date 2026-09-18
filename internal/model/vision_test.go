@@ -83,3 +83,36 @@ func TestGeminiVisionRendersInlineData(t *testing.T) {
 		t.Fatalf("Gemini request missing inline_data part: %s", s)
 	}
 }
+
+// A local model costs nothing per token. At the default rate every Ollama call
+// spent max_cost_usd budget, so a long local run stopped on a ceiling it had
+// not reached. Local is decided by the endpoint, not only the name "ollama":
+// a local server registered under another name is just as free.
+func TestLocalModelCallsCostNothing(t *testing.T) {
+	var body []byte
+	resp := `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1000000,"completion_tokens":1000000},"model":"qwen3.8"}`
+	for _, name := range []string{"ollama", "my-local-server"} {
+		ts := captureBody(t, resp, &body) // listens on 127.0.0.1
+		got, err := NewOpenAICompat(name, "k", ts.URL).Complete(t.Context(), Request{
+			Model:    "qwen3.8",
+			Messages: []Message{{Role: "user", Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Usage.CostUSD != 0 {
+			t.Errorf("%s on loopback cost %f", name, got.Usage.CostUSD)
+		}
+	}
+	for url, want := range map[string]bool{
+		"http://localhost:11434/v1":    true,
+		"http://127.0.0.1:8080/v1":     true,
+		"http://[::1]:11434/v1":        true,
+		"https://api.openai.com/v1":    false,
+		"https://openrouter.ai/api/v1": false,
+	} {
+		if got := isLocalEndpoint(url); got != want {
+			t.Errorf("isLocalEndpoint(%s) = %v, want %v", url, got, want)
+		}
+	}
+}

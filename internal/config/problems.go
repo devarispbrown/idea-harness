@@ -320,7 +320,7 @@ func ValidateBaseURL(raw string) error {
 	case "https":
 		return nil
 	case "http":
-		if isLoopbackHost(u.Hostname()) {
+		if IsLoopbackHost(u.Hostname()) {
 			return nil
 		}
 		return fmt.Errorf("base_url %q uses http; http is allowed only for loopback (localhost, 127.0.0.1, ::1)", raw)
@@ -334,10 +334,12 @@ func isLoopbackURL(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return isLoopbackHost(u.Hostname())
+	return IsLoopbackHost(u.Hostname())
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host names this machine: "localhost" in any
+// case, or any loopback IP (all of 127.0.0.0/8, and ::1).
+func IsLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

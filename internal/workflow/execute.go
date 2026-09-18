@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -21,6 +22,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/schema"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/textdiff"
 )
 
 // SetWorkRoot sets the directory that Execute derives per-initiative isolated
@@ -32,42 +34,30 @@ func (e *Engine) SetWorkRoot(dir string) { e.workRoot = dir }
 // and RevertChangeSet restores. The daemon points this at the project root.
 func (e *Engine) SetWorkspaceRoot(dir string) { e.workspaceRoot = dir }
 
-// implementerKeyEnv resolves the provider API-key env var for the coding agent's
-// model, wired through config (presets + custom providers + default-model
-// fallback) rather than a model-prefix switch, so bare/custom model specs get
-// their key (review: v1 security boundary). Empty for keyless providers.
-func (e *Engine) implementerKeyEnv() string {
-	model := e.implementerModel()
-	provider := model
-	if i := strings.Index(model, "/"); i > 0 {
-		provider = model[:i]
+// implementerProvider resolves the coding agent's provider -- its name, key
+// variable and base URL -- through executor.ResolveAgentProvider, which reads
+// the project's providers: entries before the presets and fails closed on a
+// provider it cannot resolve.
+//
+// Wired through config rather than a model-prefix switch, so bare and custom
+// model specs get their key (review: v1 security boundary).
+func (e *Engine) implementerProvider() (executor.AgentProvider, error) {
+	return ImplementerProvider(e.cfg, e.registry)
+}
+
+// SetDotEnv supplies the project's .env, which the daemon's model registry
+// already falls back to for provider keys. The coding agent reads its key the
+// same way; with only the process environment it launched keyless for anyone
+// whose key lived in .env.
+func (e *Engine) SetDotEnv(dotEnv map[string]string) { e.dotEnv = dotEnv }
+
+// lookupKey reads a provider key the way the model registry does: the process
+// environment first, then the project's .env.
+func (e *Engine) lookupKey(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
 	}
-	if p := config.PresetFor(provider); p != nil {
-		return p.DefaultKeyEnv
-	}
-	if pc, ok := e.cfg.Providers[provider]; ok {
-		_, _, keyEnv := config.ResolveProvider(provider, pc)
-		return keyEnv
-	}
-	// Bare provider: fall back to the provider of the configured default model,
-	// which the operator chose explicitly.
-	if dm := e.cfg.DefaultModel; dm != "" {
-		if i := strings.Index(dm, "/"); i > 0 {
-			if p := config.PresetFor(dm[:i]); p != nil {
-				return p.DefaultKeyEnv
-			}
-		}
-	}
-	// Unknown provider: fail closed.
-	//
-	// This used to scan config.Presets and return the first key that happened to
-	// be set in the environment. A typo in executor.model therefore handed some
-	// other provider's real API key to the coding agent -- which runs in a
-	// container with deliberate network egress (internal/executor/agent.go), so
-	// the key leaves the machine. An unresolvable provider now yields no key and
-	// the run fails with a message naming it, rather than silently spending a
-	// credential the operator did not choose.
-	return ""
+	return e.dotEnv[name]
 }
 
 // selectExecutor returns the executor selected by harness.executor.kind. The
@@ -79,18 +69,33 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image), nil
 	case config.ExecutorOMP, config.ExecutorHermes:
 		model := e.implementerModel()
-		keyEnv := e.implementerKeyEnv()
-		// A coding agent runs with network egress, so it must not be launched
-		// with a credential nobody chose. An unresolvable provider stops the run
-		// here, naming what could not be resolved.
-		if keyEnv == "" {
-			return nil, fmt.Errorf("executor: cannot resolve a provider for model %q; "+
-				"set harness.executor.model (or default_model) to a configured provider, or add the provider under providers: in .idea-harness/harness.yaml", model)
+		provider, err := e.implementerProvider()
+		if err != nil {
+			return nil, err
 		}
+		// OMP has no published image to default to. Without one, docker run
+		// failed with "invalid reference format" -- after the planner's model
+		// call had already been paid for.
+		if e.cfg.Executor.Image == "" && executor.DefaultAgentImage(string(e.cfg.Executor.Kind)) == "" {
+			return nil, fmt.Errorf("executor: %s has no default image; set one with idea executors setup --kind %s --image <image> --model %s --yes",
+				e.cfg.Executor.Kind, e.cfg.Executor.Kind, model)
+		}
+		// A key variable that resolves to nothing is refused here, not left to
+		// the agent. Hermes exits 0 after a 401, so a keyless start of a keyed
+		// provider produced an empty change set with no reason given. A
+		// provider with no key variable (Ollama) needs none and is not refused.
+		if provider.KeyEnv != "" && e.lookupKey(provider.KeyEnv) == "" {
+			return nil, fmt.Errorf("executor: provider %q needs %s, which is set neither in the daemon's environment nor in the project's .env; "+
+				"export it and restart the daemon (`idea daemon stop`), or add it to .env", provider.Name, provider.KeyEnv)
+		}
+		var ex *executor.SandboxedAgentExecutor
 		if e.cfg.Executor.Kind == config.ExecutorOMP {
-			return executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
+			ex = executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
+		} else {
+			ex = executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
 		}
-		return executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, keyEnv), nil
+		ex.SetKeyLookup(e.lookupKey)
+		return ex, nil
 	default:
 		return executor.NewInternalExecutor(e.contentBlobs()), nil
 	}
@@ -203,6 +208,27 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
+		return domain.ChangeSet{}, err
+	}
+
+	// Select the executor before anything is spent or changed. It is where a
+	// missing provider key or an unresolvable provider is refused, and it ran
+	// after the planner's model call and after superseding the previous change
+	// set -- so a refusal cost money and discarded the change set being redone.
+	exec, err := e.selectExecutor()
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	// The capability gate is the deterministic trust-tier policy, not the
+	// executor's self-declared capability list: the engine authorizes the
+	// selected executor's engine-assigned trust tier (§49).
+	// The engine assigns the trust tier from the selected executor's kind, never
+	// from the executor's self-declared Capabilities().Trust (system-deny).
+	trust := executor.TrustTierFor(exec.Name())
+	if !executor.TrustAllows(trust, "write_file") {
+		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	}
 
 	// Supersede any prior changes_requested change set for this task so a
 	// re-execute cleanly replaces it (full-platform review: changes_requested
@@ -239,20 +265,6 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
 	}
 
-	exec, err := e.selectExecutor()
-	if err != nil {
-		return domain.ChangeSet{}, err
-	}
-	// The capability gate is the deterministic trust-tier policy, not the
-	// executor's self-declared capability list: the engine authorizes the
-	// selected executor's engine-assigned trust tier (§49).
-	// The engine assigns the trust tier from the selected executor's kind, never
-	// from the executor's self-declared Capabilities().Trust (system-deny).
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
-	}
-
 	// Record a durable run for the implementer step (review B7). The run is
 	// marked failed on any error path and succeeded once the change set is
 	// produced, so the execution is traceable end to end.
@@ -271,6 +283,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// Snapshot the isolated work root BEFORE the executor runs, so the
 	// orchestrator computes the real diff itself — never trusting the executor's
 	// self-declaration (review B3).
+	// The agent works on a fresh copy of the workspace (see seed.go).
+	seedSkipped, err := seedWorkRoot(ctx, e.workspaceRoot, req.WorkRoot, e.detectCredential)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
 	before, err := fsdiff.Snapshot(req.WorkRoot)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot before: %w", err)
@@ -290,8 +307,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}()
 	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
-		return domain.ChangeSet{}, err
+		return domain.ChangeSet{}, e.withAgentOutput(ctx, exec, attempt.ID, err)
 	}
+	// Read before Collect, which removes the container and its output with it.
+	// Hermes exits 0 even when every model call failed, so a clean exit that
+	// changed nothing is the common failure, and this is the only record of why.
+	agentOutput := e.agentOutput(ctx, exec, attempt.ID)
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
@@ -326,12 +347,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
+	// Computed here (config-derived, known before the agent ever ran) so it can
+	// be stored on the change set at creation, not just on the run manifest --
+	// CreatedByRunID above is the EXECUTOR's attempt id, not the domain Run id
+	// CreateRunManifest keys its RunID on, so the two cannot be joined to
+	// recover it later.
+	modelSpec := e.implementerModel()
 	cs := &domain.ChangeSet{
 		InitiativeID:   initiativeID,
 		TaskID:         task.ID,
 		BaseSnapshotID: before.Digest(),
 		PatchDigest:    patchDigest,
 		CreatedByRunID: attempt.ID,
+		Model:          displayModel(modelSpec),
+		Executor:       exec.Name(),
 	}
 	// CreateChangeSet forces status=draft and assigns CHG-N.
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
@@ -369,6 +398,53 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			if err := e.db.CreateFinding(ctx, &f); err != nil {
 				return domain.ChangeSet{}, err
 			}
+		}
+	}
+
+	// A coding agent that changed nothing is reported, not failed. Hermes exits
+	// 0 after a failed model call, so this is the common failure, and its own
+	// output is the only record of why -- so it goes on the change set, where
+	// the review shows it. A hard failure here was tried and stranded
+	// initiatives: the work root carries every earlier attempt, so an agent
+	// that correctly finds a task already done has nothing to change, and
+	// failing it made the task impossible to get past.
+	if _, isAgent := exec.(executor.OutputTailer); isAgent && len(files) == 0 {
+		evidence := agentOutput
+		if evidence == "" {
+			evidence = "(the agent printed nothing)"
+		}
+		f := domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       cs.ID,
+			Severity:       domain.SeverityMedium,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "agent_output",
+			Finding:        "The coding agent finished without changing any file.",
+			Evidence:       evidence,
+			Impact:         "This change set is empty. If the task was not already done, the agent's model call most likely failed.",
+			Recommendation: "Read the agent output. A 401 means the provider key is wrong; a 404 means the model id is retired. Fix it and retry, or approve the empty change set if the task was already done.",
+		}
+		if err := e.db.CreateFinding(ctx, &f); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	}
+
+	if len(seedSkipped) > 0 {
+		f := domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       cs.ID,
+			Severity:       domain.SeverityObservation,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "workspace_copy",
+			Finding:        fmt.Sprintf("%d project file(s) were not given to the coding agent.", len(seedSkipped)),
+			Evidence:       seedSkipSummary(seedSkipped),
+			Impact:         "The agent could not read or build against these files.",
+			Recommendation: "If the task needed one of them, move the secret it holds into .env (which is never copied) and retry.",
+		}
+		if err := e.db.CreateFinding(ctx, &f); err != nil {
+			return domain.ChangeSet{}, err
 		}
 	}
 
@@ -426,8 +502,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
-	// Record the implementer run's provenance + success (review B7).
-	modelSpec := e.implementerModel()
+	// Record the implementer run's provenance + success (review B7). modelSpec
+	// was already resolved above, when the change set itself was created.
 	if err := e.db.CreateRunManifest(ctx, &domain.RunManifest{
 		RunID:          agentRunID,
 		RequestedModel: modelSpec,
@@ -585,6 +661,91 @@ type StructuredFile struct {
 	ChangeType string `json:"change_type"`
 	Size       int    `json:"size"`
 	Content    string `json:"content"`
+	// Patch is a unified diff of the file against its base (B6): an added file
+	// is all '+', a deleted file is all '-', a modified file is base vs new.
+	// Omitted when there is nothing to diff (both sides empty). This is what
+	// lets the diff view render a change instead of a full-file dump for a
+	// whole-file rewrite of an existing file.
+	Patch string `json:"patch,omitempty"`
+	// PatchNote says why Patch is empty when there was a change to show: the
+	// file is binary, too large to diff, its content was never kept, or its
+	// base can no longer be recovered. The UI shows it and falls back to
+	// Content.
+	PatchNote string `json:"patch_note,omitempty"`
+
+	// contentKept is whether the post-image was read from the store; an empty
+	// file that was kept is not the same as content that never was.
+	contentKept bool
+}
+
+// baseContent returns fc's REDACTED pre-change content. ok is false when the
+// base cannot be recovered exactly.
+//
+// The base is read from the content blob store first -- fsdiff.Prepare
+// persists the workspace's pre-image there keyed by digest, at apply time, for
+// revert -- and falls back to the live workspace file otherwise, which is what
+// makes a diff available at review time. The fallback is used only if the file
+// still hashes to BaseDigest: a file the user edited after the agent ran would
+// otherwise be diffed as the base, and the user's own edits would appear,
+// reversed, as the agent's.
+func (e *Engine) baseContent(fc domain.FileChange) (string, bool) {
+	if fc.BaseDigest == "" {
+		return "", true
+	}
+	var data []byte
+	if e.contentBlobs() != nil {
+		if d, err := e.contentBlobs().Get(fc.BaseDigest); err == nil {
+			data = d
+		}
+	}
+	if data == nil && e.workspaceRoot != "" {
+		if d, err := os.ReadFile(filepath.Join(e.workspaceRoot, filepath.FromSlash(fc.Path))); err == nil && blob.Digest(d) == fc.BaseDigest {
+			data = d
+		}
+	}
+	if data == nil {
+		return "", false
+	}
+	raw := string(data)
+	if e.redactor != nil {
+		return e.redactor.RedactString(raw), true
+	}
+	return security.Redact(raw), true
+}
+
+// patchFor renders fc's diff against its base as hunks, or explains why it
+// cannot. sf carries fc's already-redacted post-image content and its size
+// (Size is 0 when the content was never persisted, e.g. after the secret
+// sweep).
+func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note string) {
+	newContent := sf.Content
+	if fc.IsDelete() {
+		newContent = ""
+	} else if !sf.contentKept {
+		return "", "The new content of this file was not kept, so there is no diff to show."
+	}
+	old, ok := e.baseContent(fc)
+	if !ok {
+		return "", "The file has changed in the workspace since the agent ran, so its original version is not available to diff; showing the new content."
+	}
+	if strings.ContainsRune(old, 0) || strings.ContainsRune(newContent, 0) {
+		return "", "Binary file; no text diff."
+	}
+	if old == "" && newContent == "" {
+		return "", ""
+	}
+	p, ok := textdiff.Hunks(old, newContent)
+	if ok && p == "" && old != newContent {
+		// splitLines ignores line endings and the final newline, so a change
+		// to only those has no hunk -- and without a note the UI showed the
+		// whole file with nothing to say why.
+		return "", "Only line endings or the final newline changed."
+	}
+	if !ok {
+		return "", fmt.Sprintf("Too large to diff (%d lines); showing the new content.",
+			strings.Count(newContent, "\n")+1)
+	}
+	return p, ""
 }
 
 // StructuredDiff renders a change set as a per-file list (path + kind + redacted
@@ -614,6 +775,7 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 		sf := StructuredFile{Path: fc.Path, ChangeType: ct}
 		if !fc.IsDelete() && e.contentBlobs() != nil {
 			if content, err := e.contentBlobs().Get(fc.Digest); err == nil {
+				sf.contentKept = true
 				sf.Size = len(content)
 				raw := string(content)
 				if e.redactor != nil {
@@ -624,6 +786,7 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 				sf.Content = raw
 			}
 		}
+		sf.Patch, sf.PatchNote = e.patchFor(fc, sf)
 		out = append(out, sf)
 	}
 	return out
@@ -704,6 +867,9 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 		case "succeeded":
 			return nil
 		case "failed", "cancelled":
+			if st.Action != "" {
+				return fmt.Errorf("workflow: execute: attempt %s (%s)", st.Status, st.Action)
+			}
 			return fmt.Errorf("workflow: execute: attempt %s", st.Status)
 		}
 		time.Sleep(sleep)
@@ -711,6 +877,58 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 			sleep *= 2
 		}
 	}
+}
+
+// refuseWhileAnotherChangeSetIsOpen stops a task from running while another
+// task's change set in the same initiative is still open.
+//
+// The agent works on a copy of the workspace. That is only the right base if
+// the workspace already holds every earlier task's work: run task 2 while task
+// 1's change set is still awaiting review and task 2's agent never sees task
+// 1's changes, and the two collide at apply. The task's own earlier attempt is
+// not in the way -- it is superseded as before.
+func (e *Engine) refuseWhileAnotherChangeSetIsOpen(ctx context.Context, initiativeID, taskID string) error {
+	sets, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	for _, cs := range sets {
+		if cs.TaskID == taskID {
+			continue
+		}
+		switch cs.Status {
+		case domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, domain.ChangeSetApproved,
+			domain.ChangeSetApplying, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
+			return fmt.Errorf("workflow: execute: %s is still %s; apply or reject it before running the next task, "+
+				"so the next task starts from its changes", cs.HumanID, strings.ReplaceAll(string(cs.Status), "_", " "))
+		}
+	}
+	return nil
+}
+
+// agentOutput returns the end of an external agent's own output, redacted, or
+// "" for an executor that has none.
+func (e *Engine) agentOutput(ctx context.Context, exec executor.Executor, attemptID string) string {
+	t, ok := exec.(executor.OutputTailer)
+	if !ok {
+		return ""
+	}
+	return e.redact(t.OutputTail(ctx, attemptID))
+}
+
+// withAgentOutput appends the agent's own output to a failed attempt's error.
+// "attempt failed" was all `idea execute` reported; `--smoke` already showed the
+// output, and a real run is where it matters more.
+func (e *Engine) withAgentOutput(ctx context.Context, exec executor.Executor, attemptID string, err error) error {
+	// A cancelled run's context cannot read anything, and a timeout says why
+	// already; both were cancelled by waitForCompletion, so the output is gone.
+	if ctx.Err() != nil {
+		return err
+	}
+	if out := e.agentOutput(ctx, exec, attemptID); out != "" {
+		return fmt.Errorf("%w; agent output:\n%s", err, out)
+	}
+	return err
 }
 
 // runDeterministicChecks runs the real B5 deterministic checks against the
@@ -987,6 +1205,28 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
 		return err
+	}
+
+	// Refuse to overwrite anything the change was not made against: a file
+	// edited in the workspace after the agent ran, or one the change "adds"
+	// that now exists. Nothing is written; the change set is conflicted and
+	// the reason recorded, because retrying the same patch fails the same way
+	// -- the way forward is to reject it and run the task again.
+	if stale := fsdiff.StaleBase(workspaceRoot, patch.Files); len(stale) > 0 {
+		_ = e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       changeSetID,
+			Severity:       domain.SeverityHigh,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "stale_base",
+			Finding:        "The workspace changed since this change set was made, so applying it would overwrite work.",
+			Evidence:       strings.Join(stale, "\n"),
+			Impact:         "Nothing was written.",
+			Recommendation: "Reject this change set and run the task again; retrying the same change set conflicts again.",
+		})
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+		return fmt.Errorf("workflow: apply refused: the workspace changed since %s was made: %s", cs.HumanID, strings.Join(stale, "; "))
 	}
 
 	// Record a "prepared" journal row BEFORE mutating so an interrupted apply is

@@ -17,8 +17,9 @@ func TestUnknownModelWarns(t *testing.T) {
 		warn bool
 		why  string
 	}{
-		{"anthropic/claude-3-7-sonnet", true, "the real defect: the catalog spells it -latest"},
-		{"anthropic/claude-3-7-sonnet-latest", false, "the correct id"},
+		{"anthropic/claude-3-7-sonnet", true, "the real defect: no such id, dated or undated"},
+		{"anthropic/claude-3-7-sonnet-latest", true, "retired: Anthropic answered 404 on 2026-09-17"},
+		{"anthropic/claude-sonnet-5", false, "the correct id"},
 		{"anthropic/claude-sonnet-4-5", false, "another correct id"},
 		{"openrouter/anthropic/claude-3.7-sonnet", false, "openrouter ids are arbitrary upstream strings"},
 		{"ollama/whatever-i-pulled", false, "ollama serves whatever is pulled locally"},
@@ -34,7 +35,7 @@ func TestUnknownModelWarns(t *testing.T) {
 				t.Errorf("%s: severity %v, want warn — an error would refuse models newer than the catalog",
 					tc.spec, got[0].Severity)
 			}
-			if !strings.Contains(got[0].Message, "claude-3-7-sonnet-latest") {
+			if !strings.Contains(got[0].Message, "claude-sonnet-5") {
 				t.Errorf("%s: the warning should name the valid ids, got: %s", tc.spec, got[0].Message)
 			}
 		}
