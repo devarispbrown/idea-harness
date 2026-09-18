@@ -34,30 +34,59 @@ export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// PartialWork is what a stopped run left behind (C3, guidance's
+// `partial_work`): the next execute of the SAME task carries these files in
+// automatically, so the Build page's Run button and RunningCard's post-Stop
+// state both read it to say so rather than silently resuming.
+export interface PartialWork {
+  task_id: string;
+  task_human_id?: string;
+  files: number;
+  // Set instead of a positive `files` count when the stopped run's files
+  // were not kept (e.g. they looked like they held a secret).
+  note?: string;
+}
+
 export interface RunButtonState {
   // false when there's nothing to run, or something is already running --
   // the button should not render at all, not render disabled.
   visible: boolean;
   label: string;
   disabled: boolean;
+  // True when this button will resume a stopped run rather than start a
+  // fresh one -- BuildPage uses it to show "Start over" alongside it.
+  startOver: boolean;
 }
 
 // runButtonState decides the Build page's primary "Run next task" action.
 // It's hidden (not just disabled) once something is running, because a
 // disabled "Run TASK-2" button next to a running card reads as a second,
 // separate run available to start.
+//
+// C3: when a stopped run left files for exactly this next task, the button
+// reads "Continue TASK-n (N files from the stopped run)" instead of "Run
+// TASK-n: <title>" -- the plan's own words for it -- and `startOver` tells
+// the caller to render "Start over" beside it. `partialWork` for a
+// DIFFERENT task is not this task's to resume (the daemon discards it on a
+// task change anyway), so it's ignored rather than trusted blindly.
 export function runButtonState(
   nextTask: NextTask | null | undefined,
   runBlockedReason: string | undefined,
   isRunning: boolean,
+  partialWork?: PartialWork | null,
 ): RunButtonState {
   if (isRunning || !nextTask) {
-    return { visible: false, label: "", disabled: false };
+    return { visible: false, label: "", disabled: false, startOver: false };
   }
+  const resuming = !!partialWork && partialWork.task_id === nextTask.id && partialWork.files > 0;
+  const label = resuming
+    ? `Continue ${nextTask.human_id} (${partialWork!.files} file${partialWork!.files === 1 ? "" : "s"} from the stopped run)`
+    : `Run ${nextTask.human_id}: ${nextTask.title}`;
   return {
     visible: true,
-    label: `Run ${nextTask.human_id}: ${nextTask.title}`,
+    label,
     disabled: !!runBlockedReason,
+    startOver: resuming,
   };
 }
 
@@ -213,6 +242,9 @@ const FINDING_CATEGORY_LABEL: Record<string, string> = {
   workspace_copy: "workspace copy",
   agent_output: "agent output",
   stale_base: "stale base",
+  // C3: the finding a resumed run adds, listing what it carried in from the
+  // run that was stopped before it produced a change set.
+  carried_over: "carried over",
 };
 
 // findingCategoryLabel (H6) is the display label for a change-set finding's
@@ -315,4 +347,22 @@ export function sortFindingsForCard<T extends { category: string; severity: stri
     const sb = b.category === "stale_base" ? -1 : (SEVERITY_RANK[b.severity] ?? 5);
     return sa - sb;
   });
+}
+
+// stoppedMessage is RunningCard's post-Stop line (C3). It reads straight off
+// guidance's `partial_work` rather than guessing from the stopped operation
+// alone -- the daemon is the one that knows whether the credential sweep
+// actually kept anything. Three cases: files were kept (say how many, and
+// that running again continues from them), nothing was kept but the daemon
+// says why (the credential-sweep note), or there's nothing to report at all
+// (no partial_work -- the run stopped before the agent wrote anything).
+export function stoppedMessage(partial: PartialWork | null | undefined): string {
+  if (!partial) return "Stopped.";
+  if (partial.files > 0) {
+    return `Stopped. The agent had written ${partial.files} file${partial.files === 1 ? "" : "s"}; running the task again continues from them.`;
+  }
+  if (partial.note) {
+    return `Stopped. ${partial.note[0].toUpperCase()}${partial.note.slice(1)}.`;
+  }
+  return "Stopped.";
 }
