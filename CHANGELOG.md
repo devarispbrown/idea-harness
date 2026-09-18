@@ -9,6 +9,27 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Run the coding agent's smoke test from Settings.** The daemon runs it with its
+  own configuration and keys, so it tests what a real run will use. `idea
+  executors setup --smoke` ran it in the CLI's environment, which is not always
+  the daemon's. The last result stays on the page.
+  `POST /api/v1/projects/{projectId}/executors/smoke`; `status.last_smoke` on
+  `GET …/executors`.
+- **Live agent output on the running card**: the last 100 lines, redacted,
+  while the agent runs. `GET …/initiatives/{id}/agent-output`.
+- **`DELETE …/initiatives/{id}/partial-work`** ("Start over"), `partial_work` on
+  `GET …/guidance`, and the `carried_over` finding category.
+
+### Changed
+
+- **Running a task again after Stop continues from the files the agent had
+  written**, instead of starting from nothing. It is the same after a failure,
+  a timeout or a daemon stop. Kept files are carried only where the workspace
+  has not changed since, and the change set lists them. The Run button says
+  so. "Start over" gives the old behaviour.
+
 ## [0.5.0] - 2026-09-17
 
 ### Changed — BREAKING
