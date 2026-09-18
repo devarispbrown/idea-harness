@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appliedOutcomeLabel,
   approveErrorMessage,
+  sortFindingsForCard,
   buildFailure,
   buildHeaderMeta,
   conflictCause,
@@ -293,20 +294,33 @@ describe("noDiffMessage", () => {
   });
 });
 
+// Fixtures are the engine's exact format strings (internal/workflow/execute.go,
+// reviewChangeSet): the first version of this was tested against a shape the
+// engine never produced, and passed while the page showed the raw text.
 describe("approveErrorMessage", () => {
-  it("rewrites the workflow engine's raw approval-blocked refusal", () => {
-    expect(
-      approveErrorMessage("workflow: approval blocked: open high finding: SQL injection in query builder"),
-    ).toBe('Can\'t approve: an open HIGH finding needs to be resolved first — "SQL injection in query builder"');
+  it("rewrites the engine's refusal for a reviewer finding", () => {
+    const raw =
+      "workflow: approval blocked: system deny review_open_blocking (open high finding); " +
+      "`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` accepts the change set findings and all";
+    const msg = approveErrorMessage(raw);
+    expect(msg).toContain("Can't approve");
+    expect(msg).toContain("HIGH");
+    expect(msg).not.toContain("workflow:");
+    expect(msg).not.toContain("idea review");
   });
 
-  it("still produces a message with no finding text", () => {
-    expect(approveErrorMessage("workflow: approval blocked: open critical finding:")).toBe(
-      "Can't approve: an open CRITICAL finding needs to be resolved first.",
-    );
+  it("says a system deny cannot be accepted", () => {
+    const raw =
+      "workflow: approval blocked: system deny review_open_blocking (open critical finding, secret_detected); " +
+      "a system deny is not something a human can accept — `idea reviews` shows it";
+    const msg = approveErrorMessage(raw);
+    expect(msg).toContain("CRITICAL");
+    expect(msg).toContain("secret_detected");
+    expect(msg).toContain("cannot be accepted");
   });
 
-  it("passes through any other error unchanged", () => {
+  it("drops the internal prefix from any other error", () => {
+    expect(approveErrorMessage("workflow: change set is not in review")).toBe("change set is not in review");
     expect(approveErrorMessage("network timeout")).toBe("network timeout");
   });
 });
@@ -369,5 +383,22 @@ describe("buildHeaderMeta", () => {
   it("says nothing about placeholder code for a real executor", () => {
     expect(buildHeaderMeta("container")).toBe("container executor");
     expect(buildHeaderMeta("hermes")).toBe("hermes executor");
+  });
+});
+
+describe("sortFindingsForCard", () => {
+  it("leads with why the change set conflicted, then by severity", () => {
+    const out = sortFindingsForCard([
+      { category: "review", severity: "observation" },
+      { category: "review", severity: "high" },
+      { category: "stale_base", severity: "high" },
+      { category: "review", severity: "critical" },
+    ]);
+    expect(out.map((f) => `${f.category}/${f.severity}`)).toEqual([
+      "stale_base/high",
+      "review/critical",
+      "review/high",
+      "review/observation",
+    ]);
   });
 });

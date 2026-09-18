@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasBuiltSomething, stripSourceTag, verifiedRequirementCount } from "./verify";
+import { hasBuiltSomething, stripSourceTag, stripSourceTagsInText, verifiedRequirementCount } from "./verify";
 
 describe("verifiedRequirementCount", () => {
   it("counts only verified, non-removed requirements", () => {
@@ -63,5 +63,12 @@ describe("stripSourceTag", () => {
 
   it("leaves an unterminated leading bracket alone rather than eating the whole string", () => {
     expect(stripSourceTag("[unterminated text")).toBe("[unterminated text");
+  });
+});
+
+describe("stripSourceTagsInText", () => {
+  it("removes source attributions anywhere in a document, and nothing else", () => {
+    const doc = "- [Source: human_approved task] Users can sign in\n- Keep [brackets] like this\n";
+    expect(stripSourceTagsInText(doc)).toBe("- Users can sign in\n- Keep [brackets] like this\n");
   });
 });

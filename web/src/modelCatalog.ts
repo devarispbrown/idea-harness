@@ -68,6 +68,15 @@ const NON_CHAT_MARKERS = [
   "image",
   "transcribe",
   "live",
+  // OpenAI's live listing also carries audio, speech-to-text, realtime,
+  // research, moderation and image-generation ids.
+  "audio",
+  "whisper",
+  "realtime",
+  "deep-research",
+  "moderation",
+  "dall-e",
+  "search",
 ];
 
 export function isChatModel(id: string): boolean {

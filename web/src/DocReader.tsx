@@ -1,3 +1,4 @@
+import { stripSourceTagsInText } from "./verify";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { get, post } from "./api";
 import { navigate } from "./router";
@@ -129,7 +130,7 @@ export default function DocReader({
         {kind && <span className="code">{kind}</span>}
       </div>
       <article className="doc-reader-body">
-        {notFound ? "Document not found." : body ? renderMarkdown(body) : "No content."}
+        {notFound ? "Document not found." : body ? renderMarkdown(stripSourceTagsInText(body)) : "No content."}
       </article>
 
       <section className="doc-comments">

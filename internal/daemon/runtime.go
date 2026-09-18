@@ -817,6 +817,9 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 			"execute requires an approved plan (initiative is %s); `idea next` names the step this initiative is actually ready for",
 			ini.Status)
 	}
+	if reason := workflow.PlanNotReadyForExecution(ini); reason != "" {
+		return "", preconditionf("%s", reason)
+	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
 	// four of these entry points asked "is it running?" and never set it, so

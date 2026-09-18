@@ -24,10 +24,24 @@ export function showsRevisePrd(reason: string | undefined): boolean {
 // heading. Once the PRD is already approved, unresolved items (an unanswered
 // question, say) are optional cleanup, not a blocker — restating "this will
 // revise the PRD" there contradicts the APPROVED pill shown next to it.
-export function openItemsNote(status: string, nextVersion: number): string {
-  return status === "approved"
-    ? "Optional: unanswered items use the recommendation"
-    : `then the PRD revises to v${nextVersion} and Design unlocks`;
+//
+// Only a PRD actually waiting on review revises. Checking status === "approved"
+// alone kept promising a PRD revision on every later status -- plan approved,
+// complete -- while the CLI said nothing was waiting.
+export function openItemsNote(status: string, nextVersion: number, judgmentReason?: string): string {
+  return status === "needs_human_judgment" && judgmentReason === "prd_review"
+    ? `then the PRD revises to v${nextVersion} and Design unlocks`
+    : "Optional: unanswered items use the recommendation";
+}
+
+// planTaskActions says which task controls Plan offers. Once the plan is
+// approved it is what Build runs, so only cancelling a task remains; once the
+// initiative is complete, nothing. The controls used to stay and fail with an
+// unhandled 409.
+export function planTaskActions(status: string): { reorder: boolean; edit: boolean; cancel: boolean; add: boolean } {
+  if (status === "complete") return { reorder: false, edit: false, cancel: false, add: false };
+  if (status === "plan_approved") return { reorder: false, edit: false, cancel: true, add: false };
+  return { reorder: true, edit: true, cancel: true, add: true };
 }
 
 // PLAN_LOCKED_STATUSES are every status reachable only once a plan has been

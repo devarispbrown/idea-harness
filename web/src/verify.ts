@@ -45,3 +45,12 @@ export function stripSourceTag(text: string): string {
   }
   return s;
 }
+
+// stripSourceTagsInText removes "[Source: ...]" attributions wherever they
+// appear in a document, for display. stripSourceTag handles a single leading
+// tag on a requirement title; the PRD reader shows whole documents, where the
+// tags sit at the start of list items. Only tags starting "[Source:" are
+// touched, so ordinary bracketed text survives.
+export function stripSourceTagsInText(text: string): string {
+  return text.replace(/\[Source:[^\]\n]*\]\s*/gi, "");
+}
