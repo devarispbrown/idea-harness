@@ -292,10 +292,17 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot before: %w", err)
 	}
+	// Continue a stopped run of this task, if one left files (runstate.go).
+	// After the before snapshot, so what is carried is part of the diff.
+	carried := e.resumePartial(initiativeID, task.ID, req.WorkRoot)
 
 	attempt, err := exec.Start(ctx, req)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
+	}
+	if t, ok := exec.(executor.OutputTailer); ok {
+		e.setLive(initiativeID, t, attempt.ID)
+		defer e.clearLive(initiativeID)
 	}
 	// Cancel the attempt on any early-exit path so a hung agent never leaks a
 	// running container/subprocess (review B6). Collect already cleans up on the
@@ -307,7 +314,18 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}()
 	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
-		return domain.ChangeSet{}, e.withAgentOutput(ctx, exec, attempt.ID, err)
+		err = e.withAgentOutput(ctx, exec, attempt.ID, err)
+		// Keep what the agent wrote, so Run again continues from it -- but
+		// only once its container is confirmed gone, so nothing is still
+		// writing. waitForCompletion has usually removed it already, and
+		// then Cancel reports the attempt unknown; any other Cancel error
+		// means it may still be running, and nothing is kept.
+		cerr := exec.Cancel(context.WithoutCancel(ctx), attempt.ID)
+		completed = cerr == nil || strings.Contains(cerr.Error(), "unknown attempt")
+		if completed {
+			e.capturePartial(ctx, initiativeID, task.ID, req.WorkRoot, before)
+		}
+		return domain.ChangeSet{}, err
 	}
 	// Read before Collect, which removes the container and its output with it.
 	// Hermes exits 0 even when every model call failed, so a clean exit that
@@ -317,6 +335,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	completed = true
+	e.markLiveDone(initiativeID)
 
 	// Snapshot AFTER and compute the orchestrator-authored diff.
 	after, err := fsdiff.Snapshot(req.WorkRoot)
@@ -430,6 +449,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
+	if f := e.carriedFinding(cs, carried); f != nil {
+		if err := e.db.CreateFinding(ctx, f); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	}
 	if len(seedSkipped) > 0 {
 		f := domain.Finding{
 			InitiativeID:   cs.InitiativeID,
@@ -913,7 +937,7 @@ func (e *Engine) agentOutput(ctx context.Context, exec executor.Executor, attemp
 	if !ok {
 		return ""
 	}
-	return e.redact(t.OutputTail(ctx, attemptID))
+	return e.redact(t.OutputTail(ctx, attemptID, 0))
 }
 
 // withAgentOutput appends the agent's own output to a failed attempt's error.

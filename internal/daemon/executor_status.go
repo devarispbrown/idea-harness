@@ -161,6 +161,9 @@ type executorReadiness struct {
 	// Note is information that does not block a run, such as an image the
 	// first run will download.
 	Note string `json:"note,omitempty"`
+	// LastSmoke is the project's newest smoke test, for the selected
+	// executor only.
+	LastSmoke *smokeResult `json:"last_smoke,omitempty"`
 }
 
 // executorStatus computes executorReadiness for one executor kind. selected
