@@ -5,13 +5,19 @@
 // on screen. All four judgment reasons (prd_review, plan_dependencies,
 // plan_review, verification) share the same `needs_human_judgment` status, so
 // status alone cannot tell a stalled PRD review from a stalled plan review;
-// only the reason can. Undefined/"" is legacy data recorded before
-// judgment_reason existed, and is treated as prd_review — the daemon itself
-// falls back the same way (see PlanPage's `awaitingApproval`). Typed as a
-// plain string, matching how App.tsx carries `initiative.judgment_reason`
-// through to this page, rather than re-declaring the domain's enum here.
+// only the reason can.
+//
+// H3: this used to also treat undefined/"" as prd_review, on the theory that
+// it was legacy data predating judgment_reason. In practice App.tsx was
+// simply never threading `judgment_reason` through to this page at all, so
+// EVERY park -- including a plan-review or plan-dependencies park -- arrived
+// here as undefined and showed "Revise PRD", a wrong and destructive-looking
+// action on a PRD that was not actually what was parked. Now that the reason
+// is wired through, an absent reason fails closed: only an explicit
+// "prd_review" shows the action, so a bug that drops the reason again hides
+// the button instead of mis-showing it.
 export function showsRevisePrd(reason: string | undefined): boolean {
-  return !reason || reason === "prd_review";
+  return reason === "prd_review";
 }
 
 // openItemsNote is the text under Define's "N things need your judgment"
@@ -24,10 +30,16 @@ export function openItemsNote(status: string, nextVersion: number): string {
     : `then the PRD revises to v${nextVersion} and Design unlocks`;
 }
 
+// PLAN_LOCKED_STATUSES are every status reachable only once a plan has been
+// approved. Once approved it is the fixed input Build executes against;
+// editing a task there would silently rewrite what was approved without
+// another review cycle. This used to check only "plan_approved", so a
+// completed initiative -- unambiguously post-approval -- still showed live
+// Edit/Delete controls on a plan that had already been executed.
+const PLAN_LOCKED_STATUSES = new Set(["plan_approved", "complete"]);
+
 // planTaskEditable reports whether a plan task's Edit/Delete controls should
-// render. Once a plan is approved it is the fixed input Build executes
-// against; editing a task there would silently rewrite what was approved
-// without another review cycle.
+// render.
 export function planTaskEditable(status: string): boolean {
-  return status !== "plan_approved";
+  return !PLAN_LOCKED_STATUSES.has(status);
 }

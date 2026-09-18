@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DecisionItem, FindingItem } from "./JudgmentCard";
-import { decisionsForDefine, findingsForDefine, findingsForPlan } from "./judgmentScope";
+import {
+  decisionsForDefine,
+  decisionTypeLabel,
+  findingsForDefine,
+  findingsForPlan,
+  otherOpenFindings,
+} from "./judgmentScope";
 
 function finding(target_type: string, overrides: Partial<FindingItem> = {}): FindingItem {
   return {
@@ -45,10 +51,20 @@ describe("findingsForDefine", () => {
 });
 
 describe("findingsForPlan", () => {
-  it("keeps only execution_plan findings", () => {
-    const all = [finding("prd"), finding("requirement"), finding("execution_plan"), finding("change_set")];
+  it("keeps execution_plan findings, plus the legacy/task target_types the backend contract calls out", () => {
+    const all = [
+      finding("prd"),
+      finding("requirement"),
+      finding("execution_plan"),
+      finding("change_set"),
+      finding("", {}),
+      finding("initiative"),
+      finding("task"),
+    ];
     const kept = findingsForPlan(all);
-    expect(kept.map((f) => f.target_type)).toEqual(["execution_plan"]);
+    expect(kept.map((f) => f.target_type).sort()).toEqual(
+      ["", "execution_plan", "initiative", "task"].sort(),
+    );
   });
 
   it("includes a HIGH plan finding — Plan is where approval happens", () => {
@@ -57,19 +73,71 @@ describe("findingsForPlan", () => {
     expect(kept).toHaveLength(1);
     expect(kept[0].finding).toContain("No execution plan");
   });
+
+  // C2: a plan-stage deterministic check is Plan's regardless of what
+  // target_type its row happens to carry.
+  it("keeps a finding with review_run_id deterministic-plan-check whatever its target_type", () => {
+    const all = [finding("change_set", { review_run_id: "deterministic-plan-check" })];
+    expect(findingsForPlan(all)).toHaveLength(1);
+  });
+
+  it("does not claim an unrelated review_run_id", () => {
+    const all = [finding("change_set", { review_run_id: "some-other-check" })];
+    expect(findingsForPlan(all)).toHaveLength(0);
+  });
+});
+
+// C2: this is the reported incident — a CRITICAL finding whose target_type
+// matched neither Define's nor Plan's allowlist was simply never shown,
+// which silently blocked plan approval with no visible reason. No finding
+// may fall through both functions.
+describe("otherOpenFindings", () => {
+  it("is empty when every finding matches Define or Plan", () => {
+    const all = [finding("prd"), finding("requirement"), finding("execution_plan"), finding("task")];
+    expect(otherOpenFindings(all)).toHaveLength(0);
+  });
+
+  it("catches a target_type neither page recognizes — the reported defect", () => {
+    const all = [finding("change_set", { severity: "critical" })];
+    const other = otherOpenFindings(all);
+    expect(other).toHaveLength(1);
+    expect(other[0].severity).toBe("critical");
+  });
+
+  it("catches an unknown/future target_type", () => {
+    expect(otherOpenFindings([finding("some_new_target")])).toHaveLength(1);
+  });
+
+  it("does not duplicate a finding that Plan already claims via review_run_id", () => {
+    const all = [finding("change_set", { review_run_id: "deterministic-plan-check" })];
+    expect(otherOpenFindings(all)).toHaveLength(0);
+  });
 });
 
 describe("decisionsForDefine", () => {
-  it("keeps product decisions", () => {
-    expect(decisionsForDefine([decision("product")])).toHaveLength(1);
+  // M6 — this is the reported defect: decisionsForDefine used to keep only
+  // "product" decisions, so a design-stage decision appeared on no page at
+  // all (DesignPage does not render decisions). Define now shows every type.
+  it("keeps every decision type, not just product", () => {
+    const all = [decision("product"), decision("architecture"), decision("design"), decision("security"), decision("operations")];
+    expect(decisionsForDefine(all)).toHaveLength(5);
   });
 
-  it("excludes design-stage decisions (architecture/design/security/operations)", () => {
-    const all = [decision("architecture"), decision("design"), decision("security"), decision("operations")];
-    expect(decisionsForDefine(all)).toHaveLength(0);
-  });
-
-  it("treats an undefined type as a legacy PRD decision", () => {
+  it("keeps a legacy decision with no recorded type", () => {
     expect(decisionsForDefine([decision(undefined)])).toHaveLength(1);
+  });
+});
+
+describe("decisionTypeLabel", () => {
+  it("labels each known decision type", () => {
+    expect(decisionTypeLabel("product")).toBe("PRD");
+    expect(decisionTypeLabel("architecture")).toBe("Architecture");
+    expect(decisionTypeLabel("design")).toBe("Design");
+    expect(decisionTypeLabel("security")).toBe("Security");
+    expect(decisionTypeLabel("operations")).toBe("Operations");
+  });
+
+  it("treats an undefined type as the legacy PRD case", () => {
+    expect(decisionTypeLabel(undefined)).toBe("PRD");
   });
 });

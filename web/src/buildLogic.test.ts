@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   appliedOutcomeLabel,
+  approveErrorMessage,
   buildFailure,
   buildHeaderMeta,
   conflictCause,
   diffChangeTypeLabel,
   errMessage,
+  findingCategoryLabel,
+  hasNoFilesChanged,
   isOperationInFlight,
   isWholeFileRewrite,
   latestOperationOfType,
+  noDiffMessage,
+  patchLines,
+  resolveRunningTask,
   runButtonState,
   runningTitle,
   shouldResetRetryBusy,
@@ -150,6 +156,33 @@ describe("runningTitle", () => {
   });
 });
 
+describe("resolveRunningTask", () => {
+  it("prefers the operation's own task fields when it carries them", () => {
+    const op = { task_id: "t2", task_human_id: "TASK-2", task_title: "Add the retry button" };
+    const guidance = { id: "t9", human_id: "TASK-9", title: "A stale next task" };
+    expect(resolveRunningTask(op, guidance)).toEqual({
+      id: "t2",
+      human_id: "TASK-2",
+      title: "Add the retry button",
+    });
+  });
+
+  it("falls back to guidance's next_task when the operation has no task fields", () => {
+    const guidance = { id: "t9", human_id: "TASK-9", title: "A stale next task" };
+    expect(resolveRunningTask({}, guidance)).toEqual(guidance);
+  });
+
+  it("is null when neither the operation nor guidance names a task", () => {
+    expect(resolveRunningTask({}, null)).toBeNull();
+    expect(resolveRunningTask({}, undefined)).toBeNull();
+  });
+
+  it("requires both task_id and task_human_id before trusting the operation", () => {
+    const guidance = { id: "t9", human_id: "TASK-9", title: "fallback" };
+    expect(resolveRunningTask({ task_id: "t2" }, guidance)).toEqual(guidance);
+  });
+});
+
 describe("diffChangeTypeLabel", () => {
   it("maps the three known change types", () => {
     expect(diffChangeTypeLabel("add")).toBe("added");
@@ -162,11 +195,15 @@ describe("diffChangeTypeLabel", () => {
   });
 });
 
+// H1: the backend's patch is a plain unified diff with NO ---/+++ file
+// headers -- just `@@ -oldStart,oldCount +newStart,newCount @@` hunks
+// followed by ' '/'-'/'+' prefixed lines (an added file is one hunk
+// `@@ -0,0 +1,N @@` all '+'; a deleted file is one hunk `@@ -1,N +0,0 @@`
+// all '-'). These fixtures use exactly that shape -- the tests they replaced
+// fed invented git patches with ---/+++ headers the backend never produces.
 describe("isWholeFileRewrite", () => {
   it("flags a modify patch with no preserved context lines", () => {
     const patch = [
-      "--- a/routes.go",
-      "+++ b/routes.go",
       "@@ -1,3 +1,2 @@",
       "-old line one",
       "-old line two",
@@ -179,8 +216,6 @@ describe("isWholeFileRewrite", () => {
 
   it("does not flag an incremental patch that keeps context lines", () => {
     const patch = [
-      "--- a/routes.go",
-      "+++ b/routes.go",
       "@@ -10,3 +10,3 @@",
       " unchanged before",
       "-removed route",
@@ -191,13 +226,100 @@ describe("isWholeFileRewrite", () => {
   });
 
   it("never flags an add or a delete, only a modify", () => {
-    const patch = "@@ -1,1 +1,1 @@\n-a\n+b";
-    expect(isWholeFileRewrite("add", patch)).toBe(false);
-    expect(isWholeFileRewrite("delete", patch)).toBe(false);
+    const addPatch = "@@ -0,0 +1,1 @@\n+a";
+    const deletePatch = "@@ -1,1 +0,0 @@\n-a";
+    expect(isWholeFileRewrite("add", addPatch)).toBe(false);
+    expect(isWholeFileRewrite("delete", deletePatch)).toBe(false);
   });
 
   it("is false with no patch text", () => {
     expect(isWholeFileRewrite("modify", "")).toBe(false);
+  });
+});
+
+describe("patchLines", () => {
+  it("parses a hunk header and context/removed/added lines from the exact backend format", () => {
+    const patch = ["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"].join("\n");
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -1,3 +1,3 @@" },
+      { kind: "context", text: "a" },
+      { kind: "remove", text: "b" },
+      { kind: "add", text: "B" },
+      { kind: "context", text: "c" },
+    ]);
+  });
+
+  it("parses an added file's single all-plus hunk", () => {
+    const patch = "@@ -0,0 +1,2 @@\n+line one\n+line two";
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -0,0 +1,2 @@" },
+      { kind: "add", text: "line one" },
+      { kind: "add", text: "line two" },
+    ]);
+  });
+
+  it("parses a deleted file's single all-minus hunk", () => {
+    const patch = "@@ -1,2 +0,0 @@\n-line one\n-line two";
+    expect(patchLines(patch)).toEqual([
+      { kind: "hunk", text: "@@ -1,2 +0,0 @@" },
+      { kind: "remove", text: "line one" },
+      { kind: "remove", text: "line two" },
+    ]);
+  });
+
+  it("is empty for an empty patch (the patch_note/content fallback case)", () => {
+    expect(patchLines("")).toEqual([]);
+  });
+});
+
+describe("hasNoFilesChanged", () => {
+  it("is true when an agent_output finding is present", () => {
+    expect(hasNoFilesChanged([{ category: "agent_output" }])).toBe(true);
+  });
+
+  it("is false without one — a stale_base or workspace_copy finding doesn't mean an empty diff", () => {
+    expect(hasNoFilesChanged([{ category: "stale_base" }, { category: "workspace_copy" }])).toBe(false);
+    expect(hasNoFilesChanged([])).toBe(false);
+  });
+});
+
+describe("noDiffMessage", () => {
+  it("explains an empty diff instead of a bare, unexplained placeholder", () => {
+    expect(noDiffMessage(true)).toBe("The agent changed no files.");
+  });
+
+  it("keeps the generic placeholder when nothing explains the empty diff", () => {
+    expect(noDiffMessage(false)).toBe("(no diff)");
+  });
+});
+
+describe("approveErrorMessage", () => {
+  it("rewrites the workflow engine's raw approval-blocked refusal", () => {
+    expect(
+      approveErrorMessage("workflow: approval blocked: open high finding: SQL injection in query builder"),
+    ).toBe('Can\'t approve: an open HIGH finding needs to be resolved first — "SQL injection in query builder"');
+  });
+
+  it("still produces a message with no finding text", () => {
+    expect(approveErrorMessage("workflow: approval blocked: open critical finding:")).toBe(
+      "Can't approve: an open CRITICAL finding needs to be resolved first.",
+    );
+  });
+
+  it("passes through any other error unchanged", () => {
+    expect(approveErrorMessage("network timeout")).toBe("network timeout");
+  });
+});
+
+describe("findingCategoryLabel", () => {
+  it("labels the known change-set finding categories", () => {
+    expect(findingCategoryLabel("workspace_copy")).toBe("workspace copy");
+    expect(findingCategoryLabel("agent_output")).toBe("agent output");
+    expect(findingCategoryLabel("stale_base")).toBe("stale base");
+  });
+
+  it("passes through an unrecognized category rather than hiding it", () => {
+    expect(findingCategoryLabel("some_new_category")).toBe("some_new_category");
   });
 });
 
@@ -227,6 +349,15 @@ describe("appliedOutcomeLabel", () => {
   it("calls a real executor with a real model SHIPPED", () => {
     expect(appliedOutcomeLabel("container", "anthropic/claude-sonnet-4"))
       .toBe("SHIPPED");
+  });
+
+  // Low: this must be the CHANGE SET's own executor, not the page's
+  // currently-selected one -- an older change set predating the `executor`
+  // field carries `undefined` and falls back to the model check alone,
+  // rather than assuming "internal" the way the page-level default used to.
+  it("falls back to the model check for a change set with no recorded executor", () => {
+    expect(appliedOutcomeLabel(undefined, "demo")).toBe("Placeholder change (demo)");
+    expect(appliedOutcomeLabel(undefined, "anthropic/claude-sonnet-4")).toBe("SHIPPED");
   });
 });
 

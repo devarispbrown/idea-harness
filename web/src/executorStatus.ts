@@ -60,6 +60,19 @@ export function executorReady(status: ExecutorStatusInput): boolean {
   return !status.problem;
 }
 
+// isModelFieldError decides whether a PUT .../executors failure belongs next
+// to the Model field specifically. saveExecutor used to route EVERY failure
+// there -- a bad image reference, an unknown kind, a transient 5xx -- so an
+// error that had nothing to do with the model the user typed showed up
+// attached to a field they may not have touched, while the page's general
+// error line stayed silently empty. Only executor.ResolveAgentProvider's
+// refusals (unknown provider, bad name/type) are actually about the model,
+// and its message names it, so that's the signal used here rather than
+// re-deriving the daemon's validation rules on the client.
+export function isModelFieldError(message: string): boolean {
+  return /\bmodel\b/i.test(message);
+}
+
 // executorImagePlaceholder is the empty-field hint for the Image input. It
 // must never look like a saved value: Settings used to prefill this field
 // with the pinned default so it displayed something after every reload that

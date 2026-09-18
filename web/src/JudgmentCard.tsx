@@ -21,10 +21,16 @@ export interface FindingItem {
   recommendation: string;
   disposition?: string;
   // What the review that produced this finding looked at: "prd" or
-  // "requirement" for the PRD review, "execution_plan" for the plan review,
-  // "change_set" for Build's per-task review. Used to scope findings to the
-  // right phase (D1/judgmentScope.ts).
+  // "requirement" for the PRD review, "execution_plan" for the plan review
+  // (older rows may still carry "" or "initiative" -- see judgmentScope.ts),
+  // "task" for a plan-scoped task finding, "change_set" for Build's per-task
+  // review. Used to scope findings to the right phase (D1/judgmentScope.ts).
   target_type?: string;
+  // Set on the deterministic plan-stage checks (traceability, dependency
+  // cycle, unresolved dependency) regardless of what target_type their row
+  // happens to carry -- C2: this is the second, independent way a finding is
+  // recognized as Plan's, since older rows' target_type alone is ambiguous.
+  review_run_id?: string;
 }
 export interface QuestionItem {
   id: string;
@@ -66,12 +72,18 @@ export function DecisionCard({
   onReopen,
   projectId,
   initiativeId,
+  // typeLabel (M6): Define now shows every decision type, not just PRD
+  // ("product") ones, so each card needs to say which stage raised it —
+  // without this an architecture/design/security/operations decision reads
+  // as if it were a PRD decision.
+  typeLabel,
 }: {
   d: DecisionItem;
   onResolve: (resolution: string) => void;
   onReopen: () => void;
   projectId: string;
   initiativeId: string;
+  typeLabel?: string;
 }) {
   const [writing, setWriting] = useState(false);
   const [custom, setCustom] = useState("");
@@ -80,6 +92,7 @@ export function DecisionCard({
       <section className="judgment-card resolved">
         <div className="jc-head">
           <LineageChip label={d.code} className="chip-accent" projectId={projectId} initiativeId={initiativeId} nodeType="decision" nodeId={d.id} />
+          {typeLabel && <IdChip label={typeLabel} className="chip-inactive" />}
           <span className="jc-title">{d.question}</span>
         </div>
         <p className="jc-resolution">
@@ -96,6 +109,7 @@ export function DecisionCard({
     <section className="judgment-card">
       <div className="jc-head">
         <LineageChip label={d.code} className="chip-accent" projectId={projectId} initiativeId={initiativeId} nodeType="decision" nodeId={d.id} />
+        {typeLabel && <IdChip label={typeLabel} className="chip-inactive" />}
         <span className="jc-title">{d.question}</span>
       </div>
       {d.recommendation && (

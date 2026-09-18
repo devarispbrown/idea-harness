@@ -34,6 +34,33 @@ export function unwrapError(text: string, status: number, statusText: string): s
   return text;
 }
 
+// NetworkError marks a request that never got an HTTP response at all --
+// fetch() itself rejected (DNS failure, connection refused, the daemon
+// process is simply gone), as opposed to a response that arrived and said
+// something like 404 or 500. M4: only THIS is evidence the daemon is down;
+// a 404/500 is the daemon answering just fine, about something else. Its
+// `.message` is deliberately whatever the underlying rejection said (or
+// `String(e)` for a non-Error rejection) rather than a fixed string, so a
+// caller that just does `e instanceof Error ? e.message : String(e)` still
+// gets a sensible message either way.
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+// callFetch wraps `fetch` so a rejection (no response reached at all) throws
+// NetworkError specifically, distinguishable from the plain Error that
+// throwOnError below throws for a response that arrived but wasn't ok.
+async function callFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (e) {
+    throw new NetworkError(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function throwOnError(res: Response): Promise<void> {
   if (!res.ok) {
     const text = await res.text();
@@ -46,7 +73,7 @@ export async function api<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -61,7 +88,7 @@ export async function api<T>(
 
 // apiRaw returns a text response (used for artifact export).
 export async function apiRaw(method: string, path: string): Promise<string> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method,
     headers: { "X-Idea-Token": token },
   });
@@ -98,7 +125,7 @@ export const put = <T>(path: string, body: unknown) =>
 
 // apiBlob fetches a binary/text response as a Blob (context-doc download).
 export async function apiBlob(path: string): Promise<Blob> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     headers: { "X-Idea-Token": token },
   });
   await throwOnError(res);
@@ -117,7 +144,7 @@ export async function uploadDoc<T>(
   for (const [k, v] of Object.entries(fields)) {
     if (v) form.append(k, v);
   }
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method: "POST",
     headers: { "X-Idea-Token": token },
     body: form,

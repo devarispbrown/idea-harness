@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, post } from "./api";
-import { errMessage, type NextTask, runningTitle } from "./buildLogic";
+import { type NextTask, resolveRunningTask, runningTitle } from "./buildLogic";
 
 interface Operation {
   id: string;
@@ -8,6 +8,13 @@ interface Operation {
   status: string;
   created_at: string;
   finished_at?: string;
+  // Set on the operation the moment it starts, on a daemon that stamps it
+  // (optional so this still works against one that doesn't yet). When
+  // present it's authoritative for which task THIS run is working on, even
+  // after guidance's "next" pointer has moved on to a different task.
+  task_id?: string;
+  task_human_id?: string;
+  task_title?: string;
 }
 
 const OP_LABEL: Record<string, string> = {
@@ -50,8 +57,6 @@ export default function RunningCard({
   const [task, setTask] = useState<NextTask | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [stopBusy, setStopBusy] = useState(false);
-  const [runAgainBusy, setRunAgainBusy] = useState(false);
-  const [error, setError] = useState("");
   // A generation counter guards against a stale poll response from a previous
   // initiative resolving after the props change.
   const genRef = useRef(0);
@@ -76,15 +81,26 @@ export default function RunningCard({
       setStopped(null); // a fresh run (Run again, or a new task) supersedes it
     }
     if (running?.type === "execute_initiative") {
-      // The task this execute is working on. Best-effort: a transient error
-      // just leaves the previous title in place rather than blanking it.
-      try {
-        const ini = await get<{ next_task?: NextTask | null }>(
-          `/projects/${projectId}/initiatives/${initiativeId}`,
-        );
-        if (gen === genRef.current) setTask(ini?.next_task ?? null);
-      } catch {
-        /* keep the previous task label */
+      // The task this execute is working on. Prefer the OPERATION's own task
+      // fields when it carries them -- correct even once guidance's "next"
+      // pointer has already moved on to a different task -- and only fall
+      // back to a guidance fetch (H4: next_task lives on GET .../guidance,
+      // not on the initiative resource, which is what this used to read and
+      // always came back empty) when the operation doesn't have them yet.
+      const fromOp = resolveRunningTask(running, undefined);
+      if (fromOp) {
+        setTask(fromOp);
+      } else {
+        // Best-effort: a transient error just leaves the previous title in
+        // place rather than blanking it.
+        try {
+          const guide = await get<{ next_task?: NextTask | null }>(
+            `/projects/${projectId}/initiatives/${initiativeId}/guidance`,
+          );
+          if (gen === genRef.current) setTask(guide?.next_task ?? null);
+        } catch {
+          /* keep the previous task label */
+        }
       }
     } else {
       setTask(null);
@@ -109,37 +125,21 @@ export default function RunningCard({
 
   if (!op) {
     if (!stopped) return null;
+    // No "Run again" button here: this used to duplicate the phase page's
+    // own primary run action (BuildPage's "Run TASK-2: ..." button, driven
+    // by runButtonState) -- once nothing is running, that button already
+    // shows itself, so both offering the identical POST .../execute at once
+    // read as two competing controls for one action. This card stays
+    // (design rule 8: running/having-just-stopped is never silent) but is
+    // purely informational for the stopped state; the page's own button is
+    // the one primary way to start again.
     return (
       <section className="running-card running-card-stopped">
         <div className="running-row">
           <div className="running-body">
-            <div className="running-title">Stopped. Run again?</div>
+            <div className="running-title">Stopped.</div>
           </div>
-          {stopped.type === "execute_initiative" && (
-            <button
-              className="running-stop"
-              disabled={runAgainBusy}
-              onClick={async () => {
-                setRunAgainBusy(true);
-                setError("");
-                try {
-                  await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, {});
-                  // Left stopped=true here on purpose: load() below clears it
-                  // once the poll actually observes the new op running, so
-                  // the card never blanks between "started" and "observed".
-                } catch (e) {
-                  setError(errMessage(e));
-                } finally {
-                  setRunAgainBusy(false);
-                  await load();
-                }
-              }}
-            >
-              {runAgainBusy ? "Starting…" : "Run again"}
-            </button>
-          )}
         </div>
-        {error && <p className="error">{error}</p>}
       </section>
     );
   }

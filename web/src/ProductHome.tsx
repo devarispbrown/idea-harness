@@ -10,12 +10,19 @@ interface Initiative {
   status: string;
 }
 
+// "shipped" asserted every complete initiative was a real deploy, the same
+// overclaim buildLogic.ts's appliedOutcomeLabel exists to avoid on Build's
+// own change-set pills (G3) -- a demo/placeholder-executor initiative that
+// never touched anything real read exactly like one that did. ProductHome's
+// rollup carries no per-change-set model/executor detail (that lives on
+// BuildPage's own change-set list), so there is no cheap way to tell the two
+// apart here; "Complete" claims only what's actually known at this level.
 const STATUS_PILL: Record<string, { label: string; state: string }> = {
   running: { label: "running", state: "running" },
   needs_human_judgment: { label: "needs you", state: "needs-you" },
   approved: { label: "approved", state: "verified" },
   plan_approved: { label: "plan approved", state: "verified" },
-  complete: { label: "shipped", state: "verified" },
+  complete: { label: "Complete", state: "verified" },
   failed: { label: "failed", state: "failing" },
 };
 

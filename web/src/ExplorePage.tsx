@@ -77,7 +77,7 @@ export default function ExplorePage({
       await uploadDoc(`/projects/${projectId}/initiatives/${initiativeId}/docs`, file, { kind });
       await load();
     } catch (e) {
-      setReject({ message: String(e), name: file.name });
+      setReject({ message: e instanceof Error ? e.message : String(e), name: file.name });
     }
   };
   const addPaste = async () => {
@@ -91,7 +91,7 @@ export default function ExplorePage({
       setPasteOpen(false);
       await load();
     } catch (e) {
-      setReject({ message: String(e) });
+      setReject({ message: e instanceof Error ? e.message : String(e) });
     }
   };
   const download = async (doc: ContextDoc) => {
