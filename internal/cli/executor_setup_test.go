@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/devarispbrown/idea-harness/internal/daemon"
 )
 
 // An unknown provider must fail before the multi-gigabyte image pull, and the
@@ -76,5 +79,24 @@ func TestExecutorSetupWarnsWhenTheImplementerRoleOverrides(t *testing.T) {
 		"--image", "example/does-not-exist:never", "--yes")
 	if !strings.Contains(stderr, "models.implementer") || !strings.Contains(stderr, "anthropic/claude-sonnet-5") {
 		t.Errorf("no warning that models.implementer overrides --model:\n%s", stderr)
+	}
+}
+
+// An auto-started daemon's stderr is daemon.log itself; the logger must not
+// write each line to it twice.
+func TestDaemonLogLinesAreWrittenOnce(t *testing.T) {
+	t.Setenv("IDEA_HARNESS_STATE", t.TempDir())
+	if err := os.MkdirAll(daemon.DefaultStateRoot(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(logPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	newDaemonLogger(f).Info("hello once")
+	data, _ := os.ReadFile(logPath())
+	if n := strings.Count(string(data), "hello once"); n != 1 {
+		t.Errorf("the line is in daemon.log %d times, want 1", n)
 	}
 }

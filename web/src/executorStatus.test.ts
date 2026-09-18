@@ -54,6 +54,18 @@ describe("executorStatusLines", () => {
     expect(lines.keyLine?.text).toContain(".env");
   });
 
+  // The daemon's problem already names the key and the fix; the key line
+  // said the same thing above it.
+  it("states a missing key once when it is the problem", () => {
+    const lines = executorStatusLines({
+      ...ready,
+      key_set: false,
+      problem: "ANTHROPIC_API_KEY is not set in the daemon's environment or the project's .env; set it, then restart the daemon",
+    });
+    expect(lines.keyLine).toBeUndefined();
+    expect(lines.problemLine).toContain("ANTHROPIC_API_KEY");
+  });
+
   it("omits the key line for a keyless executor kind", () => {
     const lines = executorStatusLines({ ...ready, key_env: "" });
     expect(lines.keyLine).toBeUndefined();

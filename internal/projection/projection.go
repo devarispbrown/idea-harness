@@ -98,6 +98,20 @@ type Guidance struct {
 	// -- composed in by the daemon handler, not here -- the executor not
 	// being ready. Same population note as NextTask.
 	RunBlockedReason string `json:"run_blocked_reason,omitempty"`
+	// PartialWork is what a stopped run left for the next run of its task
+	// to continue from, omitted when nothing was kept. Same population note
+	// as NextTask.
+	PartialWork *PartialWorkRef `json:"partial_work,omitempty"`
+}
+
+// PartialWorkRef names a stopped run's kept files for the Build page.
+type PartialWorkRef struct {
+	TaskID      string `json:"task_id"`
+	TaskHumanID string `json:"task_human_id,omitempty"`
+	Files       int    `json:"files"`
+	// Note says why nothing was kept, when the stopped run's files looked
+	// like they contained a secret.
+	Note string `json:"note,omitempty"`
 }
 
 // NextTaskRef is the Build contract's `next_task` shape: enough to name and

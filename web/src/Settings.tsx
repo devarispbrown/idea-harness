@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, put } from "./api";
+import { get, post, put } from "./api";
 import {
   providerDetail,
   providerOptionSuffix,
@@ -14,6 +14,11 @@ import {
   isModelFieldError,
   type ExecutorStatusInput,
 } from "./executorStatus";
+import {
+  formatSmokeElapsed,
+  lastSmokeMessage,
+  smokeButtonState,
+} from "./smokeTest";
 import { chipsToShow, orderModels } from "./modelCatalog";
 import { resolveInitialProvider } from "./settingsLoad";
 
@@ -111,6 +116,21 @@ export default function Settings({ projectId }: { projectId: string }) {
   // The reason a 400 gave for the model field specifically (C3), shown next
   // to that field instead of only in the page-level error banner.
   const [executorModelError, setExecutorModelError] = useState("");
+
+  // S3: "Run smoke test". `smokeOpId` is only ever held in memory -- a
+  // reload loses track of it on purpose (the daemon has no "operations for
+  // this browser tab" concept), and that's fine: `last_smoke` off the
+  // executors list is what the button state falls back to after a reload,
+  // never a locally-remembered operation id.
+  const [smokeOpId, setSmokeOpId] = useState<string | null>(null);
+  const [smokeStartedAt, setSmokeStartedAt] = useState<number | null>(null);
+  const [smokeNow, setSmokeNow] = useState(() => Date.now());
+  const [smokeResult, setSmokeResult] = useState<"succeeded" | "failed" | "cancelled" | null>(null);
+  const [smokeError, setSmokeError] = useState("");
+  // A refusal from the POST itself (400 wrong kind/model, 409 already
+  // running) rather than the operation later failing -- shown the same way,
+  // but without an operation to poll.
+  const [smokeStartError, setSmokeStartError] = useState("");
 
   // git commit on apply toggle
   const [gitCommit, setGitCommit] = useState(false);
@@ -226,6 +246,44 @@ export default function Settings({ projectId }: { projectId: string }) {
     loadExecutors();
   }, [loadExecutors]);
 
+  // S3: poll the smoke operation until it leaves pending/running. Cleared
+  // whenever smokeOpId changes (a new run replaces the old poll) or the page
+  // unmounts.
+  useEffect(() => {
+    if (!smokeOpId) return;
+    let cancelled = false;
+    const poll = async () => {
+      let op: { status: string; error?: string };
+      try {
+        op = await get<{ status: string; error?: string }>(`/operations/${smokeOpId}`);
+      } catch {
+        return; // transient error: keep polling
+      }
+      if (cancelled) return;
+      if (op.status === "running" || op.status === "pending") return;
+      setSmokeResult(op.status as "succeeded" | "failed" | "cancelled");
+      setSmokeError(op.error ?? "");
+      setSmokeOpId(null);
+      // Refresh so status.last_smoke (S2) reflects this run immediately,
+      // rather than waiting for whatever next triggers loadExecutors.
+      loadExecutors();
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [smokeOpId, loadExecutors]);
+
+  // Ticks the elapsed-time display while a smoke test is running; idle
+  // (no interval) the rest of the time.
+  useEffect(() => {
+    if (!smokeOpId) return;
+    const id = setInterval(() => setSmokeNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [smokeOpId]);
+
   // C1: live models load in their own effect, keyed on the selected
   // provider -- not folded into `load`. `load` sets `selectedProvider` from
   // the fetched default model, which fires this effect exactly once for the
@@ -323,12 +381,9 @@ export default function Settings({ projectId }: { projectId: string }) {
       setInitialKind(executorKind);
       setInitialImage(executorImage);
       setInitialModel(executorModel);
-      // F4: a saved executor model can still name a provider that is not
-      // ready — same nudge as the model picker, next to a different action.
-      if (executorModel.includes("/")) {
-        const entry = view?.providers.find((p) => p.name === executorModel.split("/")[0]);
-        if (entry) setWarning(providerReadinessWarning(entry) ?? "");
-      }
+      // No separate "not ready" warning here: the executor status panel,
+      // refreshed below, already states the problem with its fix, and a
+      // second copy at the bottom of the page said it a third time.
       await loadExecutors();
     } catch (e) {
       // Low: this used to route EVERY failure here to the Model field. Only
@@ -343,6 +398,36 @@ export default function Settings({ projectId }: { projectId: string }) {
       } else {
         setError(msg);
       }
+    }
+  };
+
+  // S3: runs `executor.SmokeAgent` for real, through the SAVED executor
+  // (the daemon reads its own config, not whatever's pending in this form) --
+  // a small real model call using the project's own key. The result arrives
+  // via the poll effect above; this only starts it and surfaces a refusal
+  // (400 wrong kind/model, 409 already running) that happens before an
+  // operation id even exists.
+  // Set synchronously on click, before any await: a double click sent two
+  // POSTs, and the second one's 409 showed as a red error over a healthy run
+  // and stopped the timer.
+  const smokeStarting = useRef(false);
+  const runSmoke = async () => {
+    if (smokeStarting.current || smokeOpId) return;
+    smokeStarting.current = true;
+    setSmokeStartError("");
+    setSmokeError("");
+    setSmokeResult(null);
+    setSmokeStartedAt(Date.now());
+    try {
+      const res = await post<{ operation_id: string }>(`/projects/${projectId}/executors/smoke`, {});
+      setSmokeOpId(res.operation_id);
+    } catch (e) {
+      setSmokeStartedAt(null);
+      setSmokeStartError(errorMessage(e));
+      // Another tab's smoke, say: pick its result up when it lands.
+      loadExecutors();
+    } finally {
+      smokeStarting.current = false;
     }
   };
 
@@ -379,6 +464,32 @@ export default function Settings({ projectId }: { projectId: string }) {
   // placeholder and status panel track whichever kind is selected in the
   // dropdown right now, not only the one already saved.
   const executorEntry = executors.find((e) => e.name === executorKind);
+  // S3: the smoke test runs against the SAVED executor, not the dropdown's
+  // unsaved preview -- `last_smoke` is only ever populated on this row (the
+  // daemon computes it for `selected` only), and the daemon's own
+  // POST .../executors/smoke reads pr.cfg.Harness.Executor.Kind, not
+  // anything pending in this form.
+  const selectedExecutor = executors.find((e) => e.selected);
+  // A smoke started before a reload (or in another tab) has no id here. Keep
+  // refreshing the executors until its last_smoke leaves "running", so the
+  // result appears instead of "A smoke test is running." forever.
+  const otherSmokeRunning =
+    !smokeOpId && ["running", "pending"].includes(selectedExecutor?.status?.last_smoke?.status ?? "");
+  useEffect(() => {
+    if (!otherSmokeRunning) return;
+    const id = setInterval(() => loadExecutors(), 3000);
+    return () => clearInterval(id);
+  }, [otherSmokeRunning, loadExecutors]);
+  const smokeState = smokeButtonState(selectedExecutor?.name ?? "", selectedExecutor?.status);
+  const smokeRunning = smokeOpId !== null;
+  // The smoke tests the SAVED setup. With unsaved edits in the form it would
+  // test something other than what the page shows.
+  const executorUnsaved =
+    !!selectedExecutor &&
+    (executorKind !== selectedExecutor.name ||
+      executorModel !== (selectedExecutor.model ?? "") ||
+      executorImage !== (selectedExecutor.image ?? ""));
+  const lastSmokeLine = lastSmokeMessage(selectedExecutor?.status?.last_smoke, smokeNow);
 
   return (
     <div className="settings-page">
@@ -614,6 +725,54 @@ export default function Settings({ projectId }: { projectId: string }) {
 
         <div className="row">
           <button onClick={saveExecutor}>Save executor</button>
+        </div>
+
+        {/* S3: proves the SAVED executor setup actually works, from the
+            daemon's own environment -- `idea executors setup --smoke` proves
+            it from the CLI's, which is not always the same one. */}
+        <div className="smoke-test">
+          <div className="row">
+            <button
+              className="cs-secondary"
+              disabled={!smokeState.enabled || smokeRunning || executorUnsaved}
+              onClick={runSmoke}
+            >
+              {smokeRunning
+                ? `Running smoke test… ${formatSmokeElapsed(smokeNow - (smokeStartedAt ?? smokeNow))}`
+                : "Run smoke test"}
+            </button>
+          </div>
+          <p className="muted">
+            Makes one small real model call using your key — this isn't a dry run.
+          </p>
+          {executorUnsaved ? (
+            <p className="muted">Save the executor first — the smoke test runs the saved setup.</p>
+          ) : (
+            /* The status panel above already states a readiness problem;
+               repeating it here made the missing-key sentence appear three
+               times. Only reasons the panel does not show are repeated. */
+            !smokeState.enabled &&
+            smokeState.reason &&
+            smokeState.reason !== selectedExecutor?.status?.problem && (
+              <p className="muted">{smokeState.reason}</p>
+            )
+          )}
+          {smokeStartError && <p className="error">{smokeStartError}</p>}
+          {smokeResult === "succeeded" && <p className="ok-text">Smoke test passed.</p>}
+          {(smokeResult === "failed" || smokeResult === "cancelled") && (
+            <div className="error">
+              {smokeResult === "cancelled" ? "Smoke test was cancelled." : "Smoke test failed."}
+              {smokeError && (
+                <details>
+                  <summary>Details</summary>
+                  <pre className="cs-finding-evidence">{smokeError}</pre>
+                </details>
+              )}
+            </div>
+          )}
+          {!smokeRunning && smokeResult === null && lastSmokeLine && lastSmokeLine !== smokeState.reason && (
+            <p className="muted">{lastSmokeLine}</p>
+          )}
         </div>
       </section>
 

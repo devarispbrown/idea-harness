@@ -17,6 +17,15 @@ export interface ExecutorStatusInput {
   // Information that does not block a run (e.g. an image the first run will
   // download).
   note?: string;
+  // S2: the project's newest smoke test, for the SELECTED executor only
+  // (omitted for every other row in the list, and for one that has never
+  // run). Settings reads this to show "Last smoke test passed 5 min ago"
+  // on load, surviving a reload that lost track of any in-flight operation.
+  last_smoke?: {
+    status: string;
+    finished_at?: string;
+    error?: string;
+  };
 }
 
 export interface ExecutorStatusLine {
@@ -60,9 +69,13 @@ export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatus
         }
     : undefined;
 
+  // When the daemon's problem IS the missing key, its sentence already says
+  // so and how to fix it; a key line saying the same thing above it showed
+  // the reason twice.
+  const keyIsTheProblem = !!keyLine && !keyLine.ok && !!status.problem && status.problem.includes(status.key_env);
   return {
     imageLine,
-    keyLine,
+    keyLine: keyIsTheProblem ? undefined : keyLine,
     problemLine: status.problem || undefined,
     noteLine: status.note || undefined,
   };

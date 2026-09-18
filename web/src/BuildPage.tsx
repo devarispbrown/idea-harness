@@ -19,6 +19,7 @@ import {
   patchLines,
   runButtonState,
   type NextTask,
+  type PartialWork,
 } from "./buildLogic";
 
 interface Task {
@@ -79,6 +80,10 @@ interface DiffFile {
 interface Initiative {
   next_task?: NextTask | null;
   run_blocked_reason?: string;
+  // C3: what a stopped run left for the next run of its task to continue
+  // from, straight off guidance -- omitted (never null) when nothing is
+  // kept, the same "omit rather than emit null" contract as next_task.
+  partial_work?: PartialWork;
 }
 interface Operation {
   id: string;
@@ -145,10 +150,10 @@ export default function BuildPage({
       get<{ name: string; selected: boolean }[]>(`/projects/${projectId}/executors`).catch(() => []),
       get<Initiative>(`/projects/${projectId}/initiatives/${initiativeId}`).catch(() => null),
       get<Operation[]>(`/projects/${projectId}/initiatives/${initiativeId}/operations`).catch(() => []),
-      // next_task and run_blocked_reason are served by the guidance endpoint,
-      // which already computes "what should happen next"; merged onto the
-      // initiative so the rest of the page reads one object.
-      get<Pick<Initiative, "next_task" | "run_blocked_reason">>(
+      // next_task, run_blocked_reason and partial_work (C3) are served by the
+      // guidance endpoint, which already computes "what should happen next";
+      // merged onto the initiative so the rest of the page reads one object.
+      get<Pick<Initiative, "next_task" | "run_blocked_reason" | "partial_work">>(
         `/projects/${projectId}/initiatives/${initiativeId}/guidance`,
       ).catch(() => null),
     ]);
@@ -157,7 +162,16 @@ export default function BuildPage({
     setFindings(f ?? []);
     const sel = (ex ?? []).find((e) => e.selected);
     if (sel) setExecutorName(sel.name);
-    setInitiative(ini ? { ...ini, next_task: guide?.next_task ?? null, run_blocked_reason: guide?.run_blocked_reason ?? "" } : null);
+    setInitiative(
+      ini
+        ? {
+            ...ini,
+            next_task: guide?.next_task ?? null,
+            run_blocked_reason: guide?.run_blocked_reason ?? "",
+            partial_work: guide?.partial_work,
+          }
+        : null,
+    );
     setOperations(ops ?? []);
   }, [projectId, initiativeId]);
 
@@ -228,12 +242,18 @@ export default function BuildPage({
     await runNext();
   };
 
-  const runNext = async () => {
+  // startExecute is Run/Continue and "Start over"'s shared body: both end in
+  // the same POST .../execute, and only "Start over" first discards what a
+  // stopped run left (C3) so the next execute begins from the workspace
+  // instead of continuing from those files.
+  const startExecute = async (discardPartial: boolean) => {
     if (runBusy) return;
     setRunBusy(true);
     setRunError("");
     try {
-      await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, {});
+      // One request: the daemon discards the kept files only once the run
+      // is accepted. Deleting first and then being refused lost them.
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, discardPartial ? { fresh: true } : {});
       setStartedTask(initiative?.next_task?.human_id ?? "the next task");
     } catch (e) {
       setRunError(errMessage(e));
@@ -242,6 +262,10 @@ export default function BuildPage({
       await load();
     }
   };
+  const runNext = () => startExecute(false);
+  // "Start over" (C3): discards the stopped run's kept files first, so the
+  // task runs from a clean workspace instead of resuming.
+  const startOver = () => startExecute(true);
 
   const toggleDiff = async (cs: ChangeSet) => {
     if (openDiff === cs.id) {
@@ -278,7 +302,23 @@ export default function BuildPage({
 
   const isRunning = operations.some((o) => isOperationInFlight(o.status));
   const failedExecute = buildFailure(operations);
-  const runState = runButtonState(initiative?.next_task, initiative?.run_blocked_reason, isRunning);
+  const runState = runButtonState(
+    initiative?.next_task,
+    initiative?.run_blocked_reason,
+    isRunning,
+    initiative?.partial_work,
+  );
+  // C3: nothing was kept for the next run to resume (the credential sweep
+  // dropped it) -- said plainly instead of silently discarding it with no
+  // explanation. Only when it's actually about the task about to run; a
+  // partial for some other task is the daemon's to discard on its own.
+  const droppedPartialNote =
+    initiative?.partial_work &&
+    initiative.partial_work.files === 0 &&
+    initiative.partial_work.note &&
+    initiative.partial_work.task_id === initiative?.next_task?.id
+      ? initiative.partial_work.note
+      : null;
 
   return (
     <div className="phase-page">
@@ -314,10 +354,23 @@ export default function BuildPage({
           <button className="cs-green" disabled={runState.disabled || runBusy} onClick={runNext}>
             {runBusy ? "Starting…" : runState.label}
           </button>
+          {/* C3: "Start over" discards the stopped run's files first, then
+              runs -- beside Continue rather than replacing it, since
+              resuming is the default. */}
+          {runState.startOver && (
+            <button className="cs-secondary" disabled={runState.disabled || runBusy} onClick={startOver}>
+              Start over
+            </button>
+          )}
           {runState.disabled && initiative?.run_blocked_reason && (
             <span className="run-next-reason">{initiative.run_blocked_reason}</span>
           )}
         </div>
+      )}
+      {droppedPartialNote && (
+        <p className="muted run-next-reason">
+          The stopped run's files were not kept — {droppedPartialNote}.
+        </p>
       )}
       {runError && <p className="error">{runError}</p>}
 

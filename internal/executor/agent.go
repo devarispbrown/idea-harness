@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"context"
 	"fmt"
 	"os"
@@ -240,6 +241,11 @@ func (e *SandboxedAgentExecutor) containerArgs(req Request, attemptID, keyFile, 
 	return append(args, e.image)
 }
 
+// ErrUnknownAttempt is returned for an attempt this executor does not track --
+// including one already removed, which is how a caller knows its container is
+// gone.
+var ErrUnknownAttempt = errors.New("executor: unknown attempt")
+
 // containerAgentHome is where the generated agent home is mounted.
 const containerAgentHome = "/tmp/agent-home"
 
@@ -385,7 +391,7 @@ func (e *SandboxedAgentExecutor) Status(ctx context.Context, id string) (Status,
 	a, ok := e.attempts[id]
 	e.mu.Unlock()
 	if !ok {
-		return Status{}, fmt.Errorf("executor: unknown attempt %q", id)
+		return Status{}, fmt.Errorf("%w %q", ErrUnknownAttempt, id)
 	}
 	out, err := exec.CommandContext(ctx, e.dockerPath, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", a.containerID).Output()
 	if err != nil {
@@ -422,7 +428,7 @@ func (e *SandboxedAgentExecutor) remove(ctx context.Context, id string) error {
 	a, ok := e.attempts[id]
 	e.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("executor: unknown attempt %q", id)
+		return fmt.Errorf("%w %q", ErrUnknownAttempt, id)
 	}
 	cctx, cancel := cleanupContext(ctx)
 	defer cancel()
@@ -492,8 +498,11 @@ var ansiEscape = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\
 const agentOutputLines = 40
 
 // OutputTail implements OutputTailer.
-func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string) string {
-	return e.tailLogs(ctx, id, agentOutputLines)
+func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string, lines int) string {
+	if lines <= 0 {
+		lines = agentOutputLines
+	}
+	return e.tailLogs(ctx, id, lines)
 }
 
 // scrubAgentLog drops the image's per-start skill-sync noise and blank lines,

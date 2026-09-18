@@ -25,7 +25,7 @@ type Executor interface {
 // status alone does not carry. It must be read before Collect or Cancel, which
 // discard the output.
 type OutputTailer interface {
-	OutputTail(ctx context.Context, id string) string
+	OutputTail(ctx context.Context, id string, lines int) string
 }
 
 // Capabilities declares the executor's trust, sandbox mode, and (deterministic,

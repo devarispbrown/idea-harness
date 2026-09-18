@@ -122,6 +122,10 @@ export const post = <T>(path: string, body: unknown) =>
   api<T>("POST", path, body);
 export const put = <T>(path: string, body: unknown) =>
   api<T>("PUT", path, body);
+// del is "Start over" (C3: DELETE .../partial-work) -- the one DELETE this
+// UI makes today, so it gets the same one-liner as get/post/put rather than
+// a call site building its own `api<T>("DELETE", ...)`.
+export const del = <T>(path: string) => api<T>("DELETE", path);
 
 // apiBlob fetches a binary/text response as a Blob (context-doc download).
 export async function apiBlob(path: string): Promise<Blob> {

@@ -66,6 +66,8 @@ type Runtime struct {
 	// Build page's run_blocked_reason poll never call Docker more than once
 	// every 30s per image.
 	images *imagePresenceCache
+	// smokes is the per-project claim for smoke tests started from the UI.
+	smokes smokeClaims
 }
 
 type projectRuntime struct {
@@ -786,6 +788,13 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 // ExecuteInitiative runs the M3 execute pipeline for the next ready task
 // asynchronously, producing a change set. Returns the operation id.
 func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	return r.ExecuteInitiativeFresh(ctx, projectID, initiativeID, false)
+}
+
+// ExecuteInitiativeFresh is ExecuteInitiative; with fresh, a stopped run's kept
+// files are discarded once the run is accepted, so it starts from the
+// workspace ("Start over").
+func (r *Runtime) ExecuteInitiativeFresh(ctx context.Context, projectID, initiativeID string, fresh bool) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -867,6 +876,11 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 	// the change set afterwards, and RevertChangeSet happens to set the status
 	// back. A real multi-task initiative that applies without reverting is stuck.
 	priorStatus := ini.Status
+	// Start over: discard a stopped run's kept files only now that this run is
+	// accepted. Discarding first and then being refused lost them for nothing.
+	if fresh {
+		_ = pr.engine.DiscardPartial(initiativeID)
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		release := func() {
 			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
@@ -1215,6 +1229,9 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		}
 		return "", err
 	}
+	// The plan this changes may change the task a stopped run's kept files
+	// belong to; carrying them into a rewritten task would be wrong.
+	_ = pr.engine.DiscardPartial(initiativeID)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.ReopenPhase(bg, initiativeID, phase)
 		if runErr != nil {
@@ -1306,6 +1323,9 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		}
 		return "", err
 	}
+	// The plan this changes may change the task a stopped run's kept files
+	// belong to; carrying them into a rewritten task would be wrong.
+	_ = pr.engine.DiscardPartial(initiativeID)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.RevisePlan(bg, initiativeID)
 		if runErr != nil {

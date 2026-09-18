@@ -36,7 +36,7 @@ var asyncEntryPoints = map[string]entryPoint{
 			"but that is not a release of a claim it never took"},
 	"AdvanceInitiative": {true,
 		"workflow/advance.go sets a terminal status on success; failOperation on error"},
-	"ExecuteInitiative": {true,
+	"ExecuteInitiativeFresh": {true,
 		"explicit release on both exits — the engine sets nothing (audit 4 P0)"},
 	"ApplyChangeSetInitiative": {true,
 		"claims from every non-running state; explicit release on both exits"},
