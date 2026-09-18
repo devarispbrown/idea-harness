@@ -411,6 +411,10 @@ func TestSelectExecutorFailsClosedWithoutAResolvableProvider(t *testing.T) {
 
 // A provider the operator actually configured still resolves.
 func TestSelectExecutorAcceptsAConfiguredProvider(t *testing.T) {
+	// The key is set here, not inherited: a keyed provider without its key is
+	// refused, so this passed only on machines whose shell happened to export
+	// it -- and failed in CI, where none is set.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	e := &Engine{cfg: config.HarnessConfig{
 		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "anthropic/claude-sonnet-4-5-20250929"},
 	}}
