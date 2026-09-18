@@ -205,7 +205,9 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 // get it.
 // SameQuestion reports whether two decision questions are the same question
 // for display: equal after normalizeDecisionQuestion.
-func SameQuestion(a, b string) bool { return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b) }
+func SameQuestion(a, b string) bool {
+	return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b)
+}
 
 func normalizeDecisionQuestion(text string) string {
 	s := strings.TrimSpace(text)
