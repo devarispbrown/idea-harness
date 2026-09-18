@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/devarispbrown/idea-harness/internal/config"
 )
 
 // defaultHermesImage is the pinned, known-good Hermes Agent image. It is a
@@ -61,7 +63,20 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
-		"--entrypoint", "",
+		// Through the image's entrypoint, NOT `--entrypoint ""`.
+		//
+		// The pinned Hermes image installs its CLI at
+		// /opt/hermes/.venv/bin/hermes, which is not on the default PATH -- the
+		// entrypoint is what makes `hermes` resolvable. Probing with the
+		// entrypoint cleared therefore reported "CLI not found in image" for an
+		// image that contains it, and `idea executors setup --smoke` could never
+		// succeed against the very image it downloads by default.
+		//
+		// HERMES_HOME for the same reason the executor sets it: the entrypoint
+		// creates and writes its home, and under --read-only with a host --user
+		// the default /opt/data is not writable.
+		"-e", "HERMES_HOME=" + containerAgentHome,
+		"-e", "HOME=" + containerAgentHome,
 		image, cli, "--version",
 	}
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
@@ -85,23 +100,27 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 // name (built-in presets only; custom providers are resolved by the engine at
 // runtime). Used by the smoke check to confirm the required key is present.
 func KeyEnvForModel(model string) string {
-	provider := model
+	_, keyEnv, _ := ProviderForModel(model)
+	return keyEnv
+}
+
+// ProviderForModel splits a `provider/model` spec and returns the provider key,
+// its API-key env var (empty for a keyless provider such as Ollama) and its
+// base URL, from config.Presets.
+//
+// This used to be a switch here duplicating that table, which meant two places
+// had to agree about six providers and only one of them was checked. It also
+// silently omitted Ollama, so a keyless provider looked identical to an
+// unresolvable one -- the distinction the executor now turns on.
+func ProviderForModel(model string) (provider, keyEnv, baseURL string) {
+	provider = model
 	if i := strings.Index(model, "/"); i > 0 {
 		provider = model[:i]
 	}
-	switch provider {
-	case "anthropic":
-		return "ANTHROPIC_API_KEY"
-	case "openai":
-		return "OPENAI_API_KEY"
-	case "gemini", "google":
-		return "GOOGLE_API_KEY"
-	case "openrouter":
-		return "OPENROUTER_API_KEY"
-	case "deepseek":
-		return "DEEPSEEK_API_KEY"
+	if p := config.PresetFor(provider); p != nil {
+		return provider, p.DefaultKeyEnv, p.BaseURL
 	}
-	return ""
+	return provider, "", ""
 }
 
 // SmokeAgent runs a trivial coding task through the agent in an isolated
@@ -110,7 +129,7 @@ func KeyEnvForModel(model string) string {
 // just that the binary exists. It requires the provider API key for model to be
 // present in the environment (the agent needs it to call its model).
 func SmokeAgent(ctx context.Context, kind, image, model string) error {
-	keyEnv := KeyEnvForModel(model)
+	provider, keyEnv, baseURL := ProviderForModel(model)
 	if keyEnv != "" && os.Getenv(keyEnv) == "" {
 		return fmt.Errorf("executor: smoke requires %s in the environment", keyEnv)
 	}
@@ -124,9 +143,9 @@ func SmokeAgent(ctx context.Context, kind, image, model string) error {
 	var e *SandboxedAgentExecutor
 	switch kind {
 	case "hermes":
-		e = NewHermesExecutor(nil, model, image, keyEnv)
+		e = NewHermesExecutor(nil, model, image, keyEnv, provider, baseURL)
 	case "omp":
-		e = NewOMPExecutor(nil, model, image, keyEnv)
+		e = NewOMPExecutor(nil, model, image, keyEnv, provider, baseURL)
 	default:
 		return fmt.Errorf("executor: unsupported smoke kind %q", kind)
 	}
@@ -146,6 +165,9 @@ func SmokeAgent(ctx context.Context, kind, image, model string) error {
 		case "succeeded":
 			goto done
 		case "failed":
+			if tail := e.tailLogs(ctx, attempt.ID, 40); tail != "" {
+				return fmt.Errorf("executor: smoke agent %s failed (%s); agent output:\n%s", kind, st.Action, tail)
+			}
 			return fmt.Errorf("executor: smoke agent %s failed (%s)", kind, st.Action)
 		}
 		select {
@@ -155,6 +177,12 @@ func SmokeAgent(ctx context.Context, kind, image, model string) error {
 		}
 	}
 done:
+	// Read the output BEFORE Collect removes the container. Hermes exits 0 even
+	// when the model call fails -- a 401, a 404, a billing error all end the
+	// session "normally" -- so a clean exit with no file is the common failure,
+	// and without the agent's own output the only message was "produced no
+	// files (CLI contract mismatch?)", which is wrong about the cause.
+	tail := e.tailLogs(ctx, attempt.ID, 40)
 	_, _ = e.Collect(ctx, attempt.ID)
 
 	entries, err := os.ReadDir(work)
@@ -162,6 +190,9 @@ done:
 		return err
 	}
 	if len(entries) == 0 {
+		if tail != "" {
+			return fmt.Errorf("executor: smoke agent %s exited without writing a file; agent output:\n%s", kind, tail)
+		}
 		return fmt.Errorf("executor: smoke agent %s produced no files (CLI contract mismatch?)", kind)
 	}
 	return nil

@@ -158,7 +158,7 @@ IDEA_HARNESS_ADDR    override the daemon address (default 127.0.0.1:8787)
 idea model
 
 # Set the default model (provider/model).
-idea model set gemini/gemini-2.5-flash
+idea model set gemini/gemini-3.6-flash
 
 # Add a custom OpenAI-compatible provider.
 idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --key-env GROQ_API_KEY

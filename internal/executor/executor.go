@@ -58,7 +58,7 @@ type Status struct {
 
 // Result is the collected execution output (content-addressed digests + usage).
 type Result struct {
-	PatchDigest string           `json:"patch_digest"`
-	LogDigest   string           `json:"log_digest,omitempty"`
-	Usage       domain.RunUsage  `json:"usage,omitempty"`
+	PatchDigest string          `json:"patch_digest"`
+	LogDigest   string          `json:"log_digest,omitempty"`
+	Usage       domain.RunUsage `json:"usage,omitempty"`
 }

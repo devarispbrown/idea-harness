@@ -14,6 +14,16 @@ package model
 // checked against Anthropic's /v1/models on 2026-09-10, it is the only entry in
 // that row the listing returns, so it is the only safe default.
 //
+// Gemini's leads for the same reason, in the other direction. On 2026-09-17
+// Google answered gemini-2.5-flash (and gemini-2.5-pro) with a 404, "no longer
+// available to new users", on the native generateContent API -- while
+// /v1beta/models still LISTED it. gemini-3.6-flash returned 200 on both the
+// native API and the OpenAI-compatible surface the coding agent uses, despite
+// being absent from that listing. DefaultModelFor feeds the engine's fallback
+// when a user has only GOOGLE_API_KEY and no default_model, so a dead first
+// entry meant every model call 404'd for a new Gemini user. The older ids stay:
+// existing accounts can still reach them.
+//
 // What that check could NOT settle: whether the four undated anthropic aliases
 // still resolve for *inference*. A listing omits aliases by construction, and a
 // direct probe returned `400 credit balance is too low` for every id, because
@@ -25,7 +35,7 @@ package model
 var DefaultModels = map[string][]string{
 	"openai":     {"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini", "gpt-5.6-luna"},
 	"anthropic":  {"claude-sonnet-4-5-20250929", "claude-sonnet-4-5", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest", "claude-opus-4-1"},
-	"gemini":     {"gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"},
+	"gemini":     {"gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"},
 	"deepseek":   {"deepseek-chat", "deepseek-reasoner"},
 	"openrouter": {"openai/gpt-4o", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-flash", "meta-llama/llama-4-maverick"},
 	"ollama":     {"llama3.1", "llama3.2", "qwen2.5", "mistral", "deepseek-r1"},

@@ -648,3 +648,73 @@ func stringLit(e ast.Expr) (string, bool) {
 	v, err := strconv.Unquote(lit.Value)
 	return v, err == nil
 }
+
+// A keyless provider is not an unresolvable one, and the executor used to
+// refuse both with the same check.
+//
+// Ollama is a first-class preset with DefaultKeyEnv "" and NeedsKey false. The
+// guard was `keyEnv == ""`, so it was indistinguishable from a typo in
+// executor.model — and every keyless provider was locked out of the
+// coding-agent path entirely.
+func TestKeylessProviderIsNotTreatedAsUnresolvable(t *testing.T) {
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "ollama/llama3.1"},
+	}}
+	provider, keyEnv, baseURL, resolved := e.implementerProvider()
+	if !resolved {
+		t.Fatal("ollama did not resolve, though it is a preset")
+	}
+	if provider != "ollama" {
+		t.Errorf("provider = %q, want ollama", provider)
+	}
+	if keyEnv != "" {
+		t.Errorf("keyEnv = %q, want empty — ollama needs no key", keyEnv)
+	}
+	if baseURL == "" {
+		t.Error("no base URL, so the agent would have no endpoint to call")
+	}
+
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("selectExecutor refused a keyless provider: %v", err)
+	}
+}
+
+// An unresolvable provider must still fail closed: the agent runs with network
+// egress, so it must never be launched with a credential nobody chose.
+func TestUnresolvableProviderStillFailsClosed(t *testing.T) {
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "typo-provider/some-model"},
+	}}
+	if _, resolved := func() (string, bool) {
+		p, _, _, r := e.implementerProvider()
+		return p, r
+	}(); resolved {
+		t.Fatal("a nonexistent provider resolved")
+	}
+	_, err := e.selectExecutor()
+	if err == nil {
+		t.Fatal("selectExecutor accepted an unresolvable provider")
+	}
+	if !strings.Contains(err.Error(), "typo-provider") {
+		t.Errorf("the refusal does not name what could not be resolved: %v", err)
+	}
+}
+
+// Every provider this project presets must reach the coding agent.
+func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
+	for _, p := range config.Presets {
+		e := &Engine{cfg: config.HarnessConfig{
+			Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: p.Key + "/some-model"},
+		}}
+		if p.NeedsKey {
+			// A keyed provider resolves its env var from the preset; the value
+			// need not be set for selection to succeed.
+			if _, keyEnv, _, _ := e.implementerProvider(); keyEnv == "" {
+				t.Errorf("%s needs a key but resolves none", p.Key)
+			}
+		}
+		if _, err := e.selectExecutor(); err != nil {
+			t.Errorf("%s cannot launch the coding agent: %v", p.Key, err)
+		}
+	}
+}
