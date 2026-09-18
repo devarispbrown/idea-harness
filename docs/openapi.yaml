@@ -3647,6 +3647,12 @@ components:
             The executor kind that produced this change set (`internal`, `container`, `omp`,
             `hermes`). `internal` output is a placeholder whatever the model. Empty for change sets
             made before this field existed.
+        agent_output:
+          type: string
+          description: |
+            The end of the coding agent's own output for the run that produced this change set: the
+            last 100 lines, escape sequences stripped, known secrets redacted. Omitted for executors
+            with no agent output and for change sets made before this field existed.
         created_at: { type: string, format: date-time }
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
