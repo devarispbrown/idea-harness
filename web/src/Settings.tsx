@@ -381,12 +381,9 @@ export default function Settings({ projectId }: { projectId: string }) {
       setInitialKind(executorKind);
       setInitialImage(executorImage);
       setInitialModel(executorModel);
-      // F4: a saved executor model can still name a provider that is not
-      // ready — same nudge as the model picker, next to a different action.
-      if (executorModel.includes("/")) {
-        const entry = view?.providers.find((p) => p.name === executorModel.split("/")[0]);
-        if (entry) setWarning(providerReadinessWarning(entry) ?? "");
-      }
+      // No separate "not ready" warning here: the executor status panel,
+      // refreshed below, already states the problem with its fix, and a
+      // second copy at the bottom of the page said it a third time.
       await loadExecutors();
     } catch (e) {
       // Low: this used to route EVERY failure here to the Model field. Only
@@ -773,7 +770,7 @@ export default function Settings({ projectId }: { projectId: string }) {
               )}
             </div>
           )}
-          {!smokeRunning && smokeResult === null && lastSmokeLine && (
+          {!smokeRunning && smokeResult === null && lastSmokeLine && lastSmokeLine !== smokeState.reason && (
             <p className="muted">{lastSmokeLine}</p>
           )}
         </div>
