@@ -333,7 +333,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// Read before Collect, which removes the container and its output with it.
 	// Hermes exits 0 even when every model call failed, so a clean exit that
 	// changed nothing is the common failure, and this is the only record of why.
-	agentOutput := e.agentOutput(ctx, exec, attempt.ID)
+	// The same 100 lines the live view showed, kept on the change set.
+	agentOutput := e.agentOutputLines(ctx, exec, attempt.ID, liveOutputLines)
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
@@ -383,6 +384,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		CreatedByRunID: attempt.ID,
 		Model:          displayModel(modelSpec),
 		Executor:       exec.Name(),
+		AgentOutput:    agentOutput,
 	}
 	// CreateChangeSet forces status=draft and assigns CHG-N.
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
@@ -944,11 +946,16 @@ func (e *Engine) refuseWhileAnotherChangeSetIsOpen(ctx context.Context, initiati
 // agentOutput returns the end of an external agent's own output, redacted, or
 // "" for an executor that has none.
 func (e *Engine) agentOutput(ctx context.Context, exec executor.Executor, attemptID string) string {
+	return e.agentOutputLines(ctx, exec, attemptID, 0)
+}
+
+// agentOutputLines is agentOutput with a line count (0 = the default 40).
+func (e *Engine) agentOutputLines(ctx context.Context, exec executor.Executor, attemptID string, lines int) string {
 	t, ok := exec.(executor.OutputTailer)
 	if !ok {
 		return ""
 	}
-	return e.redact(t.OutputTail(ctx, attemptID, 0))
+	return e.redact(t.OutputTail(ctx, attemptID, lines))
 }
 
 // withAgentOutput appends the agent's own output to a failed attempt's error.

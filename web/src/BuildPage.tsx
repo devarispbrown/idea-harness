@@ -42,6 +42,10 @@ interface ChangeSet {
   // (backend contract addition). appliedOutcomeLabel must read this, not the
   // page's currently-selected executor -- see buildLogic.ts.
   executor?: string;
+  // agent_output is the end of what the coding agent printed in the run that
+  // made this change set. The running card showed it live and disappeared
+  // with it when the run finished.
+  agent_output?: string;
 }
 interface Finding {
   id: string;
@@ -490,6 +494,12 @@ export default function BuildPage({
                 401 and changed nothing showed a bare "(no diff)" next to an
                 Approve button with no explanation: the finding that said why
                 existed but was never rendered outside a conflict. */}
+            {cs.agent_output && (
+              <details className="agent-output">
+                <summary>Agent output</summary>
+                <pre className="agent-output-pre">{cs.agent_output}</pre>
+              </details>
+            )}
             {csFindings.length > 0 && (
               <div className="cs-conflict-findings">
                 {sortFindingsForCard(csFindings).map((f) => (

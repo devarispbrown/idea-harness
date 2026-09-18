@@ -170,9 +170,13 @@ export default function RunningCard({
   // execute_initiative/in-flight, which also covers the card unmounting.
   useEffect(() => {
     if (!op || op.type !== "execute_initiative" || !isOperationInFlight(op.status)) {
-      setAgentOutput(null);
+      // Not cleared when the run stops: the stopped card below keeps the
+      // last output the user was reading. A finished run's output is on its
+      // change set.
       return;
     }
+    // A new run starts with an empty panel, not the previous run's output.
+    setAgentOutput(null);
     let cancelled = false;
     // One request at a time: with a slow Docker, stacked polls took every
     // connection the browser allows to the daemon -- Stop's included.
@@ -232,6 +236,12 @@ export default function RunningCard({
             <div className="running-title">{stoppedMessage(partialWork)}</div>
           </div>
         </div>
+        {agentOutput?.output && (
+          <details className="agent-output">
+            <summary>Agent output before it stopped</summary>
+            <pre className="agent-output-pre">{agentOutput.output}</pre>
+          </details>
+        )}
       </section>
     );
   }

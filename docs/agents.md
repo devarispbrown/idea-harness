@@ -188,7 +188,8 @@ rather than CI defaults — so it runs manually (workflow_dispatch), not on ever
 ## Watching and stopping a run
 
 While the agent runs, the Build page's running card shows its latest output: the last 100 lines,
-refreshed every couple of seconds, with known secrets redacted.
+refreshed every couple of seconds, with known secrets redacted. When the run finishes, the same
+lines stay on the change set it produced, under "Agent output".
 
 **Stop keeps what the agent wrote.** When a run ends without a change set, the files the agent had
 written are kept. That covers Stop, a failure, a timeout and the daemon stopping. The next run of the

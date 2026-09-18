@@ -315,3 +315,21 @@ func TestDiscardIsIdempotent(t *testing.T) {
 		t.Errorf("discarding with nothing kept failed: %v", err)
 	}
 }
+
+// What the agent printed stays readable after the run: the running card that
+// showed it live goes away when the run finishes.
+func TestTheChangeSetKeepsTheAgentsOutput(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	eng.SetRedactor(security.NewRedactor("sk-test-leaked-value-123456"))
+	cs := finishRun(t, eng, iniID, "b.txt", "y\n")
+	got, err := eng.db.GetChangeSet(context.Background(), cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.AgentOutput, "planning the change") {
+		t.Errorf("the change set does not keep the agent's output: %q", got.AgentOutput)
+	}
+	if strings.Contains(got.AgentOutput, "sk-test-leaked-value-123456") {
+		t.Errorf("the stored output carries the key: %q", got.AgentOutput)
+	}
+}

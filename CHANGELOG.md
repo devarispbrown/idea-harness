@@ -21,6 +21,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   while the agent runs. `GET …/initiatives/{id}/agent-output`.
 - **`DELETE …/initiatives/{id}/partial-work`** ("Start over"), `partial_work` on
   `GET …/guidance`, and the `carried_over` finding category.
+- **What the agent printed stays readable after the run.** The running card
+  showed it live and disappeared with it when the run finished; each change set
+  now keeps the agent's last 100 lines (`agent_output`, redacted) under a
+  collapsible "Agent output", and a stopped run's card keeps what it last
+  showed.
 
 ### Changed
 
