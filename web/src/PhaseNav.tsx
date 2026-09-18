@@ -16,6 +16,7 @@ interface Props {
   active: PhaseName | "settings";
   inbox: InboxItem[]; // empty → hidden
   modelChip: string;
+  modelDot?: "ready" | "warn";
   onNavigate: (href: string) => void;
 }
 
@@ -47,6 +48,7 @@ export default function PhaseNav({
   active,
   inbox,
   modelChip,
+  modelDot = "ready",
   onNavigate,
 }: Props) {
   const cur = initiative ? currentPill(initiative.status) : { pill: "", note: "" };
@@ -117,7 +119,10 @@ export default function PhaseNav({
       <div className="pn-footer">
         <div className="pn-model">
           <button className="pn-model-btn" onClick={() => onNavigate("#/settings")}>
-            <span className="pn-model-dot" />
+            <span
+              className={modelDot === "warn" ? "pn-model-dot pn-model-dot--warn" : "pn-model-dot"}
+              title={modelDot === "warn" ? "The default model's provider is not ready (demo output)" : "Provider ready"}
+            />
             <span className="pn-model-name">{modelChip}</span>
           </button>
           {/* "Activity" used to sit inside the model button and navigate to

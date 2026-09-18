@@ -1314,6 +1314,7 @@ button.ghost.small {
   border-radius: 50%;
   background: var(--verified-fg);
 }
+.pn-model-dot--warn { background: var(--needs-you-fg); }
 .pn-model-name { font-family: ui-monospace, Menlo, monospace; }
 .pn-model-more {
   margin-left: auto;
