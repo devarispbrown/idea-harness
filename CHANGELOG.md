@@ -9,6 +9,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
 ### Changed — BREAKING
 
 | | Was | Now |
