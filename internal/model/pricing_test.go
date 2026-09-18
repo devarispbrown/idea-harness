@@ -29,3 +29,47 @@ func TestCostUSDMath(t *testing.T) {
 		t.Fatalf("CostUSD(unknown, 1M/1M) = %f, want 2.50", got)
 	}
 }
+
+// Every model the catalog offers must have a real price. An unpriced model
+// falls through to defaultPricing, which for claude-fable-5-1 was a twentieth
+// of its rate: max_cost_usd let a run spend twenty times its ceiling.
+func TestEveryCatalogModelIsPriced(t *testing.T) {
+	for provider, models := range DefaultModels {
+		if provider == "ollama" {
+			continue // local; costs nothing per token
+		}
+		for _, m := range models {
+			if _, ok := modelPricing[normalizeModel(m)]; !ok {
+				t.Errorf("%s/%s has no price and would be budgeted at the default rate", provider, m)
+			}
+		}
+	}
+}
+
+// The same model costs the same whether it is called directly or through
+// OpenRouter, which prefixes the vendor and spells Claude versions with dots.
+func TestOpenRouterIdsPriceLikeTheDirectModel(t *testing.T) {
+	for routed, direct := range map[string]string{
+		"anthropic/claude-sonnet-5":     "claude-sonnet-5",
+		"anthropic/claude-opus-4.8":     "claude-opus-4-8",
+		"openai/gpt-5.6-luna":           "gpt-5.6-luna",
+		"google/gemini-3.6-flash":       "gemini-3.6-flash",
+		"deepseek/deepseek-v4-pro-0813": "deepseek-v4-pro",
+		"meta-llama/llama-4-maverick":   "meta-llama/llama-4",
+	} {
+		if got := normalizeModel(routed); got != direct {
+			t.Errorf("normalizeModel(%q) = %q, want %q", routed, got, direct)
+		}
+	}
+}
+
+// Prefix matching must pick the model, not a shorter family that happens to
+// prefix it: gpt-5.6-luna is not gpt-5.
+func TestNewerModelsAreNotPricedAsTheirPrefix(t *testing.T) {
+	if got := normalizeModel("gpt-5.6-luna"); got != "gpt-5.6-luna" {
+		t.Errorf("gpt-5.6-luna priced as %q", got)
+	}
+	if got := CostUSD("claude-fable-5-1", 1_000_000, 1_000_000); got != 60 {
+		t.Errorf("claude-fable-5-1 1M/1M = %f, want 60", got)
+	}
+}

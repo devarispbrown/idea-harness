@@ -62,10 +62,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   only the environment. Before, the agent started keyless, got a 401, exited 0,
   and the run produced an empty change set with no reason given.
 
-- **A failed agent says why.** Hermes exits 0 even when the model call fails, so
-  a failure surfaced as `produced no files (CLI contract mismatch?)` — wrong
-  about the cause. `--smoke` now prints the agent's own output, which names the
-  401 or the dead model id.
+- **A failed agent says why, in `--smoke` and in `idea execute`.** Hermes exits
+  0 even when the model call fails, so a failure surfaced as `produced no files
+  (CLI contract mismatch?)` in the smoke, and in a real run as `attempt failed`
+  or as an empty change set with no reason. Both now carry the last 40 lines of
+  the agent's own output, which name the 401 or the dead model id, with known
+  secrets redacted. A run in which the agent changed no file now fails with that
+  output instead of producing an empty change set.
+
+- **`max_cost_usd` is enforced at current prices.** Every current model was
+  missing from the price table and was budgeted at the $0.50/$2.00 default:
+  `claude-sonnet-5` at a quarter of its rate, `claude-fable-5-1` at a twentieth.
+  Every catalog model now has a price, taken from OpenRouter's published rates on
+  2026-09-17, and a test fails when a catalog model has none. A model called
+  through OpenRouter now costs the same as the same model called directly. Ollama
+  calls cost nothing; they had been charged at the default rate.
 
 - **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
   and lists the providers it accepts. It also refuses a provider the daemon

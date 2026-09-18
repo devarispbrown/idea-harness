@@ -286,8 +286,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}()
 	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
-		return domain.ChangeSet{}, err
+		return domain.ChangeSet{}, e.withAgentOutput(ctx, exec, attempt.ID, err)
 	}
+	// Read before Collect, which removes the container and its output with it.
+	// Hermes exits 0 even when every model call failed, so a clean exit that
+	// changed nothing is the common failure, and this is the only record of why.
+	agentOutput := e.agentOutput(ctx, exec, attempt.ID)
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
@@ -299,6 +303,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot after: %w", err)
 	}
 	files := fsdiff.Diff(before, after)
+	if len(files) == 0 && agentOutput != "" {
+		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: the coding agent finished without changing any file; its output:\n%s", agentOutput)
+	}
 
 	// Sweep the produced content BEFORE persisting it: if it carries a known
 	// secret or credential, we reject without ever writing the raw bytes to the
@@ -700,6 +707,9 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 		case "succeeded":
 			return nil
 		case "failed", "cancelled":
+			if st.Action != "" {
+				return fmt.Errorf("workflow: execute: attempt %s (%s)", st.Status, st.Action)
+			}
 			return fmt.Errorf("workflow: execute: attempt %s", st.Status)
 		}
 		time.Sleep(sleep)
@@ -707,6 +717,31 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 			sleep *= 2
 		}
 	}
+}
+
+// agentOutput returns the end of an external agent's own output, redacted, or
+// "" for an executor that has none.
+func (e *Engine) agentOutput(ctx context.Context, exec executor.Executor, attemptID string) string {
+	t, ok := exec.(executor.OutputTailer)
+	if !ok {
+		return ""
+	}
+	return e.redact(t.OutputTail(ctx, attemptID))
+}
+
+// withAgentOutput appends the agent's own output to a failed attempt's error.
+// "attempt failed" was all `idea execute` reported; `--smoke` already showed the
+// output, and a real run is where it matters more.
+func (e *Engine) withAgentOutput(ctx context.Context, exec executor.Executor, attemptID string, err error) error {
+	// A cancelled run's context cannot read anything, and a timeout says why
+	// already; both were cancelled by waitForCompletion, so the output is gone.
+	if ctx.Err() != nil {
+		return err
+	}
+	if out := e.agentOutput(ctx, exec, attemptID); out != "" {
+		return fmt.Errorf("%w; agent output:\n%s", err, out)
+	}
+	return err
 }
 
 // runDeterministicChecks runs the real B5 deterministic checks against the
