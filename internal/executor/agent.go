@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -29,9 +30,8 @@ type SandboxedAgentExecutor struct {
 	name       string
 	image      string
 	model      string
-	keyEnv     string // provider API-key env var name (resolved by the engine)
-	provider   string // provider key, e.g. "openai" (resolved by the engine)
-	baseURL    string // that provider's API root (resolved by the engine)
+	provider   AgentProvider // resolved by the engine; zero on the capability-listing path
+	lookupKey  func(name string) string
 	dockerPath string
 	buildArgs  func(req Request, model, provider string) []string
 }
@@ -44,7 +44,7 @@ type agentAttempt struct {
 	agentHome string
 }
 
-func newSandboxedAgentExecutor(store *blob.Store, name, model, image, keyEnv, provider, baseURL string, buildArgs func(Request, string, string) []string) *SandboxedAgentExecutor {
+func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, provider AgentProvider, buildArgs func(Request, string, string) []string) *SandboxedAgentExecutor {
 	if image == "" {
 		image = "alpine:3.20"
 	}
@@ -54,9 +54,8 @@ func newSandboxedAgentExecutor(store *blob.Store, name, model, image, keyEnv, pr
 		name:       name,
 		model:      model,
 		image:      image,
-		keyEnv:     keyEnv,
 		provider:   provider,
-		baseURL:    baseURL,
+		lookupKey:  os.Getenv,
 		dockerPath: "docker",
 		buildArgs:  buildArgs,
 	}
@@ -102,28 +101,34 @@ func hermesArgs(req Request, model, provider string) []string {
 	return args
 }
 
-// bareModel strips the `provider/` prefix. OpenRouter is the exception: its
-// model ids legitimately contain a slash (`anthropic/claude-opus-5`), and the
-// prefix IS part of the id there.
+// bareModel strips the `provider/` prefix, and only the first one: an
+// OpenRouter id legitimately contains a slash (`openrouter/anthropic/x` becomes
+// `anthropic/x`), and an Ollama tag keeps its colon.
 func bareModel(model string) string {
-	i := strings.Index(model, "/")
-	if i <= 0 {
-		return model
-	}
-	if model[:i] == "openrouter" {
+	if i := strings.Index(model, "/"); i > 0 {
 		return model[i+1:]
 	}
-	return model[i+1:]
+	return model
+}
+
+// SetKeyLookup sets where the provider key's value is read from. The daemon
+// passes one that falls back to the project's .env, as its model registry does;
+// reading only the process environment gave the agent no key while every other
+// model call had one.
+func (e *SandboxedAgentExecutor) SetKeyLookup(lookup func(name string) string) {
+	if lookup != nil {
+		e.lookupKey = lookup
+	}
 }
 
 // writeProviderKeyFile writes the executor's single provider key (resolved by the
 // engine from config, not from a model-prefix switch) to a 0600 temp env-file so
 // the secret never appears in the docker run argv. Returns "" when no key is set.
 func (e *SandboxedAgentExecutor) writeProviderKeyFile() (string, error) {
-	if e.keyEnv == "" {
+	if e.provider.KeyEnv == "" {
 		return "", nil
 	}
-	value := os.Getenv(e.keyEnv)
+	value := e.lookupKey(e.provider.KeyEnv)
 	if value == "" {
 		return "", nil
 	}
@@ -132,7 +137,7 @@ func (e *SandboxedAgentExecutor) writeProviderKeyFile() (string, error) {
 		return "", fmt.Errorf("executor: create key env-file: %w", err)
 	}
 	path := f.Name()
-	if _, err := fmt.Fprintf(f, "%s=%s\n", e.keyEnv, value); err != nil {
+	if _, err := fmt.Fprintf(f, "%s=%s\n", e.provider.KeyEnv, value); err != nil {
 		f.Close()
 		os.Remove(path)
 		return "", err
@@ -148,15 +153,15 @@ func (e *SandboxedAgentExecutor) writeProviderKeyFile() (string, error) {
 	return path, nil
 }
 
-// NewOMPExecutor returns a sandboxed OMP executor. keyEnv is the provider
-// API-key env var name resolved by the engine (empty for keyless providers).
-func NewOMPExecutor(store *blob.Store, model, image, keyEnv, provider, baseURL string) *SandboxedAgentExecutor {
-	return newSandboxedAgentExecutor(store, "omp", model, image, keyEnv, provider, baseURL, ompArgs)
+// NewOMPExecutor returns a sandboxed OMP executor pinned to provider, which the
+// engine resolves with ResolveAgentProvider.
+func NewOMPExecutor(store *blob.Store, model, image string, provider AgentProvider) *SandboxedAgentExecutor {
+	return newSandboxedAgentExecutor(store, "omp", model, image, provider, ompArgs)
 }
 
 // NewHermesExecutor returns a sandboxed Hermes (Nous Research) executor.
-func NewHermesExecutor(store *blob.Store, model, image, keyEnv, provider, baseURL string) *SandboxedAgentExecutor {
-	return newSandboxedAgentExecutor(store, "hermes", model, image, keyEnv, provider, baseURL, hermesArgs)
+func NewHermesExecutor(store *blob.Store, model, image string, provider AgentProvider) *SandboxedAgentExecutor {
+	return newSandboxedAgentExecutor(store, "hermes", model, image, provider, hermesArgs)
 }
 
 // Name reports the executor's registered name.
@@ -180,16 +185,23 @@ func (e *SandboxedAgentExecutor) Capabilities(ctx context.Context) Capabilities 
 // asserted against it: that table said "no network" and a read-only /repo mount
 // for three releases, describing ContainerSandbox rather than this, and no check
 // in the repo could see the difference.
-func (e *SandboxedAgentExecutor) containerArgs(req Request, keyFile, agentHome string) []string {
+func (e *SandboxedAgentExecutor) containerArgs(req Request, attemptID, keyFile, agentHome string) []string {
 	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	// No `--rm`. The container runs detached and Status polls it with
 	// `docker inspect`; with --rm, a fast agent (the smoke writes one file in
 	// ~6s) finished and deleted itself between polls, so inspect failed on a run
 	// that had SUCCEEDED -- surfacing as "failed (removing)" or
-	// "docker inspect: exit status 1". Collect and Cancel remove it explicitly,
-	// and the engine always calls one of them.
+	// "docker inspect: exit status 1".
+	//
+	// Without --rm, a container nothing removes stays on disk with the provider
+	// key in its config, readable with `docker inspect`. So it is NAMED before
+	// it exists (Start can remove it even when `docker run` fails after
+	// creating it) and LABELLED with its work directory (SweepAgentLeftovers
+	// can find what a daemon crash left behind). Collect and Cancel remove it.
 	args := []string{
 		"run", "-d",
+		"--name", agentContainerName(attemptID),
+		"--label", agentLabel + "=" + filepath.Dir(req.WorkRoot),
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -213,7 +225,7 @@ func (e *SandboxedAgentExecutor) containerArgs(req Request, keyFile, agentHome s
 	// where it has to be mapped explicitly. Added only when the endpoint is
 	// actually a loopback one, i.e. Ollama, so nothing else gains a route to the
 	// host it did not have.
-	if _, needsGateway := containerBaseURL(e.baseURL); needsGateway {
+	if _, needsGateway := containerBaseURL(e.provider.BaseURL); needsGateway {
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	return append(args, e.image)
@@ -222,27 +234,61 @@ func (e *SandboxedAgentExecutor) containerArgs(req Request, keyFile, agentHome s
 // containerAgentHome is where the generated agent home is mounted.
 const containerAgentHome = "/tmp/agent-home"
 
-// writeAgentHome creates a writable home directory for the agent, containing
-// the generated config that pins it to one provider and endpoint. Returns ""
-// when this executor has no provider to pin (the capability-listing path).
-func (e *SandboxedAgentExecutor) writeAgentHome() (string, error) {
-	if e.provider == "" || e.baseURL == "" {
+// agentLabel marks every agent container with the directory its work roots and
+// agent homes live in, so leftovers can be found per project.
+const agentLabel = "idea-harness.agent"
+
+// agentHomePrefix names agent-home directories, which sit next to the work root.
+const agentHomePrefix = ".agent-home-"
+
+func agentContainerName(attemptID string) string { return "idea-agent-" + attemptID }
+
+// writeAgentHome creates the writable home a Hermes agent needs, containing the
+// generated config that pins it to one provider and endpoint. Returns "" for
+// any other agent: OMP is not Hermes, and replacing its HOME with an empty
+// directory would hide whatever config or auth its image bakes in.
+//
+// Created next to the work root rather than in the system temp directory.
+// The work root is already bind-mounted, so its parent is a path Docker can
+// see; $TMPDIR is not one under snap-installed Docker (private /tmp) or
+// Colima and Lima (only $HOME is shared), where the mount came up empty.
+func (e *SandboxedAgentExecutor) writeAgentHome(req Request, attemptID string) (string, error) {
+	if e.name != "hermes" {
 		return "", nil
 	}
-	baseURL, _ := containerBaseURL(agentBaseURL(e.provider, e.baseURL))
-	cfg, err := hermesConfigYAML(e.provider, baseURL, bareModel(e.model), e.keyEnv)
-	if err != nil {
-		return "", err
-	}
-	dir, err := os.MkdirTemp("", "idea-harness-agent-home-*")
-	if err != nil {
+	dir := filepath.Join(filepath.Dir(req.WorkRoot), agentHomePrefix+attemptID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("executor: create agent home: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, hermesConfigPath), []byte(cfg), 0o600); err != nil {
-		os.RemoveAll(dir)
+	// Without a provider (the capability-listing path) the home still has to
+	// exist -- the entrypoint cannot boot without it -- but there is nothing to
+	// pin.
+	if e.provider.Name == "" {
+		return dir, nil
+	}
+	baseURL, _ := containerBaseURL(agentBaseURL(e.provider.Name, e.provider.BaseURL))
+	cfg, err := hermesConfigYAML(e.provider.Name, baseURL, bareModel(e.model), e.provider.KeyEnv)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dir, hermesConfigPath), []byte(cfg), 0o600)
+	}
+	if err != nil {
+		removeAgentHome(dir)
 		return "", fmt.Errorf("executor: write agent config: %w", err)
 	}
 	return dir, nil
+}
+
+// removeAgentHome deletes an agent home. The agent runs as the host uid with
+// auto-approve, so it can leave a directory it made unreadable (chmod 000), and
+// a plain RemoveAll then fails on it. Permissions are restored first.
+func removeAgentHome(dir string) error {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if d != nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
 
 // Start launches the agent inside the isolated container (detached) and records
@@ -261,6 +307,7 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	if keyFile != "" {
 		defer os.Remove(keyFile)
 	}
+	attemptID := id.New()
 
 	// A writable agent home, seeded with the config that pins the provider.
 	//
@@ -269,7 +316,7 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	// with "Permission denied" and NOTHING runs -- which is the second reason
 	// the coding-agent path never worked. HERMES_HOME is the entrypoint's own
 	// knob for relocating it.
-	agentHome, err := e.writeAgentHome()
+	agentHome, err := e.writeAgentHome(req, attemptID)
 	if err != nil {
 		return Attempt{}, err
 	}
@@ -279,13 +326,23 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	// smoke failed in eight seconds.
 	started := false
 	defer func() {
-		if !started && agentHome != "" {
-			os.RemoveAll(agentHome)
+		if started {
+			return
+		}
+		// `docker run -d` can create the container and then fail to start it
+		// (exit 125), or be killed by ctx while the daemon goes on to create
+		// it. Either way no attempt is recorded, so nothing else would ever
+		// remove it. Not ctx: it may be the reason we are here.
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		_ = exec.CommandContext(cctx, e.dockerPath, "rm", "-f", agentContainerName(attemptID)).Run()
+		if agentHome != "" {
+			removeAgentHome(agentHome)
 		}
 	}()
 
-	args := e.containerArgs(req, keyFile, agentHome)
-	args = append(args, e.buildArgs(req, e.model, e.provider)...)
+	args := e.containerArgs(req, attemptID, keyFile, agentHome)
+	args = append(args, e.buildArgs(req, e.model, e.provider.Name)...)
 	out, err := exec.CommandContext(ctx, e.dockerPath, args...).Output()
 	if err != nil {
 		return Attempt{}, fmt.Errorf("executor: %s: docker run: %w", e.name, err)
@@ -295,13 +352,19 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 		return Attempt{}, fmt.Errorf("executor: %s: docker run returned no container id", e.name)
 	}
 
-	attemptID := id.New()
 	e.mu.Lock()
 	e.attempts[attemptID] = &agentAttempt{req: req, containerID: cid, agentHome: agentHome}
 	e.mu.Unlock()
 	started = true
 
 	return Attempt{ID: attemptID, Executor: e.name, Status: "running", Phase: "Planning"}, nil
+}
+
+// cleanupContext is for removing what an attempt left behind. It keeps ctx's
+// values but not its cancellation -- a cancelled run is exactly when cleanup
+// has to happen -- and bounds the removal itself.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 }
 
 // Status reports the container's run state by inspecting the Docker daemon.
@@ -335,16 +398,32 @@ func (e *SandboxedAgentExecutor) Status(ctx context.Context, id string) (Status,
 
 // Cancel removes the container, terminating the agent.
 func (e *SandboxedAgentExecutor) Cancel(ctx context.Context, id string) error {
+	return e.remove(ctx, id)
+}
+
+// remove deletes an attempt's container and then its agent home, and forgets
+// the attempt. If the container cannot be removed the attempt is kept, so a
+// later Cancel can retry, and so is the home, which the container may still be
+// using.
+func (e *SandboxedAgentExecutor) remove(ctx context.Context, id string) error {
 	e.mu.Lock()
 	a, ok := e.attempts[id]
 	e.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("executor: unknown attempt %q", id)
 	}
-	err := exec.CommandContext(ctx, e.dockerPath, "rm", "-f", a.containerID).Run()
-	e.release(a)
-	if err != nil {
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	if err := exec.CommandContext(cctx, e.dockerPath, "rm", "-f", a.containerID).Run(); err != nil {
 		return fmt.Errorf("executor: %s: docker rm: %w", e.name, err)
+	}
+	e.mu.Lock()
+	delete(e.attempts, id)
+	e.mu.Unlock()
+	if a.agentHome != "" {
+		if err := removeAgentHome(a.agentHome); err != nil {
+			return fmt.Errorf("executor: %s: remove agent home: %w", e.name, err)
+		}
 	}
 	return nil
 }
@@ -382,29 +461,45 @@ func scrubAgentLog(s string) string {
 	return strings.Join(keep, "\n")
 }
 
-// release removes the attempt's host-side agent home once its container is
-// gone. Safe to call more than once.
-func (e *SandboxedAgentExecutor) release(a *agentAttempt) {
-	e.mu.Lock()
-	home := a.agentHome
-	a.agentHome = ""
-	e.mu.Unlock()
-	if home != "" {
-		os.RemoveAll(home)
-	}
-}
-
 // Collect cleans up the container and returns an empty Result. The engine
 // computes the diff from the work root (B3); the executor's job is only to run
 // the agent in isolation.
 func (e *SandboxedAgentExecutor) Collect(ctx context.Context, id string) (Result, error) {
-	e.mu.Lock()
-	a, ok := e.attempts[id]
-	e.mu.Unlock()
-	if !ok {
-		return Result{}, fmt.Errorf("executor: unknown attempt %q", id)
+	// The error is returned, not dropped. Dropping it reported success while
+	// the container -- and the key in its config -- stayed on disk, and the
+	// engine then skipped the Cancel that would have retried.
+	if err := e.remove(ctx, id); err != nil {
+		return Result{}, err
 	}
-	_ = exec.CommandContext(ctx, e.dockerPath, "rm", "-f", a.containerID).Run()
-	e.release(a)
 	return Result{}, nil
+}
+
+// SweepAgentLeftovers removes agent containers and agent homes that a previous
+// daemon left behind in workDir -- the directory holding a project's work
+// roots. Collect and Cancel remove them in the normal course; this covers a
+// daemon that crashed or was killed between Start and either of them, which
+// used to leave the container, and the provider key in its config, on disk
+// with nothing that would ever find it.
+//
+// Call it only when no attempt for this project can be running, which is at
+// daemon start. Best effort: without Docker there is nothing to sweep.
+func SweepAgentLeftovers(ctx context.Context, workDir string) {
+	sctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	out, err := exec.CommandContext(sctx, "docker", "ps", "-aq",
+		"--filter", "label="+agentLabel+"="+workDir).Output()
+	if err == nil {
+		for _, cid := range strings.Fields(string(out)) {
+			_ = exec.CommandContext(sctx, "docker", "rm", "-f", cid).Run()
+		}
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		return
+	}
+	for _, ent := range entries {
+		if ent.IsDir() && strings.HasPrefix(ent.Name(), agentHomePrefix) {
+			removeAgentHome(filepath.Join(workDir, ent.Name()))
+		}
+	}
 }

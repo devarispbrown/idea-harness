@@ -69,6 +69,7 @@ type Engine struct {
 	log           *slog.Logger
 	workRoot      string
 	workspaceRoot string
+	dotEnv        map[string]string // the project's .env, for provider keys
 
 	// mu serializes the state-mutating operations (execute/apply/revert) so two
 	// concurrent invocations cannot race on the same task or workspace.

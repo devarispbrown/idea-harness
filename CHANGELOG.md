@@ -21,24 +21,29 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   | Invocation | `hermes --in /work --yolo chat --query … --model …` — Hermes has no `--in` flag, printed its usage and exited | `hermes chat --yolo -q … -m <model> --provider <slug>` |
   | Container start | `--read-only` with a host `--user` left the entrypoint unable to create its home: `mkdir: cannot create directory '/opt/data': Permission denied`, and nothing ran | a per-attempt agent home, mounted read-write, named by `HERMES_HOME` |
   | `idea executors setup` | reported `"hermes" CLI not found in image` for the image it had just downloaded, because the probe bypassed the entrypoint that puts `hermes` on `PATH` | the probe runs through the entrypoint |
-  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is removed by `Collect`/`Cancel` |
+  | Finished runs | a fast agent deleted itself (`--rm`) between status polls, so a run that succeeded reported `failed (removing)` | the container is named and labelled, and removed when the attempt is collected or cancelled, when `docker run` fails after creating it, and the next time a daemon loads the project after a crash |
 
   `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
   now passes for all six providers — OpenAI, Anthropic, Gemini, DeepSeek,
-  OpenRouter and Ollama — each producing a real file on 2026-09-17.
+  OpenRouter and Ollama — each producing a real file on 2026-09-17 with the new
+  default models below.
 
 - **The agent talks to the provider you configured.** Hermes's own provider
   names do not match this project's: it maps `openai` to OpenRouter and does not
   know `ollama`, so an OpenAI key would have gone unused while OpenRouter was
   billed. The agent now receives a generated config declaring the provider
-  explicitly, with the base URL from `harness.yaml` and the name of its key
-  variable. Without the key variable, Hermes sent the literal placeholder
+  explicitly, with the base URL and the name of its key variable. Both are
+  resolved the way every other model call resolves them: a `providers:` entry
+  in `harness.yaml` first, then the built-in preset. So an Ollama on another
+  port, or a key in a project-specific variable, reaches the agent too. Without the key variable, Hermes sent the literal placeholder
   `no-key-required`, which is why Anthropic, Gemini and DeepSeek were rejected
   with keys that were valid on the host.
 
 - **Keyless providers can run the coding agent.** The executor refused any
   provider without a key variable, which could not distinguish Ollama — a preset
-  that needs no key — from a typo. An unresolvable provider still fails closed.
+  that needs no key — from a typo. An unresolvable provider still fails closed,
+  including when `default_model` is set: only a bare model id takes the default
+  model's provider, so `opneai/gpt-x` is refused rather than sent to OpenAI.
   Ollama is reached through `host.docker.internal`, because inside a container
   `localhost` is the container.
 
@@ -51,13 +56,38 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   when a user has only `GOOGLE_API_KEY` set, so every model call had been failing
   for a new Gemini user.
 
+- **A keyed provider with no key stops before the agent starts**, naming the
+  variable. The key is read from the daemon's environment and then the
+  project's `.env`, as every other model call reads it; the agent used to read
+  only the environment. Before, the agent started keyless, got a 401, exited 0,
+  and the run produced an empty change set with no reason given.
+
 - **A failed agent says why.** Hermes exits 0 even when the model call fails, so
   a failure surfaced as `produced no files (CLI contract mismatch?)` — wrong
   about the cause. `--smoke` now prints the agent's own output, which names the
   401 or the dead model id.
 
 - **`idea executors setup` checks the provider before pulling a 5.4 GB image**,
-  and lists the providers it accepts.
+  and lists the providers it accepts. It also refuses a provider the daemon
+  reports a problem with, and `--smoke` now calls the provider as the daemon
+  resolved it, so a custom provider can be smoked.
+
+### Changed
+
+- **Current default models.** The model a provider defaults to when you set only
+  its key is now one that answered a real call on 2026-09-17:
+  `claude-sonnet-5` (was `claude-sonnet-4-5-20250929`), `gpt-5.6-luna` (was
+  `gpt-4o`), `deepseek-v4-pro` (was `deepseek-chat`),
+  `anthropic/claude-sonnet-5` on OpenRouter (was `openai/gpt-4o`), and `qwen3.8`
+  on Ollama (was `llama3.1`). Newer models were added to each provider's
+  catalog: Claude Opus 5 and Fable 5.1, GPT-5.6 and 5.5, Gemini 3.5 to 3.8,
+  DeepSeek V4, and Qwen 3.8, Kimi K3 and GLM 5.3 on OpenRouter.
+
+- **Retired model ids were removed from the catalog**, because each returned 404
+  on 2026-09-17: `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`,
+  `claude-opus-4-1`, `gemini-2.0-flash`, `gemini-1.5-pro` and OpenRouter's
+  `anthropic/claude-3.7-sonnet`. Setting one now prints the catalog warning,
+  which lists the current ids. The model is still accepted.
 
 ### Added
 

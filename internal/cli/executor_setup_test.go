@@ -41,3 +41,16 @@ func TestExecutorSetupRejectsABareModel(t *testing.T) {
 		t.Errorf("a bare model was not refused with the provider/model form: %v", err)
 	}
 }
+
+// A provider the daemon itself refuses (a preset whose base_url was
+// overridden, say) must not be smoked, pulled for, or configured.
+func TestExecutorSetupRejectsAProviderWithAProblem(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers.Providers = []cliProvider{{Name: "openai", Problem: "its base_url may not be overridden"}}
+	_, _, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-5.6-luna",
+		"--image", "example/does-not-exist:never", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "base_url may not be overridden") {
+		t.Errorf("a provider the daemon refuses was accepted: %v", err)
+	}
+}
+

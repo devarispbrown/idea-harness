@@ -95,7 +95,7 @@ func TestProblems(t *testing.T) {
 			harness: HarnessConfig{
 				Providers:    map[string]ProviderConfig{"openai": {APIKeyEnv: "OPENAI_API_KEY"}},
 				DefaultModel: "openai/gpt-4o-mini",
-				Models:       map[string]string{"implementer": "anthropic/claude-3-7-sonnet-latest"},
+				Models:       map[string]string{"implementer": "anthropic/claude-sonnet-5"},
 			},
 			dotEnv:    map[string]string{"OPENAI_API_KEY": "sk-test", "ANTHROPIC_API_KEY": "sk-ant-test"},
 			wantErrs:  0,

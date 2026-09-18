@@ -86,14 +86,25 @@ So for `omp` and `hermes` specifically:
   and passed with `--env-file`.
 - **The workspace is mounted read-write** at `/work`. It is not the read-only
   `/repo` mount described above; that belongs to `ContainerSandbox`.
-- **A second read-write mount holds the agent's home**, at `/tmp/agent-home`. It
-  is a fresh temporary directory per attempt, containing only the generated
-  agent config: provider name, base URL, model, and the *name* of the key
-  variable — never the key itself. It is removed when the attempt is collected
-  or cancelled. It exists because the image's own home is not writable under
+- **A second read-write mount holds the Hermes agent's home**, at
+  `/tmp/agent-home`. It is a fresh directory per attempt, created next to the
+  work root. idea-harness writes one file into it, the generated agent config:
+  provider name, base URL, model, and the *name* of the key variable, never the
+  key itself. The agent then writes its own state and the image's bundled skills
+  there. It exists because the image's own home is not writable under
   `--read-only` with a host `--user`, and the agent cannot start without one.
+  OMP gets no such mount and keeps its image's home.
+- **The container is not started with `--rm`**, because a fast agent deleted
+  itself before its status was read. The container keeps the forwarded key in
+  its configuration until it is removed, visible to anyone who can run
+  `docker inspect`. idea-harness removes the container and the agent home when
+  the attempt is collected or cancelled, and when `docker run` fails after
+  creating the container. A daemon that dies mid-run leaves both behind. The
+  next daemon to load that project removes them, if its executor is `hermes`
+  or `omp`.
 - **A loopback provider gets a route to the host.** When the configured base URL
-  is `localhost` or `127.0.0.1` — Ollama by default — the container gets
+  is a loopback host (`localhost`, `127.0.0.0/8` or `[::1]`), which is Ollama by
+  default, the container gets
   `--add-host host.docker.internal:host-gateway` so it can reach that service.
   On Linux this is a route the agent did not otherwise have; on Docker Desktop
   the name already exists. No other provider gets it.
