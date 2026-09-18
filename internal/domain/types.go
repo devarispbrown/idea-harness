@@ -321,6 +321,10 @@ type FileChange struct {
 	Digest     string         `json:"digest"`
 	Mode       string         `json:"mode,omitempty"`
 	ChangeType FileChangeKind `json:"change_type,omitempty"`
+	// BaseDigest is the digest of the file this change was made against, for a
+	// modified or deleted file. Apply refuses when the workspace file no longer
+	// matches it, rather than overwriting an edit made after the agent ran.
+	BaseDigest string `json:"base_digest,omitempty"`
 }
 
 // IsDelete reports whether this change removes the file at Path.

@@ -11,6 +11,19 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **The coding agent no longer overwrites your files.** Its working directory
+  started empty, so the agent never saw the project: asked to add a route to
+  `server.js`, it wrote a new `server.js` from nothing, the change set called
+  the file "added", and applying it deleted the routes that were there. Each
+  run now starts from a fresh copy of the project (git's tracked and untracked,
+  non-ignored files). `.env` files and any file that looks like it holds a
+  credential are never copied, because the agent runs with network access;
+  everything left out is listed on the change set. Applying now refuses, and
+  marks the change set conflicted, when a file it changes was edited after the
+  agent ran or a file it adds now exists. The next task in an initiative waits
+  until the previous task's change set is applied or rejected, so it starts
+  from those changes.
+
 - **The Hermes coding agent generates real code.** It never could against the
   pinned image `nousresearch/hermes-agent:v2026.5.16`, for three independent
   reasons, and nothing noticed because the only CI job that exercised the path

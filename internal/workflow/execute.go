@@ -199,6 +199,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
+		return domain.ChangeSet{}, err
+	}
 
 	// Select the executor before anything is spent or changed. It is where a
 	// missing provider key or an unresolvable provider is refused, and it ran
@@ -271,6 +274,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// Snapshot the isolated work root BEFORE the executor runs, so the
 	// orchestrator computes the real diff itself — never trusting the executor's
 	// self-declaration (review B3).
+	// The agent works on a fresh copy of the workspace (see seed.go).
+	seedSkipped, err := seedWorkRoot(ctx, e.workspaceRoot, req.WorkRoot, e.detectCredential)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
 	before, err := fsdiff.Snapshot(req.WorkRoot)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot before: %w", err)
@@ -399,6 +407,24 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			Evidence:       evidence,
 			Impact:         "This change set is empty. If the task was not already done, the agent's model call most likely failed.",
 			Recommendation: "Read the agent output. A 401 means the provider key is wrong; a 404 means the model id is retired. Fix it and retry, or approve the empty change set if the task was already done.",
+		}
+		if err := e.db.CreateFinding(ctx, &f); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	}
+
+	if len(seedSkipped) > 0 {
+		f := domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       cs.ID,
+			Severity:       domain.SeverityObservation,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "workspace_copy",
+			Finding:        fmt.Sprintf("%d project file(s) were not given to the coding agent.", len(seedSkipped)),
+			Evidence:       seedSkipSummary(seedSkipped),
+			Impact:         "The agent could not read or build against these files.",
+			Recommendation: "If the task needed one of them, move the secret it holds into .env (which is never copied) and retry.",
 		}
 		if err := e.db.CreateFinding(ctx, &f); err != nil {
 			return domain.ChangeSet{}, err
@@ -749,6 +775,33 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 	}
 }
 
+// refuseWhileAnotherChangeSetIsOpen stops a task from running while another
+// task's change set in the same initiative is still open.
+//
+// The agent works on a copy of the workspace. That is only the right base if
+// the workspace already holds every earlier task's work: run task 2 while task
+// 1's change set is still awaiting review and task 2's agent never sees task
+// 1's changes, and the two collide at apply. The task's own earlier attempt is
+// not in the way -- it is superseded as before.
+func (e *Engine) refuseWhileAnotherChangeSetIsOpen(ctx context.Context, initiativeID, taskID string) error {
+	sets, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	for _, cs := range sets {
+		if cs.TaskID == taskID {
+			continue
+		}
+		switch cs.Status {
+		case domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, domain.ChangeSetApproved,
+			domain.ChangeSetApplying, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
+			return fmt.Errorf("workflow: execute: %s is still %s; apply or reject it before running the next task, "+
+				"so the next task starts from its changes", cs.HumanID, strings.ReplaceAll(string(cs.Status), "_", " "))
+		}
+	}
+	return nil
+}
+
 // agentOutput returns the end of an external agent's own output, redacted, or
 // "" for an executor that has none.
 func (e *Engine) agentOutput(ctx context.Context, exec executor.Executor, attemptID string) string {
@@ -1048,6 +1101,28 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
 		return err
+	}
+
+	// Refuse to overwrite anything the change was not made against: a file
+	// edited in the workspace after the agent ran, or one the change "adds"
+	// that now exists. Nothing is written; the change set is conflicted and
+	// the reason recorded, because retrying the same patch fails the same way
+	// -- the way forward is to reject it and run the task again.
+	if stale := fsdiff.StaleBase(workspaceRoot, patch.Files); len(stale) > 0 {
+		_ = e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       changeSetID,
+			Severity:       domain.SeverityHigh,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "stale_base",
+			Finding:        "The workspace changed since this change set was made, so applying it would overwrite work.",
+			Evidence:       strings.Join(stale, "\n"),
+			Impact:         "Nothing was written.",
+			Recommendation: "Reject this change set and run the task again; retrying the same change set conflicts again.",
+		})
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
+		return fmt.Errorf("workflow: apply refused: the workspace changed since %s was made: %s", cs.HumanID, strings.Join(stale, "; "))
 	}
 
 	// Record a "prepared" journal row BEFORE mutating so an interrupted apply is
