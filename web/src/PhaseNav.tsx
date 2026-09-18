@@ -115,11 +115,21 @@ export default function PhaseNav({
       )}
 
       <div className="pn-footer">
-        <button className="pn-model" onClick={() => onNavigate("#/settings")}>
-          <span className="pn-model-dot" />
-          <span className="pn-model-name">{modelChip}</span>
-          <span className="pn-model-more">Activity ↗</span>
-        </button>
+        <div className="pn-model">
+          <button className="pn-model-btn" onClick={() => onNavigate("#/settings")}>
+            <span className="pn-model-dot" />
+            <span className="pn-model-name">{modelChip}</span>
+          </button>
+          {/* "Activity" used to sit inside the model button and navigate to
+              Settings regardless -- a label with no destination of its own.
+              It now goes to this initiative's health/activity trace, and
+              only appears when there is one. */}
+          {initiative && (
+            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/health`)}>
+              Activity ↗
+            </button>
+          )}
+        </div>
         <button
           className={`pn-settings ${active === "settings" ? "on" : ""}`}
           onClick={() => onNavigate("#/settings")}

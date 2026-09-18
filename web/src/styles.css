@@ -39,14 +39,97 @@
   --verified-pill: #dcfce7;
   --failing-pill: #fee2e2;
   --inactive-pill: #f5f4f1;
+
+  /* Explore "grounding" doc-kind chips. Their own tokens, not reused from the
+     state palette above, so a dark-mode override here doesn't ripple into
+     unrelated status pills. */
+  --kind-prd-bg: #eef2ff;
+  --kind-prd-fg: #4338ca;
+  --kind-design-bg: #dcfce7;
+  --kind-design-fg: #166534;
+  --kind-tech-bg: #fef3c7;
+  --kind-tech-fg: #92400e;
+  --kind-market-bg: #fee2e2;
+  --kind-market-fg: #991b1b;
+  --kind-other-bg: #f5f4f1;
+  --kind-other-fg: #78716c;
+}
+
+/* Emulated dark mode (L): every rule above reads colour through a custom
+   property, so redefining the tokens here is enough to re-theme the whole
+   app -- as long as call sites use var(--...) instead of a literal hex
+   value. This was previously not possible at all: nothing redefined these
+   tokens for a dark scheme, and a few call sites (Explore's doc-kind chips)
+   bypassed the token system with inline hex, which this can't reach. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #17161a;
+    --surface: #201f24;
+    --sunken: #26252b;
+    --line: #34333a;
+    --line-soft: #2b2a30;
+    --text: #f2f1ee;
+    --text-body: #d6d3ce;
+    --text-muted: #a29d97;
+    --text-faint: #726d68;
+    --accent: #818cf8;
+    --accent-bg: #262a4a;
+    --accent-line: #3f4470;
+
+    --needs-you-fg: #fbbf24;
+    --needs-you-bg: #3a2f13;
+    --needs-you-line: #6b551d;
+    --running-fg: #a5b4fc;
+    --running-bg: #23223a;
+    --running-line: #3f4470;
+    --verified-fg: #4ade80;
+    --verified-bg: #16241c;
+    --verified-line: #23532f;
+    --failing-fg: #f87171;
+    --failing-bg: #331515;
+    --failing-line: #5c2323;
+    --unverified-fg: #fbbf24;
+    --unverified-bg: #201f24;
+    --unverified-line: #5c4a1a;
+    --inactive-fg: #a29d97;
+    --inactive-bg: #201f24;
+    --inactive-line: #34333a;
+
+    --needs-you-pill: #453a17;
+    --running-pill: #23223a;
+    --verified-pill: #16241c;
+    --failing-pill: #331515;
+    --inactive-pill: #26252b;
+
+    --kind-prd-bg: #23264a;
+    --kind-prd-fg: #a5b4fc;
+    --kind-design-bg: #163826;
+    --kind-design-fg: #6ee7a3;
+    --kind-tech-bg: #3a2f13;
+    --kind-tech-fg: #fbbf24;
+    --kind-market-bg: #3a1c1c;
+    --kind-market-fg: #fca5a5;
+    --kind-other-bg: #26252b;
+    --kind-other-fg: #a29d97;
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  /* J: stop page-level horizontal scroll on narrow viewports. Any element
+     that still needs to scroll sideways (the diff pane, the mobile phase
+     rail) declares its own overflow-x: auto rather than relying on the
+     whole page growing wider than the viewport. */
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
+  max-width: 100vw;
+  overflow-x: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   background: var(--canvas);
@@ -361,6 +444,14 @@ button.ghost {
 .banner a {
   color: var(--needs-you-fg);
   font-weight: 600;
+}
+
+/* G1: the same banner, spanning the whole app shell (sidebar included) so
+   demo mode is visible from every screen, not only Settings. */
+.banner-app {
+  position: relative;
+  z-index: 1;
+  text-align: center;
 }
 
 .palette-trigger {
@@ -1000,9 +1091,16 @@ button.ghost.small {
 }
 
 /* ---------- phase-nav sidebar ---------- */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .phase-nav {
@@ -1197,21 +1295,35 @@ button.ghost.small {
   align-items: center;
   gap: 7px;
   padding: 0 6px;
+}
+.pn-model-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11.5px;
   color: var(--text-muted);
   cursor: pointer;
   background: none;
   border: none;
+  padding: 0;
   text-align: left;
 }
 .pn-model-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #16a34a;
+  background: var(--verified-fg);
 }
 .pn-model-name { font-family: ui-monospace, Menlo, monospace; }
-.pn-model-more { margin-left: auto; }
+.pn-model-more {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
 .pn-settings {
   display: flex;
   gap: 6px;
@@ -1250,6 +1362,24 @@ button.ghost.small {
   display: flex;
   flex-direction: column;
   min-height: calc(100vh - 68px);
+}
+
+/* K: "Next: <phase> →" handoff, shown once the phase being viewed has
+   completed. Rendered by App.tsx alongside whichever phase page is active,
+   so it applies uniformly rather than being wired into each page. */
+.phase-handoff {
+  max-width: 860px;
+  margin-top: 18px;
+}
+.phase-handoff-link {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .phase-header {
@@ -1943,7 +2073,18 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   background: var(--surface);
 }
 .ph-project { font-weight: 600; font-size: 13px; color: var(--text); }
-.ph-settings { font-size: 12px; color: var(--text-muted); margin-left: auto; cursor: pointer; }
+.ph-settings {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  cursor: pointer;
+  /* Was a plain <span> (not focusable, not clickable); now a real <button>,
+     reset back to the same look (K). */
+  background: none;
+  border: none;
+  font-family: inherit;
+  padding: 0;
+}
 .ph-new {
   background: var(--accent);
   color: #fff;
@@ -1968,7 +2109,57 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   padding: 3px 11px;
 }
 .ph-create { margin-top: 16px; }
+.ph-create-hint {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--needs-you-fg);
+}
 .ph-list { display: flex; flex-direction: column; gap: 11px; margin-top: 18px; }
+
+/* G4: first-run explainer, shown instead of the list when there are no
+   initiatives yet. Previously this was a single muted line with no
+   explanation of what the phases mean. */
+.ph-empty {
+  margin-top: 22px;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.ph-empty-lead {
+  margin: 0 0 14px;
+  color: var(--text-body);
+  font-size: 13.5px;
+}
+.ph-empty-phases {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ph-empty-phase {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ph-empty-phase:last-child { border-bottom: none; padding-bottom: 0; }
+.ph-empty-phase-name {
+  flex: none;
+  width: 64px;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ph-empty-phase-purpose { font-size: 12.5px; color: var(--text-muted); }
+.ph-empty-next {
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--text-body);
+}
 .ph-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -2118,8 +2309,10 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 /* ---------- verify page ---------- */
 .verify-meter { display: flex; gap: 9px; margin-top: 16px; align-items: center; }
 .verify-track { flex: 1; height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--line); }
-.verify-fill { height: 100%; background: #16a34a; }
+.verify-fill { height: 100%; background: var(--verified-fg); }
 .verify-meta { font-size: 11.5px; color: var(--text-muted); font-family: ui-monospace, Menlo, monospace; flex: none; }
+/* K: reason shown above the list while Pass/Fail is disabled. */
+.verify-gate-note { margin-top: 12px; }
 .verify-list { display: flex; flex-direction: column; gap: 11px; margin-top: 18px; }
 .verify-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 17px; }
 .verify-card.current { border: 2px solid var(--accent); }
@@ -2291,6 +2484,23 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
     overflow-x: auto;
   }
   .pn-logo, .pn-initiative, .pn-inbox, .pn-eyebrow, .pn-footer { display: none; }
+  /* J: on Home and Settings there is no initiative, so `.pn-rail` doesn't
+     render at all -- hiding the logo and footer alongside it left the whole
+     nav empty but for its own padding ("collapsed to 13 px, leaving no way
+     home"). Bring the logo (home) and footer (Settings) back whenever the
+     rail isn't there to take their place. */
+  .phase-nav:not(:has(.pn-rail)) .pn-logo,
+  .phase-nav:not(:has(.pn-rail)) .pn-footer {
+    display: flex;
+  }
+  .phase-nav:not(:has(.pn-rail)) {
+    align-items: center;
+  }
+  .phase-nav:not(:has(.pn-rail)) .pn-footer {
+    margin-top: 0;
+    margin-left: auto;
+    padding-top: 0;
+  }
   .pn-rail { flex-direction: row; gap: 0; width: 100%; }
   .pn-phase { flex-direction: column; align-items: center; gap: 0; flex: 1; min-width: 0; padding: 6px 0; }
   .pn-dot-wrap { width: auto; flex-direction: row; }

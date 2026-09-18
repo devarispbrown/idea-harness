@@ -70,6 +70,7 @@ export default function DocReader({
 }) {
   const [body, setBody] = useState("");
   const [kind, setKind] = useState("");
+  const [notFound, setNotFound] = useState(false);
   const [comments, setComments] = useState<DocComment[]>([]);
   const [section, setSection] = useState("");
   const [text, setText] = useState("");
@@ -82,12 +83,16 @@ export default function DocReader({
   }, [projectId, artifactId]);
 
   useEffect(() => {
+    setNotFound(false);
     get<{ kind: string; body: string }>(`/projects/${projectId}/artifacts/${artifactId}/body`)
       .then((v) => {
         setBody(v?.body ?? "");
         setKind(v?.kind ?? "");
       })
-      .catch(() => setBody(""));
+      // A failed fetch (bogus artifact id) is not the same thing as a real
+      // document with an empty body -- it used to render the same "No
+      // content." either way (K).
+      .catch(() => setNotFound(true));
     loadComments();
   }, [projectId, artifactId, loadComments]);
 
@@ -123,7 +128,9 @@ export default function DocReader({
         </button>
         {kind && <span className="code">{kind}</span>}
       </div>
-      <article className="doc-reader-body">{body ? renderMarkdown(body) : "No content."}</article>
+      <article className="doc-reader-body">
+        {notFound ? "Document not found." : body ? renderMarkdown(body) : "No content."}
+      </article>
 
       <section className="doc-comments">
         <div className="doc-eyebrow">Comments</div>

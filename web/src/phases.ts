@@ -154,7 +154,13 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
   const done: Record<PhaseName, boolean> = {
     explore: hasAll(artifacts, ["idea_brief", "research_brief"]),
     define: pastDefine,
-    design: hasAll(artifacts, ["technical_design", "design_spec", "verification_plan"]),
+    // Gated on `pastDefine`, not just the artifacts' presence (K): design
+    // artifacts existing is not the same as Design having legitimately
+    // started -- e.g. leftovers from an earlier cycle, the same class of
+    // proxy-vs-reason mistake `pastDefine` itself was written to avoid for
+    // Define. Without this, "Design ✓ approved" could show before the PRD
+    // was even approved.
+    design: pastDefine && hasAll(artifacts, ["technical_design", "design_spec", "verification_plan"]),
     plan: status === "plan_approved" || complete,
     build: allTasksFinished && allChangeSetsTerminal,
     verify: complete,

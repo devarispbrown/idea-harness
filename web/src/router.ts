@@ -10,7 +10,11 @@ export type Route =
   | { name: "health"; id: string }
   | { name: "doc"; id: string; artifact: string; version: string }
   | { name: "diff"; id: string; from: string; to: string }
-  | { name: "settings" };
+  | { name: "settings" }
+  // Anything that doesn't match a known shape. Falling back to "home" here
+  // used to send a mistyped or stale link silently to the initiative list --
+  // indistinguishable from the user having clicked home on purpose (K).
+  | { name: "not-found"; path: string };
 
 export const PHASES: PhaseName[] = ["explore", "define", "design", "plan", "build", "verify"];
 
@@ -38,7 +42,10 @@ export function parseRoute(hash: string): Route {
       return { name: "phase", id, phase: rest as PhaseName };
     }
   }
-  return { name: "home" };
+  // Normalized (no leading/trailing/doubled slashes) so App.tsx can show it
+  // back to the user without echoing whatever stray punctuation was in the
+  // original hash.
+  return { name: "not-found", path: segs.join("/") };
 }
 
 export function currentRoute(): Route {
