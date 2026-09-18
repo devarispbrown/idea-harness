@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, post } from "./api";
+import { errMessage, type NextTask, runningTitle } from "./buildLogic";
 
 interface Operation {
   id: string;
@@ -33,7 +34,10 @@ function fmtElapsed(ms: number): string {
 
 // RunningCard surfaces the initiative's current running operation with a live
 // elapsed timer and a Stop action (design rule 8: running never silent). It
-// renders nothing when no operation is running/pending for this initiative.
+// renders nothing when no operation is running/pending for this initiative
+// AND nothing was just stopped by the person here (B3: after Stop, it shows
+// a "Stopped. Run again?" state instead of vanishing -- a card that just
+// disappears reads as "did that even do anything?").
 export default function RunningCard({
   projectId,
   initiativeId,
@@ -42,7 +46,12 @@ export default function RunningCard({
   initiativeId: string;
 }) {
   const [op, setOp] = useState<Operation | null>(null);
+  const [stopped, setStopped] = useState<Operation | null>(null);
+  const [task, setTask] = useState<NextTask | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [stopBusy, setStopBusy] = useState(false);
+  const [runAgainBusy, setRunAgainBusy] = useState(false);
+  const [error, setError] = useState("");
   // A generation counter guards against a stale poll response from a previous
   // initiative resolving after the props change.
   const genRef = useRef(0);
@@ -62,11 +71,29 @@ export default function RunningCard({
       (o) => o.status === "running" || o.status === "pending",
     );
     setOp(running ?? null);
-    if (running) setNow(Date.now());
+    if (running) {
+      setNow(Date.now());
+      setStopped(null); // a fresh run (Run again, or a new task) supersedes it
+    }
+    if (running?.type === "execute_initiative") {
+      // The task this execute is working on. Best-effort: a transient error
+      // just leaves the previous title in place rather than blanking it.
+      try {
+        const ini = await get<{ next_task?: NextTask | null }>(
+          `/projects/${projectId}/initiatives/${initiativeId}`,
+        );
+        if (gen === genRef.current) setTask(ini?.next_task ?? null);
+      } catch {
+        /* keep the previous task label */
+      }
+    } else {
+      setTask(null);
+    }
   }, [projectId, initiativeId]);
 
   useEffect(() => {
     genRef.current++;
+    setStopped(null);
     load();
     const poll = setInterval(load, 2500);
     return () => clearInterval(poll);
@@ -80,15 +107,54 @@ export default function RunningCard({
     return () => clearInterval(tick);
   }, [op]);
 
-  if (!op) return null;
+  if (!op) {
+    if (!stopped) return null;
+    return (
+      <section className="running-card running-card-stopped">
+        <div className="running-row">
+          <div className="running-body">
+            <div className="running-title">Stopped. Run again?</div>
+          </div>
+          {stopped.type === "execute_initiative" && (
+            <button
+              className="running-stop"
+              disabled={runAgainBusy}
+              onClick={async () => {
+                setRunAgainBusy(true);
+                setError("");
+                try {
+                  await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, {});
+                  // Left stopped=true here on purpose: load() below clears it
+                  // once the poll actually observes the new op running, so
+                  // the card never blanks between "started" and "observed".
+                } catch (e) {
+                  setError(errMessage(e));
+                } finally {
+                  setRunAgainBusy(false);
+                  await load();
+                }
+              }}
+            >
+              {runAgainBusy ? "Starting…" : "Run again"}
+            </button>
+          )}
+        </div>
+        {error && <p className="error">{error}</p>}
+      </section>
+    );
+  }
 
   const stop = async () => {
+    setStopBusy(true);
     try {
       await post(`/operations/${op.id}/cancel`, {});
+      setStopped(op);
     } catch {
       /* the poll reconciles on its own */
+    } finally {
+      setStopBusy(false);
+      await load();
     }
-    await load();
   };
 
   return (
@@ -96,13 +162,13 @@ export default function RunningCard({
       <div className="running-row">
         <span className="pill-spinner" aria-hidden="true" />
         <div className="running-body">
-          <div className="running-title">{OP_LABEL[op.type] ?? op.type}</div>
+          <div className="running-title">{runningTitle(op.type, OP_LABEL, task)}</div>
           <div className="running-sub" aria-hidden="true">
             Running for {fmtElapsed(now - Date.parse(op.created_at))} · you can leave this page
           </div>
         </div>
-        <button className="running-stop" onClick={stop}>
-          Stop
+        <button className="running-stop" onClick={stop} disabled={stopBusy}>
+          {stopBusy ? "Stopping…" : "Stop"}
         </button>
       </div>
     </section>

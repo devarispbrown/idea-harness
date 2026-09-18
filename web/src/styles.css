@@ -2640,3 +2640,45 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   margin-top: 6px;
   color: var(--needs-you-fg);
 }
+/* ---- web-build ---- */
+/* B1: the primary "Run next task" action and its blocked-reason note. */
+.run-next-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.run-next-reason { font-size: 12px; color: var(--text-muted); }
+
+/* B6: flags a modified file whose patch preserves no context lines -- a
+   whole-file rewrite rather than an incremental edit. */
+.cs-file-rewrite {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--needs-you-fg);
+  background: var(--needs-you-pill);
+  border-radius: 5px;
+  padding: 2px 6px;
+  flex: none;
+}
+
+/* Stale-base conflicts: workspace_copy / agent_output findings shown next to
+   a conflicted change set's diff, above the resolve actions. */
+.cs-conflict-findings { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cs-conflict-finding {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--text-body);
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 6px 10px;
+}
+.cs-conflict-cat {
+  flex: none;
+  font: 600 10px ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.cs-conflict-text { flex: 1; min-width: 0; }
+
+/* B3: the running card's post-Stop state, instead of vanishing. */
+.running-card-stopped { border-color: var(--line); }
