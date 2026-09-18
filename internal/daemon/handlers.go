@@ -619,7 +619,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if provider == "" {
 		provider = "openai"
 	}
-	models, _ := pr.registry.ListModels(r.Context(), provider)
+	models, _ := listModelsCached(r.Context(), pr.registry, provider)
 	if models == nil {
 		// The documented behaviour for an unreachable provider is "200 with an
 		// empty models array" -- and the error is deliberately dropped above to
