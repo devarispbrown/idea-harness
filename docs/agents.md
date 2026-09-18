@@ -171,10 +171,35 @@ run` argv and is never written to state.
 
 ## Smoke test
 
-[`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) runs a real Hermes coding task end-to-end in
+**From the web UI:** Settings → Executor → **Run smoke test**. The daemon runs a trivial task
+through the configured agent, which must write one file. It uses the daemon's own configuration and
+keys (its environment, then the project's `.env`), so it tests what a real run will use. It makes
+one small real model call. The last result stays on the Settings page. The same test is
+`POST /api/v1/projects/{projectId}/executors/smoke`.
+
+**From the CLI:** `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
+runs it in your terminal's environment, which is not always the daemon's.
+
+**In CI:** [`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) runs a real Hermes coding task end-to-end in
 the isolated container and asserts that it produces a real file diff. It is **opt-in**: it requires
 `HERMES_IMAGE` and `AGENT_MODEL` (plus a model API key), which are repository variables/secrets
 rather than CI defaults — so it runs manually (workflow_dispatch), not on every push.
+
+## Watching and stopping a run
+
+While the agent runs, the Build page's running card shows its latest output: the last 100 lines,
+refreshed every couple of seconds, with known secrets redacted.
+
+**Stop keeps what the agent wrote.** When a run ends without a change set, the files the agent had
+written are kept. That covers Stop, a failure, a timeout and the daemon stopping. The next run of the
+same task continues from them: the Run button reads "Continue TASK-n (N files from the stopped
+run)". Carried files are applied only where your workspace has not changed since the stopped run.
+The change set's `carried_over` finding lists what was carried and what was skipped.
+
+Choose **Start over** to discard them and begin from the workspace. Over the API, that is
+`DELETE …/initiatives/{id}/partial-work`. Kept files are also discarded when the next task is a
+different one, and when a phase is reopened or the plan revised. Files that look like they hold a
+secret are never kept, and the Build page says so.
 
 ## Security / trust tradeoff — read this before wiring an agent
 
