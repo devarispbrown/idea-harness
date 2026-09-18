@@ -97,8 +97,12 @@ describe("otherOpenFindings", () => {
     expect(otherOpenFindings(all)).toHaveLength(0);
   });
 
+  it("leaves change-set findings to the Build page, which shows them", () => {
+    expect(otherOpenFindings([finding("change_set", { severity: "critical" })])).toHaveLength(0);
+  });
+
   it("catches a target_type neither page recognizes — the reported defect", () => {
-    const all = [finding("change_set", { severity: "critical" })];
+    const all = [finding("some_unplaced_target", { severity: "critical" })];
     const other = otherOpenFindings(all);
     expect(other).toHaveLength(1);
     expect(other[0].severity).toBe("critical");

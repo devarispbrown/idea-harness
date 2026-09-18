@@ -78,7 +78,13 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [view, setView] = useState<ProvidersView | null>(null);
   const [demo, setDemo] = useState(false);
   const [defaultModel, setDefaultModel] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState("openai");
+  // Empty until the providers view has loaded and chosen the default
+  // provider. Starting at "openai" fetched openai's models before the view
+  // existed: no key state to judge it by, so "Loaded 0 models" showed in green,
+  // and its slow live listing could land after the real provider's.
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const selectedProviderRef = useRef("");
+  selectedProviderRef.current = selectedProvider;
   const [liveModels, setLiveModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
@@ -136,6 +142,9 @@ export default function Settings({ projectId }: { projectId: string }) {
         const v = await get<{ provider: string; models: string[] }>(
           `/projects/${projectId}/models?provider=${provider}`,
         );
+        // The user may have switched provider while this was in flight; a late
+        // answer for the old one must not replace the new one's models.
+        if (provider !== selectedProviderRef.current) return;
         const ordered = orderModels(provider, v.models ?? []);
         setLiveModels(ordered.map((m) => `${provider}/${m}`));
         const entry = viewRef.current?.providers.find((pr) => pr.name === provider);
@@ -178,8 +187,8 @@ export default function Settings({ projectId }: { projectId: string }) {
       setDefaultModel(v.default_model || "");
       setGitCommit(v.git_commit ?? false);
       // I1: this sets the provider whose models the effect below preloads;
-      // resolveInitialProvider is the same rule loadSettingsOnce documents
-      // and unit-tests in settingsLoad.ts.
+      // Setting the provider starts the model fetch, in its own effect; load
+      // itself never depends on the view, which is what looped.
       setSelectedProvider(resolveInitialProvider(v.default_model || ""));
     } catch (e) {
       setError(errorMessage(e));
@@ -580,6 +589,7 @@ export default function Settings({ projectId }: { projectId: string }) {
                       {lines.keyLine.text}
                     </div>
                   )}
+                  {lines.noteLine && <div className="executor-status-line">{lines.noteLine}</div>}
                   {lines.problemLine && (
                     <div className="executor-status-problem">{lines.problemLine}</div>
                   )}

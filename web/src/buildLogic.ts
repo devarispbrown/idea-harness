@@ -122,14 +122,10 @@ export interface OperationTaskFields {
 }
 
 // resolveRunningTask picks which task RunningCard names for a running
-// execute_initiative operation. An operation that carries its own task
-// fields (stamped on it the moment it started) is authoritative and
-// correct even after guidance's "next" pointer has already moved on to a
-// different task; `guidanceNextTask` is the fallback for a daemon that
-// doesn't stamp operations with them yet, which is also the ONLY source
-// RunningCard used to read (H4's other half) -- fetched via an extra
-// request that this function lets the caller skip entirely once the
-// operation itself has the answer.
+// execute_initiative operation. The daemon does not stamp task fields on
+// operations today, so this resolves to guidance's next_task -- which is the
+// running task, because a task stays ready until its change set is applied.
+// Operation task fields, if the daemon ever adds them, take precedence.
 export function resolveRunningTask(
   op: OperationTaskFields,
   guidanceNextTask: NextTask | null | undefined,

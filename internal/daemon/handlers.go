@@ -730,7 +730,12 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	if d, err := pr.db.GetDecision(r.Context(), decisionID); err == nil {
 		if all, err := pr.db.ListDecisions(r.Context(), d.InitiativeID); err == nil {
 			for _, other := range all {
-				if other.ID != d.ID && other.Status == domain.DecisionOpen && projection.SameQuestion(other.Question, d.Question) {
+				// Same type too, and only an answer that decision offers: the
+				// question match ignores leading tags, and copying an answer
+				// that is not one of a decision's options would record a
+				// choice nobody was offered.
+				if other.ID != d.ID && other.Status == domain.DecisionOpen && other.Type == d.Type &&
+					projection.SameQuestion(other.Question, d.Question) && offers(other.Options, body.Resolution) {
 					_ = pr.db.ResolveDecision(r.Context(), other.ID, body.Resolution, store.HumanActor)
 				}
 			}
@@ -2522,4 +2527,18 @@ func (s *Server) initiative(r *http.Request) (*projectRuntime, domain.Initiative
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), id)
 	return pr, ini, err
+}
+
+// offers reports whether answer is one of options, or options is empty (a
+// free-text decision).
+func offers(options []string, answer string) bool {
+	if len(options) == 0 {
+		return true
+	}
+	for _, o := range options {
+		if o == answer {
+			return true
+		}
+	}
+	return false
 }
