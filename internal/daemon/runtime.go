@@ -66,6 +66,8 @@ type Runtime struct {
 	// Build page's run_blocked_reason poll never call Docker more than once
 	// every 30s per image.
 	images *imagePresenceCache
+	// smokes is the per-project claim for smoke tests started from the UI.
+	smokes smokeClaims
 }
 
 type projectRuntime struct {
@@ -1215,6 +1217,9 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 		}
 		return "", err
 	}
+	// The plan this changes may change the task a stopped run's kept files
+	// belong to; carrying them into a rewritten task would be wrong.
+	_ = pr.engine.DiscardPartial(initiativeID)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.ReopenPhase(bg, initiativeID, phase)
 		if runErr != nil {
@@ -1306,6 +1311,9 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 		}
 		return "", err
 	}
+	// The plan this changes may change the task a stopped run's kept files
+	// belong to; carrying them into a rewritten task would be wrong.
+	_ = pr.engine.DiscardPartial(initiativeID)
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.RevisePlan(bg, initiativeID)
 		if runErr != nil {

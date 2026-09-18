@@ -232,7 +232,9 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/advance` | Run the M2 Design → Execution Plan pipeline. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan — accepts it, findings and all. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. **202** |
+| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. **202** |
+| GET | `/projects/{projectId}/initiatives/{id}/agent-output` | The running coding agent's last 100 output lines (redacted), and whether it is still running. |
+| DELETE | `/projects/{projectId}/initiatives/{id}/partial-work` | Discard a stopped run's kept files, so the next run starts from the workspace ("Start over"). |
 | POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
 
 ### Understanding, guidance and analysis
@@ -338,6 +340,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/models?provider=` | List a provider's models live, falling back to the bundled catalog. Defaults to the default model's provider. |
 | GET | `/projects/{projectId}/executors` | Available executors, their declared capabilities, and which one is configured. |
 | PUT | `/projects/{projectId}/executors` | Field-level merge of `{kind, image, model}` into `harness.yaml`, validated, then reload. |
+| POST | `/projects/{projectId}/executors/smoke` | Run the coding agent's smoke test with the daemon's own config and keys; one small real model call. **202** |
 
 ### Activity and events
 

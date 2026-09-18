@@ -115,7 +115,13 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 // lookupKey reads the provider key; the CLI passes one that falls back to the
 // project's .env, as the daemon does, so a key `idea execute` would accept is
 // not refused here.
-func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentProvider, lookupKey func(string) string) error {
+//
+// workDir is where the smoke's work root is made. The daemon passes a
+// directory under its state root: the system temp directory is not visible
+// to Docker under snap-installed Docker or Colima, and a smoke there reported
+// "produced no files" for a setup that worked. "" uses the temp directory,
+// which is right for the CLI.
+func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentProvider, lookupKey func(string) string, workDir string) error {
 	if err := provider.Validate(); err != nil {
 		return fmt.Errorf("executor: smoke: %w", err)
 	}
@@ -126,7 +132,12 @@ func SmokeAgent(ctx context.Context, kind, image, model string, provider AgentPr
 		return fmt.Errorf("executor: smoke requires %s, in the environment or the project's .env", provider.KeyEnv)
 	}
 
-	work, err := os.MkdirTemp("", "idea-smoke-*")
+	if workDir != "" {
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return err
+		}
+	}
+	work, err := os.MkdirTemp(workDir, "idea-smoke-*")
 	if err != nil {
 		return err
 	}

@@ -99,6 +99,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/risk", s.handleRisk)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/doctor", s.handleDoctor)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/executors/smoke", s.handleExecutorSmoke)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/agent-output", s.handleAgentOutput)
+	m.HandleFunc("DELETE /api/v1/projects/{projectId}/initiatives/{id}/partial-work", s.handleDiscardPartialWork)
 
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make

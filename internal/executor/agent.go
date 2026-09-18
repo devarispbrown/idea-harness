@@ -492,8 +492,11 @@ var ansiEscape = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\
 const agentOutputLines = 40
 
 // OutputTail implements OutputTailer.
-func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string) string {
-	return e.tailLogs(ctx, id, agentOutputLines)
+func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string, lines int) string {
+	if lines <= 0 {
+		lines = agentOutputLines
+	}
+	return e.tailLogs(ctx, id, lines)
 }
 
 // scrubAgentLog drops the image's per-start skill-sync noise and blank lines,

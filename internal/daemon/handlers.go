@@ -191,6 +191,13 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	// The executor-readiness half (C3): only worth a Docker-backed check (cached,
 	// see imagePresenceCache) when the workflow-level checks already say a run
 	// could start and there is actually a task to run it on.
+	if pw := pr.engine.PartialWork(ini.ID); pw != nil {
+		ref := &projection.PartialWorkRef{TaskID: pw.TaskID, Files: pw.Files, Note: pw.Note}
+		if t, err := pr.db.GetTask(r.Context(), pw.TaskID); err == nil {
+			ref.TaskHumanID = t.Code
+		}
+		g.PartialWork = ref
+	}
 	if g.RunBlockedReason == "" && g.NextTask != nil {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
@@ -2368,7 +2375,11 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		caps := exec.Capabilities(r.Context())
 		// C3: status is only meaningful for hermes/omp; executorStatus reports
 		// internal/container as always-ready.
-		status := s.rt.executorStatus(pr, exec.Name(), exec.Name() == string(pr.cfg.Harness.Executor.Kind))
+		selected := exec.Name() == string(pr.cfg.Harness.Executor.Kind)
+		status := s.rt.executorStatus(pr, exec.Name(), selected)
+		if selected {
+			status.LastSmoke = lastSmoke(r.Context(), pr, r.PathValue("projectId"))
+		}
 		list = append(list, map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,

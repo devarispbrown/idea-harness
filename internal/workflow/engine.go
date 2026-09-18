@@ -68,6 +68,10 @@ type Engine struct {
 	registry      *model.Registry
 	cfg           config.HarnessConfig
 	log           *slog.Logger
+	// liveMu guards live: the running agent of each initiative, readable
+	// while Execute holds mu (see runstate.go).
+	liveMu sync.Mutex
+	live   map[string]*liveAttempt
 	workRoot      string
 	workspaceRoot string
 	dotEnv        map[string]string // the project's .env, for provider keys
