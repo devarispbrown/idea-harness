@@ -75,3 +75,12 @@ describe("chipsToShow", () => {
     expect(chipsToShow(["a", "b", "c"], "")).toEqual(["a", "b", "c"]);
   });
 });
+
+describe("isChatModel on OpenAI's live listing", () => {
+  it("drops audio, speech, realtime, research and moderation models", () => {
+    for (const id of ["gpt-audio-2025", "whisper-1", "gpt-realtime", "o3-deep-research", "omni-moderation-latest", "dall-e-3", "gpt-4o-search-preview"]) {
+      expect(isChatModel(id)).toBe(false);
+    }
+    expect(isChatModel("gpt-5.6-luna")).toBe(true);
+  });
+});

@@ -247,22 +247,22 @@ export function noDiffMessage(noFilesChanged: boolean): string {
   return noFilesChanged ? "The agent changed no files." : "(no diff)";
 }
 
-// APPROVAL_BLOCKED matches the workflow engine's raw refusal from POST
-// .../review — "workflow: approval blocked: open <severity> finding: <text>"
-// — internal error-chain phrasing, not something a reviewer should have to
-// parse. The finding itself is already listed next to the diff (H6); this
-// just makes the button's own refusal point at it in plain language instead
-// of surfacing the wrapped error verbatim.
-const APPROVAL_BLOCKED = /^workflow:\s*approval blocked:\s*open (\w+) finding:?\s*(.*)$/i;
+// approveErrorMessage turns the engine's refusal from POST .../review into a
+// sentence for the reviewer. The engine's text is written for the CLI --
+// "workflow: approval blocked: system deny review_open_blocking (open high
+// finding); `idea reviews` lists them, ..." -- and an earlier version of this
+// matched a shape the engine never sent, so the raw text reached the page.
+// The finding itself is listed on the card; this points at it.
+const APPROVAL_BLOCKED = /approval blocked:.*?\(open (\w+) finding(?:, ([\w-]+))?\)/i;
 
 export function approveErrorMessage(raw: string): string {
-  const m = APPROVAL_BLOCKED.exec(raw.trim());
-  if (!m) return raw;
-  const [, severity, text] = m;
-  const detail = text.trim();
-  return detail
-    ? `Can't approve: an open ${severity.toUpperCase()} finding needs to be resolved first — "${detail}"`
-    : `Can't approve: an open ${severity.toUpperCase()} finding needs to be resolved first.`;
+  const m = APPROVAL_BLOCKED.exec(raw);
+  if (!m) return raw.replace(/^workflow:\s*/i, "");
+  const severity = m[1].toUpperCase();
+  if (m[2]) {
+    return `Can't approve: an open ${severity} finding (${m[2]}) is a system block that cannot be accepted. Reject this change set and run the task again.`;
+  }
+  return `Can't approve: an open ${severity} finding from the reviewer is listed on this change set. Resolve it, or request changes.`;
 }
 
 export type ConflictCause = "stale_base" | "other";
@@ -303,4 +303,16 @@ export function buildHeaderMeta(executorKind: string): string {
   return executorKind === "internal"
     ? `${executorKind} executor · placeholder code`
     : `${executorKind} executor`;
+}
+
+// sortFindingsForCard puts what explains the card's state first: why it
+// conflicted (stale_base), then blocking severities, then the rest. The
+// stale-base finding was the last of nine rows on the card it explained.
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, observation: 4 };
+export function sortFindingsForCard<T extends { category: string; severity: string }>(findings: T[]): T[] {
+  return [...findings].sort((a, b) => {
+    const sa = a.category === "stale_base" ? -1 : (SEVERITY_RANK[a.severity] ?? 5);
+    const sb = b.category === "stale_base" ? -1 : (SEVERITY_RANK[b.severity] ?? 5);
+    return sa - sb;
+  });
 }

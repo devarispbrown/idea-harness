@@ -9,6 +9,67 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+| | Was | Now |
+|---|---|---|
+| `PUT …/executors` with a model the coding agent cannot use (unknown provider, a provider name Hermes rejects, an Anthropic-type proxy) | stored; the run failed later | `400` with the reason |
+| `POST …/execute` while the PRD or the plan is waiting for review (`needs_human_judgment` with `prd_review`, `plan_review` or `plan_dependencies`) | ran tasks from an unapproved plan, leaving approve-plan and revise-plan both refused | refused: approve the PRD and plan first |
+| `POST …/execute` while another task's change set in the initiative is open (`checks_running`, `review_required`, `approved`, `applying`, `changes_requested`, `conflicted`) | ran, on a copy that lacked the open change set's work | refused, naming the open change set |
+| `GET …/initiatives/{id}/decisions` | every row | one row per question (newest open, else newest decided); `?all=true` returns every row |
+| `POST …/decisions/{id}/resolve` | resolved that decision | also resolves open decisions of the same type asking the same question, when they offer the same answer |
+| Ollama with no `default_model` | `llama3.1` | `qwen3.8` |
+| A second `idea daemon` on another address sharing the same state directory | started | refused: the state directory is locked |
+
+Consumer impact: automation that saves an executor with an unresolvable model,
+runs tasks back to back without applying or rejecting each change set, or
+counts decisions, will see a refusal or fewer rows. Ollama users relying on
+the default must `ollama pull qwen3.8` or set `default_model: ollama/llama3.1`.
+
+### Added
+
+- **API fields for the web UI's Build and Settings pages** (all omitted when
+  empty):
+  - operations: `error`, the redacted reason a failed operation failed;
+  - `GET …/guidance`: `next_task` and `run_blocked_reason`;
+  - `GET …/executors`: `status` (`image`, `image_present`, `image_state`,
+    `key_env`, `key_set`, `problem`, `note`);
+  - change-set diff files: `patch` (git-style hunks) and `patch_note`;
+  - change sets: `model` and `executor`;
+  - `GET …/decisions?all=true`;
+  - finding categories `stale_base`, `workspace_copy` and `agent_output`.
+- **Patch manifests record `base_digest`** for modified and deleted files, so
+  apply can refuse a stale base. Patches made before this apply as before.
+
+- **A CI job that runs the real agent path without an API key.** It starts the
+  pinned image through the real executor against a refused endpoint and asserts
+  Hermes accepted the query. Both startup defects above fail it; neither needed
+  a key to detect. It runs on pushes rather than every pull request because the
+  image is 5.4 GB, and releases now wait for it.
+
+### Changed
+
+- **Current default models.** The model a provider defaults to when you set only
+  its key is now one that answered a real call on 2026-09-17:
+  `claude-sonnet-5` (was `claude-sonnet-4-5-20250929`), `gpt-5.6-luna` (was
+  `gpt-4o`), `deepseek-v4-pro` (was `deepseek-chat`),
+  `anthropic/claude-sonnet-5` on OpenRouter (was `openai/gpt-4o`), and `qwen3.8`
+  on Ollama (was `llama3.1`). **If you use Ollama without a `default_model`**,
+  the harness now asks for `qwen3.8`: pull it (`ollama pull qwen3.8`), or set
+  `default_model: ollama/llama3.1` to keep the old one. Newer models were added to each provider's
+  catalog: Claude Opus 5 and Fable 5.1, GPT-5.6 and 5.5, Gemini 3.5 to 3.8,
+  DeepSeek V4, and Qwen 3.8, Kimi K3 and GLM 5.3 on OpenRouter.
+
+- **Retired model ids were removed from the catalog**, because each returned 404
+  on 2026-09-17: `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`,
+  `claude-opus-4-1`, `gemini-2.0-flash`, `gemini-1.5-pro` and OpenRouter's
+  `anthropic/claude-3.7-sonnet`. Setting one now prints the catalog warning,
+  which lists the current ids. The model is still accepted.
+
+- **`idea daemon stop` waits for the daemon to exit** (up to 35 s, while it
+  cancels running work) and prints the pid it stopped; it exits non-zero if
+  the daemon is still stopping.
+
 ### Fixed
 
 - **The web UI can run the whole loop.** The UI walkthrough rated it 3/10:
@@ -162,33 +223,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   project's `.env` as the daemon does, refuses a provider name or type the agent
   cannot use (an uppercase name, an Anthropic-type proxy), and warns when
   `models.implementer` would run a different model than the one set.
-
-### Changed
-
-- **Current default models.** The model a provider defaults to when you set only
-  its key is now one that answered a real call on 2026-09-17:
-  `claude-sonnet-5` (was `claude-sonnet-4-5-20250929`), `gpt-5.6-luna` (was
-  `gpt-4o`), `deepseek-v4-pro` (was `deepseek-chat`),
-  `anthropic/claude-sonnet-5` on OpenRouter (was `openai/gpt-4o`), and `qwen3.8`
-  on Ollama (was `llama3.1`). **If you use Ollama without a `default_model`**,
-  the harness now asks for `qwen3.8`: pull it (`ollama pull qwen3.8`), or set
-  `default_model: ollama/llama3.1` to keep the old one. Newer models were added to each provider's
-  catalog: Claude Opus 5 and Fable 5.1, GPT-5.6 and 5.5, Gemini 3.5 to 3.8,
-  DeepSeek V4, and Qwen 3.8, Kimi K3 and GLM 5.3 on OpenRouter.
-
-- **Retired model ids were removed from the catalog**, because each returned 404
-  on 2026-09-17: `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`,
-  `claude-opus-4-1`, `gemini-2.0-flash`, `gemini-1.5-pro` and OpenRouter's
-  `anthropic/claude-3.7-sonnet`. Setting one now prints the catalog warning,
-  which lists the current ids. The model is still accepted.
-
-### Added
-
-- **A CI job that runs the real agent path without an API key.** It starts the
-  pinned image through the real executor against a refused endpoint and asserts
-  Hermes accepted the query. Both startup defects above fail it; neither needed
-  a key to detect. It runs on pushes rather than every pull request because the
-  image is 5.4 GB, and releases now wait for it.
 
 ## [0.4.0] - 2026-09-17
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -44,7 +45,14 @@ const (
 	imageAbsent imageState = iota
 	imagePresent
 	dockerUnavailable
+	// imageUnknown: Docker answered with something unrecognised, or too
+	// slowly. Neither blocks a run -- the run itself will say what is wrong
+	// -- and it is cached only briefly.
+	imageUnknown
 )
+
+// unknownTTL is how long an inconclusive answer is reused.
+const unknownTTL = 5 * time.Second
 
 func newImagePresenceCache() *imagePresenceCache {
 	return &imagePresenceCache{
@@ -63,7 +71,7 @@ func (c *imagePresenceCache) state(image string) imageState {
 	}
 	for {
 		c.mu.Lock()
-		if e, ok := c.entries[image]; ok && time.Since(e.checkedAt) < c.ttl {
+		if e, ok := c.entries[image]; ok && time.Since(e.checkedAt) < c.ttlFor(e.state) {
 			c.mu.Unlock()
 			return e.state
 		}
@@ -94,17 +102,44 @@ func (c *imagePresenceCache) state(image string) imageState {
 	}
 }
 
+func (c *imagePresenceCache) ttlFor(st imageState) time.Duration {
+	if st == imageUnknown {
+		return unknownTTL
+	}
+	return c.ttl
+}
+
 // dockerImageState asks `docker image inspect`, the same presence check
 // executor.PullImage makes before deciding whether to pull -- but never pulls.
+//
+// Only answers that clearly mean "no Docker" count as unavailable. Everything
+// else that is not "present" used to, so Podman's "image not known" and a
+// Docker Desktop still starting (slower than the probe's timeout) both greyed
+// out the Run button with "Docker is not running" for 30 s.
 func dockerImageState(ctx context.Context, image string) imageState {
 	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", image).CombinedOutput()
-	switch {
-	case err == nil:
+	return classifyInspect(err, string(out), ctx.Err())
+}
+
+func classifyInspect(err error, out string, ctxErr error) imageState {
+	if err == nil {
 		return imagePresent
-	case strings.Contains(strings.ToLower(string(out)), "no such image"):
+	}
+	if ctxErr != nil {
+		return imageUnknown
+	}
+	o := strings.ToLower(out)
+	switch {
+	case strings.Contains(o, "no such image"), strings.Contains(o, "image not known"):
 		return imageAbsent
-	default:
+	case errors.Is(err, exec.ErrNotFound),
+		strings.Contains(o, "cannot connect to the docker daemon"),
+		strings.Contains(o, "is the docker daemon running"),
+		strings.Contains(o, "error during connect"),
+		strings.Contains(o, "cannot connect to podman"):
 		return dockerUnavailable
+	default:
+		return imageUnknown
 	}
 }
 
@@ -114,8 +149,12 @@ func dockerImageState(ctx context.Context, image string) imageState {
 type executorReadiness struct {
 	Image        string `json:"image"`
 	ImagePresent bool   `json:"image_present"`
-	KeyEnv       string `json:"key_env"`
-	KeySet       bool   `json:"key_set"`
+	// ImageState says why ImagePresent is false: "absent", "unknown" (Docker
+	// answered slowly or unexpectedly) or "docker_unavailable"; "present"
+	// otherwise. Empty for executors with no image.
+	ImageState string `json:"image_state,omitempty"`
+	KeyEnv     string `json:"key_env"`
+	KeySet     bool   `json:"key_set"`
 	// Problem is empty when a run can start. It is only ever computed for
 	// hermes/omp; internal/container are always ready.
 	Problem string `json:"problem,omitempty"`
@@ -150,11 +189,16 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 		st.Problem = fmt.Sprintf("%s has no default image; run: idea executors setup --kind %s --image <image> --model %s --yes",
 			kind, kind, modelHint)
 	default:
-		switch r.images.state(image) {
+		ims := r.images.state(image)
+		st.ImageState = map[imageState]string{imagePresent: "present", imageAbsent: "absent",
+			imageUnknown: "unknown", dockerUnavailable: "docker_unavailable"}[ims]
+		switch ims {
 		case imagePresent:
 			st.ImagePresent = true
 		case dockerUnavailable:
 			st.Problem = "Docker is not running or not installed; the coding agent runs in a Docker container. Start Docker and try again."
+		case imageUnknown:
+			st.Note = "Could not check the image just now (Docker answered slowly or unexpectedly); the run will report any problem."
 		case imageAbsent:
 			st.Note = fmt.Sprintf("Image %s is not pulled yet; the first run downloads it, which can take several minutes. "+
 				"To pull it now: idea executors setup --kind %s --model %s --yes", image, kind, modelHint)

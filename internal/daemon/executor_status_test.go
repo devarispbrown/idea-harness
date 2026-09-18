@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,5 +143,39 @@ func TestImageProbeOutlivesTheRequest(t *testing.T) {
 	}
 	if got := c.state("some/image:tag"); got != imagePresent {
 		t.Errorf("state = %v, want present", got)
+	}
+}
+
+// Only a clear "no Docker" blocks a run. Podman's wording for a missing image,
+// and a Docker slower than the probe, were both reported as "Docker is not
+// running" and greyed out the Run button.
+func TestInspectAnswersAreClassifiedCarefully(t *testing.T) {
+	failed := errors.New("exit status 1")
+	for _, c := range []struct {
+		name   string
+		err    error
+		out    string
+		ctxErr error
+		want   imageState
+	}{
+		{"present", nil, "[{}]", nil, imagePresent},
+		{"docker: no such image", failed, "Error: No such image: x", nil, imageAbsent},
+		{"podman: image not known", failed, "Error: x: image not known", nil, imageAbsent},
+		{"daemon down", failed, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", nil, dockerUnavailable},
+		{"no docker binary", exec.ErrNotFound, "", nil, dockerUnavailable},
+		{"too slow", failed, "", context.DeadlineExceeded, imageUnknown},
+		{"something else", failed, "permission denied", nil, imageUnknown},
+	} {
+		if got := classifyInspect(c.err, c.out, c.ctxErr); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAnUnknownImageStateDoesNotBlock(t *testing.T) {
+	rt := &Runtime{images: fakeImageCache(imageUnknown)}
+	st := rt.executorStatus(hermesProject("anthropic/claude-sonnet-5", map[string]string{"ANTHROPIC_API_KEY": "k"}), "hermes", true)
+	if st.Problem != "" || st.Note == "" {
+		t.Errorf("status = %+v, want a note and no problem", st)
 	}
 }
