@@ -21,6 +21,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/schema"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
+	"github.com/devarispbrown/idea-harness/internal/textdiff"
 )
 
 // SetWorkRoot sets the directory that Execute derives per-initiative isolated
@@ -338,12 +339,19 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
+	// Computed here (config-derived, known before the agent ever ran) so it can
+	// be stored on the change set at creation, not just on the run manifest --
+	// CreatedByRunID above is the EXECUTOR's attempt id, not the domain Run id
+	// CreateRunManifest keys its RunID on, so the two cannot be joined to
+	// recover it later.
+	modelSpec := e.implementerModel()
 	cs := &domain.ChangeSet{
 		InitiativeID:   initiativeID,
 		TaskID:         task.ID,
 		BaseSnapshotID: before.Digest(),
 		PatchDigest:    patchDigest,
 		CreatedByRunID: attempt.ID,
+		Model:          displayModel(modelSpec),
 	}
 	// CreateChangeSet forces status=draft and assigns CHG-N.
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
@@ -485,8 +493,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
-	// Record the implementer run's provenance + success (review B7).
-	modelSpec := e.implementerModel()
+	// Record the implementer run's provenance + success (review B7). modelSpec
+	// was already resolved above, when the change set itself was created.
 	if err := e.db.CreateRunManifest(ctx, &domain.RunManifest{
 		RunID:          agentRunID,
 		RequestedModel: modelSpec,
@@ -644,6 +652,61 @@ type StructuredFile struct {
 	ChangeType string `json:"change_type"`
 	Size       int    `json:"size"`
 	Content    string `json:"content"`
+	// Patch is a unified diff of the file against its base (B6): an added file
+	// is all '+', a deleted file is all '-', a modified file is base vs new.
+	// Omitted when there is nothing to diff (both sides empty). This is what
+	// lets the diff view render a change instead of a full-file dump for a
+	// whole-file rewrite of an existing file.
+	Patch string `json:"patch,omitempty"`
+}
+
+// baseContent returns fc's REDACTED pre-change content, or "" when there is
+// none (an added file, or a base that cannot be recovered).
+//
+// The base is read from the content blob store first -- fsdiff.Prepare
+// persists the workspace's pre-image there keyed by digest, at apply time, for
+// revert -- and falls back to the live workspace file otherwise. That fallback
+// is what makes a diff available at REVIEW time, before any apply has
+// happened: the work root the agent edited is a fresh copy (Track A), so the
+// file at this path in the actual workspace is still exactly what the agent
+// started from.
+func (e *Engine) baseContent(fc domain.FileChange) string {
+	if fc.BaseDigest == "" {
+		return ""
+	}
+	var data []byte
+	if e.contentBlobs() != nil {
+		if d, err := e.contentBlobs().Get(fc.BaseDigest); err == nil {
+			data = d
+		}
+	}
+	if data == nil && e.workspaceRoot != "" {
+		if d, err := os.ReadFile(filepath.Join(e.workspaceRoot, filepath.FromSlash(fc.Path))); err == nil {
+			data = d
+		}
+	}
+	if data == nil {
+		return ""
+	}
+	raw := string(data)
+	if e.redactor != nil {
+		return e.redactor.RedactString(raw)
+	}
+	return security.Redact(raw)
+}
+
+// patchFor renders fc's unified diff against its base. newContent is fc's
+// already-redacted post-image content (StructuredDiff's sf.Content); a delete
+// has none.
+func (e *Engine) patchFor(fc domain.FileChange, newContent string) string {
+	old := e.baseContent(fc)
+	if fc.IsDelete() {
+		newContent = ""
+	}
+	if old == "" && newContent == "" {
+		return ""
+	}
+	return textdiff.Unified(old, newContent)
 }
 
 // StructuredDiff renders a change set as a per-file list (path + kind + redacted
@@ -683,6 +746,7 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 				sf.Content = raw
 			}
 		}
+		sf.Patch = e.patchFor(fc, sf.Content)
 		out = append(out, sf)
 	}
 	return out

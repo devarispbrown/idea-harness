@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +30,30 @@ func daemonAddr() string {
 		return v
 	}
 	return defaultAddr
+}
+
+// uiURL is where the web UI is served -- the same host:port the API answers
+// on. Named once (H2) so `idea init`, `idea dev` and `idea daemon status`
+// cannot print three different addresses for the same daemon.
+func uiURL() string {
+	return "http://" + daemonAddr()
+}
+
+// stopHint names a precise way to find and stop the daemon on daemonAddr()'s
+// own port, for the rare case its pidfile is gone and `idea daemon stop`
+// cannot find it by PID (L).
+//
+// `pkill -f 'idea daemon'` used to be the suggestion here, and it kills every
+// idea-harness daemon on the machine that matches the pattern -- every
+// project, every worktree -- not just the one this CLI is even pointed at.
+// Naming the port instead of the process name targets exactly the one
+// process actually listening on it.
+func stopHint() string {
+	_, port, err := net.SplitHostPort(daemonAddr())
+	if err != nil || port == "" {
+		return "find the process listening on " + daemonAddr() + " and stop that one specifically"
+	}
+	return "kill $(lsof -ti tcp:" + port + ") — the one process actually listening on " + daemonAddr() + ", not every idea-harness daemon on the machine"
 }
 
 // initiativeResource builds the URL of an initiative-scoped resource:
