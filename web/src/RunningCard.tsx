@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, post } from "./api";
-import { type NextTask, resolveRunningTask, runningTitle } from "./buildLogic";
+import {
+  isOperationInFlight,
+  type NextTask,
+  type PartialWork,
+  resolveRunningTask,
+  runningTitle,
+  stoppedMessage,
+} from "./buildLogic";
+import { shouldStickToBottom } from "./agentOutput";
 
 interface Operation {
   id: string;
@@ -57,6 +65,19 @@ export default function RunningCard({
   const [task, setTask] = useState<NextTask | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [stopBusy, setStopBusy] = useState(false);
+  // C3: what a stopped run left behind, read from guidance once there's
+  // nothing running -- used only by the post-Stop render below. Kept as a
+  // ref alongside the state so `load` (a stable useCallback) can decide
+  // whether it's worth fetching without re-creating itself every time Stop
+  // is clicked.
+  const [partialWork, setPartialWork] = useState<PartialWork | null>(null);
+  const stoppedRef = useRef<Operation | null>(null);
+  // L3: the running agent's live output and whether the user has scrolled
+  // away from the bottom (in which case new output must not yank them back).
+  const [agentOutput, setAgentOutput] = useState<{ state?: string; running: boolean; output: string } | null>(null);
+  const [outputOpen, setOutputOpen] = useState(true);
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const stickRef = useRef(true);
   // A generation counter guards against a stale poll response from a previous
   // initiative resolving after the props change.
   const genRef = useRef(0);
@@ -79,6 +100,22 @@ export default function RunningCard({
     if (running) {
       setNow(Date.now());
       setStopped(null); // a fresh run (Run again, or a new task) supersedes it
+      stoppedRef.current = null;
+    } else if (stoppedRef.current) {
+      // C3: nothing is running and this card is (or is about to be)
+      // showing its post-Stop state -- pick up what the daemon captured.
+      // Capture happens as part of Execute's own teardown before the
+      // operation itself leaves running/pending, so by the time `running`
+      // above is empty this is already settled; re-fetched every poll so a
+      // race with that teardown resolves within one tick rather than never.
+      try {
+        const guide = await get<{ partial_work?: PartialWork }>(
+          `/projects/${projectId}/initiatives/${initiativeId}/guidance`,
+        );
+        if (gen === genRef.current) setPartialWork(guide?.partial_work ?? null);
+      } catch {
+        /* keep the previous value */
+      }
     }
     if (running?.type === "execute_initiative") {
       // The task this execute is working on. Prefer the OPERATION's own task
@@ -110,6 +147,7 @@ export default function RunningCard({
   useEffect(() => {
     genRef.current++;
     setStopped(null);
+    stoppedRef.current = null;
     load();
     const poll = setInterval(load, 2500);
     return () => clearInterval(poll);
@@ -122,6 +160,60 @@ export default function RunningCard({
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(tick);
   }, [op]);
+
+  // L3: poll the running agent's live output while an execute is in flight.
+  // Keyed on id/type/status rather than the whole `op` object, which is a
+  // new object every 2.5s poll tick even when nothing about it changed --
+  // that would restart this poll (and lose the user's scroll position) every
+  // cycle instead of only when the running operation actually changes.
+  // Cleared -- stopping the poll -- the moment the operation is no longer
+  // execute_initiative/in-flight, which also covers the card unmounting.
+  useEffect(() => {
+    if (!op || op.type !== "execute_initiative" || !isOperationInFlight(op.status)) {
+      setAgentOutput(null);
+      return;
+    }
+    let cancelled = false;
+    // One request at a time: with a slow Docker, stacked polls took every
+    // connection the browser allows to the daemon -- Stop's included.
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const out = await get<{ state?: string; running: boolean; output: string }>(
+          `/projects/${projectId}/initiatives/${initiativeId}/agent-output`,
+        );
+        if (!cancelled) setAgentOutput(out);
+      } catch {
+        /* transient error: leave the previous output on screen */
+      } finally {
+        inFlight = false;
+      }
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [op?.id, op?.type, op?.status, projectId, initiativeId]);
+
+  // Auto-scroll the output box to the newest line unless the user scrolled
+  // away from the bottom to read something earlier (shouldStickToBottom is
+  // recorded on scroll, below, from measurements taken BEFORE this update).
+  useEffect(() => {
+    const el = preRef.current;
+    if (el && stickRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [agentOutput?.output]);
+
+  const handleOutputScroll = () => {
+    const el = preRef.current;
+    if (!el) return;
+    stickRef.current = shouldStickToBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+  };
 
   if (!op) {
     if (!stopped) return null;
@@ -137,7 +229,7 @@ export default function RunningCard({
       <section className="running-card running-card-stopped">
         <div className="running-row">
           <div className="running-body">
-            <div className="running-title">Stopped.</div>
+            <div className="running-title">{stoppedMessage(partialWork)}</div>
           </div>
         </div>
       </section>
@@ -149,6 +241,7 @@ export default function RunningCard({
     try {
       await post(`/operations/${op.id}/cancel`, {});
       setStopped(op);
+      stoppedRef.current = op;
     } catch {
       /* the poll reconciles on its own */
     } finally {
@@ -171,6 +264,29 @@ export default function RunningCard({
           {stopBusy ? "Stopping…" : "Stop"}
         </button>
       </div>
+      {/* L3: live output of the coding agent while it's actually running --
+          text only (never dangerouslySetInnerHTML), open by default so it's
+          not one more thing to discover. `running:false` while the operation
+          itself is still in flight means the agent is done and the run's own
+          build/test checks are now what's taking the time. */}
+      {op.type === "execute_initiative" && agentOutput && agentOutput.state !== "starting" && agentOutput.state !== "idle" && (
+        <details
+          className="agent-output"
+          open={outputOpen}
+          onToggle={(e) => setOutputOpen(e.currentTarget.open)}
+        >
+          <summary>Agent output</summary>
+          {/* Only once the agent has really finished. "Not running" also
+              covered the planner call and the workspace copy before it
+              started, and the card claimed it was done. */}
+          {agentOutput.state === "finished" && (
+            <p className="muted agent-output-note">The agent finished; running checks…</p>
+          )}
+          <pre ref={preRef} className="agent-output-pre" onScroll={handleOutputScroll}>
+            {agentOutput.output || "(no output yet)"}
+          </pre>
+        </details>
+      )}
     </section>
   );
 }

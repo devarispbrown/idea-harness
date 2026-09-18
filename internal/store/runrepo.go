@@ -431,3 +431,39 @@ func jsonUnmarshal(s string, v any) error {
 	}
 	return json.Unmarshal([]byte(s), v)
 }
+
+// LatestOperationOfType returns the newest operation of opType for a project,
+// or (nil, nil) when there is none. It answers "how did the last smoke test
+// go", which no initiative-scoped listing can: a smoke belongs to no
+// initiative.
+func (db *DB) LatestOperationOfType(ctx context.Context, projectID, opType string) (*domain.Operation, error) {
+	var op domain.Operation
+	var iniID, resultRef sql.NullString
+	var finished sql.NullInt64
+	var created int64
+	err := db.SQL().QueryRowContext(ctx, `
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
+		FROM operations WHERE project_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1`, projectID, opType).
+		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	op.InitiativeID = iniID.String
+	op.ResultRef = resultRef.String
+	op.CreatedAt = time.UnixMilli(created)
+	if finished.Valid {
+		t := time.UnixMilli(finished.Int64)
+		op.FinishedAt = &t
+	}
+	return &op, nil
+}
+
+// SetOperationResultRef records a reference on a finished operation, e.g.
+// what a smoke test tested, which the failure path has no other place for.
+func (db *DB) SetOperationResultRef(ctx context.Context, opID, ref string) error {
+	_, err := db.SQL().ExecContext(ctx, `UPDATE operations SET result_ref = ? WHERE id = ?`, ref, opID)
+	return err
+}

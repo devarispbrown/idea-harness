@@ -405,7 +405,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 			}
 			return dotEnv[name]
 		}
-		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup); err != nil {
+		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup, ""); err != nil {
 			return fmt.Errorf("smoke failed: %w", err)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")

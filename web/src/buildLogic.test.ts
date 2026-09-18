@@ -19,6 +19,7 @@ import {
   runButtonState,
   runningTitle,
   shouldResetRetryBusy,
+  stoppedMessage,
 } from "./buildLogic";
 
 describe("isOperationInFlight", () => {
@@ -70,6 +71,71 @@ describe("runButtonState", () => {
   it("hides the button when there is no next task", () => {
     expect(runButtonState(null, "", false).visible).toBe(false);
     expect(runButtonState(undefined, "", false).visible).toBe(false);
+  });
+
+  // C3: resuming a stopped run.
+  it("reads Continue with the file count when the stopped run left files for this task", () => {
+    const s = runButtonState(task, "", false, { task_id: "t1", files: 3 });
+    expect(s.label).toBe("Continue TASK-2 (3 files from the stopped run)");
+    expect(s.startOver).toBe(true);
+  });
+
+  it("singularizes one carried file", () => {
+    const s = runButtonState(task, "", false, { task_id: "t1", files: 1 });
+    expect(s.label).toBe("Continue TASK-2 (1 file from the stopped run)");
+  });
+
+  it("ignores partial work for a different task", () => {
+    const s = runButtonState(task, "", false, { task_id: "some-other-task", files: 3 });
+    expect(s.label).toBe("Run TASK-2: Add the retry button");
+    expect(s.startOver).toBe(false);
+  });
+
+  // Mutation guard: files must be > 0 to resume -- a partial_work entry with
+  // 0 files (everything was dropped by the credential sweep) has nothing to
+  // continue from, so the button must stay a plain "Run", not "Continue (0
+  // files from the stopped run)".
+  it("does not treat a zero-file partial as something to resume", () => {
+    const s = runButtonState(task, "", false, { task_id: "t1", files: 0, note: "dropped" });
+    expect(s.label).toBe("Run TASK-2: Add the retry button");
+    expect(s.startOver).toBe(false);
+  });
+});
+
+describe("stoppedMessage", () => {
+  it("names the file count and says running again continues from them", () => {
+    expect(stoppedMessage({ task_id: "t1", files: 2 })).toBe(
+      "Stopped. The agent had written 2 files; running the task again continues from them.",
+    );
+  });
+
+  it("singularizes one file", () => {
+    expect(stoppedMessage({ task_id: "t1", files: 1 })).toBe(
+      "Stopped. The agent had written 1 file; running the task again continues from it.",
+    );
+  });
+
+  it("shows the daemon's note when nothing was kept", () => {
+    expect(
+      stoppedMessage({
+        task_id: "t1",
+        files: 0,
+        note: "the files it wrote looked like they contained a secret, so they were not kept",
+      }),
+    ).toBe(
+      "Stopped. The files it wrote looked like they contained a secret, so they were not kept.",
+    );
+  });
+
+  it("is a bare Stopped with no partial work at all", () => {
+    expect(stoppedMessage(null)).toBe("Stopped.");
+    expect(stoppedMessage(undefined)).toBe("Stopped.");
+  });
+
+  // Mutation guard: a zero-file partial with no note must not read as if
+  // files were written.
+  it("does not claim files were written when there are none and no note", () => {
+    expect(stoppedMessage({ task_id: "t1", files: 0 })).toBe("Stopped.");
   });
 });
 
@@ -330,6 +396,7 @@ describe("findingCategoryLabel", () => {
     expect(findingCategoryLabel("workspace_copy")).toBe("workspace copy");
     expect(findingCategoryLabel("agent_output")).toBe("agent output");
     expect(findingCategoryLabel("stale_base")).toBe("stale base");
+    expect(findingCategoryLabel("carried_over")).toBe("carried over");
   });
 
   it("passes through an unrecognized category rather than hiding it", () => {

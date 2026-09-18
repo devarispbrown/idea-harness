@@ -161,6 +161,9 @@ type executorReadiness struct {
 	// Note is information that does not block a run, such as an image the
 	// first run will download.
 	Note string `json:"note,omitempty"`
+	// LastSmoke is the project's newest smoke test, for the selected
+	// executor only.
+	LastSmoke *smokeResult `json:"last_smoke,omitempty"`
 }
 
 // executorStatus computes executorReadiness for one executor kind. selected
@@ -216,7 +219,7 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 	st.KeySet = provider.KeyEnv == "" || lookupEnv(provider.KeyEnv, pr.dotEnv) != ""
 	if st.Problem == "" && !st.KeySet {
 		st.Problem = fmt.Sprintf(
-			"%s is not set in the daemon's environment or the project's .env; set it and run idea daemon stop",
+			"%s is not set in the daemon's environment or the project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again).",
 			provider.KeyEnv)
 	}
 	return st

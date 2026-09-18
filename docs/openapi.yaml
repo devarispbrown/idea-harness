@@ -417,6 +417,74 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/agent-output:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [change-sets]
+      operationId: getAgentOutput
+      summary: The running coding agent's latest output
+      description: |
+        The last 100 lines of the coding agent's output while an execute is running, and the run's
+        `state`: escape
+        sequences stripped, capped at 8 KB, known secrets redacted. Reading it never waits on the
+        run. Refreshed at most every 1.5 s however many clients poll, so a repeated answer is the
+        cache, not a stall. `running` turns false once the agent's container is gone, including
+        while the run's build and test checks continue.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The output, or `running:false` with empty output when no agent is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                    enum: [idle, starting, running, finished]
+                    description: |
+                      `idle`: no run. `starting`: a run is planning or copying the workspace and
+                      the agent has not started. `running`: the agent is running. `finished`: the
+                      agent is done and the run is in its build and test checks; `output` is its
+                      final output.
+                  running: { type: boolean, description: "`state == running`." }
+                  output: { type: string }
+                required: [state, running, output]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/partial-work:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    delete:
+      tags: [change-sets]
+      operationId: discardPartialWork
+      summary: Discard a stopped run's kept files ("Start over")
+      description: |
+        When a run stops without a change set (Stop, failure, timeout, daemon shutdown), the files
+        the agent had written are kept, and the next run of the same task continues from them
+        (guidance reports them as `partial_work`). This discards them, so the next run starts from
+        the workspace. Succeeds when nothing is kept.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Discarded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: discarded }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/initiatives/{id}/next:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -691,7 +759,23 @@ paths:
       tags: [initiatives]
       operationId: executeInitiative
       summary: Run the next ready task through the executor
-      description: Produces a change set. The response names the executor the run will use.
+      description: |
+        Produces a change set. The response names the executor the run will use.
+
+        If a stopped run of the same task left files (`partial_work` on guidance), this run
+        continues from them. Send `{"fresh": true}` to discard them and start from the workspace
+        instead ("Start over"); they are discarded only once the run is accepted. The body is
+        optional and decoded leniently.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fresh:
+                  type: boolean
+                  description: Discard a stopped run's kept files, once this run is accepted.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202":
@@ -2771,6 +2855,41 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/executors/smoke:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      tags: [config]
+      operationId: smokeExecutor
+      summary: Run the coding agent's smoke test
+      description: |
+        Runs a trivial task through the configured coding agent -- it must write one file -- as an
+        operation of type `executor_smoke`, with exactly what a real run would use: the configured
+        kind and image, the implementer's model and provider, and the daemon's own keys (its
+        environment, then the project's `.env`). **It makes one small real model call.**
+        `idea executors setup --smoke` does the same from the CLI, in the CLI's environment.
+
+        The operation carries no `initiative_id`. It fails with the smoke's own error, which
+        includes the agent's output (redacted). The latest result is reported as
+        `status.last_smoke` on `GET /executors`. One smoke runs per project at a time.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "400":
+          description: The executor is not a coding agent (`internal`, `container`), has no image, or its model resolves to no usable provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: A smoke test is already running for this project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/activity:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -3088,7 +3207,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 81 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 84 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3772,8 +3891,23 @@ components:
             plan is not approved yet ("The plan is not approved yet"), the initiative failed or is
             complete, or the executor is not ready (the same `problem` sentence `GET /executors`'
             `status` reports, e.g. "ANTHROPIC_API_KEY is not set in the daemon's environment or the
-            project's .env; set it and run idea daemon stop"). A coding-agent image that is not
+            project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again)"). A coding-agent image that is not
             pulled yet does not block: the first run pulls it.
+        partial_work:
+          type: object
+          description: |
+            What a stopped run left for the next run of its task to continue from; omitted when
+            nothing is kept. The next execute of the same task carries these files into its work
+            root (only where the workspace has not changed since) and lists them in a
+            `carried_over` finding. `DELETE .../partial-work` discards them.
+          properties:
+            task_id: { type: string }
+            task_human_id: { type: string }
+            files: { type: integer }
+            note:
+              type: string
+              description: Why nothing was kept, when the stopped run's files looked like they held a secret.
+          required: [task_id, files]
       required: [action, why, affected]
 
     NextTaskRef:
@@ -4093,7 +4227,7 @@ components:
           description: |
             Empty when ready, otherwise a user-facing sentence naming the fix, e.g. "Docker is not
             running or not installed; ..." or "ANTHROPIC_API_KEY is not set in the daemon's
-            environment or the project's .env; set it and run idea daemon stop". A missing image is
+            environment or the project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again)". A missing image is
             not a problem: `docker run` pulls it on first use; see `note`. Docker being unreachable is.
             Resolves the model exactly as execution does (`models.implementer`, then
             `executor.model`, then the implementer role's default).
@@ -4103,4 +4237,15 @@ components:
             Information that does not block a run, e.g. "Image nousresearch/hermes-agent:v2026.5.16
             is not pulled yet; the first run downloads it, which can take several minutes. To pull
             it now: idea executors setup --kind hermes --model <model> --yes".
+        last_smoke:
+          type: object
+          description: |
+            The project's newest smoke test, for the selected executor only. Omitted when none has
+            run, and when the last one tested a different kind, image or model than the current
+            setup. A smoke still running is always reported.
+          properties:
+            status: { $ref: "#/components/schemas/OperationStatus" }
+            finished_at: { type: string, format: date-time }
+            error: { type: string }
+          required: [status]
       required: [image, image_present, key_env, key_set]

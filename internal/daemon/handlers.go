@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -191,6 +192,13 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	// The executor-readiness half (C3): only worth a Docker-backed check (cached,
 	// see imagePresenceCache) when the workflow-level checks already say a run
 	// could start and there is actually a task to run it on.
+	if pw := pr.engine.PartialWork(ini.ID); pw != nil {
+		ref := &projection.PartialWorkRef{TaskID: pw.TaskID, Files: pw.Files, Note: pw.Note}
+		if t, err := pr.db.GetTask(r.Context(), pw.TaskID); err == nil {
+			ref.TaskHumanID = t.Code
+		}
+		g.PartialWork = ref
+	}
 	if g.RunBlockedReason == "" && g.NextTask != nil {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
@@ -1039,6 +1047,13 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	if err := pr.db.UpdateTask(r.Context(), ini.ID, task.ID, title, statement, priority, body.Estimate); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	// Files a stopped run wrote for the old wording must not be carried into
+	// the new one; the task id alone does not tell them apart.
+	if title != task.Title || statement != task.Statement {
+		if pw := pr.engine.PartialWork(ini.ID); pw != nil && pw.TaskID == task.ID {
+			_ = pr.engine.DiscardPartial(ini.ID)
+		}
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
 	writeJSON(w, http.StatusOK, updated)
@@ -1932,7 +1947,17 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	opID, err := s.rt.ExecuteInitiative(r.Context(), projectID, initiativeID)
+	// Optional body: {"fresh": true} is "Start over". An empty body is the
+	// ordinary run, which continues a stopped run's kept files. Decoded
+	// leniently on purpose: this endpoint has always ignored its body, and
+	// refusing one it used to accept would be a breaking change.
+	var body struct {
+		Fresh bool `json:"fresh"`
+	}
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
+	}
+	opID, err := s.rt.ExecuteInitiativeFresh(r.Context(), projectID, initiativeID, body.Fresh)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -2368,7 +2393,11 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		caps := exec.Capabilities(r.Context())
 		// C3: status is only meaningful for hermes/omp; executorStatus reports
 		// internal/container as always-ready.
-		status := s.rt.executorStatus(pr, exec.Name(), exec.Name() == string(pr.cfg.Harness.Executor.Kind))
+		selected := exec.Name() == string(pr.cfg.Harness.Executor.Kind)
+		status := s.rt.executorStatus(pr, exec.Name(), selected)
+		if selected {
+			status.LastSmoke = lastSmoke(r.Context(), pr, r.PathValue("projectId"))
+		}
 		list = append(list, map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,
