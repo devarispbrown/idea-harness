@@ -9,6 +9,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
@@ -76,5 +77,33 @@ func TestAgentThatChangedNothingSaysWhy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "without changing any file") || !strings.Contains(err.Error(), "HTTP 401") {
 		t.Errorf("the error does not say why nothing changed: %v", err)
+	}
+}
+
+// A refusal to launch the agent must come before the planner's model call, or
+// every refused run is paid for.
+func TestMissingKeyIsRefusedBeforeThePlannerSpends(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-5.6-luna", Image: "img"},
+	})
+	eng.SetWorkRoot(t.TempDir())
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Execute(ctx, ini.ID); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatalf("the missing key was not refused: %v", err)
+	}
+	if n := len(fp.Calls()); n != 0 {
+		t.Errorf("%d model call(s) were made before the refusal", n)
 	}
 }

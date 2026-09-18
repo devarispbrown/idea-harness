@@ -27,6 +27,9 @@ PROJ="$TMPROOT/project"
 mkdir -p "$STATE" "$PROJ"
 export IDEA_HARNESS_STATE="$STATE"
 export IDEA_HARNESS_ADDR="127.0.0.1:$((21000 + ($$ % 2000)))"
+# `idea init` auto-starts a daemon on this throwaway state; stop it on exit, or
+# every run leaves one behind (six accumulated in one afternoon).
+trap '"$ROOT/bin/idea" daemon stop >/dev/null 2>&1 || true; rm -rf "$TMPROOT"' EXIT
 
 cd "$PROJ"
 "$ROOT/bin/idea" init >/dev/null

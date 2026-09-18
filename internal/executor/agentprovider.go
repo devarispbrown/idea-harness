@@ -9,9 +9,31 @@ import (
 
 // AgentProvider is the model endpoint a coding agent is pinned to.
 type AgentProvider struct {
-	Name    string // provider key, e.g. "openai"
-	KeyEnv  string // env var holding its API key; "" for a keyless provider
-	BaseURL string // its API root
+	Name    string              // provider key, e.g. "openai"
+	Type    config.ProviderType // the API it speaks natively
+	KeyEnv  string              // env var holding its API key; "" for a keyless provider
+	BaseURL string              // its API root
+}
+
+// Validate reports what would stop the agent from using this provider, so it
+// is caught before a multi-gigabyte image pull rather than at Start.
+func (p AgentProvider) Validate() error {
+	if !slugSafe.MatchString(p.Name) {
+		return fmt.Errorf("provider name %q cannot be used by the coding agent: use lowercase letters, digits, '.', '_' or '-'", p.Name)
+	}
+	if p.BaseURL == "" {
+		return fmt.Errorf("provider %q has no base URL, so the coding agent has no endpoint to call", p.Name)
+	}
+	// The agent speaks OpenAI chat completions. Anthropic serves that surface
+	// at its own API root; an Anthropic-type provider anywhere else (a proxy,
+	// a gateway) is not known to, and would fail on the first call.
+	if p.Type == config.ProviderAnthropic {
+		if pre := config.PresetFor("anthropic"); pre != nil && strings.TrimRight(p.BaseURL, "/") != strings.TrimRight(pre.BaseURL, "/") {
+			return fmt.Errorf("provider %q is anthropic-type at %s; the coding agent speaks OpenAI chat completions, "+
+				"which Anthropic serves only at %s. Use an openai-type provider for that endpoint", p.Name, p.BaseURL, pre.BaseURL)
+		}
+	}
+	return nil
 }
 
 // ResolveAgentProvider resolves the provider a coding-agent model spec names,
@@ -39,11 +61,12 @@ func ResolveAgentProvider(model, defaultModel string, providers map[string]confi
 		if err := config.ValidateProvider(name, pc); err != nil {
 			return AgentProvider{}, fmt.Errorf("executor: provider %q in harness.yaml is not usable: %w", name, err)
 		}
-		_, base, keyEnv := config.ResolveProvider(name, pc)
-		return AgentProvider{Name: name, KeyEnv: keyEnv, BaseURL: base}, nil
+		typ, base, keyEnv := config.ResolveProvider(name, pc)
+		p := AgentProvider{Name: name, Type: typ, KeyEnv: keyEnv, BaseURL: base}
+		return p, p.Validate()
 	}
-	if p := config.PresetFor(name); p != nil {
-		return AgentProvider{Name: name, KeyEnv: p.DefaultKeyEnv, BaseURL: p.BaseURL}, nil
+	if pre := config.PresetFor(name); pre != nil {
+		return AgentProvider{Name: name, Type: pre.Type, KeyEnv: pre.DefaultKeyEnv, BaseURL: pre.BaseURL}, nil
 	}
 	if !hasPrefix && defaultModel != "" && strings.Contains(defaultModel, "/") {
 		return ResolveAgentProvider(defaultModel, "", providers)

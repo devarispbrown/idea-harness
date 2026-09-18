@@ -53,7 +53,7 @@ func TestAgentProviderResolvesACustomProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p != (AgentProvider{Name: "groq", KeyEnv: "GROQ_API_KEY", BaseURL: "https://api.groq.com/openai/v1"}) {
+	if p != (AgentProvider{Name: "groq", Type: config.ProviderOpenAI, KeyEnv: "GROQ_API_KEY", BaseURL: "https://api.groq.com/openai/v1"}) {
 		t.Errorf("groq resolved to %+v", p)
 	}
 }
@@ -91,5 +91,35 @@ func TestEveryPresetResolvesForTheAgent(t *testing.T) {
 		if p.BaseURL != preset.BaseURL || p.KeyEnv != preset.DefaultKeyEnv {
 			t.Errorf("%s resolved to %+v", preset.Key, p)
 		}
+	}
+}
+
+// What would stop the agent is caught when the provider is resolved, before
+// setup pulls a 5.4 GB image, not at Start.
+func TestAgentProviderRefusesWhatTheAgentCannotUse(t *testing.T) {
+	for name, pc := range map[string]config.ProviderConfig{
+		// Hermes's provider names are lowercase slugs.
+		"MyGateway": {Type: config.ProviderOpenAI, BaseURL: "https://gw.example/v1"},
+		// The agent speaks OpenAI chat completions, which an Anthropic-type
+		// endpoint other than Anthropic's own is not known to serve.
+		"claude-proxy": {Type: config.ProviderAnthropic, BaseURL: "https://proxy.example/v1"},
+	} {
+		if _, err := ResolveAgentProvider(name+"/m", "", map[string]config.ProviderConfig{name: pc}); err == nil {
+			t.Errorf("%s was accepted for the coding agent", name)
+		}
+	}
+}
+
+// A custom Gemini-type provider needs the compatible endpoint as much as the
+// preset does; keying that on the name "gemini" missed it.
+func TestCustomGeminiProviderGetsTheCompatibleEndpoint(t *testing.T) {
+	p, err := ResolveAgentProvider("vertex-ish/gemini-3.6-flash", "", map[string]config.ProviderConfig{
+		"vertex-ish": {Type: config.ProviderGemini, BaseURL: "https://gl.example/v1beta", APIKeyEnv: "GL_KEY"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agentBaseURL(p, p.BaseURL); got != "https://gl.example/v1beta/openai" {
+		t.Errorf("custom gemini-type endpoint = %q", got)
 	}
 }

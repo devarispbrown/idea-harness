@@ -390,7 +390,21 @@ func stopDaemon() error {
 	if err != nil {
 		return err
 	}
-	return syscall.Kill(pid, syscall.SIGTERM)
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return err
+	}
+	// Wait for it to go. The daemon now cancels running operations on SIGTERM
+	// and removes their agent containers before exiting, which takes a moment;
+	// returning at once let `idea daemon stop && idea ...` race a daemon that
+	// was still shutting down. Bounded by the daemon's own 30 s shutdown limit.
+	deadline := time.Now().Add(35 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("the daemon (pid %d) is still stopping after 35 s; check `idea logs`", pid)
 }
 
 // ---------- init / new ----------

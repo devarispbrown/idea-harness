@@ -381,15 +381,16 @@ func TestFailedStartRemovesWhatItCreated(t *testing.T) {
 	}
 }
 
-// What a crashed daemon leaves behind is found by label and removed, and so is
-// any agent home.
+// What a killed daemon leaves behind is found by its agent-home directory, and
+// both the container and the directory are removed.
 func TestSweepRemovesLeftovers(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 	bin := writeExecutable(t, "docker", fakeDockerLog)
 	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	workDir := t.TempDir()
+	state := t.TempDir()
+	workDir := filepath.Join(state, "projects", "p1", "work")
 	stale := filepath.Join(workDir, agentHomePrefix+"dead")
 	if err := os.MkdirAll(filepath.Join(stale, "locked"), 0o700); err != nil {
 		t.Fatal(err)
@@ -401,24 +402,66 @@ func TestSweepRemovesLeftovers(t *testing.T) {
 	if err := os.Chmod(filepath.Join(stale, "locked"), 0); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(stale, "locked"), 0o700) })
 	keep := filepath.Join(workDir, "initiative-1")
 	if err := os.MkdirAll(keep, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	SweepAgentLeftovers(t.Context(), workDir)
+	SweepAgentLeftovers(t.Context(), state)
 
-	calls := dockerCalls(t, record)
-	if !hasCall(calls, "ps -aq --filter label="+agentLabel+"="+workDir) {
-		t.Errorf("the sweep did not look for this project's containers:\n%s", strings.Join(calls, "\n"))
-	}
-	if !hasCall(calls, "rm -f leftover-1") {
-		t.Error("a leftover container was not removed")
+	if !hasCall(dockerCalls(t, record), "rm -f "+agentContainerName("dead")) {
+		t.Error("the leftover container was not removed by name")
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("a stale agent home survived the sweep: %v", err)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("the sweep removed a work root: %v", err)
+	}
+}
+
+// A normal start has nothing to sweep and must not call Docker at all: the
+// sweep runs before the daemon serves, and a hung Docker would hold it up.
+func TestSweepWithNothingLeftDoesNotCallDocker(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	bin := writeExecutable(t, "docker", fakeDockerLog)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "projects", "p1", "work", "initiative-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	SweepAgentLeftovers(t.Context(), state)
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Error("the sweep called docker with nothing to sweep")
+	}
+}
+
+// OMP gets an attempt directory too -- unmounted -- because that is how the
+// sweep finds a killed daemon's OMP containers.
+func TestOMPAttemptLeavesAMarker(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	e := NewOMPExecutor(newTestBlobStore(t), "openai/gpt-5.6-luna", "alpine:3.20",
+		AgentProvider{Name: "openai", BaseURL: "https://api.openai.com/v1"})
+	e.dockerPath = writeExecutable(t, "docker", fakeDockerLog)
+	work := t.TempDir()
+	a, err := e.Start(t.Context(), Request{TaskStatement: "x", WorkRoot: work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(filepath.Dir(work), agentHomePrefix+a.ID)
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("no marker for a running OMP attempt: %v", err)
+	}
+	// And it goes with the attempt; one left behind would make every daemon
+	// start call Docker.
+	if _, err := e.Collect(t.Context(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("the OMP marker outlived its attempt: %v", err)
 	}
 }

@@ -215,7 +215,7 @@ func (e *SandboxedAgentExecutor) containerArgs(req Request, attemptID, keyFile, 
 	if keyFile != "" {
 		args = append(args, "--env-file", keyFile)
 	}
-	if agentHome != "" {
+	if agentHome != "" && e.name == "hermes" {
 		args = append(args,
 			"-v", agentHome+":"+containerAgentHome,
 			"-e", "HERMES_HOME="+containerAgentHome,
@@ -243,30 +243,30 @@ const agentHomePrefix = ".agent-home-"
 
 func agentContainerName(attemptID string) string { return "idea-agent-" + attemptID }
 
-// writeAgentHome creates the writable home a Hermes agent needs, containing the
-// generated config that pins it to one provider and endpoint. Returns "" for
-// any other agent: OMP is not Hermes, and replacing its HOME with an empty
-// directory would hide whatever config or auth its image bakes in.
+// writeAgentHome creates the attempt's directory next to the work root. For
+// Hermes it is the agent's writable home, mounted into the container and holding
+// the generated config that pins it to one provider and endpoint.
+//
+// Every agent gets one, OMP included, because it is also how leftovers are
+// found: it outlives its container, so SweepAgentLeftovers can find what a
+// killed daemon left behind by listing these directories, without asking
+// Docker about anything unless one exists. OMP's is not mounted: replacing its
+// HOME with an empty directory would hide whatever config or auth its image
+// bakes in.
 //
 // Created next to the work root rather than in the system temp directory.
 // The work root is already bind-mounted, so its parent is a path Docker can
 // see; $TMPDIR is not one under snap-installed Docker (private /tmp) or
 // Colima and Lima (only $HOME is shared), where the mount came up empty.
 func (e *SandboxedAgentExecutor) writeAgentHome(req Request, attemptID string) (string, error) {
-	if e.name != "hermes" {
-		return "", nil
-	}
 	dir := filepath.Join(filepath.Dir(req.WorkRoot), agentHomePrefix+attemptID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("executor: create agent home: %w", err)
 	}
-	// Without a provider (the capability-listing path) the home still has to
-	// exist -- the entrypoint cannot boot without it -- but there is nothing to
-	// pin.
-	if e.provider.Name == "" {
+	if e.name != "hermes" || e.provider.Name == "" {
 		return dir, nil
 	}
-	baseURL, _ := containerBaseURL(agentBaseURL(e.provider.Name, e.provider.BaseURL))
+	baseURL, _ := containerBaseURL(agentBaseURL(e.provider, e.provider.BaseURL))
 	cfg, err := hermesConfigYAML(e.provider.Name, baseURL, bareModel(e.model), e.provider.KeyEnv)
 	if err == nil {
 		err = os.WriteFile(filepath.Join(dir, hermesConfigPath), []byte(cfg), 0o600)
@@ -320,7 +320,8 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	if err != nil {
 		return Attempt{}, err
 	}
-	// Removed by release(), NOT deferred here. The container runs detached, so
+	// Removed by remove() when the attempt is collected or cancelled, NOT
+	// deferred here. The container runs detached, so
 	// Start returns while the agent is still working; deleting the home at that
 	// point pulled its config and state out from under it mid-run, and the
 	// smoke failed in eight seconds.
@@ -420,10 +421,11 @@ func (e *SandboxedAgentExecutor) remove(ctx context.Context, id string) error {
 	e.mu.Lock()
 	delete(e.attempts, id)
 	e.mu.Unlock()
+	// Best effort. The container, and the key in its config, are already
+	// gone, so failing the whole run here would throw away its result for a
+	// directory; one left behind is removed by the next SweepAgentLeftovers.
 	if a.agentHome != "" {
-		if err := removeAgentHome(a.agentHome); err != nil {
-			return fmt.Errorf("executor: %s: remove agent home: %w", e.name, err)
-		}
+		_ = removeAgentHome(a.agentHome)
 	}
 	return nil
 }
@@ -483,32 +485,27 @@ func (e *SandboxedAgentExecutor) Collect(ctx context.Context, id string) (Result
 	return Result{}, nil
 }
 
-// SweepAgentLeftovers removes agent containers and agent homes that a previous
-// daemon left behind in workDir -- the directory holding a project's work
-// roots. Collect and Cancel remove them in the normal course; this covers a
-// daemon that crashed or was killed between Start and either of them, which
-// used to leave the container, and the provider key in its config, on disk
-// with nothing that would ever find it.
+// SweepAgentLeftovers removes the agent containers and agent homes that a
+// previous daemon left behind anywhere under stateRoot. Collect and Cancel
+// remove them in the normal course, and a daemon that is stopped cancels its
+// runs first; this covers one that was killed or crashed mid-run, which used
+// to leave the container, and the provider key in its config, on disk with
+// nothing that would ever find it.
 //
-// Call it only when no attempt for this project can be running, which is at
-// daemon start. Best effort: without Docker there is nothing to sweep.
-func SweepAgentLeftovers(ctx context.Context, workDir string) {
-	sctx, cancel := cleanupContext(ctx)
-	defer cancel()
-	out, err := exec.CommandContext(sctx, "docker", "ps", "-aq",
-		"--filter", "label="+agentLabel+"="+workDir).Output()
-	if err == nil {
-		for _, cid := range strings.Fields(string(out)) {
-			_ = exec.CommandContext(sctx, "docker", "rm", "-f", cid).Run()
-		}
-	}
-	entries, err := os.ReadDir(workDir)
-	if err != nil {
+// Call it before the daemon serves anything, so no attempt of its own can be
+// running. It finds leftovers by their agent-home directories, so Docker is
+// only asked to remove containers by name when one exists: a normal start, or
+// a machine without Docker, costs a directory listing.
+func SweepAgentLeftovers(ctx context.Context, stateRoot string) {
+	homes, _ := filepath.Glob(filepath.Join(stateRoot, "projects", "*", "work", agentHomePrefix+"*"))
+	if len(homes) == 0 {
 		return
 	}
-	for _, ent := range entries {
-		if ent.IsDir() && strings.HasPrefix(ent.Name(), agentHomePrefix) {
-			removeAgentHome(filepath.Join(workDir, ent.Name()))
-		}
+	sctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	for _, home := range homes {
+		attemptID := strings.TrimPrefix(filepath.Base(home), agentHomePrefix)
+		_ = exec.CommandContext(sctx, "docker", "rm", "-f", agentContainerName(attemptID)).Run()
+		_ = removeAgentHome(home)
 	}
 }
