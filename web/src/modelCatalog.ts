@@ -7,8 +7,8 @@
 // ids with no curation), and there is no endpoint that returns "which of
 // these live ids are curated". ASSUMPTION for whoever edits
 // internal/model/catalog.go next: this list needs the same edit, or the
-// picker's ordering drifts from the CLI/API default. Nothing enforces that
-// automatically today.
+// picker's ordering drifts from the CLI/API default. Enforced by
+// internal/model/catalog_sync_test.go, which fails when the two differ.
 export const CURATED_MODELS: Record<string, string[]> = {
   openai: [
     "gpt-5.6-luna",
