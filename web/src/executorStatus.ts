@@ -69,9 +69,13 @@ export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatus
         }
     : undefined;
 
+  // When the daemon's problem IS the missing key, its sentence already says
+  // so and how to fix it; a key line saying the same thing above it showed
+  // the reason twice.
+  const keyIsTheProblem = !!keyLine && !keyLine.ok && !!status.problem && status.problem.includes(status.key_env);
   return {
     imageLine,
-    keyLine,
+    keyLine: keyIsTheProblem ? undefined : keyLine,
     problemLine: status.problem || undefined,
     noteLine: status.note || undefined,
   };
