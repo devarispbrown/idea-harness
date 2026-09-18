@@ -506,6 +506,13 @@ ALTER TABLE operations ADD COLUMN error TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE change_sets ADD COLUMN model TEXT NOT NULL DEFAULT '';
 `,
+	// 21: record which executor produced a change set. The internal executor
+	// writes a placeholder whatever the model is, so "was this real output"
+	// is a property of the executor; the UI read the currently selected one,
+	// and switching executors relabelled every earlier change set.
+	`
+ALTER TABLE change_sets ADD COLUMN executor TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

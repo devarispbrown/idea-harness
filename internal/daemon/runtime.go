@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -56,6 +57,10 @@ type Runtime struct {
 	// this daemon's own agents.
 	swept     chan struct{}
 	sweptOnce sync.Once
+	// lifetime is cancelled when shutdown begins. Work that must survive its
+	// HTTP client going away, but not the daemon stopping, derives from it.
+	lifetime    context.Context
+	endLifetime context.CancelFunc
 
 	// images caches docker image presence (C3), so GET /executors and the
 	// Build page's run_blocked_reason poll never call Docker more than once
@@ -92,16 +97,19 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		global.Close()
 		return nil, err
 	}
+	lifetime, endLifetime := context.WithCancel(context.Background())
 	return &Runtime{
-		stateRoot:  stateRoot,
-		token:      token,
-		global:     global,
-		log:        log,
-		projects:   map[string]*projectRuntime{},
-		reconciled: map[string]bool{},
-		cancels:    map[string]context.CancelFunc{},
-		swept:      closedChan(),
-		images:     newImagePresenceCache(),
+		lifetime:    lifetime,
+		endLifetime: endLifetime,
+		stateRoot:   stateRoot,
+		token:       token,
+		global:      global,
+		log:         log,
+		projects:    map[string]*projectRuntime{},
+		reconciled:  map[string]bool{},
+		cancels:     map[string]context.CancelFunc{},
+		swept:       closedChan(),
+		images:      newImagePresenceCache(),
 	}, nil
 }
 
@@ -285,6 +293,9 @@ func (r *Runtime) beginShutdown() {
 	r.cancelMu.Lock()
 	defer r.cancelMu.Unlock()
 	r.closing = true
+	if r.endLifetime != nil {
+		r.endLifetime()
+	}
 	for _, cancel := range r.cancels {
 		cancel()
 	}
@@ -294,6 +305,22 @@ func (r *Runtime) beginShutdown() {
 // before serving; a Runtime built any other way (tests) never sweeps and does
 // not wait.
 func (r *Runtime) holdOperationsUntilSwept() { r.swept = make(chan struct{}) }
+
+// lifetimeContext is cancelled when the daemon begins shutting down. A Runtime
+// not built by NewRuntime has none, and gets a background context.
+func (r *Runtime) lifetimeContext() context.Context {
+	if r.lifetime == nil {
+		return context.Background()
+	}
+	return r.lifetime
+}
+
+// detachedContext is for work a request starts that must finish even if the
+// client goes away (approving a change set runs a model review), bounded, and
+// cancelled when the daemon stops.
+func (r *Runtime) detachedContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.lifetimeContext(), 5*time.Minute)
+}
 
 // markSwept records that the startup sweep is done.
 func (r *Runtime) markSwept() { r.sweptOnce.Do(func() { close(r.swept) }) }
@@ -453,7 +480,9 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 	// `failed` is the right resting state for both: it is honest about the work
 	// not completing, and `idea retry` runs from exactly there.
 	if failInitiative && (status == domain.OperationFailed || status == domain.OperationCancelled) {
-		reason := runErr.Error()
+		// Redacted like the operation's own error: both are shown in the UI,
+		// and a provider error can echo request material.
+		reason := operationErrorMessage(pr, runErr.Error())
 		if status == domain.OperationCancelled {
 			reason = "cancelled: " + reason
 		}
@@ -610,7 +639,7 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	// too, deterministically, leaving exactly the stranded row this function was
 	// changed to prevent.
 	fail := func(err error) (string, string, error) {
-		if ferr := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID, err.Error()); ferr != nil {
+		if ferr := pr.db.FailInitiative(context.WithoutCancel(ctx), ini.ID, operationErrorMessage(pr, err.Error())); ferr != nil {
 			r.log.Error("could not fail a half-created initiative", "initiative", ini.ID, "err", ferr)
 		}
 		return "", "", err

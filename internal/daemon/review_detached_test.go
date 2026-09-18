@@ -68,3 +68,28 @@ func TestApproveCompletesDespiteACancelledRequestContext(t *testing.T) {
 			"the request context was cancelled mid-flight", cs.Status)
 	}
 }
+
+// The approval's context is detached from the request but not from the
+// daemon: a client leaving must not cancel it, a daemon stopping must. The
+// end-to-end test above cannot tell these apart against the instant demo
+// reviewer; this one can.
+func TestApprovalContextOutlivesTheClientButNotTheDaemon(t *testing.T) {
+	rt, err := NewRuntime(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	ctx, cancel := rt.detachedContext()
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		t.Fatal("the approval context is already done")
+	default:
+	}
+	rt.beginShutdown()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the approval context survived the daemon stopping; the review would hold the engine lock through the stop")
+	}
+}

@@ -145,12 +145,12 @@ func TestGuidanceRunBlockedReasonNamesARunningOperation(t *testing.T) {
 // TestGuidanceRunBlockedReasonNamesTheExecutorProblem is C3's half of the
 // Build contract: even when the workflow-level checks pass (plan approved, a
 // task is ready, nothing else open), an unready executor -- here, hermes with
-// an image that is not pulled -- must still block the run and say why,
+// Docker unavailable -- must still block the run and say why,
 // reusing the same executorStatus logic GET /executors exposes (single
 // source of truth for "is the executor ready").
 func TestGuidanceRunBlockedReasonNamesTheExecutorProblem(t *testing.T) {
 	rt, ts, token := newTestServer(t)
-	rt.images = fakeImageCache(false) // the pinned hermes image is never "present" in this test
+	rt.images = fakeImageCache(dockerUnavailable)
 	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
 	pr, err := rt.EnsureProject(t.Context(), projectID)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestGuidanceRunBlockedReasonNamesTheExecutorProblem(t *testing.T) {
 	if g.RunBlockedReason == "" {
 		t.Fatal("run_blocked_reason is empty, want the executor-not-ready problem")
 	}
-	if !strings.Contains(g.RunBlockedReason, "not pulled") {
-		t.Errorf("run_blocked_reason = %q, want it to name the unpulled image", g.RunBlockedReason)
+	if !strings.Contains(g.RunBlockedReason, "Docker is not running") {
+		t.Errorf("run_blocked_reason = %q, want it to say Docker is not running", g.RunBlockedReason)
 	}
 }

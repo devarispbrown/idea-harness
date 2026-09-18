@@ -146,7 +146,13 @@ func (e *Engine) RunBlockedReason(ctx context.Context, initiativeID string) (str
 	if ini.Status == domain.InitiativeRunning {
 		return "An operation is already running", nil
 	}
-	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+	switch ini.Status {
+	case domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment:
+	case domain.InitiativeFailed:
+		return "This initiative failed; retry it before running tasks", nil
+	case domain.InitiativeComplete:
+		return "This initiative is complete", nil
+	default:
 		return "The plan is not approved yet", nil
 	}
 	task, err := e.nextReadyTask(ctx, initiativeID)

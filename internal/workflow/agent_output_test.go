@@ -122,3 +122,15 @@ func TestMissingKeyIsRefusedBeforeThePlannerSpends(t *testing.T) {
 		t.Errorf("%d model call(s) were made before the refusal", n)
 	}
 }
+
+// OMP has no default image, so a missing one is refused before anything is
+// spent, not by docker after the planner ran.
+func TestOMPWithoutAnImageIsRefusedUpFront(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorOMP, Model: "openai/gpt-5.6-luna"},
+	}}
+	if _, err := e.selectExecutor(); err == nil || !strings.Contains(err.Error(), "--image") {
+		t.Errorf("OMP without an image was accepted: %v", err)
+	}
+}

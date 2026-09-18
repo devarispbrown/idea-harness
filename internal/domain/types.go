@@ -353,6 +353,9 @@ type ChangeSet struct {
 	// keys model=="demo" to label the change "Shipped (demo)" / "Placeholder
 	// change" rather than real agent output.
 	Model     string    `json:"model,omitempty"`
+	// Executor is the executor kind that produced the change set ("internal"
+	// output is a placeholder whatever the model).
+	Executor string `json:"executor,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

@@ -53,7 +53,7 @@ func stopHint() string {
 	if err != nil || port == "" {
 		return "find the process listening on " + daemonAddr() + " and stop that one specifically"
 	}
-	return "kill $(lsof -ti tcp:" + port + ") — the one process actually listening on " + daemonAddr() + ", not every idea-harness daemon on the machine"
+	return "kill $(lsof -ti tcp:" + port + " -sTCP:LISTEN) — the one process actually listening on " + daemonAddr() + ", not every idea-harness daemon on the machine"
 }
 
 // initiativeResource builds the URL of an initiative-scoped resource:

@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -193,8 +192,7 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	// see imagePresenceCache) when the workflow-level checks already say a run
 	// could start and there is actually a task to run it on.
 	if g.RunBlockedReason == "" && g.NextTask != nil {
-		st := s.rt.executorStatus(r.Context(), pr,
-			string(pr.cfg.Harness.Executor.Kind), pr.cfg.Harness.Executor.Image, pr.cfg.Harness.Executor.Model)
+		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
 	}
 
@@ -698,6 +696,12 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// A revise cycle re-lists a decision it already asked; the UI showed the
+	// same question five times while guidance counted one. Collapsed here as
+	// in the projection; ?all=true returns every row.
+	if r.URL.Query().Get("all") != "true" {
+		list = projection.DedupDecisions(list)
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -714,9 +718,23 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "resolution is required")
 		return
 	}
-	if err := pr.db.ResolveDecision(r.Context(), r.PathValue("id"), body.Resolution, store.HumanActor); err != nil {
+	decisionID := r.PathValue("id")
+	if err := pr.db.ResolveDecision(r.Context(), decisionID, body.Resolution, store.HumanActor); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// The same question asked again in the same initiative is answered by
+	// this answer. Otherwise the list, which shows one row per question,
+	// brought an older open copy back the moment the newest was answered, and
+	// the open-decision count kept every copy.
+	if d, err := pr.db.GetDecision(r.Context(), decisionID); err == nil {
+		if all, err := pr.db.ListDecisions(r.Context(), d.InitiativeID); err == nil {
+			for _, other := range all {
+				if other.ID != d.ID && other.Status == domain.DecisionOpen && projection.SameQuestion(other.Question, d.Question) {
+					_ = pr.db.ResolveDecision(r.Context(), other.ID, body.Resolution, store.HumanActor)
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "decided"})
 }
@@ -2180,11 +2198,14 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	// closing the browser tab -- which cancels it -- cancelled the review
 	// mid-flight and left "context canceled" in daemon.log with the change set
 	// stuck wherever it was. context.WithoutCancel detaches from the client's
-	// disconnect while keeping any values on ctx; the timeout is this
-	// process's own bound, generous enough for a real model call (the
-	// provider HTTP clients themselves time out at 5 minutes, so a review
-	// cannot outlive one anyway) without hanging forever on a wedged provider.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
+	// disconnect; the timeout is this process's own bound, generous enough
+	// for a real model call without hanging forever on a wedged provider.
+	//
+	// It derives from the runtime's lifetime, not from nothing: detached
+	// from everything, a review kept the engine lock through `idea daemon
+	// stop`, so the stop waited out its whole budget and the process exited
+	// mid-review without recording the run.
+	ctx, cancel := s.rt.detachedContext()
 	defer cancel()
 	if err := review(ctx, cs.InitiativeID, cs.ID, body.Verdict); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
@@ -2342,7 +2363,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		caps := exec.Capabilities(r.Context())
 		// C3: status is only meaningful for hermes/omp; executorStatus reports
 		// internal/container as always-ready.
-		status := s.rt.executorStatus(r.Context(), pr, exec.Name(), pr.cfg.Harness.Executor.Image, pr.cfg.Harness.Executor.Model)
+		status := s.rt.executorStatus(pr, exec.Name(), exec.Name() == string(pr.cfg.Harness.Executor.Kind))
 		list = append(list, map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,
