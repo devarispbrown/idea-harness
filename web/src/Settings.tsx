@@ -410,7 +410,13 @@ export default function Settings({ projectId }: { projectId: string }) {
   // via the poll effect above; this only starts it and surfaces a refusal
   // (400 wrong kind/model, 409 already running) that happens before an
   // operation id even exists.
+  // Set synchronously on click, before any await: a double click sent two
+  // POSTs, and the second one's 409 showed as a red error over a healthy run
+  // and stopped the timer.
+  const smokeStarting = useRef(false);
   const runSmoke = async () => {
+    if (smokeStarting.current || smokeOpId) return;
+    smokeStarting.current = true;
     setSmokeStartError("");
     setSmokeError("");
     setSmokeResult(null);
@@ -421,6 +427,10 @@ export default function Settings({ projectId }: { projectId: string }) {
     } catch (e) {
       setSmokeStartedAt(null);
       setSmokeStartError(errorMessage(e));
+      // Another tab's smoke, say: pick its result up when it lands.
+      loadExecutors();
+    } finally {
+      smokeStarting.current = false;
     }
   };
 
@@ -475,6 +485,13 @@ export default function Settings({ projectId }: { projectId: string }) {
   }, [otherSmokeRunning, loadExecutors]);
   const smokeState = smokeButtonState(selectedExecutor?.name ?? "", selectedExecutor?.status);
   const smokeRunning = smokeOpId !== null;
+  // The smoke tests the SAVED setup. With unsaved edits in the form it would
+  // test something other than what the page shows.
+  const executorUnsaved =
+    !!selectedExecutor &&
+    (executorKind !== selectedExecutor.name ||
+      executorModel !== (selectedExecutor.model ?? "") ||
+      executorImage !== (selectedExecutor.image ?? ""));
   const lastSmokeLine = lastSmokeMessage(selectedExecutor?.status?.last_smoke, smokeNow);
 
   return (
@@ -720,7 +737,7 @@ export default function Settings({ projectId }: { projectId: string }) {
           <div className="row">
             <button
               className="cs-secondary"
-              disabled={!smokeState.enabled || smokeRunning}
+              disabled={!smokeState.enabled || smokeRunning || executorUnsaved}
               onClick={runSmoke}
             >
               {smokeRunning
@@ -731,8 +748,17 @@ export default function Settings({ projectId }: { projectId: string }) {
           <p className="muted">
             Makes one small real model call using your key — this isn't a dry run.
           </p>
-          {!smokeState.enabled && smokeState.reason && (
-            <p className="muted">{smokeState.reason}</p>
+          {executorUnsaved ? (
+            <p className="muted">Save the executor first — the smoke test runs the saved setup.</p>
+          ) : (
+            /* The status panel above already states a readiness problem;
+               repeating it here made the missing-key sentence appear three
+               times. Only reasons the panel does not show are repeated. */
+            !smokeState.enabled &&
+            smokeState.reason &&
+            smokeState.reason !== selectedExecutor?.status?.problem && (
+              <p className="muted">{smokeState.reason}</p>
+            )
           )}
           {smokeStartError && <p className="error">{smokeStartError}</p>}
           {smokeResult === "succeeded" && <p className="ok-text">Smoke test passed.</p>}

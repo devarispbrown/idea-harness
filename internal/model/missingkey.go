@@ -42,6 +42,6 @@ func (p *MissingKeyProvider) Capabilities() Capabilities { return Capabilities{}
 // fix.
 func (p *MissingKeyProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	return Response{}, fmt.Errorf(
-		"%s is not set in the daemon's environment or the project's .env; set it and run idea daemon stop",
+		"%s is not set in the daemon's environment or the project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again)",
 		p.keyEnv)
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1946,7 +1947,17 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	opID, err := s.rt.ExecuteInitiative(r.Context(), projectID, initiativeID)
+	// Optional body: {"fresh": true} is "Start over". An empty body is the
+	// ordinary run, which continues a stopped run's kept files. Decoded
+	// leniently on purpose: this endpoint has always ignored its body, and
+	// refusing one it used to accept would be a breaking change.
+	var body struct {
+		Fresh bool `json:"fresh"`
+	}
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
+	}
+	opID, err := s.rt.ExecuteInitiativeFresh(r.Context(), projectID, initiativeID, body.Fresh)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return

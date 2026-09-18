@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiRaw, del, get, post, resource } from "./api";
+import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import {
@@ -251,10 +251,9 @@ export default function BuildPage({
     setRunBusy(true);
     setRunError("");
     try {
-      if (discardPartial) {
-        await del(`/projects/${projectId}/initiatives/${initiativeId}/partial-work`);
-      }
-      await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, {});
+      // One request: the daemon discards the kept files only once the run
+      // is accepted. Deleting first and then being refused lost them.
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, discardPartial ? { fresh: true } : {});
       setStartedTask(initiative?.next_task?.human_id ?? "the next task");
     } catch (e) {
       setRunError(errMessage(e));
