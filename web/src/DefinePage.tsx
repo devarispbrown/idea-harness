@@ -13,6 +13,8 @@ import {
   type FindingItem,
   type QuestionItem,
 } from "./JudgmentCard";
+import { decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings } from "./judgmentScope";
+import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
 
 interface Artifact {
   id: string;
@@ -28,10 +30,14 @@ export default function DefinePage({
   projectId,
   initiativeId,
   status,
+  judgmentReason,
 }: {
   projectId: string;
   initiativeId: string;
   status: string;
+  // Why the initiative is waiting, from App. Undefined never shows "Revise
+  // PRD": showsRevisePrd fails closed to anything but prd_review.
+  judgmentReason?: string;
 }) {
   const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [findings, setFindings] = useState<FindingItem[]>([]);
@@ -62,13 +68,25 @@ export default function DefinePage({
     return () => clearInterval(id);
   }, [load]);
 
-  const openDecisions = decisions.filter((d) => d.status === "open");
-  const openFindings = findings.filter((f) => !f.disposition);
+  // D1: Define is the PRD phase, so it shows PRD decisions and PRD-review
+  // (+ deterministic requirement-check) findings only. Plan-review findings
+  // — including HIGH ones like "No execution plan ... was provided" — belong
+  // on Plan, where approval actually happens (see PlanPage.tsx).
+  const prdDecisions = decisionsForDefine(decisions);
+  const prdFindings = findingsForDefine(findings);
+  // C2: the catch-all — a finding whose target_type matches neither Define's
+  // nor Plan's allowlist still has to land somewhere, so it shows here rather
+  // than being silently dropped (the reported incident: a hidden CRITICAL
+  // finding that blocked plan approval with no visible reason).
+  const otherFindings = otherOpenFindings(findings).filter((f) => !f.disposition);
+
+  const openDecisions = prdDecisions.filter((d) => d.status === "open");
+  const openFindings = prdFindings.filter((f) => !f.disposition);
   const openQuestions = questions.filter((q) => q.status === "open");
   const openCount = openDecisions.length + openFindings.length + openQuestions.length;
 
-  const resolvedDecisions = decisions.filter((d) => d.status !== "open");
-  const resolvedFindings = findings.filter((f) => !!f.disposition);
+  const resolvedDecisions = prdDecisions.filter((d) => d.status !== "open");
+  const resolvedFindings = prdFindings.filter((f) => !!f.disposition);
 
   // The current (latest) PRD version; /artifacts returns oldest-first.
   const prdVersions = artifacts.filter((a) => a.kind === "prd");
@@ -142,7 +160,11 @@ export default function DefinePage({
       actionLabel: "Proceed to design & plan →",
       onAction: advance,
     };
-  } else if (status === "needs_human_judgment") {
+  } else if (status === "needs_human_judgment" && showsRevisePrd(judgmentReason)) {
+    // D2: the four judgment reasons share this one status, and only
+    // prd_review (or the undefined legacy case) is Define's to resolve — a
+    // plan_review/plan_dependencies/verification park shows no commit bar
+    // here at all, because "Revise PRD" would not be the right action.
     commit = {
       explanation:
         openCount > 0
@@ -160,12 +182,12 @@ export default function DefinePage({
           <h2 className="section-title">
             {openCount} thing{openCount === 1 ? "" : "s"} need{openCount === 1 ? "s" : ""} your judgment
           </h2>
-          <span className="muted">then the PRD revises to v{nextVersion} and Design unlocks</span>
+          <span className="muted">{openItemsNote(status, nextVersion)}</span>
         </div>
       )}
       <div className="judgment-list">
         {openDecisions.map((d) => (
-          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
+          <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
         ))}
         {openFindings.map((f) => (
           <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
@@ -181,10 +203,28 @@ export default function DefinePage({
           </div>
           <div className="judgment-list">
             {resolvedDecisions.map((d) => (
-              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} />
+              <DecisionCard key={d.id} d={d} onResolve={() => {}} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
             ))}
             {resolvedFindings.map((f) => (
               <FindingCard key={f.id} f={f} onDisposition={() => {}} />
+            ))}
+          </div>
+        </>
+      )}
+      {/* C2: nothing may be silently unshown. A finding whose target_type is
+          not yet recognized by either page's allowlist still shows up here,
+          rather than vanishing the way the reported CRITICAL finding did. */}
+      {otherFindings.length > 0 && (
+        <>
+          <div className="judgment-head">
+            <h2 className="section-title">Other open items</h2>
+            <span className="muted">
+              didn't match a known phase — shown here so nothing is hidden
+            </span>
+          </div>
+          <div className="judgment-list">
+            {otherFindings.map((f) => (
+              <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
             ))}
           </div>
         </>

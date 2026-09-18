@@ -19,6 +19,15 @@ type Executor interface {
 	Collect(ctx context.Context, id string) (Result, error)
 }
 
+// OutputTailer is implemented by executors that run an external agent and can
+// report the end of its own output. The engine uses it to say WHY an attempt
+// failed or changed nothing -- a 401, a retired model id -- which the attempt
+// status alone does not carry. It must be read before Collect or Cancel, which
+// discard the output.
+type OutputTailer interface {
+	OutputTail(ctx context.Context, id string) string
+}
+
 // Capabilities declares the executor's trust, sandbox mode, and (deterministic,
 // not model-granted) capabilities.
 type Capabilities struct {
@@ -58,7 +67,7 @@ type Status struct {
 
 // Result is the collected execution output (content-addressed digests + usage).
 type Result struct {
-	PatchDigest string           `json:"patch_digest"`
-	LogDigest   string           `json:"log_digest,omitempty"`
-	Usage       domain.RunUsage  `json:"usage,omitempty"`
+	PatchDigest string          `json:"patch_digest"`
+	LogDigest   string          `json:"log_digest,omitempty"`
+	Usage       domain.RunUsage `json:"usage,omitempty"`
 }

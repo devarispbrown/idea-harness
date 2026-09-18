@@ -263,7 +263,7 @@ Configure via the CLI or the web UI (Settings):
 
 ```bash
 idea model                        # list providers + status
-idea model set gemini/gemini-2.5-flash
+idea model set gemini/gemini-3.6-flash
 idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --key-env GROQ_API_KEY
 ```
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
+import { hasBuiltSomething, stripSourceTag, verifiedRequirementCount } from "./verify";
 
 interface Criterion {
   metric: string;
@@ -14,6 +15,9 @@ interface Requirement {
   status: string;
   acceptance_criteria: Criterion[];
 }
+interface ChangeSetStatus {
+  status: string;
+}
 
 export default function VerifyPage({
   projectId,
@@ -23,12 +27,17 @@ export default function VerifyPage({
   initiativeId: string;
 }) {
   const [reqs, setReqs] = useState<Requirement[]>([]);
+  const [changeSets, setChangeSets] = useState<ChangeSetStatus[]>([]);
   const [note, setNote] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    const r = await get<Requirement[]>(resource(projectId, initiativeId, "requirements")).catch(() => []);
+    const [r, c] = await Promise.all([
+      get<Requirement[]>(resource(projectId, initiativeId, "requirements")).catch(() => []),
+      get<ChangeSetStatus[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
+    ]);
     setReqs(r ?? []);
+    setChangeSets(c ?? []);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -50,7 +59,7 @@ export default function VerifyPage({
       setNote((p) => ({ ...p, [code]: "" }));
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -63,7 +72,7 @@ export default function VerifyPage({
       );
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -73,11 +82,17 @@ export default function VerifyPage({
   const verifiableReqs = activeReqs.filter((r) => r.status !== "waived");
   const waivedReqs = activeReqs.filter((r) => r.status === "waived").length;
   const totalCriteria = verifiableReqs.reduce((n, r) => n + r.acceptance_criteria.length, 0);
-  const verifiedReqs = activeReqs.filter((r) => r.status === "verified").length;
+  // Same function App.tsx's sidebar uses on the same requirements shape, so
+  // the two numbers can't drift apart again (K).
+  const verifiedReqs = verifiedRequirementCount(reqs);
   const passedCriteria = activeReqs
     .filter((r) => r.status === "verified")
     .reduce((n, r) => n + r.acceptance_criteria.length, 0);
   const pct = totalCriteria > 0 ? Math.round((passedCriteria / totalCriteria) * 100) : 0;
+  // Pass/Fail record evidence against code that landed in the workspace --
+  // before anything has been built and applied, there is nothing to check
+  // yet (K).
+  const built = hasBuiltSomething(changeSets);
 
   return (
     <div className="phase-page">
@@ -93,6 +108,13 @@ export default function VerifyPage({
         </span>
       </div>
 
+      {!built && verifiableReqs.length > 0 && (
+        <p className="muted verify-gate-note">
+          Pass/Fail unlocks once a task has been built and its change set applied — there's
+          nothing to check against yet.
+        </p>
+      )}
+
       <div className="verify-list">
         {activeReqs.map((r) => {
           const verified = r.status === "verified";
@@ -103,7 +125,7 @@ export default function VerifyPage({
               <div className="verify-head">
                 <span className="verify-mark">{verified ? "✓" : waived ? "—" : "▶"}</span>
                 <span className="verify-code">{r.code}</span>
-                <span className="verify-statement">{r.statement}</span>
+                <span className="verify-statement">{stripSourceTag(r.statement)}</span>
                 {verified && <span className="phase-pill pill-verified">verified</span>}
                 {failed && <span className="phase-pill pill-failing">failed</span>}
                 {waived && <span className="phase-pill pill-inactive">waived</span>}
@@ -129,9 +151,23 @@ export default function VerifyPage({
                     value={note[r.code] ?? ""}
                     onChange={(e) => setNote((p) => ({ ...p, [r.code]: e.target.value }))}
                   />
-                  <button className="cs-green" onClick={() => record(r.code, "pass")}>Pass</button>
+                  <button
+                    className="cs-green"
+                    disabled={!built}
+                    title={!built ? "Build and apply a change set before recording pass/fail" : undefined}
+                    onClick={() => record(r.code, "pass")}
+                  >
+                    Pass
+                  </button>
                   {!failed && (
-                    <button className="cs-danger" onClick={() => record(r.code, "fail")}>Fail</button>
+                    <button
+                      className="cs-danger"
+                      disabled={!built}
+                      title={!built ? "Build and apply a change set before recording pass/fail" : undefined}
+                      onClick={() => record(r.code, "fail")}
+                    >
+                      Fail
+                    </button>
                   )}
                   <button className="cs-secondary" onClick={() => record(r.code, "waived")}>Waive</button>
                   <button className="verify-task" onClick={() => generateTask(r)}>Add verify task</button>

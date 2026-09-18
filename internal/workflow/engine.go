@@ -18,6 +18,7 @@ import (
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/docparse"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/review"
 	"github.com/devarispbrown/idea-harness/internal/roles"
@@ -69,6 +70,7 @@ type Engine struct {
 	log           *slog.Logger
 	workRoot      string
 	workspaceRoot string
+	dotEnv        map[string]string // the project's .env, for provider keys
 
 	// mu serializes the state-mutating operations (execute/apply/revert) so two
 	// concurrent invocations cannot race on the same task or workspace.
@@ -152,9 +154,12 @@ func (e *Engine) chargeUSD(cost float64) error {
 // engine's mutex continues to serialize execute/apply/revert across a reload. It
 // is guarded by e.mu, which ALL entry points now hold (see below), so no field
 // read races the swap.
-func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store) {
+func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store, dotEnv map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Swapped under the same lock as cfg, so an Execute never pairs a new
+	// config with the old .env.
+	e.dotEnv = dotEnv
 	if cfg.Review.MaxCycles <= 0 {
 		cfg.Review.MaxCycles = 3
 	}
@@ -402,17 +407,21 @@ func (e *Engine) storeBlob(content string) string {
 // default_model, then the registry default with a catalog-default model, then
 // the demo default.
 func (e *Engine) resolveModelSpec(roleName string) string {
-	if m := e.cfg.Models[roleName]; m != "" {
+	return resolveModelSpecFor(e.cfg, e.registry, roleName)
+}
+
+func resolveModelSpecFor(cfg config.HarnessConfig, registry *model.Registry, roleName string) string {
+	if m := cfg.Models[roleName]; m != "" {
 		return m
 	}
 	if rc, err := roles.Load(roleName); err == nil && rc.Model != "" {
 		return rc.Model
 	}
-	if e.cfg.DefaultModel != "" {
-		return e.cfg.DefaultModel
+	if cfg.DefaultModel != "" {
+		return cfg.DefaultModel
 	}
-	if e.registry != nil {
-		if d := e.registry.Default(); d != "" && d != "idea-harness-default" {
+	if registry != nil {
+		if d := registry.Default(); d != "" && d != "idea-harness-default" {
 			return d + "/" + model.DefaultModelFor(d)
 		}
 	}
@@ -456,13 +465,47 @@ func (e *Engine) modelSpecFor(initiativeID, roleName string) string {
 // ("implementer") wins, then the executor-level model, then the default chain.
 // This is how OMP and Hermes get different models per role.
 func (e *Engine) implementerModel() string {
-	if m := e.cfg.Models["implementer"]; m != "" {
+	return ImplementerModelSpec(e.cfg, e.registry)
+}
+
+// ImplementerModelSpec is the model the coding agent runs: models.implementer,
+// then executor.model, then the implementer role's usual resolution. Exported
+// so the daemon's "can a run start" check resolves exactly what Execute will;
+// it checked executor.model alone and so blocked runs Execute would accept,
+// and passed ones it would refuse.
+func ImplementerModelSpec(cfg config.HarnessConfig, registry *model.Registry) string {
+	if m := cfg.Models["implementer"]; m != "" {
 		return m
 	}
-	if m := e.cfg.Executor.Model; m != "" {
+	if m := cfg.Executor.Model; m != "" {
 		return m
 	}
-	return e.resolveModelSpec("implementer")
+	return resolveModelSpecFor(cfg, registry, "implementer")
+}
+
+// ImplementerProvider resolves the provider the coding agent will use, as
+// Execute does.
+func ImplementerProvider(cfg config.HarnessConfig, registry *model.Registry) (executor.AgentProvider, error) {
+	return executor.ResolveAgentProvider(ImplementerModelSpec(cfg, registry), cfg.DefaultModel, cfg.Providers)
+}
+
+// demoModelSpec is the internal registry key resolveModelSpec falls back to
+// when no provider is configured -- the same key the daemon's isDemo check
+// (internal/daemon/providers.go: demoProviderName) compares against. Kept as
+// its own constant here rather than imported, since workflow does not (and
+// should not) depend on daemon.
+const demoModelSpec = "idea-harness-default"
+
+// displayModel maps the internal demo-provider spec to the literal "demo" a
+// client can key off (model == "demo") to label placeholder output, so the
+// registry's internal implementation detail never leaks into the API surface
+// as a fake model id. Used on ChangeSet.Model (B2/Track G: "Shipped (demo)" /
+// "Placeholder change" vs a real model's output).
+func displayModel(spec string) string {
+	if spec == "" || spec == demoModelSpec {
+		return "demo"
+	}
+	return spec
 }
 
 // ---------- Stages ----------

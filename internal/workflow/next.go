@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
@@ -97,6 +98,76 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 	default: // running
 		return "wait", nil
 	}
+}
+
+// NextTask is the task Execute would run next, projected for an API response
+// without exposing the full domain.Task shape (the Build contract's
+// `next_task`).
+type NextTask struct {
+	ID      string `json:"id"`
+	HumanID string `json:"human_id"`
+	Title   string `json:"title"`
+}
+
+// NextReadyTask reports the task Execute would run next for initiativeID, or
+// nil when there is none.
+//
+// Deliberately lock-free, unlike Execute itself: a poll-driven UI (the Build
+// page) calling this on every refresh must not block for the whole duration
+// of an in-flight Execute, which holds e.mu for as long as the agent
+// container runs. A slightly stale answer is an acceptable cost for a
+// read-only hint; Execute's own claim is still what actually enforces
+// correctness when the button is clicked.
+func (e *Engine) NextReadyTask(ctx context.Context, initiativeID string) (*NextTask, error) {
+	t, err := e.nextReadyTask(ctx, initiativeID)
+	if err != nil {
+		if errors.Is(err, ErrNoReadyTask) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &NextTask{ID: t.ID, HumanID: t.Code, Title: t.Title}, nil
+}
+
+// RunBlockedReason reports why Execute would refuse to run right now for
+// initiativeID, or "" when it would not (the Build contract's
+// `run_blocked_reason`).
+//
+// It mirrors Execute's own guards read-only and lock-free (see NextReadyTask)
+// so the Build page can grey out "Run next task" and say why, instead of
+// letting the click land on a 409/400 it has to parse. It does NOT check
+// executor readiness (image/key) -- that lives in the daemon package, which
+// alone knows about Docker and the project's .env; the caller composes both.
+func (e *Engine) RunBlockedReason(ctx context.Context, initiativeID string) (string, error) {
+	ini, err := e.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.Status == domain.InitiativeRunning {
+		return "An operation is already running", nil
+	}
+	switch ini.Status {
+	case domain.InitiativePlanApproved, domain.InitiativeNeedsHumanJudgment:
+	case domain.InitiativeFailed:
+		return "This initiative failed; retry it before running tasks", nil
+	case domain.InitiativeComplete:
+		return "This initiative is complete", nil
+	default:
+		return "The plan is not approved yet", nil
+	}
+	task, err := e.nextReadyTask(ctx, initiativeID)
+	if err != nil {
+		if errors.Is(err, ErrNoReadyTask) {
+			// Nothing to run is not a blocked run: the Build page simply has
+			// no button to show, which next_task == nil already conveys.
+			return "", nil
+		}
+		return "", err
+	}
+	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
+		return strings.TrimPrefix(err.Error(), "workflow: execute: "), nil
+	}
+	return "", nil
 }
 
 // changeSetRef is the reference `idea next` should print for a change set.

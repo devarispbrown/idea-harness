@@ -164,6 +164,11 @@ func (s *Server) handleUnderstanding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
+// handleGuidance returns the Recommended Next Move, extended with the Build
+// contract (backend-2/web-build): `next_task` (the task Execute would run
+// next) and `run_blocked_reason` (empty when a run can start now). Both are
+// composed here rather than inside BuildGuidance, which stays a pure function
+// of Understanding with no engine/task-store access.
 func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
@@ -175,7 +180,23 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projection.BuildGuidance(ini, u))
+	g := projection.BuildGuidance(ini, u)
+
+	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
+		g.NextTask = &projection.NextTaskRef{ID: nt.ID, HumanID: nt.HumanID, Title: nt.Title}
+	}
+	if reason, err := pr.engine.RunBlockedReason(r.Context(), ini.ID); err == nil {
+		g.RunBlockedReason = reason
+	}
+	// The executor-readiness half (C3): only worth a Docker-backed check (cached,
+	// see imagePresenceCache) when the workflow-level checks already say a run
+	// could start and there is actually a task to run it on.
+	if g.RunBlockedReason == "" && g.NextTask != nil {
+		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
+		g.RunBlockedReason = st.Problem
+	}
+
+	writeJSON(w, http.StatusOK, g)
 }
 
 func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
@@ -598,7 +619,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if provider == "" {
 		provider = "openai"
 	}
-	models, _ := pr.registry.ListModels(r.Context(), provider)
+	models, _ := listModelsCached(r.Context(), pr.registry, provider)
 	if models == nil {
 		// The documented behaviour for an unreachable provider is "200 with an
 		// empty models array" -- and the error is deliberately dropped above to
@@ -675,6 +696,12 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// A revise cycle re-lists a decision it already asked; the UI showed the
+	// same question five times while guidance counted one. Collapsed here as
+	// in the projection; ?all=true returns every row.
+	if r.URL.Query().Get("all") != "true" {
+		list = projection.DedupDecisions(list)
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -691,9 +718,28 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "resolution is required")
 		return
 	}
-	if err := pr.db.ResolveDecision(r.Context(), r.PathValue("id"), body.Resolution, store.HumanActor); err != nil {
+	decisionID := r.PathValue("id")
+	if err := pr.db.ResolveDecision(r.Context(), decisionID, body.Resolution, store.HumanActor); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// The same question asked again in the same initiative is answered by
+	// this answer. Otherwise the list, which shows one row per question,
+	// brought an older open copy back the moment the newest was answered, and
+	// the open-decision count kept every copy.
+	if d, err := pr.db.GetDecision(r.Context(), decisionID); err == nil {
+		if all, err := pr.db.ListDecisions(r.Context(), d.InitiativeID); err == nil {
+			for _, other := range all {
+				// Same type too, and only an answer that decision offers: the
+				// question match ignores leading tags, and copying an answer
+				// that is not one of a decision's options would record a
+				// choice nobody was offered.
+				if other.ID != d.ID && other.Status == domain.DecisionOpen && other.Type == d.Type &&
+					projection.SameQuestion(other.Question, d.Question) && offers(other.Options, body.Resolution) {
+					_ = pr.db.ResolveDecision(r.Context(), other.ID, body.Resolution, store.HumanActor)
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "decided"})
 }
@@ -2152,7 +2198,21 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	if body.AcceptFindings {
 		review = pr.engine.ReviewChangeSetAccepting
 	}
-	if err := review(r.Context(), cs.InitiativeID, cs.ID, body.Verdict); err != nil {
+	// E1: an "approved" verdict runs the adversarial reviewer synchronously,
+	// inside this request. That used to share the request's own context, so
+	// closing the browser tab -- which cancels it -- cancelled the review
+	// mid-flight and left "context canceled" in daemon.log with the change set
+	// stuck wherever it was. context.WithoutCancel detaches from the client's
+	// disconnect; the timeout is this process's own bound, generous enough
+	// for a real model call without hanging forever on a wedged provider.
+	//
+	// It derives from the runtime's lifetime, not from nothing: detached
+	// from everything, a review kept the engine lock through `idea daemon
+	// stop`, so the stop waited out its whole budget and the process exited
+	// mid-review without recording the run.
+	ctx, cancel := s.rt.detachedContext()
+	defer cancel()
+	if err := review(ctx, cs.InitiativeID, cs.ID, body.Verdict); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -2298,12 +2358,17 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	execs := []executor.Executor{
 		executor.NewInternalExecutor(pr.blobs),
 		executor.NewContainerExecutor(pr.blobs, pr.cfg.Harness.Executor.Image),
-		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, ""),
-		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, ""),
+		// Capability listing only: these are never Start()ed here, so the
+		// credential and endpoint are deliberately empty rather than resolved.
+		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
+		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 	}
 	list := make([]map[string]any, 0, len(execs))
 	for _, exec := range execs {
 		caps := exec.Capabilities(r.Context())
+		// C3: status is only meaningful for hermes/omp; executorStatus reports
+		// internal/container as always-ready.
+		status := s.rt.executorStatus(pr, exec.Name(), exec.Name() == string(pr.cfg.Harness.Executor.Kind))
 		list = append(list, map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,
@@ -2314,6 +2379,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 			"image":         pr.cfg.Harness.Executor.Image,
 			"model":         pr.cfg.Harness.Executor.Model,
 			"default_image": executor.DefaultAgentImage(exec.Name()),
+			"status":        status,
 		})
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -2361,6 +2427,32 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Model != nil {
 		cfg.Harness.Executor.Model = *body.Model // empty clears
+	}
+
+	// C2: for hermes/omp, a configured model must actually resolve to a
+	// provider before it is saved. Without this, a typo or an unconfigured
+	// provider name was written to harness.yaml, forwarded into the agent
+	// container at execute time, and failed there -- minutes later, nowhere
+	// near the settings page that caused it, with `selectExecutor`'s own
+	// fail-closed check as the only thing standing between the typo and a
+	// leaked credential.
+	if cfg.Harness.Executor.Kind == config.ExecutorHermes || cfg.Harness.Executor.Kind == config.ExecutorOMP {
+		if cfg.Harness.Executor.Model != "" {
+			if _, err := executor.ResolveAgentProvider(cfg.Harness.Executor.Model, cfg.Harness.DefaultModel, cfg.Harness.Providers); err != nil {
+				writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "executor: "))
+				return
+			}
+		}
+	}
+	// C1: hermes/omp with no image stores the pinned default, not an empty
+	// string the runtime would otherwise have to guess at. agent.go's own
+	// fallback (DefaultAgentImage, not alpine:3.20) still exists for a
+	// pre-existing or hand-edited harness.yaml; the write path should not
+	// manufacture new instances of the empty-image case that fixes.
+	if cfg.Harness.Executor.Image == "" {
+		if def := executor.DefaultAgentImage(string(cfg.Harness.Executor.Kind)); def != "" {
+			cfg.Harness.Executor.Image = def
+		}
 	}
 	if err := config.WriteHarness(filepath.Join(pr.rootPath, config.Dir), cfg.Harness); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
@@ -2435,4 +2527,18 @@ func (s *Server) initiative(r *http.Request) (*projectRuntime, domain.Initiative
 	}
 	ini, err := pr.db.GetInitiative(r.Context(), id)
 	return pr, ini, err
+}
+
+// offers reports whether answer is one of options, or options is empty (a
+// free-text decision).
+func offers(options []string, answer string) bool {
+	if len(options) == 0 {
+		return true
+	}
+	for _, o := range options {
+		if o == answer {
+			return true
+		}
+	}
+	return false
 }

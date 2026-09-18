@@ -30,7 +30,7 @@ func TestDocumentedIsolationMatchesTheArgv(t *testing.T) {
 	t.Run("agent egress is documented as unrestricted", func(t *testing.T) {
 		// The claim only stays true while the agent has no --network flag.
 		e := &SandboxedAgentExecutor{name: "hermes", image: "img", dockerPath: "docker"}
-		args := e.containerArgs(Request{WorkRoot: "/tmp/work"}, "")
+		args := e.containerArgs(Request{WorkRoot: "/tmp/work"}, "attempt", "", "")
 		if hasFlag(args, "--network") {
 			t.Fatal("the agent now sets --network; docs/security-model.md still says egress is unrestricted")
 		}

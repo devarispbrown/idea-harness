@@ -249,8 +249,19 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // cmdDev starts the daemon and serves the web UI.
-func cmdDev(_ cmdArgs, _, stderr io.Writer) error {
-	fmt.Fprintln(stderr, muted("starting daemon (web UI served at http://127.0.0.1:8787)"))
+//
+// It used to call runDaemon unconditionally, which binds daemonAddr()
+// (hard-coded to 8787 unless IDEA_HARNESS_ADDR overrides it) in the
+// foreground. `idea init` already auto-starts a background daemon on that
+// same address (ensureDaemon), so a plain `idea dev` run afterwards failed
+// with a raw `bind: address already in use` -- true, but useless: the goal of
+// `idea dev` (a daemon serving the UI) was already met (H2).
+func cmdDev(_ cmdArgs, stdout, stderr io.Writer) error {
+	if healthy() {
+		fmt.Fprintln(stdout, ok("✓ daemon already running")+" "+muted("— web UI at "+uiURL()))
+		return nil
+	}
+	fmt.Fprintln(stderr, muted("starting daemon (web UI served at "+uiURL()+")"))
 	return runDaemon(cmdArgs{}, io.Discard, stderr)
 }
 
@@ -325,16 +336,26 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 				}
 			}
 			fmt.Fprintln(stdout, line)
+			// H2: "is it running" and "where do I use it" are the same question
+			// from the UI side, and the address was otherwise something you had
+			// to already know (or infer from IDEA_HARNESS_ADDR) to answer it.
+			fmt.Fprintln(stdout, muted("web UI: ")+bold(uiURL()))
 			return nil
 		}
 		return fmt.Errorf("daemon is not running (it auto-starts on the first command that needs it)")
 	case "stop":
-		return stopDaemon()
+		pid, err := stopDaemon()
+		if err == nil {
+			fmt.Fprintf(stdout, "daemon stopped (pid %d)\n", pid)
+		}
+		return err
 	}
 	log := newDaemonLogger(stderr)
-	writePID()
 	defer removePID()
-	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log)
+	// Written only once this process owns the address and the state dir. A
+	// second `idea daemon` wrote it first and then failed on the port, leaving
+	// the running daemon with a pidfile naming a dead process.
+	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log, writePID)
 }
 
 func pidPath() string {
@@ -364,9 +385,18 @@ func writePID() {
 	_ = os.WriteFile(pidPath(), []byte(strconv.Itoa(os.Getpid())), 0o600)
 }
 
-func removePID() { _ = os.Remove(pidPath()) }
+// removePID removes the pidfile only if it is still ours. A stop now takes up
+// to 30 s, and a command in that window starts a new daemon that writes its own
+// pid; removing the file unconditionally on the way out left that daemon with
+// no pidfile, so it could not be stopped.
+func removePID() {
+	data, err := os.ReadFile(pidPath())
+	if err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(os.Getpid()) {
+		_ = os.Remove(pidPath())
+	}
+}
 
-func stopDaemon() error {
+func stopDaemon() (int, error) {
 	data, err := os.ReadFile(pidPath())
 	if err != nil {
 		// The pidfile lives in the state directory, so removing that directory
@@ -378,19 +408,33 @@ func stopDaemon() error {
 		// solve a token problem would be a worse trade than this message. So
 		// say precisely what is true and what will work.
 		if healthy() {
-			return fmt.Errorf("a daemon is answering on %s but its pidfile is gone, "+
+			return 0, fmt.Errorf("a daemon is answering on %s but its pidfile is gone, "+
 				"so it cannot be stopped from here -- this is what happens when the state "+
-				"directory is removed while it runs. Stop it with: pkill -f 'idea daemon'",
-				daemonAddr())
+				"directory is removed while it runs. Stop it with: %s",
+				daemonAddr(), stopHint())
 		}
-		return fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
+		return 0, fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
 			daemonAddr())
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return syscall.Kill(pid, syscall.SIGTERM)
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return 0, err
+	}
+	// Wait for it to go. The daemon now cancels running operations on SIGTERM
+	// and removes their agent containers before exiting, which takes a moment;
+	// returning at once let `idea daemon stop && idea ...` race a daemon that
+	// was still shutting down. Bounded by the daemon's own 30 s shutdown limit.
+	deadline := time.Now().Add(35 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return pid, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return pid, fmt.Errorf("the daemon (pid %d) is still stopping after 35 s; check `idea logs`", pid)
 }
 
 // ---------- init / new ----------
@@ -432,6 +476,11 @@ func cmdInit(a cmdArgs, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ initialized project")+" "+code(out["project_id"])+" in "+cwd)
+	// H2: this is the first moment the daemon (auto-started above by
+	// ensureDaemon) is actually running, and the web UI is one of the two ways
+	// to use it. Without this line, finding the UI meant already knowing the
+	// port -- or hitting `idea dev`'s bind error moments later trying to guess.
+	fmt.Fprintln(stdout, muted("web UI: ")+bold(uiURL()))
 	fmt.Fprintln(stdout, muted("next: ")+bold("idea new")+muted(" \"<describe your idea>\""))
 	return nil
 }
@@ -715,7 +764,7 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, warn("✗ daemon")+" "+muted("running, but it is rejecting this CLI's token"))
 		fmt.Fprintln(stdout, muted("  It is serving with a token from before the state directory changed."))
 		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
-			muted(" — or, if its pidfile went with the state directory, ")+bold("pkill -f 'idea daemon'")+muted("."))
+			muted(" — or, if its pidfile went with the state directory, ")+bold(stopHint())+muted("."))
 		fmt.Fprintln(stdout, muted("  The next command starts a fresh one."))
 		daemonProblem = fmt.Errorf("the daemon is rejecting this CLI's token; stop it and let the next command restart it")
 	case staleDaemon:
@@ -736,7 +785,7 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, warn("✗ daemon")+" "+muted("running, but this CLI has no token for it"))
 		fmt.Fprintln(stdout, muted("  The state directory is gone or unreadable; the daemon still holds the token it read at start."))
 		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
-			muted(" — or, if its pidfile went with the state directory, ")+bold("pkill -f 'idea daemon'")+muted("."))
+			muted(" — or, if its pidfile went with the state directory, ")+bold(stopHint())+muted("."))
 		daemonProblem = fmt.Errorf("a daemon is running but this CLI has no token for it; stop it and let the next command restart it")
 	default:
 		fmt.Fprintln(stdout, muted("• daemon: not running (auto-starts on first command)"))

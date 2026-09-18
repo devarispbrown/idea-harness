@@ -145,6 +145,10 @@ so it is worth being exact:
   and it does not limit input tokens.
 - **`review.max_cost_usd`** is the only cumulative figure. It is charged in `Engine.chargeUSD` from
   each response's reported cost, including the vision-description calls for uploaded images.
+  The cost is computed from a built-in price table (`internal/model/pricing.go`), not billed
+  amounts, so it is an estimate. A model with no row of its own (a date or release suffix on a row counts as that row) is charged $0.50 per million input
+  tokens and $2.00 per million output tokens. Calls to a local model (Ollama, or any provider on `localhost`) are charged nothing.
+  The coding agent's own model calls, made inside its container, are not counted.
 
 Reading `0` as "unlimited" is right for `max_tokens` and `max_cost_usd` and wrong for `max_cycles`,
 which the engine rewrites to 3. `idea config validate` rejects a negative `max_cycles`.
@@ -185,9 +189,9 @@ The model is a `provider/model` string. Examples:
 
 ```text
 openai/gpt-5.6-luna
-anthropic/claude-sonnet-4-5-20250929
-gemini/gemini-2.5-flash
-deepseek/deepseek-chat
+anthropic/claude-sonnet-5
+gemini/gemini-3.6-flash
+deepseek/deepseek-v4-pro
 openrouter/anthropic/claude-opus-5   # note: OpenRouter model ids contain slashes
 ollama/llama3.1
 groq/llama-3.3-70b-versatile

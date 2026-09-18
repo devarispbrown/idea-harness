@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  modelsLoadedMessage,
   providerDetail,
+  providerDotState,
   providerOptionSuffix,
+  providerReadinessWarning,
   providerState,
   providerStatusLabel,
 } from "./providerStatus";
@@ -69,5 +72,67 @@ describe("providerDetail", () => {
 
   it("says nothing when there is nothing wrong", () => {
     expect(providerDetail(keyless)).toBe("");
+  });
+});
+
+describe("providerReadinessWarning", () => {
+  it("warns nothing for a ready provider", () => {
+    expect(providerReadinessWarning(keyless)).toBeUndefined();
+  });
+
+  it("names the key variable and the restart step for a missing key", () => {
+    const w = providerReadinessWarning(noKey);
+    expect(w).toContain("ANTHROPIC_API_KEY");
+    expect(w).toContain("idea daemon stop");
+  });
+
+  it("names the key variable and the restart step for an unconfigured preset", () => {
+    const w = providerReadinessWarning(unconfigured);
+    expect(w).toContain("GOOGLE_API_KEY");
+    expect(w).toContain("idea daemon stop");
+  });
+
+  it("carries the daemon's own reason for a refused entry, not a key nudge", () => {
+    const w = providerReadinessWarning(refused);
+    expect(w).toContain("base_url may not be overridden");
+    expect(w).not.toContain("is not set");
+  });
+});
+
+describe("modelsLoadedMessage", () => {
+  it("reports the count for a ready provider", () => {
+    expect(modelsLoadedMessage({ ...keyless, name: "ollama" }, 7)).toBe(
+      "Loaded 7 models from ollama.",
+    );
+  });
+
+  it("uses singular for exactly one model", () => {
+    expect(modelsLoadedMessage({ ...keyless, name: "ollama" }, 1)).toBe(
+      "Loaded 1 model from ollama.",
+    );
+  });
+
+  it("names the key variable instead of a bogus zero-model count when not ready", () => {
+    const msg = modelsLoadedMessage({ ...noKey, name: "anthropic" }, 0);
+    expect(msg).toContain("ANTHROPIC_API_KEY");
+    expect(msg).not.toContain("Loaded 0 models");
+  });
+});
+
+describe("providerDotState", () => {
+  it("is ready only when the provider is actually ready", () => {
+    expect(providerDotState(keyless)).toBe("ready");
+  });
+
+  it("is warn for a missing key, not the green a bare 'not ready' used to get", () => {
+    expect(providerDotState(noKey)).toBe("warn");
+  });
+
+  it("is warn for a refused entry", () => {
+    expect(providerDotState(refused)).toBe("warn");
+  });
+
+  it("is warn for an unconfigured preset", () => {
+    expect(providerDotState(unconfigured)).toBe("warn");
   });
 });

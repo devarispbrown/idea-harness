@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -170,10 +172,32 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		actual = req.Model
 	}
 	in, out := int64(parsed.Usage.PromptTokens), int64(parsed.Usage.CompletionTokens)
+	cost := CostUSD(actual, in, out)
+	if p.name == "ollama" || isLocalEndpoint(p.baseURL) {
+		// A local model -- Ollama, or any server on this machine -- costs
+		// nothing per token. At the default rate every
+		// Ollama call spent max_cost_usd budget, and a long local run stopped
+		// on a ceiling it had not reached.
+		cost = 0
+	}
 	return Response{
 		Text:        content,
 		RawJSON:     content,
-		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: CostUSD(actual, in, out)},
+		Usage:       Usage{InputTokens: in, OutputTokens: out, CostUSD: cost},
 		ActualModel: actual,
 	}, nil
+}
+
+// isLocalEndpoint reports whether baseURL is on this machine.
+func isLocalEndpoint(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

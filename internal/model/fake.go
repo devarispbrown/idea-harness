@@ -161,6 +161,16 @@ func userIdea(req Request) string {
 	return "your idea"
 }
 
+// schemaInstructionMarker is the start of the suffix runModel
+// (internal/workflow/engine.go) appends to every system prompt, after the
+// compiled context sections, so a structured-output model knows the exact
+// required fields. It carries no "--- " section delimiter of its own, so
+// taskSection's scan for the next section boundary ran straight through it
+// into the schema JSON: the demo idea brief echoed the user's idea followed
+// immediately by "Return a single JSON object matching this schema…", making
+// the same instruction appear to print twice in the brief (G2).
+const schemaInstructionMarker = "Return a single JSON object matching this schema"
+
 // taskSection extracts the "task" context entry from a compiled system prompt.
 // The compiled format is "--- task (trust: X) ---\n<content>".
 func taskSection(system string) string {
@@ -176,6 +186,9 @@ func taskSection(system string) string {
 	rest = rest[end+len(") ---"):]
 	rest = strings.TrimPrefix(rest, "\n")
 	if i := strings.Index(rest, "\n--- "); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, schemaInstructionMarker); i >= 0 {
 		rest = rest[:i]
 	}
 	// Defensively strip any untrusted data-framing wrapper.

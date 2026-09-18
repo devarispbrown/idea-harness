@@ -1,11 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { get, put } from "./api";
 import {
   providerDetail,
   providerOptionSuffix,
+  providerReadinessWarning,
   providerState,
   providerStatusLabel,
+  modelsLoadedMessage,
 } from "./providerStatus";
+import {
+  executorImagePlaceholder,
+  executorStatusLines,
+  isModelFieldError,
+  type ExecutorStatusInput,
+} from "./executorStatus";
+import { chipsToShow, orderModels } from "./modelCatalog";
+import { resolveInitialProvider } from "./settingsLoad";
 
 interface Provider {
   name: string;
@@ -40,9 +50,20 @@ interface ExecutorInfo {
   image?: string;
   model?: string;
   default_image?: string;
+  // Added alongside this feature: image/key readiness and, when not ready,
+  // the reason (C3). Optional so a daemon that predates it still renders.
+  status?: ExecutorStatusInput;
 }
 
 const EXECUTOR_KINDS = ["internal", "container", "omp", "hermes"];
+
+// api.ts throws an Error whose .message is already the server's plain `error`
+// string (no JSON to parse here) — this just narrows the catch(e: unknown)
+// down to that .message for the one inline error this page shows next to a
+// field rather than in the page-level banner (C3).
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 const PRESETS = [
   { key: "openai", label: "OpenAI", type: "openai", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
@@ -57,12 +78,22 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [view, setView] = useState<ProvidersView | null>(null);
   const [demo, setDemo] = useState(false);
   const [defaultModel, setDefaultModel] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState("openai");
+  // Empty until the providers view has loaded and chosen the default
+  // provider. Starting at "openai" fetched openai's models before the view
+  // existed: no key state to judge it by, so "Loaded 0 models" showed in green,
+  // and its slow live listing could land after the real provider's.
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const selectedProviderRef = useRef("");
+  selectedProviderRef.current = selectedProvider;
   const [liveModels, setLiveModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  // A readiness nudge shown alongside a successful save, not instead of it
+  // (F4): saving a model/executor pointed at an unready provider still
+  // succeeds — the daemon just can't call it yet.
+  const [warning, setWarning] = useState("");
 
   // add-provider form state
   const [preset, setPreset] = useState("openai");
@@ -70,47 +101,114 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [keyEnv, setKeyEnv] = useState("");
 
   // executor form state
+  const [executors, setExecutors] = useState<ExecutorInfo[]>([]);
   const [executorKind, setExecutorKind] = useState("internal");
   const [executorImage, setExecutorImage] = useState("");
   const [executorModel, setExecutorModel] = useState("");
   const [initialKind, setInitialKind] = useState("internal");
   const [initialImage, setInitialImage] = useState("");
   const [initialModel, setInitialModel] = useState("");
+  // The reason a 400 gave for the model field specifically (C3), shown next
+  // to that field instead of only in the page-level error banner.
+  const [executorModelError, setExecutorModelError] = useState("");
 
   // git commit on apply toggle
   const [gitCommit, setGitCommit] = useState(false);
 
+  // C1: `viewRef` mirrors `view` state so loadLiveModels can read the latest
+  // providers view (to look up the provider's readiness for its status
+  // message) WITHOUT depending on `view` as a useCallback dependency. That
+  // dependency was the reload loop: loadLiveModels closed over `view` ->
+  // setView inside `load` gave loadLiveModels a new identity every render ->
+  // `load` (which depended on loadLiveModels) got a new identity too -> the
+  // mount effect below, keyed on `load`, re-ran `load()` -> forever. Each
+  // cycle re-fetched /providers and made a live /models call, and reset
+  // whatever the user was typing, the selected provider, gitCommit, the
+  // error text, and the Saved message. A ref can't do that: reading/writing
+  // `.current` never changes any callback's identity.
+  const viewRef = useRef<ProvidersView | null>(null);
+
+  // loadLiveModels fetches one provider's live listing, orders it
+  // curated-first (I2), and reports either the count or — for a provider
+  // that cannot actually be called — why not, instead of "Loaded 0 models"
+  // (I3/F4). Depends on projectId only, so its identity is stable across the
+  // component's lifetime.
+  const loadLiveModels = useCallback(
+    async (provider: string) => {
+      setLoadingModels(true);
+      setError("");
+      setWarning("");
+      try {
+        const v = await get<{ provider: string; models: string[] }>(
+          `/projects/${projectId}/models?provider=${provider}`,
+        );
+        // The user may have switched provider while this was in flight; a late
+        // answer for the old one must not replace the new one's models.
+        if (provider !== selectedProviderRef.current) return;
+        const ordered = orderModels(provider, v.models ?? []);
+        setLiveModels(ordered.map((m) => `${provider}/${m}`));
+        const entry = viewRef.current?.providers.find((pr) => pr.name === provider);
+        // A provider that is not ready gets its reason (missing key,
+        // refused, ...) — that is a warning about the provider, not a
+        // success, and used to render in the green "Saved" line because
+        // modelsLoadedMessage's not-ready text was pushed through
+        // `setSaved` here. Route it to `warning` (amber) instead.
+        if (entry && providerState(entry) !== "ready") {
+          setSaved("");
+          setWarning(modelsLoadedMessage(entry, ordered.length));
+        } else {
+          setSaved(
+            entry
+              ? modelsLoadedMessage(entry, ordered.length)
+              : `Loaded ${ordered.length} models from ${provider}.`,
+          );
+        }
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        setLoadingModels(false);
+      }
+    },
+    [projectId],
+  );
+
+  // load fetches the providers view only -- it no longer also fetches live
+  // models (that used to be the other half of the loop: `load` awaited
+  // loadLiveModels, so `load`'s own identity was hostage to loadLiveModels's).
+  // Depends on projectId only, so it runs on mount and on an explicit
+  // refresh (addProvider/saveDefault/toggleGitCommit calling it), never as a
+  // side effect of its own prior run.
   const load = useCallback(async () => {
     try {
       const v = await get<ProvidersView>(`/projects/${projectId}/providers`);
       setView(v);
+      viewRef.current = v;
       setDemo(v.demo ?? false);
       setDefaultModel(v.default_model || "");
       setGitCommit(v.git_commit ?? false);
-      const p = v.default_model?.includes("/")
-        ? v.default_model.split("/")[0]
-        : "openai";
-      setSelectedProvider(p);
+      // I1: this sets the provider whose models the effect below preloads;
+      // Setting the provider starts the model fetch, in its own effect; load
+      // itself never depends on the view, which is what looped.
+      setSelectedProvider(resolveInitialProvider(v.default_model || ""));
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   }, [projectId]);
 
   const loadExecutors = useCallback(async () => {
     try {
-      const executors = await get<ExecutorInfo[]>(
-        `/projects/${projectId}/executors`,
-      );
-      const selected = executors.find((e) => e.selected);
+      const list = await get<ExecutorInfo[]>(`/projects/${projectId}/executors`);
+      setExecutors(list);
+      const selected = list.find((e) => e.selected);
       if (selected && EXECUTOR_KINDS.includes(selected.name)) {
         setExecutorKind(selected.name);
         setInitialKind(selected.name);
-        // Prefill image/model from the persisted config, falling back to the
-        // pinned default image (Hermes) so an empty image never silently runs
-        // the agent in a toolchain-less alpine image.
-        const image = selected.image || selected.default_image || "";
-        setExecutorImage(image);
-        setInitialImage(image);
+        // C3: show what is actually stored, never a default it never saved.
+        // This used to fall back to `selected.default_image`, which meant a
+        // reload showed an image nobody had chosen — that fallback moved to
+        // the field's placeholder (executorImagePlaceholder) instead.
+        setExecutorImage(selected.image || "");
+        setInitialImage(selected.image || "");
         setExecutorModel(selected.model || "");
         setInitialModel(selected.model || "");
       }
@@ -119,6 +217,7 @@ export default function Settings({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
+  // Mount / explicit-refresh only -- see the comment on `load` above.
   useEffect(() => {
     load();
   }, [load]);
@@ -126,6 +225,16 @@ export default function Settings({ projectId }: { projectId: string }) {
   useEffect(() => {
     loadExecutors();
   }, [loadExecutors]);
+
+  // C1: live models load in their own effect, keyed on the selected
+  // provider -- not folded into `load`. `load` sets `selectedProvider` from
+  // the fetched default model, which fires this effect exactly once for the
+  // right provider; switching the dropdown (selectProvider) or clicking
+  // "Reload models" fires it again the same way, without touching `load`.
+  useEffect(() => {
+    if (!selectedProvider) return;
+    loadLiveModels(selectedProvider);
+  }, [selectedProvider, loadLiveModels]);
 
   const allModels = () => {
     const seen = new Set<string>();
@@ -150,12 +259,19 @@ export default function Settings({ projectId }: { projectId: string }) {
   const saveDefault = async () => {
     setError("");
     setSaved("");
+    setWarning("");
     try {
       await put(`/projects/${projectId}/providers`, { default_model: defaultModel });
       setSaved("Saved — will apply to the next initiative.");
+      // F4: the save still succeeds — the daemon just records the spec — but
+      // if the provider it names cannot actually be called yet, say so here
+      // rather than let the next run fail with no warning beforehand.
+      const providerName = defaultModel.includes("/") ? defaultModel.split("/")[0] : "";
+      const entry = view?.providers.find((p) => p.name === providerName);
+      if (entry) setWarning(providerReadinessWarning(entry) ?? "");
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
 
@@ -184,13 +300,15 @@ export default function Settings({ projectId }: { projectId: string }) {
       setSaved(`Provider "${preset}" configured.`);
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
 
   const saveExecutor = async () => {
     setError("");
     setSaved("");
+    setWarning("");
+    setExecutorModelError("");
     const body: { kind?: string; image?: string; model?: string } = {};
     if (executorKind !== initialKind) body.kind = executorKind;
     if (executorImage !== initialImage) body.image = executorImage;
@@ -205,8 +323,26 @@ export default function Settings({ projectId }: { projectId: string }) {
       setInitialKind(executorKind);
       setInitialImage(executorImage);
       setInitialModel(executorModel);
+      // F4: a saved executor model can still name a provider that is not
+      // ready — same nudge as the model picker, next to a different action.
+      if (executorModel.includes("/")) {
+        const entry = view?.providers.find((p) => p.name === executorModel.split("/")[0]);
+        if (entry) setWarning(providerReadinessWarning(entry) ?? "");
+      }
+      await loadExecutors();
     } catch (e) {
-      setError(String(e));
+      // Low: this used to route EVERY failure here to the Model field. Only
+      // a message that actually names the model (C3: a 400 from
+      // executor.ResolveAgentProvider refusing it — unknown provider, bad
+      // name/type) belongs next to that field; a bad image reference, an
+      // unknown kind, or a transient 5xx belongs on the general error line,
+      // where it used to never appear at all.
+      const msg = errorMessage(e);
+      if (isModelFieldError(msg)) {
+        setExecutorModelError(msg);
+      } else {
+        setError(msg);
+      }
     }
   };
 
@@ -218,38 +354,31 @@ export default function Settings({ projectId }: { projectId: string }) {
       await put(`/projects/${projectId}/providers`, { git_commit: checked });
       setSaved(`git commit on apply ${checked ? "enabled" : "disabled"}.`);
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       setGitCommit(!checked);
     }
   };
 
   const models = Array.from(new Set([...allModels(), ...liveModels]));
 
-  const loadLiveModels = async (provider: string) => {
-    setLoadingModels(true);
-    setError("");
-    try {
-      const v = await get<{ provider: string; models: string[] }>(
-        `/projects/${projectId}/models?provider=${provider}`,
-      );
-      setLiveModels((v.models ?? []).map((m) => `${provider}/${m}`));
-      setSaved(`Loaded ${v.models?.length ?? 0} models from ${provider}.`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
   const selectProvider = (provider: string) => {
+    // Clears the stale list immediately; the effect above (keyed on
+    // selectedProvider) does the actual fetch, so this doesn't also call
+    // loadLiveModels directly -- that would fire it twice for one click.
     setSelectedProvider(provider);
     setLiveModels([]);
-    loadLiveModels(provider);
   };
 
-  const visibleModels = liveModels.filter((m) =>
-    m.toLowerCase().includes(modelQuery.toLowerCase()),
-  );
+  // I2/I3: liveModels is already curated-first and chat-only (orderModels,
+  // in loadLiveModels above); this just bounds how many render at once and
+  // lets a typed query reach past that bound (I "Bound OpenRouter's 446
+  // chips").
+  const visibleModels = chipsToShow(liveModels, modelQuery);
+
+  // The full executors list (one entry per kind, C3) so the Image
+  // placeholder and status panel track whichever kind is selected in the
+  // dropdown right now, not only the one already saved.
+  const executorEntry = executors.find((e) => e.name === executorKind);
 
   return (
     <div className="settings-page">
@@ -423,7 +552,7 @@ export default function Settings({ projectId }: { projectId: string }) {
           id="executor-image"
           className="text-input"
           value={executorImage}
-          placeholder="container image (e.g. ghcr.io/org/agent:latest)"
+          placeholder={executorImagePlaceholder(executorEntry?.default_image)}
           onChange={(e) => setExecutorImage(e.target.value)}
         />
 
@@ -437,19 +566,41 @@ export default function Settings({ projectId }: { projectId: string }) {
           placeholder="provider/model — leave empty for default"
           onChange={(e) => setExecutorModel(e.target.value)}
         />
+        {/* C3: a 400 from PUT .../executors names the reason a model's
+            provider can't be used — shown next to the field it's about. */}
+        {executorModelError && <p className="error">{executorModelError}</p>}
+
+        {/* C3: image/key readiness for whichever kind is selected above, so
+            switching kinds previews what would happen before Save is even
+            clicked. */}
+        {executorEntry?.status && (
+          <div className="executor-status">
+            {(() => {
+              const lines = executorStatusLines(executorEntry.status!);
+              return (
+                <>
+                  <div className={`executor-status-line ${lines.imageLine.ok ? "ok" : "warn"}`}>
+                    <span className="executor-status-dot" />
+                    {lines.imageLine.text}
+                  </div>
+                  {lines.keyLine && (
+                    <div className={`executor-status-line ${lines.keyLine.ok ? "ok" : "warn"}`}>
+                      <span className="executor-status-dot" />
+                      {lines.keyLine.text}
+                    </div>
+                  )}
+                  {lines.noteLine && <div className="executor-status-line">{lines.noteLine}</div>}
+                  {lines.problemLine && (
+                    <div className="executor-status-problem">{lines.problemLine}</div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
 
         {(executorKind === "omp" || executorKind === "hermes") && (
-          <p
-            style={{
-              marginTop: 12,
-              padding: "10px 14px",
-              borderRadius: 8,
-              background: "#fffbeb",
-              border: "1px solid #fde68a",
-              color: "#92400e",
-              fontSize: "0.9rem",
-            }}
-          >
+          <p className="warn-text">
             Runs with network egress + auto-approve and receives its provider
             API key. Only use an image you trust.
           </p>
@@ -489,6 +640,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       </section>
 
       {saved && <p className="ok-text">{saved}</p>}
+      {warning && <p className="warn-text">{warning}</p>}
       {error && <p className="error">{error}</p>}
     </div>
   );

@@ -82,6 +82,30 @@ type Guidance struct {
 	Action   string   `json:"action"`
 	Why      string   `json:"why"`
 	Affected []string `json:"affected"`
+	// NextTask is the task Execute would run next, omitted when there is none
+	// (the Build contract's `next_task`, reusing workflow's nextReadyTask).
+	// Omitted rather than null: every other daemon endpoint's contract is
+	// "never emit a null field" (TestNoEndpointEmitsANullArray), and this is
+	// the same rule applied to a single optional object instead of a slice.
+	// BuildGuidance leaves this nil: it stays a pure function of Understanding
+	// with no engine/task-store access, so the daemon handler populates it
+	// after calling BuildGuidance (via Engine.NextReadyTask).
+	NextTask *NextTaskRef `json:"next_task,omitempty"`
+	// RunBlockedReason is empty (and so omitted) when Execute could start
+	// right now for this initiative, otherwise a user-facing sentence naming
+	// the fix (the Build contract's `run_blocked_reason`): another change set
+	// still open, an operation already running, the plan not approved yet, or
+	// -- composed in by the daemon handler, not here -- the executor not
+	// being ready. Same population note as NextTask.
+	RunBlockedReason string `json:"run_blocked_reason,omitempty"`
+}
+
+// NextTaskRef is the Build contract's `next_task` shape: enough to name and
+// link the task without exposing the full domain.Task.
+type NextTaskRef struct {
+	ID      string `json:"id"`
+	HumanID string `json:"human_id"`
+	Title   string `json:"title"`
 }
 
 // BuildUnderstanding assembles the Current Understanding projection.
@@ -131,7 +155,7 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 	if err != nil {
 		return u, err
 	}
-	for _, d := range decs {
+	for _, d := range dedupDecisionsForDisplay(decs) {
 		hasDissent, err := db.HasDissent(ctx, d.ID)
 		if err != nil {
 			return u, err
@@ -167,6 +191,87 @@ func BuildUnderstanding(ctx context.Context, db *store.DB, ini domain.Initiative
 	u.Summary = summarize(&u)
 	u.NeedsJudgment = judgmentItems(&u)
 	return u, nil
+}
+
+// SameQuestion reports whether two decision questions are the same question
+// for display: equal after normalizeDecisionQuestion.
+func SameQuestion(a, b string) bool {
+	return normalizeDecisionQuestion(a) == normalizeDecisionQuestion(b)
+}
+
+// normalizeDecisionQuestion returns a canonical form for comparing decision
+// questions across revise cycles (D3): a model re-listing a prior decision
+// verbatim often prefixes it with "[Source: ...]", and casing/whitespace
+// otherwise identical questions must still collapse onto one row.
+//
+// Mirrors workflow.normalizeJudgment's rule (same prefix-strip, same
+// case/whitespace fold), kept as its own copy here rather than exported from
+// workflow: the store stays the single source of truth and this is a
+// display-only rule, so projection must not gain a dependency on workflow to
+// get it.
+func normalizeDecisionQuestion(text string) string {
+	s := strings.TrimSpace(text)
+	for strings.HasPrefix(s, "[") {
+		end := strings.Index(s, "]")
+		if end < 0 {
+			break
+		}
+		s = strings.TrimSpace(s[end+1:])
+	}
+	s = strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.TrimRight(s, "?!.;: ")
+}
+
+// dedupDecisionsForDisplay collapses decisions that ask the same normalized
+// question down to one (D3).
+//
+// A revise cycle can re-list a prior decision verbatim or lightly reworded, so
+// before this every re-listing was its own row and answering a question once
+// still left it showing as open N more times.
+//
+// Precedence: the newest UNRESOLVED decision for a question always wins, even
+// over a newer RESOLVED one for the same question -- an unresolved decision
+// must never be hidden behind a resolved one asking the same thing. Only once
+// every decision for a question is resolved does the newest resolved one
+// show.
+//
+// decs must be ordered oldest-first, which is ListDecisions' own contract
+// (`ORDER BY created_at ASC`); that ordering is what lets one forward pass
+// track "newest" without a separate timestamp compare, and callers other than
+// BuildUnderstanding must preserve it too.
+func dedupDecisionsForDisplay(decs []domain.Decision) []domain.Decision {
+	return DedupDecisions(decs)
+}
+
+// DedupDecisions is dedupDecisionsForDisplay for callers outside the package:
+// the decisions endpoint the UI reads applies it too, so the page and the
+// guidance agree on how many decisions there are.
+func DedupDecisions(decs []domain.Decision) []domain.Decision {
+	chosen := map[string]domain.Decision{}
+	order := make([]string, 0, len(decs))
+	for _, d := range decs {
+		key := normalizeDecisionQuestion(d.Question)
+		existing, ok := chosen[key]
+		if !ok {
+			chosen[key] = d
+			order = append(order, key)
+			continue
+		}
+		if existing.Status == domain.DecisionOpen && d.Status != domain.DecisionOpen {
+			// existing (older) is unresolved, d (newer) is resolved: keep the
+			// unresolved one -- never hide it behind a resolved one.
+			continue
+		}
+		// Either d is unresolved (always wins over whatever came before), or
+		// both are resolved (d is newer, since decs is ascending, so it wins
+		// the "newest resolved" case).
+		chosen[key] = d
+	}
+	out := make([]domain.Decision, 0, len(order))
+	for _, key := range order {
+		out = append(out, chosen[key])
+	}
+	return out
 }
 
 // summarize renders a deterministic, provenance-backed prose summary (§5).
@@ -320,7 +425,10 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 	case domain.InitiativeApproved:
 		return Guidance{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
 	case domain.InitiativePlanApproved:
-		return Guidance{Action: "Execution plan approved", Why: "The reviewed plan is ready to build. Implementation and ChangeSets arrive in Milestone 3.", Affected: []string{"Execution Plan"}}
+		// B5: this used to say "Implementation and ChangeSets arrive in
+		// Milestone 3" -- true when it was written, false since Milestone 3
+		// shipped. Execute/apply/verify are live; say what to actually do.
+		return Guidance{Action: "Execution plan approved", Why: "The reviewed plan is ready to build. Run the next task to produce a change set for review.", Affected: []string{"Execution Plan"}}
 	case domain.InitiativeFailed:
 		why := "Check the logs, fix the cause, then retry with `idea new`."
 		if reason := strings.TrimSpace(ini.FailureReason); reason != "" {

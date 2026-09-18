@@ -26,12 +26,16 @@ const KIND_LABEL: Record<string, string> = {
   market: "market",
   other: "other",
 };
+// Colours come from CSS custom properties, not literal hex, so an emulated
+// dark color scheme (which redefines these tokens in styles.css) actually
+// changes what renders here instead of leaving a light-mode chip stuck on a
+// dark background (L).
 const KIND_CHIP: Record<string, { bg: string; fg: string }> = {
-  prd: { bg: "#eef2ff", fg: "#4338ca" },
-  design: { bg: "#dcfce7", fg: "#166534" },
-  tech: { bg: "#fef3c7", fg: "#92400e" },
-  market: { bg: "#fee2e2", fg: "#991b1b" },
-  other: { bg: "#f5f4f1", fg: "#78716c" },
+  prd: { bg: "var(--kind-prd-bg)", fg: "var(--kind-prd-fg)" },
+  design: { bg: "var(--kind-design-bg)", fg: "var(--kind-design-fg)" },
+  tech: { bg: "var(--kind-tech-bg)", fg: "var(--kind-tech-fg)" },
+  market: { bg: "var(--kind-market-bg)", fg: "var(--kind-market-fg)" },
+  other: { bg: "var(--kind-other-bg)", fg: "var(--kind-other-fg)" },
 };
 
 export default function ExplorePage({
@@ -73,7 +77,7 @@ export default function ExplorePage({
       await uploadDoc(`/projects/${projectId}/initiatives/${initiativeId}/docs`, file, { kind });
       await load();
     } catch (e) {
-      setReject({ message: String(e), name: file.name });
+      setReject({ message: e instanceof Error ? e.message : String(e), name: file.name });
     }
   };
   const addPaste = async () => {
@@ -87,7 +91,7 @@ export default function ExplorePage({
       setPasteOpen(false);
       await load();
     } catch (e) {
-      setReject({ message: String(e) });
+      setReject({ message: e instanceof Error ? e.message : String(e) });
     }
   };
   const download = async (doc: ContextDoc) => {
@@ -122,8 +126,10 @@ export default function ExplorePage({
 
       <div className="doc-eyebrow" style={{ marginTop: 22 }}>Grounding</div>
       <p className="grounding-desc">
-        Your own material, injected into design, planning, and PRD revisions. Everything is
-        credential-swept and redacted on ingest — never fed to a model or served back unredacted.
+        Your own material, injected into design, planning, and PRD revisions. Text and documents
+        are credential-swept and redacted on ingest, and never fed to a model or served back
+        unredacted. Images are described by a vision model instead — the description, not the
+        pixels, is what reaches the design agents.
       </p>
       <section className="grounding-card">
         {docs.map((d) => {

@@ -1,12 +1,79 @@
+// Guarded for environments with no `document` (vitest's default "node"
+// environment, used by this file's own unit tests) so importing `unwrapError`
+// for testing doesn't require pulling in jsdom just to satisfy a module-level
+// side effect this file needs only in the browser.
 export const token =
-  document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "";
+  typeof document !== "undefined"
+    ? (document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "")
+    : "";
+
+// unwrapError turns a non-OK response body into the message the UI should
+// show. The daemon's error responses are `{"error": "..."}`; without this,
+// every failed call surfaced as `Error: {"error":"...<provider>..."}` because
+// the raw JSON text was passed straight into `new Error(...)`. Every other
+// worker's error-handling codes against this contract (F2), so it is pure and
+// exported: unwrap {"error": "..."} to the message alone, and fall back to
+// the raw text, and then to "<status> <statusText>", for anything else.
+export function unwrapError(text: string, status: number, statusText: string): string {
+  if (!text) return `${status} ${statusText}`;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "error" in parsed &&
+      typeof (parsed as { error: unknown }).error === "string" &&
+      (parsed as { error: string }).error
+    ) {
+      return (parsed as { error: string }).error;
+    }
+  } catch {
+    // Not JSON (or not an {"error": "..."} shape) -- fall through to the raw
+    // text, which is still more useful than nothing.
+  }
+  return text;
+}
+
+// NetworkError marks a request that never got an HTTP response at all --
+// fetch() itself rejected (DNS failure, connection refused, the daemon
+// process is simply gone), as opposed to a response that arrived and said
+// something like 404 or 500. M4: only THIS is evidence the daemon is down;
+// a 404/500 is the daemon answering just fine, about something else. Its
+// `.message` is deliberately whatever the underlying rejection said (or
+// `String(e)` for a non-Error rejection) rather than a fixed string, so a
+// caller that just does `e instanceof Error ? e.message : String(e)` still
+// gets a sensible message either way.
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+// callFetch wraps `fetch` so a rejection (no response reached at all) throws
+// NetworkError specifically, distinguishable from the plain Error that
+// throwOnError below throws for a response that arrived but wasn't ok.
+async function callFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (e) {
+    throw new NetworkError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function throwOnError(res: Response): Promise<void> {
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(unwrapError(text, res.status, res.statusText));
+  }
+}
 
 export async function api<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -14,24 +81,18 @@ export async function api<T>(
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
-  }
+  await throwOnError(res);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 // apiRaw returns a text response (used for artifact export).
 export async function apiRaw(method: string, path: string): Promise<string> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method,
     headers: { "X-Idea-Token": token },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
-  }
+  await throwOnError(res);
   return res.text();
 }
 
@@ -64,13 +125,10 @@ export const put = <T>(path: string, body: unknown) =>
 
 // apiBlob fetches a binary/text response as a Blob (context-doc download).
 export async function apiBlob(path: string): Promise<Blob> {
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     headers: { "X-Idea-Token": token },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
-  }
+  await throwOnError(res);
   return res.blob();
 }
 
@@ -86,14 +144,11 @@ export async function uploadDoc<T>(
   for (const [k, v] of Object.entries(fields)) {
     if (v) form.append(k, v);
   }
-  const res = await fetch("/api/v1" + path, {
+  const res = await callFetch("/api/v1" + path, {
     method: "POST",
     headers: { "X-Idea-Token": token },
     body: form,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
-  }
+  await throwOnError(res);
   return (await res.json()) as T;
 }

@@ -32,6 +32,24 @@ export interface InitiativeRollup {
   verified_requirements: number;
 }
 
+// attentionCount is how many open items an initiative contributes to "Needs
+// you elsewhere" (App.tsx's sidebar inbox). A COMPLETE initiative's
+// unresolved decisions/questions/findings are optional cleanup, not
+// something blocking anything -- the same "optional once approved" rule
+// DefinePage's openItemsNote applies to a single approved PRD -- so they must
+// not inflate a count that reads as "this still needs your judgment." Before
+// this, a shipped initiative with a stray unanswered question showed up in
+// the inbox exactly like one genuinely parked and waiting.
+export function attentionCount(r: {
+  status: string;
+  open_decisions: number;
+  open_questions: number;
+  open_findings: number;
+}): number {
+  if (r.status === "complete") return 0;
+  return r.open_decisions + r.open_questions + r.open_findings;
+}
+
 // rollupPhaseSource maps an InitiativeRollup to the shape derivePhases expects.
 export function rollupPhaseSource(r: InitiativeRollup): PhaseSource {
   return {
@@ -154,8 +172,18 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
   const done: Record<PhaseName, boolean> = {
     explore: hasAll(artifacts, ["idea_brief", "research_brief"]),
     define: pastDefine,
-    design: hasAll(artifacts, ["technical_design", "design_spec", "verification_plan"]),
-    plan: status === "plan_approved" || complete,
+    // Gated on `pastDefine`, not just the artifacts' presence (K): design
+    // artifacts existing is not the same as Design having legitimately
+    // started -- e.g. leftovers from an earlier cycle, the same class of
+    // proxy-vs-reason mistake `pastDefine` itself was written to avoid for
+    // Define. Without this, "Design ✓ approved" could show before the PRD
+    // was even approved.
+    design: pastDefine && hasAll(artifacts, ["technical_design", "design_spec", "verification_plan"]),
+    // Guarded on hasExecutionPlan too, not status alone: `plan_approved` is
+    // the status that means "a plan was approved", but the artifact is what
+    // Plan actually PRODUCES, and the rail should not be able to say a
+    // phase is done when its own output doesn't exist.
+    plan: (status === "plan_approved" || complete) && hasExecutionPlan,
     build: allTasksFinished && allChangeSetsTerminal,
     verify: complete,
   };
@@ -165,7 +193,11 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
     explore: "brief + research",
     define: `PRD v${prdVersion} approved`,
     design: "architecture + spec",
-    plan: `${taskCount} task${taskCount === 1 ? "" : "s"} approved`,
+    // The PLAN was approved -- individual tasks have no "approved" status of
+    // their own (proposed/ready/blocked/done/cancelled), so a task added
+    // after approval and still `proposed` used to be miscounted as one of
+    // "N tasks approved", asserting an approval that never happened for it.
+    plan: `plan approved · ${taskCount} task${taskCount === 1 ? "" : "s"}`,
     build: `${appliedChangeSets} change set${appliedChangeSets === 1 ? "" : "s"} applied`,
     verify: `${src.verifiedRequirements} requirement${src.verifiedRequirements === 1 ? "" : "s"} verified`,
   };
@@ -183,4 +215,33 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
 export function currentPhase(src: PhaseSource): PhaseName {
   const states = derivePhases(src);
   return (states.find((s) => s.state === "current") ?? states[states.length - 1]).phase;
+}
+
+// currentPill is the live badge/note PhaseNav shows next to whichever phase
+// the rail currently considers "current". It must only describe a condition
+// that is actually true of the CURRENT phase, not whatever the initiative's
+// raw status happens to be.
+//
+// "approved" and "plan_approved" are announcements that a PREVIOUS phase
+// (Define, Plan respectively) just finished -- that fact is already shown as
+// that phase's own DONE summary ("PRD v4 approved", above). Both statuses
+// persist in the initiative record well after the rail's "current" phase has
+// moved on (Design generates automatically after PRD approval; Verify
+// becomes current once Build finishes, all still under status
+// "plan_approved"). Rendering them here too used to attach a stale
+// "✓ approved"/"✓ plan approved" badge to whichever phase came next -- Design,
+// or even Verify -- as if THAT phase had just been approved. Only
+// "running" / "needs_human_judgment" / "failed" describe an actually-active
+// condition of the current phase itself, so only those get a live badge.
+export function currentPill(status: string): { pill: string; note: string } {
+  switch (status) {
+    case "running":
+      return { pill: "▶", note: "working…" };
+    case "needs_human_judgment":
+      return { pill: "!", note: "waiting on you" };
+    case "failed":
+      return { pill: "✕", note: "failed" };
+    default:
+      return { pill: "", note: "" };
+  }
 }

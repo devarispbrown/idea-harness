@@ -5,6 +5,9 @@ import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
+import { FindingCard, type FindingItem } from "./JudgmentCard";
+import { findingsForPlan } from "./judgmentScope";
+import { planTaskEditable } from "./judgmentCopy";
 
 interface Task {
   id: string;
@@ -34,6 +37,7 @@ export default function PlanPage({
 }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [findings, setFindings] = useState<FindingItem[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState({ title: "", statement: "", priority: "should", estimate: "" });
   const [adding, setAdding] = useState(false);
@@ -41,16 +45,20 @@ export default function PlanPage({
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    const [t, a, c] = await Promise.all([
+    const [t, a, c, f] = await Promise.all([
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
       get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
       // Change sets, because both plan-level actions are refused once one
       // exists — revising a plan whose work has started would orphan it.
       get<{ id: string }[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
+      // D1: the plan-review findings belong here, not on Define — see
+      // judgmentScope.ts for why target_type is what tells them apart.
+      get<FindingItem[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
     ]);
     setTasks(t ?? []);
     setArtifacts(a ?? []);
     setHasChangeSets((c ?? []).length > 0);
+    setFindings(f ?? []);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -80,7 +88,12 @@ export default function PlanPage({
     setEditing(null);
     await load();
   };
-  const remove = async (id: string) => {
+  // D2: deleting a task is not undoable, so confirm before sending it —
+  // unlike Cancel, which just marks status and stays reversible.
+  const remove = async (id: string, title: string) => {
+    if (!window.confirm(`Delete task "${title}"? This cannot be undone.`)) {
+      return;
+    }
     setError("");
     const res = await fetch(`/api/v1/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}`, {
       method: "DELETE",
@@ -91,6 +104,10 @@ export default function PlanPage({
       setError(t || `delete failed (${res.status})`);
       return;
     }
+    await load();
+  };
+  const dispositionFinding = async (id: string, disposition: string) => {
+    await post(`/projects/${projectId}/findings/${id}/disposition`, { disposition });
     await load();
   };
   const cancel = async (id: string) => {
@@ -128,7 +145,7 @@ export default function PlanPage({
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/approve-plan`, {});
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
       return;
     }
     await load();
@@ -138,7 +155,7 @@ export default function PlanPage({
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/revise-plan`, {});
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
       return;
     }
     await load();
@@ -210,6 +227,18 @@ export default function PlanPage({
   // "building" rather than disappearing, because the state is not an error.
   const approvedIdle = status === "plan_approved" && planCommandsAvailable;
 
+  // D1: the plan-review findings, scoped out of the initiative-wide list by
+  // target_type (see judgmentScope.ts) — this is what used to render nothing
+  // here while Define rendered them instead.
+  const planFindings = findingsForPlan(findings);
+  const openPlanFindings = planFindings.filter((f) => !f.disposition);
+  const resolvedPlanFindings = planFindings.filter((f) => !!f.disposition);
+
+  // D2: once approved, the plan is the fixed input to Build — Edit/Delete are
+  // hidden so the approved document cannot be silently rewritten out from
+  // under it. Reorder/Cancel are left alone; only D2 asked for these two.
+  const tasksEditable = planTaskEditable(status);
+
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
     : parkedElsewhere
@@ -242,6 +271,34 @@ export default function PlanPage({
 
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>
+      {openPlanFindings.length > 0 && (
+        <div className="judgment-head">
+          <h2 className="section-title">
+            {openPlanFindings.length} thing{openPlanFindings.length === 1 ? "" : "s"} need
+            {openPlanFindings.length === 1 ? "s" : ""} your judgment
+          </h2>
+          <span className="muted">the plan review raised these before it can be approved</span>
+        </div>
+      )}
+      {openPlanFindings.length > 0 && (
+        <div className="judgment-list">
+          {openPlanFindings.map((f) => (
+            <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
+          ))}
+        </div>
+      )}
+      {resolvedPlanFindings.length > 0 && (
+        <>
+          <div className="judgment-head">
+            <h2 className="section-title">Resolved</h2>
+          </div>
+          <div className="judgment-list">
+            {resolvedPlanFindings.map((f) => (
+              <FindingCard key={f.id} f={f} onDisposition={() => {}} />
+            ))}
+          </div>
+        </>
+      )}
       <section className="plan-card">
         {tasks.map((t, i) =>
           editing === t.id ? (
@@ -287,21 +344,53 @@ export default function PlanPage({
               </div>
               <span className={`plan-prio prio-${t.priority}`}>{t.priority}</span>
               <span className="plan-est">{t.estimate || "–"}</span>
-              <button className="plan-act" onClick={() => move(i, -1)}>↑</button>
-              <button className="plan-act" onClick={() => move(i, 1)}>↓</button>
-              <button
-                className="plan-act"
-                onClick={() => {
-                  setEditing(t.id);
-                  setDraft({ title: t.title, statement: t.statement, priority: t.priority, estimate: t.estimate });
-                }}
-              >
-                Edit
-              </button>
-              <button className="plan-act" onClick={() => remove(t.id)}>Delete</button>
-              {t.status !== "cancelled" && (
-                <button className="plan-act" onClick={() => cancel(t.id)}>Cancel</button>
-              )}
+              {(() => {
+                // J: seven possible buttons in a row squeeze the title to one
+                // word per line at narrow widths. Built once, rendered twice
+                // below (flat above 600px, in a "⋯" menu under it) so the
+                // wiring can't drift between the two layouts.
+                const actions: { key: string; label: string; onClick: () => void }[] = [
+                  { key: "up", label: "↑", onClick: () => move(i, -1) },
+                  { key: "down", label: "↓", onClick: () => move(i, 1) },
+                  ...(tasksEditable
+                    ? [
+                        {
+                          key: "edit",
+                          label: "Edit",
+                          onClick: () => {
+                            setEditing(t.id);
+                            setDraft({ title: t.title, statement: t.statement, priority: t.priority, estimate: t.estimate });
+                          },
+                        },
+                        { key: "delete", label: "Delete", onClick: () => remove(t.id, t.title) },
+                      ]
+                    : []),
+                  ...(t.status !== "cancelled"
+                    ? [{ key: "cancel", label: "Cancel", onClick: () => cancel(t.id) }]
+                    : []),
+                ];
+                return (
+                  <>
+                    <span className="plan-row-actions">
+                      {actions.map((a) => (
+                        <button key={a.key} className="plan-act" onClick={a.onClick}>
+                          {a.label}
+                        </button>
+                      ))}
+                    </span>
+                    <details className="plan-actions-menu">
+                      <summary aria-label="More actions">⋯</summary>
+                      <div className="plan-actions-menu-list">
+                        {actions.map((a) => (
+                          <button key={a.key} className="plan-act" onClick={a.onClick}>
+                            {a.label}
+                          </button>
+                        ))}
+                      </div>
+                    </details>
+                  </>
+                );
+              })()}
             </div>
           ),
         )}
