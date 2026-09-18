@@ -102,7 +102,9 @@ So for `omp` and `hermes` specifically:
   creating the container. `idea daemon stop` cancels running attempts and
   waits up to 30 seconds for their containers to be removed. A daemon that is
   killed or crashes mid-run leaves both behind; the next daemon start removes
-  them before it serves anything. The `idea executors setup --smoke` container
+  them before it starts any run, finding them by the agent home and by
+  container label. If Docker cannot be reached at that moment, the record is
+  kept and the removal is retried at the following start. The `idea executors setup --smoke` container
   is removed on Ctrl-C, but not if the CLI itself is killed.
 - **A loopback provider gets a route to the host.** When the configured base URL
   is a loopback host (`localhost`, `127.0.0.0/8` or `[::1]`), which is Ollama by

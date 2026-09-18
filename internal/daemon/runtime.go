@@ -46,7 +46,16 @@ type Runtime struct {
 	cancels  map[string]context.CancelFunc
 	// ops counts running operations, so Shutdown can wait for them to unwind
 	// -- and remove their agent containers -- before the process exits.
-	ops sync.WaitGroup
+	// closing (under cancelMu) is set once shutdown begins: an operation
+	// launched after that starts already cancelled, and is still counted, so
+	// nothing runs uncancelled past the stop and Add never races Wait.
+	ops     sync.WaitGroup
+	closing bool
+	// swept is closed once the startup sweep of a dead daemon's leftovers has
+	// finished. Operations wait for it, so the sweep cannot remove one of
+	// this daemon's own agents.
+	swept     chan struct{}
+	sweptOnce sync.Once
 }
 
 type projectRuntime struct {
@@ -86,6 +95,7 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		projects:   map[string]*projectRuntime{},
 		reconciled: map[string]bool{},
 		cancels:    map[string]context.CancelFunc{},
+		swept:      closedChan(),
 	}, nil
 }
 
@@ -249,11 +259,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 // happened to load the project again. Cancelling an operation's context is what
 // makes the engine remove its container.
 func (r *Runtime) Shutdown(ctx context.Context) error {
-	r.cancelMu.Lock()
-	for _, cancel := range r.cancels {
-		cancel()
-	}
-	r.cancelMu.Unlock()
+	r.beginShutdown()
 	done := make(chan struct{})
 	go func() {
 		r.ops.Wait()
@@ -265,6 +271,31 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("daemon: operations still running at shutdown: %w", ctx.Err())
 	}
+}
+
+// beginShutdown cancels every running operation and makes any launched from
+// now on start cancelled. Safe to call more than once.
+func (r *Runtime) beginShutdown() {
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	r.closing = true
+	for _, cancel := range r.cancels {
+		cancel()
+	}
+}
+
+// holdOperationsUntilSwept makes operations wait for markSwept. Run calls it
+// before serving; a Runtime built any other way (tests) never sweeps and does
+// not wait.
+func (r *Runtime) holdOperationsUntilSwept() { r.swept = make(chan struct{}) }
+
+// markSwept records that the startup sweep is done.
+func (r *Runtime) markSwept() { r.sweptOnce.Do(func() { close(r.swept) }) }
+
+func closedChan() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
 }
 
 // registerCancel records a live cancellation handle for opID.
@@ -287,11 +318,20 @@ func (r *Runtime) unregisterCancel(opID string) {
 // and released when fn returns.
 func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r.registerCancel(opID, cancel)
+	r.cancelMu.Lock()
+	r.cancels[opID] = cancel
 	r.ops.Add(1)
+	if r.closing {
+		cancel()
+	}
+	r.cancelMu.Unlock()
 	go func() {
 		defer r.ops.Done()
 		defer cancel()
+		select {
+		case <-r.swept:
+		case <-ctx.Done():
+		}
 		defer r.unregisterCancel(opID)
 		// These goroutines are detached, so net/http's per-request recovery does
 		// not reach them: one panic in a pipeline took the whole daemon down,
@@ -577,7 +617,7 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 			r.failOperation(opID, ini.ID, "initiative run failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, ini.ID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, ini.ID)
 		r.log.Info("initiative run complete", "initiative", ini.ID, "status", status)
 	})
 
@@ -683,7 +723,7 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 			r.failOperation(opID, initiativeID, "advance failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("advance complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -788,7 +828,7 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 			return
 		}
 		release()
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, cs.ID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, cs.ID)
 		r.log.Info("execute complete", "initiative", initiativeID, "change_set", cs.HumanID)
 	})
 	return opID, nil
@@ -848,7 +888,7 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 			return
 		}
 		release()
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("apply complete", "change_set", changeSetID)
 	})
 	return opID, nil
@@ -920,7 +960,7 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 		// released even if the engine's own write failed (it discards its
 		// error).
 		release(domain.InitiativePlanApproved)
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, changeSetID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, changeSetID)
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})
 	return opID, nil
@@ -978,7 +1018,7 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 			r.failOperation(opID, initiativeID, "revise failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("revise complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1040,7 +1080,7 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 			r.failOperation(opID, initiativeID, "retry failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("retry complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1124,7 +1164,7 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 			r.failOperation(opID, initiativeID, "reopen phase failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("reopen phase complete", "initiative", initiativeID, "phase", phase, "status", status)
 	})
 	return opID, nil
@@ -1215,7 +1255,7 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 			r.failOperation(opID, initiativeID, "plan revision failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("plan revision complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1450,7 +1490,7 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 			r.failOperation(opID, initiativeID, "plan approval failed", bg, pr, runErr, true)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("plan approval complete", "initiative", initiativeID, "status", status)
 	})
 	return opID, nil
@@ -1516,7 +1556,7 @@ func (r *Runtime) SuggestAnswersInitiative(ctx context.Context, projectID, initi
 			r.failOperation(opID, initiativeID, "suggest answers failed", bg, pr, runErr, false)
 			return
 		}
-		pr.db.SetOperationStatus(bg, opID, domain.OperationSucceeded, initiativeID)
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("suggest answers complete", "initiative", initiativeID, "count", total)
 	})
 	return opID, nil

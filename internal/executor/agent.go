@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -336,8 +337,10 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 		// remove it. Not ctx: it may be the reason we are here.
 		cctx, cancel := cleanupContext(ctx)
 		defer cancel()
-		_ = exec.CommandContext(cctx, e.dockerPath, "rm", "-f", agentContainerName(attemptID)).Run()
-		if agentHome != "" {
+		// The home doubles as the marker SweepAgentLeftovers finds leftovers
+		// by, so it is kept when the container could not be removed.
+		// `docker rm -f` succeeds for a container that never existed.
+		if exec.CommandContext(cctx, e.dockerPath, "rm", "-f", agentContainerName(attemptID)).Run() == nil && agentHome != "" {
 			removeAgentHome(agentHome)
 		}
 	}()
@@ -445,8 +448,36 @@ func (e *SandboxedAgentExecutor) tailLogs(ctx context.Context, id string, n int)
 		return ""
 	}
 	out, _ := exec.CommandContext(ctx, e.dockerPath, "logs", "--tail", fmt.Sprint(n), a.containerID).CombinedOutput()
-	return strings.TrimSpace(scrubAgentLog(string(out)))
+	return strings.TrimSpace(sanitizeAgentLog(scrubAgentLog(string(out))))
 }
+
+// maxAgentLogBytes caps what an error or finding carries from the agent. Forty
+// lines have no byte limit of their own, and this text is stored, streamed to
+// the UI and printed to terminals.
+const maxAgentLogBytes = 8 << 10
+
+// sanitizeAgentLog strips ANSI escape sequences and other control characters
+// (the agent's output is model- and attacker-influenced, and ends up printed
+// in a terminal) and keeps only the last maxAgentLogBytes, where the error is.
+func sanitizeAgentLog(s string) string {
+	s = ansiEscape.ReplaceAllString(s, "")
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f && !(r >= 0x80 && r < 0xa0)) {
+			return r
+		}
+		return -1
+	}, s)
+	if len(s) > maxAgentLogBytes {
+		s = s[len(s)-maxAgentLogBytes:]
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			s = s[i+1:]
+		}
+		s = "…\n" + s
+	}
+	return s
+}
+
+var ansiEscape = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])`)
 
 // agentOutputLines is how much of an agent's output a failure message carries:
 // enough for the provider's error and the lines around it.
@@ -492,20 +523,37 @@ func (e *SandboxedAgentExecutor) Collect(ctx context.Context, id string) (Result
 // to leave the container, and the provider key in its config, on disk with
 // nothing that would ever find it.
 //
-// Call it before the daemon serves anything, so no attempt of its own can be
-// running. It finds leftovers by their agent-home directories, so Docker is
-// only asked to remove containers by name when one exists: a normal start, or
-// a machine without Docker, costs a directory listing.
+// Call it before this daemon starts any operation, so no attempt of its own can
+// be running. It finds leftovers by their agent-home directories, and then by
+// container label as a backstop for one whose directory is gone.
 func SweepAgentLeftovers(ctx context.Context, stateRoot string) {
-	homes, _ := filepath.Glob(filepath.Join(stateRoot, "projects", "*", "work", agentHomePrefix+"*"))
-	if len(homes) == 0 {
-		return
-	}
-	sctx, cancel := cleanupContext(ctx)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	homes, _ := filepath.Glob(filepath.Join(stateRoot, "projects", "*", "work", agentHomePrefix+"*"))
 	for _, home := range homes {
 		attemptID := strings.TrimPrefix(filepath.Base(home), agentHomePrefix)
-		_ = exec.CommandContext(sctx, "docker", "rm", "-f", agentContainerName(attemptID)).Run()
-		_ = removeAgentHome(home)
+		// The marker is the only record of a container that may still hold
+		// the key in its config, so it goes only once the container has.
+		// `docker rm -f` succeeds for one that is already gone, and fails when
+		// Docker cannot be reached -- a daemon auto-started while Docker
+		// Desktop is still starting -- in which case the next start retries.
+		if exec.CommandContext(sctx, "docker", "rm", "-f", agentContainerName(attemptID)).Run() == nil {
+			_ = removeAgentHome(home)
+		}
+	}
+	// Backstop: any container labelled with a work directory under this state
+	// root, whether or not its marker survived. Nothing of this daemon's is
+	// running yet (operations wait for the sweep), so every one is a leftover.
+	out, err := exec.CommandContext(sctx, "docker", "ps", "-a", "--filter", "label="+agentLabel,
+		"--format", `{{.ID}} {{.Label "`+agentLabel+`"}}`).Output()
+	if err != nil {
+		return
+	}
+	prefix := filepath.Join(stateRoot, "projects") + string(filepath.Separator)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		cid, workDir, ok := strings.Cut(line, " ")
+		if ok && strings.HasPrefix(workDir+string(filepath.Separator), prefix) {
+			_ = exec.CommandContext(sctx, "docker", "rm", "-f", cid).Run()
+		}
 	}
 }

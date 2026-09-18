@@ -307,9 +307,6 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot after: %w", err)
 	}
 	files := fsdiff.Diff(before, after)
-	if len(files) == 0 && agentOutput != "" {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: the coding agent finished without changing any file; its output:\n%s", agentOutput)
-	}
 
 	// Sweep the produced content BEFORE persisting it: if it carries a known
 	// secret or credential, we reject without ever writing the raw bytes to the
@@ -376,6 +373,35 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			if err := e.db.CreateFinding(ctx, &f); err != nil {
 				return domain.ChangeSet{}, err
 			}
+		}
+	}
+
+	// A coding agent that changed nothing is reported, not failed. Hermes exits
+	// 0 after a failed model call, so this is the common failure, and its own
+	// output is the only record of why -- so it goes on the change set, where
+	// the review shows it. A hard failure here was tried and stranded
+	// initiatives: the work root carries every earlier attempt, so an agent
+	// that correctly finds a task already done has nothing to change, and
+	// failing it made the task impossible to get past.
+	if _, isAgent := exec.(executor.OutputTailer); isAgent && len(files) == 0 {
+		evidence := agentOutput
+		if evidence == "" {
+			evidence = "(the agent printed nothing)"
+		}
+		f := domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       cs.ID,
+			Severity:       domain.SeverityMedium,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "agent_output",
+			Finding:        "The coding agent finished without changing any file.",
+			Evidence:       evidence,
+			Impact:         "This change set is empty. If the task was not already done, the agent's model call most likely failed.",
+			Recommendation: "Read the agent output. A 401 means the provider key is wrong; a 404 means the model id is retired. Fix it and retry, or approve the empty change set if the task was already done.",
+		}
+		if err := e.db.CreateFinding(ctx, &f); err != nil {
+			return domain.ChangeSet{}, err
 		}
 	}
 

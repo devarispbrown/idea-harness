@@ -246,7 +246,7 @@ case "$1" in
   run) [ -n "$FAKE_DOCKER_RUN_FAIL" ] && exit 125; echo "cid-123" ;;
   inspect) echo "exited 0" ;;
   rm) [ -n "$FAKE_DOCKER_RM_FAIL" ] && exit 1; exit 0 ;;
-  ps) echo "leftover-1" ;;
+  ps) printf '%b' "$FAKE_DOCKER_PS" ;;
   *) exit 1 ;;
 esac
 `
@@ -421,21 +421,47 @@ func TestSweepRemovesLeftovers(t *testing.T) {
 	}
 }
 
-// A normal start has nothing to sweep and must not call Docker at all: the
-// sweep runs before the daemon serves, and a hung Docker would hold it up.
-func TestSweepWithNothingLeftDoesNotCallDocker(t *testing.T) {
+// The marker is the only record of a container that may still hold the key.
+// When Docker cannot be reached -- Docker Desktop still starting after a
+// reboot -- the container is still there, so the marker must be too.
+func TestSweepKeepsTheMarkerWhenDockerFails(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	t.Setenv("FAKE_DOCKER_RM_FAIL", "1")
+	bin := writeExecutable(t, "docker", fakeDockerLog)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	state := t.TempDir()
+	marker := filepath.Join(state, "projects", "p1", "work", agentHomePrefix+"live")
+	if err := os.MkdirAll(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	SweepAgentLeftovers(t.Context(), state)
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the marker was deleted although its container was not removed: %v", err)
+	}
+}
+
+// A leftover whose marker is gone is still found, by label -- and only one
+// labelled with a work directory under this state root.
+func TestSweepFindsLabelledLeftoversUnderThisStateRoot(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
 	bin := writeExecutable(t, "docker", fakeDockerLog)
 	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "projects", "p1", "work", "initiative-1"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mine := filepath.Join(state, "projects", "p1", "work")
+	t.Setenv("FAKE_DOCKER_PS", "c-mine "+mine+"\\nc-other /elsewhere/projects/p1/work\\nc-sibling "+state+"-other/projects/p/work\\n")
 	SweepAgentLeftovers(t.Context(), state)
-	if _, err := os.Stat(record); !os.IsNotExist(err) {
-		t.Error("the sweep called docker with nothing to sweep")
+	calls := dockerCalls(t, record)
+	if !hasCall(calls, "rm -f c-mine") {
+		t.Errorf("a labelled leftover under this state root was not removed:\n%s", strings.Join(calls, "\n"))
+	}
+	for _, other := range []string{"c-other", "c-sibling"} {
+		if hasCall(calls, "rm -f "+other) {
+			t.Errorf("%s belongs to another state root and was removed", other)
+		}
 	}
 }
 
@@ -463,5 +489,30 @@ func TestOMPAttemptLeavesAMarker(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("the OMP marker outlived its attempt: %v", err)
+	}
+}
+
+// Agent output is model- and attacker-influenced and ends up in a terminal and
+// in stored findings: escape sequences go, and it is bounded.
+func TestAgentLogIsSanitisedAndBounded(t *testing.T) {
+	got := sanitizeAgentLog("\x1b[31mError\x1b[0m: 401\x07\x1b]0;title\x07 done\n")
+	if got != "Error: 401 done\n" {
+		t.Errorf("escape sequences survived: %q", got)
+	}
+	long := strings.Repeat("line of agent output\n", 2000) + "Error: the real reason\n"
+	got = sanitizeAgentLog(long)
+	if len(got) > maxAgentLogBytes+8 {
+		t.Errorf("output not bounded: %d bytes", len(got))
+	}
+	if !strings.HasSuffix(got, "Error: the real reason\n") {
+		t.Error("the bound kept the start instead of the end, where the error is")
+	}
+}
+
+func TestSmokeOutputHidesTheKey(t *testing.T) {
+	lookup := func(string) string { return "sk-live-abcdef123456" }
+	got := redactKey("echo OPENAI_API_KEY=sk-live-abcdef123456", "OPENAI_API_KEY", lookup)
+	if strings.Contains(got, "sk-live-abcdef123456") {
+		t.Errorf("the key reached the smoke output: %q", got)
 	}
 }
