@@ -113,20 +113,26 @@ export default function BuildPage({
   const [csError, setCsError] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    const [t, c, f, ex, ini, ops] = await Promise.all([
+    const [t, c, f, ex, ini, ops, guide] = await Promise.all([
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
       get<ChangeSet[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
       get<Finding[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
       get<{ name: string; selected: boolean }[]>(`/projects/${projectId}/executors`).catch(() => []),
       get<Initiative>(`/projects/${projectId}/initiatives/${initiativeId}`).catch(() => null),
       get<Operation[]>(`/projects/${projectId}/initiatives/${initiativeId}/operations`).catch(() => []),
+      // next_task and run_blocked_reason are served by the guidance endpoint,
+      // which already computes "what should happen next"; merged onto the
+      // initiative so the rest of the page reads one object.
+      get<Pick<Initiative, "next_task" | "run_blocked_reason">>(
+        `/projects/${projectId}/initiatives/${initiativeId}/guidance`,
+      ).catch(() => null),
     ]);
     setTasks(t ?? []);
     setChangeSets(c ?? []);
     setFindings(f ?? []);
     const sel = (ex ?? []).find((e) => e.selected);
     if (sel) setExecutorName(sel.name);
-    setInitiative(ini);
+    setInitiative(ini ? { ...ini, next_task: guide?.next_task ?? null, run_blocked_reason: guide?.run_blocked_reason ?? "" } : null);
     setOperations(ops ?? []);
   }, [projectId, initiativeId]);
 
