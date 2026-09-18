@@ -35,7 +35,7 @@ export default function DesignPage({
     try {
       await post(`/projects/${projectId}/initiatives/${initiativeId}/reopen-phase`, { phase });
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
@@ -48,6 +48,18 @@ export default function DesignPage({
       pill={pill}
       docs={docs}
     >
+      {/* Design generates automatically once the PRD is approved -- there is
+          no button here that starts it, so a blank page (before it has run)
+          used to look like a dead end rather than "not started yet". */}
+      {docs.length === 0 && !canReopen && (
+        <div className="empty">
+          <p className="muted">
+            Design hasn't run yet. Once the PRD is approved, it generates the technical design,
+            design spec, and verification plan automatically — this page fills in when that
+            finishes, and the plan unlocks right after.
+          </p>
+        </div>
+      )}
       {canReopen && (
         <section className="reopen-card">
           <div className="reopen-title">Reopen a design stage</div>

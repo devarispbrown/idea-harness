@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { get, put } from "./api";
 import {
   providerDetail,
@@ -11,9 +11,11 @@ import {
 import {
   executorImagePlaceholder,
   executorStatusLines,
+  isModelFieldError,
   type ExecutorStatusInput,
 } from "./executorStatus";
 import { chipsToShow, orderModels } from "./modelCatalog";
+import { resolveInitialProvider } from "./settingsLoad";
 
 interface Provider {
   name: string;
@@ -107,55 +109,82 @@ export default function Settings({ projectId }: { projectId: string }) {
   // git commit on apply toggle
   const [gitCommit, setGitCommit] = useState(false);
 
+  // C1: `viewRef` mirrors `view` state so loadLiveModels can read the latest
+  // providers view (to look up the provider's readiness for its status
+  // message) WITHOUT depending on `view` as a useCallback dependency. That
+  // dependency was the reload loop: loadLiveModels closed over `view` ->
+  // setView inside `load` gave loadLiveModels a new identity every render ->
+  // `load` (which depended on loadLiveModels) got a new identity too -> the
+  // mount effect below, keyed on `load`, re-ran `load()` -> forever. Each
+  // cycle re-fetched /providers and made a live /models call, and reset
+  // whatever the user was typing, the selected provider, gitCommit, the
+  // error text, and the Saved message. A ref can't do that: reading/writing
+  // `.current` never changes any callback's identity.
+  const viewRef = useRef<ProvidersView | null>(null);
+
   // loadLiveModels fetches one provider's live listing, orders it
   // curated-first (I2), and reports either the count or — for a provider
   // that cannot actually be called — why not, instead of "Loaded 0 models"
-  // (I3/F4). `viewOverride` lets `load()` below pass the ProvidersView it
-  // just fetched, since the `view` state it would otherwise close over has
-  // not been committed yet on that first render.
+  // (I3/F4). Depends on projectId only, so its identity is stable across the
+  // component's lifetime.
   const loadLiveModels = useCallback(
-    async (provider: string, viewOverride?: ProvidersView | null) => {
+    async (provider: string) => {
       setLoadingModels(true);
       setError("");
+      setWarning("");
       try {
         const v = await get<{ provider: string; models: string[] }>(
           `/projects/${projectId}/models?provider=${provider}`,
         );
         const ordered = orderModels(provider, v.models ?? []);
         setLiveModels(ordered.map((m) => `${provider}/${m}`));
-        const entry = (viewOverride ?? view)?.providers.find((pr) => pr.name === provider);
-        setSaved(
-          entry
-            ? modelsLoadedMessage(entry, ordered.length)
-            : `Loaded ${ordered.length} models from ${provider}.`,
-        );
+        const entry = viewRef.current?.providers.find((pr) => pr.name === provider);
+        // A provider that is not ready gets its reason (missing key,
+        // refused, ...) — that is a warning about the provider, not a
+        // success, and used to render in the green "Saved" line because
+        // modelsLoadedMessage's not-ready text was pushed through
+        // `setSaved` here. Route it to `warning` (amber) instead.
+        if (entry && providerState(entry) !== "ready") {
+          setSaved("");
+          setWarning(modelsLoadedMessage(entry, ordered.length));
+        } else {
+          setSaved(
+            entry
+              ? modelsLoadedMessage(entry, ordered.length)
+              : `Loaded ${ordered.length} models from ${provider}.`,
+          );
+        }
       } catch (e) {
-        setError(String(e));
+        setError(errorMessage(e));
       } finally {
         setLoadingModels(false);
       }
     },
-    [projectId, view],
+    [projectId],
   );
 
+  // load fetches the providers view only -- it no longer also fetches live
+  // models (that used to be the other half of the loop: `load` awaited
+  // loadLiveModels, so `load`'s own identity was hostage to loadLiveModels's).
+  // Depends on projectId only, so it runs on mount and on an explicit
+  // refresh (addProvider/saveDefault/toggleGitCommit calling it), never as a
+  // side effect of its own prior run.
   const load = useCallback(async () => {
     try {
       const v = await get<ProvidersView>(`/projects/${projectId}/providers`);
       setView(v);
+      viewRef.current = v;
       setDemo(v.demo ?? false);
       setDefaultModel(v.default_model || "");
       setGitCommit(v.git_commit ?? false);
-      const p = v.default_model?.includes("/")
-        ? v.default_model.split("/")[0]
-        : "openai";
-      setSelectedProvider(p);
-      // I1: load the default provider's models on mount instead of leaving
-      // the chip grid empty until the user switches provider and back.
-      await loadLiveModels(p, v);
+      // I1: this sets the provider whose models the effect below preloads;
+      // resolveInitialProvider is the same rule loadSettingsOnce documents
+      // and unit-tests in settingsLoad.ts.
+      setSelectedProvider(resolveInitialProvider(v.default_model || ""));
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
-  }, [projectId, loadLiveModels]);
+  }, [projectId]);
 
   const loadExecutors = useCallback(async () => {
     try {
@@ -179,6 +208,7 @@ export default function Settings({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
+  // Mount / explicit-refresh only -- see the comment on `load` above.
   useEffect(() => {
     load();
   }, [load]);
@@ -186,6 +216,16 @@ export default function Settings({ projectId }: { projectId: string }) {
   useEffect(() => {
     loadExecutors();
   }, [loadExecutors]);
+
+  // C1: live models load in their own effect, keyed on the selected
+  // provider -- not folded into `load`. `load` sets `selectedProvider` from
+  // the fetched default model, which fires this effect exactly once for the
+  // right provider; switching the dropdown (selectProvider) or clicking
+  // "Reload models" fires it again the same way, without touching `load`.
+  useEffect(() => {
+    if (!selectedProvider) return;
+    loadLiveModels(selectedProvider);
+  }, [selectedProvider, loadLiveModels]);
 
   const allModels = () => {
     const seen = new Set<string>();
@@ -222,7 +262,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       if (entry) setWarning(providerReadinessWarning(entry) ?? "");
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
 
@@ -251,7 +291,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       setSaved(`Provider "${preset}" configured.`);
       await load();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
 
@@ -282,10 +322,18 @@ export default function Settings({ projectId }: { projectId: string }) {
       }
       await loadExecutors();
     } catch (e) {
-      // C3: a 400 here is executor.ResolveAgentProvider refusing the model
-      // (unknown provider, bad name/type) — shown next to the Model field,
-      // since that is the one field a 400 can name a reason for.
-      setExecutorModelError(errorMessage(e));
+      // Low: this used to route EVERY failure here to the Model field. Only
+      // a message that actually names the model (C3: a 400 from
+      // executor.ResolveAgentProvider refusing it — unknown provider, bad
+      // name/type) belongs next to that field; a bad image reference, an
+      // unknown kind, or a transient 5xx belongs on the general error line,
+      // where it used to never appear at all.
+      const msg = errorMessage(e);
+      if (isModelFieldError(msg)) {
+        setExecutorModelError(msg);
+      } else {
+        setError(msg);
+      }
     }
   };
 
@@ -297,7 +345,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       await put(`/projects/${projectId}/providers`, { git_commit: checked });
       setSaved(`git commit on apply ${checked ? "enabled" : "disabled"}.`);
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       setGitCommit(!checked);
     }
   };
@@ -305,9 +353,11 @@ export default function Settings({ projectId }: { projectId: string }) {
   const models = Array.from(new Set([...allModels(), ...liveModels]));
 
   const selectProvider = (provider: string) => {
+    // Clears the stale list immediately; the effect above (keyed on
+    // selectedProvider) does the actual fetch, so this doesn't also call
+    // loadLiveModels directly -- that would fire it twice for one click.
     setSelectedProvider(provider);
     setLiveModels([]);
-    loadLiveModels(provider);
   };
 
   // I2/I3: liveModels is already curated-first and chat-only (orderModels,
