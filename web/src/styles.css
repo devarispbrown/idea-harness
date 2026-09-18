@@ -2311,3 +2311,122 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   button { min-height: 44px; }
   .jc-actions button, .cs-actions button, .discussion-resolve button { min-height: 44px; }
 }
+
+/* ---- web-settings ---- */
+
+/* J: Gemini's "type · endpoint · key: VAR" line is long enough to overflow
+   the card at 390px. These are new rules layered after .provider-row's
+   original definition (never edited), so the row wraps instead of clipping. */
+.provider-row {
+  flex-wrap: wrap;
+}
+.provider-row > div {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* J: on Plan, seven possible inline buttons (↑ ↓ Edit Delete Cancel) squeeze
+   the task title to one word per line at narrow widths. Below 600px they
+   collapse into a "⋯" menu — a native <details>, so no JS state is needed —
+   and .plan-body gets its room back. */
+.plan-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.plan-actions-menu {
+  display: none;
+  flex: none;
+  position: relative;
+}
+.plan-actions-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-faint);
+  padding: 4px 6px;
+}
+.plan-actions-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.plan-actions-menu[open] > summary {
+  color: var(--text);
+}
+.plan-actions-menu-list {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.plan-actions-menu-list .plan-act {
+  text-align: left;
+  padding: 4px 6px;
+}
+@media (max-width: 600px) {
+  .plan-row-actions {
+    display: none;
+  }
+  .plan-actions-menu {
+    display: block;
+  }
+}
+
+/* L: token-based warning banner, replacing Settings.tsx's hard-coded light
+   colours (#fffbeb/#fde68a/#92400e) so emulated dark mode isn't stuck light.
+   Shares .error's shape with the amber "needs-you" tokens instead of red —
+   used for the executor security tradeoff and the F4 not-ready nudges. */
+.warn-text {
+  color: var(--needs-you-fg);
+  background: var(--needs-you-bg);
+  border: 1px solid var(--needs-you-line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  margin-top: 12px;
+}
+
+/* C3: the executor image/key/problem status panel. */
+.executor-status {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.executor-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.executor-status-line + .executor-status-line {
+  margin-top: 4px;
+}
+.executor-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+}
+.executor-status-line.ok .executor-status-dot {
+  background: var(--verified-fg);
+}
+.executor-status-line.warn .executor-status-dot {
+  background: var(--needs-you-fg);
+}
+.executor-status-problem {
+  margin-top: 6px;
+  color: var(--needs-you-fg);
+}

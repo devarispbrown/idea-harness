@@ -3,9 +3,17 @@ import { get, put } from "./api";
 import {
   providerDetail,
   providerOptionSuffix,
+  providerReadinessWarning,
   providerState,
   providerStatusLabel,
+  modelsLoadedMessage,
 } from "./providerStatus";
+import {
+  executorImagePlaceholder,
+  executorStatusLines,
+  type ExecutorStatusInput,
+} from "./executorStatus";
+import { chipsToShow, orderModels } from "./modelCatalog";
 
 interface Provider {
   name: string;
@@ -40,9 +48,20 @@ interface ExecutorInfo {
   image?: string;
   model?: string;
   default_image?: string;
+  // Added alongside this feature: image/key readiness and, when not ready,
+  // the reason (C3). Optional so a daemon that predates it still renders.
+  status?: ExecutorStatusInput;
 }
 
 const EXECUTOR_KINDS = ["internal", "container", "omp", "hermes"];
+
+// api.ts throws an Error whose .message is already the server's plain `error`
+// string (no JSON to parse here) — this just narrows the catch(e: unknown)
+// down to that .message for the one inline error this page shows next to a
+// field rather than in the page-level banner (C3).
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 const PRESETS = [
   { key: "openai", label: "OpenAI", type: "openai", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
@@ -63,6 +82,10 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [modelQuery, setModelQuery] = useState("");
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  // A readiness nudge shown alongside a successful save, not instead of it
+  // (F4): saving a model/executor pointed at an unready provider still
+  // succeeds — the daemon just can't call it yet.
+  const [warning, setWarning] = useState("");
 
   // add-provider form state
   const [preset, setPreset] = useState("openai");
@@ -70,15 +93,50 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [keyEnv, setKeyEnv] = useState("");
 
   // executor form state
+  const [executors, setExecutors] = useState<ExecutorInfo[]>([]);
   const [executorKind, setExecutorKind] = useState("internal");
   const [executorImage, setExecutorImage] = useState("");
   const [executorModel, setExecutorModel] = useState("");
   const [initialKind, setInitialKind] = useState("internal");
   const [initialImage, setInitialImage] = useState("");
   const [initialModel, setInitialModel] = useState("");
+  // The reason a 400 gave for the model field specifically (C3), shown next
+  // to that field instead of only in the page-level error banner.
+  const [executorModelError, setExecutorModelError] = useState("");
 
   // git commit on apply toggle
   const [gitCommit, setGitCommit] = useState(false);
+
+  // loadLiveModels fetches one provider's live listing, orders it
+  // curated-first (I2), and reports either the count or — for a provider
+  // that cannot actually be called — why not, instead of "Loaded 0 models"
+  // (I3/F4). `viewOverride` lets `load()` below pass the ProvidersView it
+  // just fetched, since the `view` state it would otherwise close over has
+  // not been committed yet on that first render.
+  const loadLiveModels = useCallback(
+    async (provider: string, viewOverride?: ProvidersView | null) => {
+      setLoadingModels(true);
+      setError("");
+      try {
+        const v = await get<{ provider: string; models: string[] }>(
+          `/projects/${projectId}/models?provider=${provider}`,
+        );
+        const ordered = orderModels(provider, v.models ?? []);
+        setLiveModels(ordered.map((m) => `${provider}/${m}`));
+        const entry = (viewOverride ?? view)?.providers.find((pr) => pr.name === provider);
+        setSaved(
+          entry
+            ? modelsLoadedMessage(entry, ordered.length)
+            : `Loaded ${ordered.length} models from ${provider}.`,
+        );
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoadingModels(false);
+      }
+    },
+    [projectId, view],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -91,26 +149,28 @@ export default function Settings({ projectId }: { projectId: string }) {
         ? v.default_model.split("/")[0]
         : "openai";
       setSelectedProvider(p);
+      // I1: load the default provider's models on mount instead of leaving
+      // the chip grid empty until the user switches provider and back.
+      await loadLiveModels(p, v);
     } catch (e) {
       setError(String(e));
     }
-  }, [projectId]);
+  }, [projectId, loadLiveModels]);
 
   const loadExecutors = useCallback(async () => {
     try {
-      const executors = await get<ExecutorInfo[]>(
-        `/projects/${projectId}/executors`,
-      );
-      const selected = executors.find((e) => e.selected);
+      const list = await get<ExecutorInfo[]>(`/projects/${projectId}/executors`);
+      setExecutors(list);
+      const selected = list.find((e) => e.selected);
       if (selected && EXECUTOR_KINDS.includes(selected.name)) {
         setExecutorKind(selected.name);
         setInitialKind(selected.name);
-        // Prefill image/model from the persisted config, falling back to the
-        // pinned default image (Hermes) so an empty image never silently runs
-        // the agent in a toolchain-less alpine image.
-        const image = selected.image || selected.default_image || "";
-        setExecutorImage(image);
-        setInitialImage(image);
+        // C3: show what is actually stored, never a default it never saved.
+        // This used to fall back to `selected.default_image`, which meant a
+        // reload showed an image nobody had chosen — that fallback moved to
+        // the field's placeholder (executorImagePlaceholder) instead.
+        setExecutorImage(selected.image || "");
+        setInitialImage(selected.image || "");
         setExecutorModel(selected.model || "");
         setInitialModel(selected.model || "");
       }
@@ -150,9 +210,16 @@ export default function Settings({ projectId }: { projectId: string }) {
   const saveDefault = async () => {
     setError("");
     setSaved("");
+    setWarning("");
     try {
       await put(`/projects/${projectId}/providers`, { default_model: defaultModel });
       setSaved("Saved — will apply to the next initiative.");
+      // F4: the save still succeeds — the daemon just records the spec — but
+      // if the provider it names cannot actually be called yet, say so here
+      // rather than let the next run fail with no warning beforehand.
+      const providerName = defaultModel.includes("/") ? defaultModel.split("/")[0] : "";
+      const entry = view?.providers.find((p) => p.name === providerName);
+      if (entry) setWarning(providerReadinessWarning(entry) ?? "");
       await load();
     } catch (e) {
       setError(String(e));
@@ -191,6 +258,8 @@ export default function Settings({ projectId }: { projectId: string }) {
   const saveExecutor = async () => {
     setError("");
     setSaved("");
+    setWarning("");
+    setExecutorModelError("");
     const body: { kind?: string; image?: string; model?: string } = {};
     if (executorKind !== initialKind) body.kind = executorKind;
     if (executorImage !== initialImage) body.image = executorImage;
@@ -205,8 +274,18 @@ export default function Settings({ projectId }: { projectId: string }) {
       setInitialKind(executorKind);
       setInitialImage(executorImage);
       setInitialModel(executorModel);
+      // F4: a saved executor model can still name a provider that is not
+      // ready — same nudge as the model picker, next to a different action.
+      if (executorModel.includes("/")) {
+        const entry = view?.providers.find((p) => p.name === executorModel.split("/")[0]);
+        if (entry) setWarning(providerReadinessWarning(entry) ?? "");
+      }
+      await loadExecutors();
     } catch (e) {
-      setError(String(e));
+      // C3: a 400 here is executor.ResolveAgentProvider refusing the model
+      // (unknown provider, bad name/type) — shown next to the Model field,
+      // since that is the one field a 400 can name a reason for.
+      setExecutorModelError(errorMessage(e));
     }
   };
 
@@ -225,31 +304,22 @@ export default function Settings({ projectId }: { projectId: string }) {
 
   const models = Array.from(new Set([...allModels(), ...liveModels]));
 
-  const loadLiveModels = async (provider: string) => {
-    setLoadingModels(true);
-    setError("");
-    try {
-      const v = await get<{ provider: string; models: string[] }>(
-        `/projects/${projectId}/models?provider=${provider}`,
-      );
-      setLiveModels((v.models ?? []).map((m) => `${provider}/${m}`));
-      setSaved(`Loaded ${v.models?.length ?? 0} models from ${provider}.`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
   const selectProvider = (provider: string) => {
     setSelectedProvider(provider);
     setLiveModels([]);
     loadLiveModels(provider);
   };
 
-  const visibleModels = liveModels.filter((m) =>
-    m.toLowerCase().includes(modelQuery.toLowerCase()),
-  );
+  // I2/I3: liveModels is already curated-first and chat-only (orderModels,
+  // in loadLiveModels above); this just bounds how many render at once and
+  // lets a typed query reach past that bound (I "Bound OpenRouter's 446
+  // chips").
+  const visibleModels = chipsToShow(liveModels, modelQuery);
+
+  // The full executors list (one entry per kind, C3) so the Image
+  // placeholder and status panel track whichever kind is selected in the
+  // dropdown right now, not only the one already saved.
+  const executorEntry = executors.find((e) => e.name === executorKind);
 
   return (
     <div className="settings-page">
@@ -423,7 +493,7 @@ export default function Settings({ projectId }: { projectId: string }) {
           id="executor-image"
           className="text-input"
           value={executorImage}
-          placeholder="container image (e.g. ghcr.io/org/agent:latest)"
+          placeholder={executorImagePlaceholder(executorEntry?.default_image)}
           onChange={(e) => setExecutorImage(e.target.value)}
         />
 
@@ -437,19 +507,40 @@ export default function Settings({ projectId }: { projectId: string }) {
           placeholder="provider/model — leave empty for default"
           onChange={(e) => setExecutorModel(e.target.value)}
         />
+        {/* C3: a 400 from PUT .../executors names the reason a model's
+            provider can't be used — shown next to the field it's about. */}
+        {executorModelError && <p className="error">{executorModelError}</p>}
+
+        {/* C3: image/key readiness for whichever kind is selected above, so
+            switching kinds previews what would happen before Save is even
+            clicked. */}
+        {executorEntry?.status && (
+          <div className="executor-status">
+            {(() => {
+              const lines = executorStatusLines(executorEntry.status!);
+              return (
+                <>
+                  <div className={`executor-status-line ${lines.imageLine.ok ? "ok" : "warn"}`}>
+                    <span className="executor-status-dot" />
+                    {lines.imageLine.text}
+                  </div>
+                  {lines.keyLine && (
+                    <div className={`executor-status-line ${lines.keyLine.ok ? "ok" : "warn"}`}>
+                      <span className="executor-status-dot" />
+                      {lines.keyLine.text}
+                    </div>
+                  )}
+                  {lines.problemLine && (
+                    <div className="executor-status-problem">{lines.problemLine}</div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
 
         {(executorKind === "omp" || executorKind === "hermes") && (
-          <p
-            style={{
-              marginTop: 12,
-              padding: "10px 14px",
-              borderRadius: 8,
-              background: "#fffbeb",
-              border: "1px solid #fde68a",
-              color: "#92400e",
-              fontSize: "0.9rem",
-            }}
-          >
+          <p className="warn-text">
             Runs with network egress + auto-approve and receives its provider
             API key. Only use an image you trust.
           </p>
@@ -489,6 +580,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       </section>
 
       {saved && <p className="ok-text">{saved}</p>}
+      {warning && <p className="warn-text">{warning}</p>}
       {error && <p className="error">{error}</p>}
     </div>
   );
