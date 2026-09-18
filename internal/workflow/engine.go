@@ -469,6 +469,25 @@ func (e *Engine) implementerModel() string {
 	return e.resolveModelSpec("implementer")
 }
 
+// demoModelSpec is the internal registry key resolveModelSpec falls back to
+// when no provider is configured -- the same key the daemon's isDemo check
+// (internal/daemon/providers.go: demoProviderName) compares against. Kept as
+// its own constant here rather than imported, since workflow does not (and
+// should not) depend on daemon.
+const demoModelSpec = "idea-harness-default"
+
+// displayModel maps the internal demo-provider spec to the literal "demo" a
+// client can key off (model == "demo") to label placeholder output, so the
+// registry's internal implementation detail never leaks into the API surface
+// as a fake model id. Used on ChangeSet.Model (B2/Track G: "Shipped (demo)" /
+// "Placeholder change" vs a real model's output).
+func displayModel(spec string) string {
+	if spec == "" || spec == demoModelSpec {
+		return "demo"
+	}
+	return spec
+}
+
 // ---------- Stages ----------
 
 func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) error {

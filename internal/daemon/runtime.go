@@ -56,6 +56,11 @@ type Runtime struct {
 	// this daemon's own agents.
 	swept     chan struct{}
 	sweptOnce sync.Once
+
+	// images caches docker image presence (C3), so GET /executors and the
+	// Build page's run_blocked_reason poll never call Docker more than once
+	// every 30s per image.
+	images *imagePresenceCache
 }
 
 type projectRuntime struct {
@@ -96,6 +101,7 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		reconciled: map[string]bool{},
 		cancels:    map[string]context.CancelFunc{},
 		swept:      closedChan(),
+		images:     newImagePresenceCache(),
 	}, nil
 }
 
@@ -352,6 +358,24 @@ func (r *Runtime) launchOperation(opID string, fn func(ctx context.Context)) {
 	}()
 }
 
+// operationErrorMessage redacts msg with the project's own redactor (nil-safe:
+// falls back to pattern-only redaction) before it is persisted on the
+// operation (B2), so a credential the agent's own output happened to echo
+// never lands in the operations table. store.SetOperationFailed caps the
+// length; this only redacts.
+func operationErrorMessage(pr *projectRuntime, msg string) string {
+	var redactor *security.Redactor
+	if pr != nil {
+		redactor = pr.redactor
+	}
+	if redactor != nil {
+		msg = redactor.RedactString(msg)
+	} else {
+		msg = security.Redact(msg)
+	}
+	return msg
+}
+
 // failOperationAfterPanic records a panicked operation as failed and releases
 // the initiative claim, searching the registry because launchOperation is not
 // told which project owns the id.
@@ -387,7 +411,8 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 				"operation_id", opID, "status", op.Status, "panic", p)
 			return
 		}
-		if err := pr.db.SetOperationStatus(ctx, opID, domain.OperationFailed, ""); err != nil {
+		if err := pr.db.SetOperationFailed(ctx, opID, domain.OperationFailed,
+			operationErrorMessage(pr, fmt.Sprintf("internal error: %v", p))); err != nil {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
 			return
 		}
@@ -412,7 +437,7 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 	if opCtx.Err() != nil {
 		status = domain.OperationCancelled
 	}
-	_ = pr.db.SetOperationStatus(sctx, opID, status, "")
+	_ = pr.db.SetOperationFailed(sctx, opID, status, operationErrorMessage(pr, runErr.Error()))
 
 	// Release the initiative on cancellation too, not only on failure.
 	//
@@ -1576,7 +1601,8 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 	ops, err := pr.db.ListUnfinishedOperations(ctx)
 	if err == nil {
 		for _, op := range ops {
-			_ = pr.db.SetOperationStatus(ctx, op.ID, domain.OperationFailed, "")
+			_ = pr.db.SetOperationFailed(ctx, op.ID, domain.OperationFailed,
+				"the daemon restarted while this operation was running, so it could not finish")
 			if op.InitiativeID == "" {
 				continue
 			}
@@ -1750,7 +1776,7 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 	// model listing works even before a provider is explicitly configured.
 	for _, p := range config.Presets {
 		key := lookupEnv(p.DefaultKeyEnv, dotEnv)
-		reg.Add(p.Key, providerFor(p.Key, p.Type, key, p.BaseURL))
+		reg.Add(p.Key, providerFor(p.Key, p.Type, key, p.BaseURL, p.DefaultKeyEnv))
 	}
 
 	// Configured providers override preset defaults (custom base URLs/types) —
@@ -1773,7 +1799,7 @@ func buildRegistry(cfg config.Config, log *slog.Logger, dotEnv map[string]string
 			"provider", e.Name, "reason", e.Err)
 	}
 	for _, e := range accepted {
-		reg.Add(e.Name, providerFor(e.Name, e.Type, lookupEnv(e.KeyEnv, dotEnv), e.BaseURL))
+		reg.Add(e.Name, providerFor(e.Name, e.Type, lookupEnv(e.KeyEnv, dotEnv), e.BaseURL, e.KeyEnv))
 	}
 
 	if isDemo(cfg, dotEnv) {
@@ -1865,7 +1891,18 @@ func resolveProviderEntries(providers map[string]config.ProviderConfig) ([]resol
 }
 
 // providerFor constructs a provider from a resolved type/key/base URL.
-func providerFor(name string, typ config.ProviderType, key, baseURL string) model.Provider {
+//
+// keyEnv is the variable name key was (or should have been) read from. When
+// the provider is keyed (keyEnv != "") and no value was found, this registers
+// a MissingKeyProvider instead of the real client (F1): the real client would
+// otherwise run and let the provider's own 401 JSON reach the UI verbatim,
+// with no daemon-side indication that the actual problem is a missing key
+// rather than a live provider failure. Ollama and other keyless providers
+// pass keyEnv == "" and are never affected.
+func providerFor(name string, typ config.ProviderType, key, baseURL, keyEnv string) model.Provider {
+	if keyEnv != "" && key == "" {
+		return model.NewMissingKeyProvider(name, keyEnv)
+	}
 	switch typ {
 	case config.ProviderAnthropic:
 		return model.NewAnthropic(key, baseURL)

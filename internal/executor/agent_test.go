@@ -46,6 +46,38 @@ func TestSandboxedAgentCapabilities(t *testing.T) {
 	}
 }
 
+// TestEmptyImageResolvesToTheAgentsPinnedDefault is C1's runtime-fallback half.
+//
+// An empty image reaching the sandboxed executor -- from an existing project's
+// harness.yaml written before PUT /executors started storing the pinned
+// default, or a hand-edited one -- used to become "alpine:3.20". Alpine has no
+// agent CLI at all, so `docker run` exited 127 with a message that read exactly
+// like a broken PATH, when the real cause was "no agent image was ever
+// configured".
+func TestEmptyImageResolvesToTheAgentsPinnedDefault(t *testing.T) {
+	h := NewHermesExecutor(nil, "opus", "", AgentProvider{})
+	if h.image == "alpine:3.20" {
+		t.Fatal("hermes with an empty image fell back to alpine, which has no agent CLI")
+	}
+	if want := DefaultAgentImage("hermes"); h.image != want {
+		t.Errorf("hermes image = %q, want the pinned default %q", h.image, want)
+	}
+	if h.image == "" {
+		t.Error("hermes has a pinned default image and must not resolve to empty")
+	}
+
+	// OMP has no canonical image (DefaultAgentImage returns ""); an empty
+	// image must stay empty -- never alpine -- so a caller can tell "no image
+	// configured" from "a real image was requested".
+	o := NewOMPExecutor(nil, "opus", "", AgentProvider{})
+	if o.image == "alpine:3.20" {
+		t.Fatal("omp with an empty image fell back to alpine, which has no agent CLI")
+	}
+	if o.image != DefaultAgentImage("omp") {
+		t.Errorf("omp image = %q, want %q", o.image, DefaultAgentImage("omp"))
+	}
+}
+
 func TestSandboxedOMPArgs(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)

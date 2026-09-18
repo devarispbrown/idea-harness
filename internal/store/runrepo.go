@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/id"
@@ -174,6 +175,58 @@ func (db *DB) SetOperationStatus(ctx context.Context, opID string, status domain
 	})
 }
 
+// maxOperationErrorBytes caps what SetOperationFailed persists on an
+// operation. Agent output and provider error bodies are unbounded, and this
+// column is read back on every poll of a busy Build page; a multi-megabyte
+// stack trace would otherwise sit in the row and in every JSON response that
+// includes it.
+const maxOperationErrorBytes = 8 * 1024
+
+// truncateOperationError caps s at n bytes without splitting a multi-byte
+// UTF-8 rune at the boundary, which a plain s[:n] can do.
+func truncateOperationError(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s + "…(truncated)"
+}
+
+// SetOperationFailed transitions an operation to a terminal failed or
+// cancelled status and records why (B2).
+//
+// Separate from SetOperationStatus rather than an added parameter there:
+// every other caller of SetOperationStatus is the success path, which has no
+// error to record, and giving them all a permanent "" argument to thread
+// through would have obscured which of the two paths callers actually meant.
+// errMsg is expected to already be redacted by the caller (the daemon layer,
+// which holds the project's redactor); this only bounds its size.
+func (db *DB) SetOperationFailed(ctx context.Context, opID string, status domain.OperationStatus, errMsg string) error {
+	if status != domain.OperationFailed && status != domain.OperationCancelled {
+		return fmt.Errorf("store: SetOperationFailed called with non-terminal-failure status %q", status)
+	}
+	errMsg = truncateOperationError(errMsg, maxOperationErrorBytes)
+	return db.Apply(ctx, Event{
+		AggregateType: "operation",
+		AggregateID:   opID,
+		Actor:         ActorOrchestrator,
+		EventType:     "operation.status_changed",
+		Operation:     string(status),
+	}, func(tx *sql.Tx) error {
+		finished := sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
+		_, err := tx.Exec(`UPDATE operations SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
+			status, errMsg, finished, opID)
+		return err
+	})
+}
+
 // CancelOperationStatus marks an operation cancelled, but only while it is still
 // pending or running.
 //
@@ -230,9 +283,9 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 	var finished sql.NullInt64
 	var created int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, project_id, initiative_id, type, status, result_ref, created_at, finished_at
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
 		FROM operations WHERE id = ?`, opID).
-		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &created, &finished)
+		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished)
 	if err != nil {
 		return op, notFoundIfNoRows(err, "operation", opID)
 	}
@@ -250,7 +303,7 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 // first, so the UI can find the running one and show elapsed time.
 func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID string) ([]domain.Operation, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, project_id, initiative_id, type, status, result_ref, created_at, finished_at
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
 		FROM operations WHERE initiative_id = ? ORDER BY created_at DESC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -262,7 +315,7 @@ func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID strin
 		var iniID, resultRef sql.NullString
 		var finished sql.NullInt64
 		var created int64
-		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &created, &finished); err != nil {
+		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished); err != nil {
 			return nil, err
 		}
 		op.InitiativeID = iniID.String
@@ -281,7 +334,7 @@ func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID strin
 // daemon restart reconciliation, §16).
 func (db *DB) ListUnfinishedOperations(ctx context.Context) ([]domain.Operation, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, project_id, initiative_id, type, status, result_ref, created_at, finished_at
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
 		FROM operations WHERE status IN (?, ?) ORDER BY created_at ASC`,
 		domain.OperationPending, domain.OperationRunning)
 	if err != nil {
@@ -294,7 +347,7 @@ func (db *DB) ListUnfinishedOperations(ctx context.Context) ([]domain.Operation,
 		var iniID, resultRef sql.NullString
 		var finished sql.NullInt64
 		var created int64
-		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &created, &finished); err != nil {
+		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished); err != nil {
 			return nil, err
 		}
 		op.InitiativeID = iniID.String

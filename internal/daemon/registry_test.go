@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/model"
 )
 
 // TestResolveProviderEntriesValidatesAtRegistryBuild covers the read path.
@@ -140,5 +142,58 @@ func TestBuildRegistryRefusedCustomProviderFailsClosed(t *testing.T) {
 	reg := buildRegistry(cfg, slog.New(slog.DiscardHandler), nil)
 	if _, _, err := reg.Resolve("evil/some-model"); err == nil {
 		t.Fatal("expected a refused provider to be unresolvable, got a live provider")
+	}
+}
+
+// TestBuildRegistryRefusesAKeyedProviderWithNoKey is F1's choke-point test.
+//
+// Before this, a keyed provider with no key still got a real HTTP client
+// registered (key=""), so the first call reached the provider and its raw 401
+// JSON body was the only thing anyone saw -- in the daemon log at best, and in
+// the UI as an unreadable blob at worst. Complete must now fail locally,
+// naming the variable to set and the fix, before any network call.
+func TestBuildRegistryRefusesAKeyedProviderWithNoKey(t *testing.T) {
+	// Force-cleared: a developer's own shell commonly has OPENAI_API_KEY
+	// exported for unrelated tools, and that ambient value would otherwise
+	// leak into buildRegistry's lookupEnv (which checks os.Getenv first) and
+	// make this test pass for the wrong reason -- or, worse, silently make a
+	// real network call.
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg := config.Config{Harness: config.HarnessConfig{DefaultModel: "openai/gpt-4o-mini"}}
+	reg := buildRegistry(cfg, slog.New(slog.DiscardHandler), nil) // nil dotEnv: no key anywhere either
+
+	_, err := reg.Complete(t.Context(), "openai/gpt-4o-mini", model.Request{})
+	if err == nil {
+		t.Fatal("Complete succeeded with no OPENAI_API_KEY set anywhere")
+	}
+	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Errorf("error does not name the missing variable: %v", err)
+	}
+	if !strings.Contains(err.Error(), "idea daemon stop") {
+		t.Errorf("error does not name the fix: %v", err)
+	}
+	// The raw provider error shape ("status 401", a JSON body) must not leak
+	// through -- that is exactly the defect this closes.
+	if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "{") {
+		t.Errorf("error looks like a raw provider response, not the pre-flight message: %v", err)
+	}
+}
+
+// TestBuildRegistryDemoModeIsUnaffectedByTheKeyCheck: the deterministic demo
+// provider is not "keyed" in the sense F1 cares about, and must keep working
+// with no key configured anywhere -- which is also the daemon's own default
+// state, so a regression here would break every fresh `idea init`.
+func TestBuildRegistryDemoModeIsUnaffectedByTheKeyCheck(t *testing.T) {
+	cfg := config.Config{} // no default_model, no providers: pure demo mode
+	reg := buildRegistry(cfg, slog.New(slog.DiscardHandler), nil)
+	resp, err := reg.Complete(t.Context(), demoProviderName+"/anything", model.Request{
+		JSONSchemaName: "idea_brief",
+		Messages:       []model.Message{{Role: "user", Content: "an idea"}},
+	})
+	if err != nil {
+		t.Fatalf("demo provider failed: %v", err)
+	}
+	if resp.Text == "" && resp.RawJSON == "" {
+		t.Error("demo provider returned an empty response")
 	}
 }
