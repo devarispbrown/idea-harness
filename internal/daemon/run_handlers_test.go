@@ -139,16 +139,20 @@ func TestOnlyOneSmokeRunsAtATime(t *testing.T) {
 	_, base, token, projectID := smokeProject(t)
 	var wg sync.WaitGroup
 	codes := make([]int, 8)
+	ops := make([]string, 8)
 	for i := range codes {
 		wg.Add(1)
-		go func() { defer wg.Done(); codes[i], _ = startSmoke(t, base, token, projectID) }()
+		go func() { defer wg.Done(); codes[i], ops[i] = startSmoke(t, base, token, projectID) }()
 	}
 	wg.Wait()
 	accepted := 0
-	for _, c := range codes {
+	for i, c := range codes {
 		switch c {
 		case http.StatusAccepted:
 			accepted++
+			// Wait for it: returning while it runs let it outlive the test's
+			// fake docker and reach the real one.
+			waitOperation(t, base, token, ops[i])
 		case http.StatusConflict:
 		default:
 			t.Errorf("unexpected status %d", c)

@@ -9,6 +9,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-18
+
 ### Added
 
 - **Run the coding agent's smoke test from Settings.** The daemon runs it with its
