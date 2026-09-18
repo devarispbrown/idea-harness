@@ -74,7 +74,7 @@ export default function RunningCard({
   const stoppedRef = useRef<Operation | null>(null);
   // L3: the running agent's live output and whether the user has scrolled
   // away from the bottom (in which case new output must not yank them back).
-  const [agentOutput, setAgentOutput] = useState<{ running: boolean; output: string } | null>(null);
+  const [agentOutput, setAgentOutput] = useState<{ state?: string; running: boolean; output: string } | null>(null);
   const [outputOpen, setOutputOpen] = useState(true);
   const preRef = useRef<HTMLPreElement | null>(null);
   const stickRef = useRef(true);
@@ -174,14 +174,21 @@ export default function RunningCard({
       return;
     }
     let cancelled = false;
+    // One request at a time: with a slow Docker, stacked polls took every
+    // connection the browser allows to the daemon -- Stop's included.
+    let inFlight = false;
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const out = await get<{ running: boolean; output: string }>(
+        const out = await get<{ state?: string; running: boolean; output: string }>(
           `/projects/${projectId}/initiatives/${initiativeId}/agent-output`,
         );
         if (!cancelled) setAgentOutput(out);
       } catch {
         /* transient error: leave the previous output on screen */
+      } finally {
+        inFlight = false;
       }
     };
     poll();
@@ -262,14 +269,17 @@ export default function RunningCard({
           not one more thing to discover. `running:false` while the operation
           itself is still in flight means the agent is done and the run's own
           build/test checks are now what's taking the time. */}
-      {op.type === "execute_initiative" && agentOutput && (
+      {op.type === "execute_initiative" && agentOutput && agentOutput.state !== "starting" && agentOutput.state !== "idle" && (
         <details
           className="agent-output"
           open={outputOpen}
           onToggle={(e) => setOutputOpen(e.currentTarget.open)}
         >
           <summary>Agent output</summary>
-          {!agentOutput.running && (
+          {/* Only once the agent has really finished. "Not running" also
+              covered the planner call and the workspace copy before it
+              started, and the card claimed it was done. */}
+          {agentOutput.state === "finished" && (
             <p className="muted agent-output-note">The agent finished; running checks…</p>
           )}
           <pre ref={preRef} className="agent-output-pre" onScroll={handleOutputScroll}>

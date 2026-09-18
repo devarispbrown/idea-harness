@@ -19,8 +19,13 @@ export interface SmokeButtonState {
 
 export function smokeButtonState(
   kind: string,
-  status: { problem: string } | undefined,
+  status: { problem: string; last_smoke?: { status: string } } | undefined,
 ): SmokeButtonState {
+  // A smoke already running (started in this tab or another, or before a
+  // reload) makes a click a 409; say so instead.
+  if (status?.last_smoke?.status === "running" || status?.last_smoke?.status === "pending") {
+    return { enabled: false, reason: "A smoke test is running." };
+  }
   if (kind !== "hermes" && kind !== "omp") {
     return {
       enabled: false,

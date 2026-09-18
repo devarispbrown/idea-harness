@@ -426,7 +426,8 @@ paths:
       operationId: getAgentOutput
       summary: The running coding agent's latest output
       description: |
-        The last 100 lines of the coding agent's output while an execute is running: escape
+        The last 100 lines of the coding agent's output while an execute is running, and the run's
+        `state`: escape
         sequences stripped, capped at 8 KB, known secrets redacted. Reading it never waits on the
         run. Refreshed at most every 1.5 s however many clients poll, so a repeated answer is the
         cache, not a stall. `running` turns false once the agent's container is gone, including
@@ -440,9 +441,17 @@ paths:
               schema:
                 type: object
                 properties:
-                  running: { type: boolean }
+                  state:
+                    type: string
+                    enum: [idle, starting, running, finished]
+                    description: |
+                      `idle`: no run. `starting`: a run is planning or copying the workspace and
+                      the agent has not started. `running`: the agent is running. `finished`: the
+                      agent is done and the run is in its build and test checks; `output` is its
+                      final output.
+                  running: { type: boolean, description: "`state == running`." }
                   output: { type: string }
-                required: [running, output]
+                required: [state, running, output]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -4214,7 +4223,10 @@ components:
             it now: idea executors setup --kind hermes --model <model> --yes".
         last_smoke:
           type: object
-          description: The project's newest smoke test, for the selected executor only; omitted when none has run.
+          description: |
+            The project's newest smoke test, for the selected executor only. Omitted when none has
+            run, and when the last one tested a different kind, image or model than the current
+            setup. A smoke still running is always reported.
           properties:
             status: { $ref: "#/components/schemas/OperationStatus" }
             finished_at: { type: string, format: date-time }

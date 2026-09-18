@@ -1047,6 +1047,13 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Files a stopped run wrote for the old wording must not be carried into
+	// the new one; the task id alone does not tell them apart.
+	if title != task.Title || statement != task.Statement {
+		if pw := pr.engine.PartialWork(ini.ID); pw != nil && pw.TaskID == task.ID {
+			_ = pr.engine.DiscardPartial(ini.ID)
+		}
+	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
