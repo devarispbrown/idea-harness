@@ -55,7 +55,29 @@ func stopMidRun(t *testing.T, eng *Engine, iniID, path, content string) {
 	t.Setenv("FAKE_CONTENT", content)
 	t.Setenv("FAKE_HOLD", filepath.Join(t.TempDir(), "never"))
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+	// Cancel once the agent has written its file, not after a fixed delay:
+	// under -race on a loaded machine the planner can outlast 300 ms, and a
+	// cancel before the agent ran kept nothing -- a flake, not a defect.
+	written := filepath.Join(eng.workRoot, "work", iniID, path)
+	go func() {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if path == "" {
+				time.Sleep(300 * time.Millisecond)
+				break
+			}
+			// The agent has started (Start returned; cancelling earlier kills
+			// `docker run` itself, and a run that never started keeps
+			// nothing) AND written its content -- content, not existence,
+			// since a modified file is already in the seeded work root.
+			state, _ := eng.AgentOutput(context.Background(), iniID)
+			if got, err := os.ReadFile(written); state == LiveRunning && err == nil && string(got) == content {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+	}()
 	if _, err := eng.Execute(ctx, iniID); err == nil {
 		t.Fatal("a stopped run produced a change set")
 	}
