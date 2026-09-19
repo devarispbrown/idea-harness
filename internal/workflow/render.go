@@ -198,7 +198,16 @@ func renderVerificationPlan(obj map[string]any) string {
 	}
 	b.WriteString("## Verification hooks\n\n")
 	for _, h := range objSlice(obj["hooks"]) {
-		fmt.Fprintf(&b, "- **%s** → %s (%s)\n", str(h["requirement"]), str(h["check"]), str(h["evidence"]))
+		fmt.Fprintf(&b, "- **%s** → %s (%s)", str(h["requirement"]), str(h["check"]), str(h["evidence"]))
+		// [tests: ...] is a machine-recoverable suffix (C2, wave 3 contract):
+		// this rendered markdown is the artifact's only persisted form (the raw
+		// model JSON is not kept), so mapping a test name to a requirement later
+		// (evidence_tests on GET .../requirements) parses it back out of here --
+		// see internal/projection.mappedTestsByRequirement.
+		if tests := strSlice(h["tests"]); len(tests) > 0 {
+			fmt.Fprintf(&b, " [tests: %s]", strings.Join(tests, ", "))
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }

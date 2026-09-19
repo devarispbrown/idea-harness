@@ -153,6 +153,41 @@ func (db *DB) ListStaleItems(ctx context.Context, initiativeID string) ([]domain
 	return out, rows.Err()
 }
 
+// ListAllStaleMarks returns every stale mark for an initiative -- cleared and
+// active alike -- oldest first, for BuildTimeline (C1, wave 3 contract).
+// ListStaleItems (above) intentionally returns only the active ones, which is
+// right for "what needs acknowledgement now"; the timeline instead needs "what
+// went stale, and when", including a mark since cleared.
+func (db *DB) ListAllStaleMarks(ctx context.Context, initiativeID string) ([]domain.StaleItem, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT id, initiative_id, target_type, target_id, reason, decision_id, created_at, cleared_at, cleared_by
+		FROM stale_marks WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.StaleItem, 0)
+	for rows.Next() {
+		var s domain.StaleItem
+		var created int64
+		var cleared sql.NullInt64
+		var clearedBy sql.NullString
+		if err := rows.Scan(&s.ID, &s.InitiativeID, &s.TargetType, &s.TargetID, &s.Reason, &s.DecisionID, &created, &cleared, &clearedBy); err != nil {
+			return nil, err
+		}
+		s.CreatedAt = time.UnixMilli(created)
+		if cleared.Valid {
+			t := time.UnixMilli(cleared.Int64)
+			s.ClearedAt = &t
+		}
+		if clearedBy.Valid {
+			s.ClearedBy = clearedBy.String
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ClearStaleItem explicitly acknowledges one stale item, clearing it (review
 // A4 #5: "explicitly acknowledging the item clears the stale state").
 func (db *DB) ClearStaleItem(ctx context.Context, initiativeID, staleID, actor string) error {

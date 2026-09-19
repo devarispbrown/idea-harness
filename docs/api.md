@@ -232,6 +232,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
 | GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}` — the only *collection* endpoint with an envelope, because it is a cross-initiative rollup and so has somewhere to put a cursor later. (`/models` also wraps its list, but in a response whose other field names the provider consulted.) |
+| GET | `/projects/{projectId}/queue` | (D-b) The cross-initiative "needs you" queue: open blocking decisions, change sets awaiting review, conflicts, denials, stale items, and verifications ready to confirm — one row per item, ranked blocking first and then by age (`rank`, ascending). |
 
 ### Initiative lifecycle
 
@@ -240,7 +241,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
-| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`, which is **required** — a missing or blank `model` is `400 model is required`. **202**. `409` when the initiative is running. |
+| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`, which is **required** — a missing or blank `model` is `400 model is required`. **202**. `409` when the initiative is running. An optional `note` (D-a) steers this retry: it joins the framing prompt that restarts the pipeline (there is no implementer brief at this stage) and is recorded on that run. |
 | POST | `/projects/{projectId}/initiatives/{id}/reopen-phase` | Reopen a completed phase named by `{"phase": …}` so it can be revised. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/resume` | Resume a paused/interrupted initiative; returns the new status. |
 | POST | `/projects/{projectId}/initiatives/{id}/approve` | Human approval of the reviewed PRD. |
@@ -248,11 +249,11 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/advance` | Run the M2 Design → Execution Plan pipeline. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan — accepts it, findings and all. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. **202** |
+| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. `{"fresh": true}` discards them first ("Start over"). An optional `note` (D-a) steers this run: appended to the implementer's brief and recorded on the agent run. Both are decoded leniently. **202** |
 | GET | `/projects/{projectId}/initiatives/{id}/agent-output` | The running coding agent's last 100 output lines (redacted), and whether it is still running. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/partial-work` | Discard a stopped run's kept files, so the next run starts from the workspace ("Start over"). |
 | POST | `/projects/{projectId}/initiatives/{id}/pr` | Push the initiative's dedicated branch (`git.branch_per_initiative`) and open a pull request via `gh pr create`, with a body built from the initiative (PRD summary, change sets, verification progress). Synchronous — no workspace mutation, so no background operation. Idempotent: a repeat call answers the same `pr_url` rather than opening a second PR. **409** if the initiative has no dedicated branch yet, or `gh` is not installed. |
-| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
+| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. `{"confirm_passing_tests": true}` (C2) additionally confirms every requirement whose `evidence_tests` all passed, through the same human-evidence path, actor `human` — nothing is ever auto-verified without this explicit request. Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
 
 ### Understanding, guidance and analysis
 
@@ -264,8 +265,10 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/impact-counts?nodes=` | Dependent counts per graph node, for badging the UI without a query per node. `nodes` is **required**: a comma-separated list of `type:id` pairs, where `id` is the graph node id the read endpoints return, not the human code — `decision:<id>,requirement:<id>`. Missing, malformed, or more than 200 entries is `400`. |
 | POST | `/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack` | Acknowledge one stale item, clearing it (review A4 #5). Re-planning clears every stale item for the initiative at once instead. |
 | GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
-| GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
+| GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. Scoped to this initiative (fixed in C1: this used to read the whole project's events, unscoped, and could report another initiative's counts). |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
+| GET | `/projects/{projectId}/initiatives/{id}/timeline?since=` | (C1) The human-language "what changed" timeline: change sets applied/rejected/denied/reverted, decisions changed, stale marks, run failures/stops, and completed phases, newest first. `since` (optional, RFC3339) excludes entries at or before it. `idea changed` uses this, not `/changed` above. |
+| GET | `/projects/{projectId}/initiatives/{id}/costs` | (C3) Spend and time per workflow phase from the run records, plus the coding-agent run count/duration/spend separately (`usd: null` with a note when agent spend could not be measured for every run). `idea status` prints the total. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
 | GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. A task's change sets are query-linked (not edge-linked) and are included as synthetic dependents; `staleness` is `"stale"` when the node carries an active review-A4 stale mark, else `"obsolete"`/`"revalidate"` by edge type. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
@@ -277,7 +280,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). |
+| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). Each carries `requirement_ids[]`/`depends_on[]` (always arrays, never `null`), computed from the task's graph edges. |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `requirement_ids[]`, `depends_on[]`). A task implements one or more requirements, N:M (review A4 #3/#4): `implements` and `requirement_ids` are merged and tolerantly resolved by code or id; at least one is required. |
 | PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority, estimate, or (via `requirement_ids[]`, which replaces the links entirely and requires at least one) its requirements. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Delete a task. |
@@ -315,7 +318,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
+| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. Each carries `evidence_tests[]` (C2): tests the verification plan or a code-name match maps to it, and whether the last parsed check run had them passing. |
 | GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
 | GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
 | GET | `/projects/{projectId}/artifacts/diff` | Unified line diff between two versions of one artifact, given `?from=` and `?to=` version ids. Versions from different artifacts are a `400`; bodies over 1 MiB or 20,000 lines are a `413`. |
@@ -361,8 +364,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/providers` | Configured providers plus the unconfigured presets, each with type, base URL, key-env **name**, and a `ready` flag saying whether that key is present. Key values are never returned. |
-| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit}` into `harness.yaml` and reload the runtime. Answers `{status, warnings?}`; `warnings` carries non-blocking problems attributable to a field this request wrote — a model id absent from the bundled catalog, say — under the same attribution rule as the `400`. |
+| GET | `/projects/{projectId}/providers` | Configured providers plus the unconfigured presets, each with type, base URL, key-env **name**, and a `ready` flag saying whether that key is present. Key values are never returned. Also returns `git_commit`, `git_allow_default_branch`, `git_branch_per_initiative` and `review_rigor` (`"auto"` when unset). |
+| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit, git_allow_default_branch, git_branch_per_initiative, review_rigor}` into `harness.yaml` and reload the runtime. `review_rigor` must be one of `auto\|quick\|standard\|thorough` (`400` otherwise). Answers `{status, warnings?}`; `warnings` carries non-blocking problems attributable to a field this request wrote — a model id absent from the bundled catalog, say — under the same attribution rule as the `400`. |
 | GET | `/projects/{projectId}/models?provider=` | List a provider's models live, falling back to the bundled catalog. Defaults to the default model's provider. |
 | GET | `/projects/{projectId}/executors` | Available executors, their declared capabilities, and which one is configured. |
 | PUT | `/projects/{projectId}/executors` | Field-level merge of `{kind, image, model}` into `harness.yaml`, validated, then reload. |

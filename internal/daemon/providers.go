@@ -42,8 +42,15 @@ type providersView struct {
 	DefaultModel string            `json:"default_model"`
 	Models       map[string]string `json:"models,omitempty"`
 	GitCommit    bool              `json:"git_commit"`
-	Demo         bool              `json:"demo"`
-	Providers    []providerSummary `json:"providers"`
+	// GitAllowDefaultBranch and GitBranchPerInitiative are harness.yaml
+	// git.allow_default_branch / git.branch_per_initiative (review C4,
+	// adopted #2; wave 3 contract). ReviewRigor is harness.yaml
+	// review.rigor ("auto" when unset).
+	GitAllowDefaultBranch  bool              `json:"git_allow_default_branch"`
+	GitBranchPerInitiative bool              `json:"git_branch_per_initiative"`
+	ReviewRigor            string            `json:"review_rigor"`
+	Demo                   bool              `json:"demo"`
+	Providers              []providerSummary `json:"providers"`
 }
 
 // buildProvidersView builds the provider summary from config, presets, the
@@ -116,7 +123,20 @@ func buildProvidersView(ctx context.Context, cfg config.Config, dotEnv map[strin
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return providersView{DefaultModel: cfg.Harness.DefaultModel, Models: cfg.Harness.Models, GitCommit: cfg.Harness.GitCommit, Demo: isDemo(cfg, dotEnv), Providers: out}
+	rigor := cfg.Harness.Review.Rigor
+	if rigor == "" {
+		rigor = "auto"
+	}
+	return providersView{
+		DefaultModel:           cfg.Harness.DefaultModel,
+		Models:                 cfg.Harness.Models,
+		GitCommit:              cfg.Harness.GitCommit,
+		GitAllowDefaultBranch:  cfg.Harness.Git.AllowDefaultBranch,
+		GitBranchPerInitiative: cfg.Harness.Git.BranchPerInitiative,
+		ReviewRigor:            rigor,
+		Demo:                   isDemo(cfg, dotEnv),
+		Providers:              out,
+	}
 }
 
 // providerModels returns the live model list for a ready provider, falling back

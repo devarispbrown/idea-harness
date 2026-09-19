@@ -15,6 +15,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/understanding", s.handleUnderstanding)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/guidance", s.handleGuidance)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/changed", s.handleChanged)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/timeline", s.handleTimeline)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/costs", s.handleCosts)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/resume", s.handleResume)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/revise", s.handleRevise)
@@ -46,6 +48,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/diff", s.handleDiff)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers", s.handleSuggestAnswers)
 	m.HandleFunc("GET /api/v1/logs", s.handleLogs)
+
+	m.HandleFunc("GET /api/v1/projects/{projectId}/queue", s.handleQueue)
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/providers", s.handleListProviders)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/providers", s.handleUpdateProviders)

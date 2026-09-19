@@ -22,6 +22,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/git"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/project"
+	"github.com/devarispbrown/idea-harness/internal/projection"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
 	"github.com/devarispbrown/idea-harness/internal/workflow"
@@ -809,6 +810,15 @@ func (r *Runtime) ExecuteInitiative(ctx context.Context, projectID, initiativeID
 // files are discarded once the run is accepted, so it starts from the
 // workspace ("Start over").
 func (r *Runtime) ExecuteInitiativeFresh(ctx context.Context, projectID, initiativeID string, fresh bool) (string, error) {
+	return r.ExecuteInitiativeFreshWithNote(ctx, projectID, initiativeID, fresh, "")
+}
+
+// ExecuteInitiativeFreshWithNote is ExecuteInitiativeFresh, with an optional
+// human note (D-a, wave 3 contract) that steers this one execute: appended to
+// the implementer's brief and recorded on the agent run. Set on the engine
+// BEFORE launching, and cleared by Execute itself once that run finishes, so
+// it can never bleed into a later, unrelated execute of this initiative.
+func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID, initiativeID string, fresh bool, note string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -894,6 +904,9 @@ func (r *Runtime) ExecuteInitiativeFresh(ctx context.Context, projectID, initiat
 	// accepted. Discarding first and then being refused lost them for nothing.
 	if fresh {
 		_ = pr.engine.DiscardPartial(initiativeID)
+	}
+	if strings.TrimSpace(note) != "" {
+		pr.engine.SetNoteOverride(initiativeID, note)
 	}
 	r.launchOperation(opID, func(bg context.Context) {
 		release := func() {
@@ -1174,6 +1187,16 @@ func (r *Runtime) ReviseInitiative(ctx context.Context, projectID, initiativeID 
 // RetryInitiative re-runs a failed initiative's workflow under a chosen model
 // (retry-with-a-different-model). Returns the operation id.
 func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, model string) (string, error) {
+	return r.RetryInitiativeWithNote(ctx, projectID, initiativeID, model, "")
+}
+
+// RetryInitiativeWithNote is RetryInitiative, with an optional human note
+// (D-a, wave 3 contract) that steers this one retry. Retry re-runs the
+// framing→research→PRD→review pipeline rather than the implementer, so the
+// note joins the framing prompt (see Engine.runFraming) instead of "the
+// implementer's brief" the wave 3 contract names -- there is no implementer
+// brief at this stage of the pipeline for it to join.
+func (r *Runtime) RetryInitiativeWithNote(ctx context.Context, projectID, initiativeID, model, note string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -1222,6 +1245,9 @@ func (r *Runtime) RetryInitiative(ctx context.Context, projectID, initiativeID, 
 	}
 	r.launchOperation(opID, func(bg context.Context) {
 		pr.engine.SetModelOverride(initiativeID, model)
+		if strings.TrimSpace(note) != "" {
+			pr.engine.SetNoteOverride(initiativeID, note)
+		}
 		status, runErr := pr.engine.Retry(bg, initiativeID)
 		if runErr != nil {
 			r.failOperation(opID, initiativeID, "retry failed", bg, pr, runErr, true)
@@ -1471,6 +1497,17 @@ func hasOpenStructuralPlanFinding(ctx context.Context, pr *projectRuntime, initi
 // Pre-existing, recorded in docs/plans/deferred.md, and not closed here.
 func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiativeID, requirement string,
 	disposition domain.VerificationStatus, note string) (domain.InitiativeStatus, []workflow.Coverage, error) {
+	return r.RunVerificationGateConfirmingTests(ctx, projectID, initiativeID, requirement, disposition, note, false)
+}
+
+// RunVerificationGateConfirmingTests is RunVerificationGate, with
+// confirmPassingTests (C2, wire contract: `POST .../verify
+// {"confirm_passing_tests": true}`) additionally confirming, through the same
+// human-evidence path (actor "human"), every requirement whose mapped tests
+// all passed. Never runs without this explicit request -- nothing here is
+// invoked from any other path.
+func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projectID, initiativeID, requirement string,
+	disposition domain.VerificationStatus, note string, confirmPassingTests bool) (domain.InitiativeStatus, []workflow.Coverage, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", nil, err
@@ -1497,6 +1534,11 @@ func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiative
 	// of this fix gated both and a commit review caught the over-reach.
 	if requirement != "" && disposition != "" {
 		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, requirement, disposition, note, ""); err != nil {
+			return "", nil, err
+		}
+	}
+	if confirmPassingTests {
+		if err := r.confirmPassingTests(ctx, pr, initiativeID); err != nil {
 			return "", nil, err
 		}
 	}
@@ -1529,6 +1571,39 @@ func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiative
 		return "", nil, err
 	}
 	return ini.Status, coverage, nil
+}
+
+// confirmPassingTests records human "pass" evidence, via the same path a
+// manual `idea verify REQ-n --pass` uses, for every requirement whose mapped
+// tests (projection.ComputeEvidenceTests) all passed and that is not already
+// verified (C2, wire contract). A requirement with no mapped tests, or with
+// any failing or unmapped one, is left untouched -- confirmed only means
+// "every test named for it passed", never "most of them did".
+func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, initiativeID string) error {
+	reqs, err := pr.db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	evidence, err := projection.ComputeEvidenceTests(ctx, pr.db, pr.blobs, initiativeID)
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		if req.SupersededBy != "" || req.Status == domain.RequirementVerified {
+			continue
+		}
+		if !projection.AllTestsPassed(evidence[req.ID]) {
+			continue
+		}
+		// actor "": RecordHumanEvidence defaults it to store.HumanActor, so this
+		// is recorded exactly as if a human had typed the pass themselves (C2:
+		// "using the existing human-evidence path with the actor set to human").
+		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, req.Code, domain.VerificationPass,
+			"confirmed: every mapped test passed", ""); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ApprovePlanInitiative accepts the execution plan, findings and all.

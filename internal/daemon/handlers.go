@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -284,7 +285,7 @@ func (s *Server) handleAckStale(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
-	pr, _, err := s.initiative(r)
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
@@ -294,12 +295,60 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		since = cursor
 	}
-	changed, err := projection.BuildChanged(r.Context(), pr.db, since, 200)
+	// Scoped to this initiative (C1/JTBD 6) -- see BuildChanged's doc comment.
+	// The response shape is unchanged ({groups, through}); web/DecisionPage.tsx
+	// still reads this endpoint that way.
+	changed, err := projection.BuildChanged(r.Context(), pr.db, ini.ID, since, 200)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, changed)
+}
+
+// handleTimeline returns an initiative's human-language "what changed"
+// timeline (C1, wave 3 contract): change sets applied/rejected/denied/
+// reverted, decisions changed, stale marks, run failures/stops, and completed
+// phases -- newest first. `idea changed` uses this, not handleChanged above
+// (which stays byte-compatible for the web What Changed widget).
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	since := int64(0)
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "since must be RFC3339")
+			return
+		}
+		since = t.UnixMilli()
+	}
+	entries, err := projection.BuildTimeline(r.Context(), pr.db, ini.ID, since, 0)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleCosts returns an initiative's spend/time summary (C3, wave 3
+// contract): per-phase model spend/time from the run records, and the
+// coding-agent run count/duration/spend separately.
+func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	costs, err := projection.BuildCosts(r.Context(), pr.db, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, costs)
 }
 
 // handleAttention returns a cross-initiative rollup (phase-derivation inputs
@@ -317,6 +366,24 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": rollups})
+}
+
+// handleQueue returns the cross-initiative "needs you" queue (D-b, wave 3
+// contract): open blocking decisions, change sets awaiting review, conflicts,
+// denials, stale items, and verifications ready to confirm, ranked blocking
+// first and then by age.
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	items, err := projection.BuildQueue(r.Context(), pr.db, pr.blobs)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // handleMarkSeen writes the project's "ui" read cursor to the sequence the
@@ -397,14 +464,21 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
+	// `note` (D-a, wave 3 contract) steers this one retry: joins the framing
+	// prompt that restarts the pipeline and is recorded on that run. Decoded
+	// leniently like `fresh` on /execute -- an old caller that never sends it
+	// must keep working unchanged, and a caller that sends only `note` should
+	// not silently have it read as "model": "" and rejected as if it never
+	// sent one.
 	var body struct {
 		Model string `json:"model"`
+		Note  string `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Model) == "" {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	opID, err := s.rt.RetryInitiative(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model))
+	opID, err := s.rt.RetryInitiativeWithNote(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model), body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -564,6 +638,12 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		Providers    map[string]config.ProviderConfig `json:"providers"`
 		Models       map[string]string                `json:"models"`
 		GitCommit    *bool                            `json:"git_commit"`
+		// GitAllowDefaultBranch/GitBranchPerInitiative/ReviewRigor (wave 3
+		// contract): harness.yaml git.allow_default_branch,
+		// git.branch_per_initiative and review.rigor, alongside git_commit.
+		GitAllowDefaultBranch  *bool   `json:"git_allow_default_branch"`
+		GitBranchPerInitiative *bool   `json:"git_branch_per_initiative"`
+		ReviewRigor            *string `json:"review_rigor"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -625,6 +705,19 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 
 	if body.GitCommit != nil {
 		cfg.GitCommit = *body.GitCommit
+	}
+	if body.GitAllowDefaultBranch != nil {
+		cfg.Git.AllowDefaultBranch = *body.GitAllowDefaultBranch
+	}
+	if body.GitBranchPerInitiative != nil {
+		cfg.Git.BranchPerInitiative = *body.GitBranchPerInitiative
+	}
+	if body.ReviewRigor != nil {
+		if !config.ValidRigor(*body.ReviewRigor) {
+			writeError(w, http.StatusBadRequest, "review_rigor must be one of "+strings.Join(config.RigorLevels, "|"))
+			return
+		}
+		cfg.Review.Rigor = *body.ReviewRigor
 	}
 
 	// A model spec naming a provider that does not exist is rejected here rather
@@ -1025,6 +1118,16 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// evidence_tests (C2, wave 3 contract): computed at read time, never
+	// persisted, so it is always as fresh as the last check run.
+	evidence, err := projection.ComputeEvidenceTests(r.Context(), pr.db, pr.blobs, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for i := range list {
+		list[i].EvidenceTests = evidence[list[i].ID]
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -1053,6 +1156,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := pr.db.ListTasks(r.Context(), ini.ID)
 	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := pr.db.AttachTaskEdges(r.Context(), ini.ID, list); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1162,7 +1269,17 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	task.RequirementIDs, task.DependsOn = nonNilStrings(implementsIDs), nonNilStrings(depIDs)
 	writeJSON(w, http.StatusOK, task)
+}
+
+// nonNilStrings returns s, or an empty (non-nil) slice when s is nil, so a
+// Task's requirement_ids/depends_on always serialize as `[]`, never `null`.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // resolveRequirementRefs resolves each ref to a Requirement.ID, matching by
@@ -1321,6 +1438,9 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	if updated != nil {
+		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1456,6 +1576,9 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	if updated != nil {
+		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1583,6 +1706,9 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := pr.db.GetTask(ctx, keep.ID)
+	if updated != nil {
+		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(ctx, ini.ID, updated.ID)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1704,6 +1830,7 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		nt.RequirementIDs, nt.DependsOn = nonNilStrings(reqIDs), nonNilStrings(originalDeps)
 		created = append(created, nt)
 	}
 
@@ -2559,13 +2686,19 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	// ordinary run, which continues a stopped run's kept files. Decoded
 	// leniently on purpose: this endpoint has always ignored its body, and
 	// refusing one it used to accept would be a breaking change.
+	//
+	// `note` (D-a, wave 3 contract) steers this one rerun: appended to the
+	// implementer's brief and recorded on the run. Decoded just as leniently
+	// as `fresh` -- an old CLI/UI that never sends it must keep working
+	// unchanged.
 	var body struct {
-		Fresh bool `json:"fresh"`
+		Fresh bool   `json:"fresh"`
+		Note  string `json:"note"`
 	}
 	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
 		_ = json.Unmarshal(raw, &body)
 	}
-	opID, err := s.rt.ExecuteInitiativeFresh(r.Context(), projectID, initiativeID, body.Fresh)
+	opID, err := s.rt.ExecuteInitiativeFreshWithNote(r.Context(), projectID, initiativeID, body.Fresh, body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -2602,6 +2735,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		Fail        bool   `json:"fail"`
 		Waived      bool   `json:"waived"`
 		Note        string `json:"note"`
+		// ConfirmPassingTests (C2, wire contract) confirms every criterion
+		// whose mapped tests all passed, via the same human-evidence path,
+		// actor human. Never inferred -- only this explicit request does it.
+		ConfirmPassingTests bool `json:"confirm_passing_tests"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -2621,8 +2758,8 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// reported the whole-initiative gate and never mentioned REQ-99. The name is
 	// resolved inside RunVerificationGate, alongside the state check, so the two
 	// refusals have one precedence rather than depending on which field was set.
-	status, coverage, err := s.rt.RunVerificationGate(
-		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note)
+	status, coverage, err := s.rt.RunVerificationGateConfirmingTests(
+		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note, body.ConfirmPassingTests)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return

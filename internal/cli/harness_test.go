@@ -198,6 +198,7 @@ func (f *fakeDaemon) seedInitiative() {
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/changed", map[string]any{
 		"groups": []map[string]any{},
 	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/timeline", []map[string]any{})
 	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/risk", map[string]any{
 		"level": "low", "signals": []string{},
 	})

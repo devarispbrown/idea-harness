@@ -17,7 +17,10 @@ import (
 
 // CreateRun creates a run row and returns its id. actor is the producing agent
 // (role name) and is recorded on the run.created event (§14 actor separation).
-func (db *DB) CreateRun(ctx context.Context, kind domain.RunKind, stageRunID, actor string) (string, error) {
+// initiativeID and stage attribute the run to an initiative and workflow
+// stage (C3, wave 3 contract), so GET .../costs can group spend/time by phase;
+// both may be empty (e.g. a run with no initiative context).
+func (db *DB) CreateRun(ctx context.Context, kind domain.RunKind, stageRunID, actor, initiativeID, stage string) (string, error) {
 	if !kind.Valid() {
 		return "", fmt.Errorf("store: invalid run kind %q", kind)
 	}
@@ -32,14 +35,24 @@ func (db *DB) CreateRun(ctx context.Context, kind domain.RunKind, stageRunID, ac
 		EventType:     "run.created",
 		Operation:     string(kind),
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO runs (id, kind, stage_run_id, status, started_at) VALUES (?, ?, ?, ?, ?)`,
-			runID, kind, nullable(stageRunID), domain.RunPending, time.Now().UTC().UnixMilli())
+		_, err := tx.Exec(`INSERT INTO runs (id, kind, stage_run_id, status, initiative_id, stage, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			runID, kind, nullable(stageRunID), domain.RunPending, initiativeID, stage, time.Now().UTC().UnixMilli())
 		return err
 	})
 	if err != nil {
 		return "", err
 	}
 	return runID, nil
+}
+
+// SetRunNote records a human note on a run (D-a, wave 3 contract): the
+// optional note on `POST .../execute`/`POST .../retry`, appended to the
+// implementer's brief and kept here as the run's own record of it. Plain
+// update, no event -- the note is provenance on the run, not itself a fact the
+// event log narrates (the run's own created/status events already are).
+func (db *DB) SetRunNote(ctx context.Context, runID, note string) error {
+	_, err := db.SQL().ExecContext(ctx, `UPDATE runs SET note = ? WHERE id = ?`, note, runID)
+	return err
 }
 
 // SetRunStatus transitions a run's status.
@@ -283,9 +296,9 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 	var finished sql.NullInt64
 	var created int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, stage, created_at, finished_at
 		FROM operations WHERE id = ?`, opID).
-		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished)
+		Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &op.Stage, &created, &finished)
 	if err != nil {
 		return op, notFoundIfNoRows(err, "operation", opID)
 	}
@@ -299,11 +312,130 @@ func (db *DB) GetOperation(ctx context.Context, opID string) (domain.Operation, 
 	return op, nil
 }
 
+// PhaseCostRow is one (stage, run kind) group of an initiative's model-call
+// spend/time (C3, wave 3 contract).
+type PhaseCostRow struct {
+	Stage      string
+	CostUSD    float64
+	DurationMS int64
+	Calls      int
+}
+
+// ListModelPhaseCosts groups an initiative's RunModel-kind runs by stage,
+// summing cost and duration from their manifests (C3, wave 3 contract). Agent
+// (coding) runs are excluded -- see ListAgentRunStats -- since their cost is
+// not always measurable the same way and they are reported separately.
+func (db *DB) ListModelPhaseCosts(ctx context.Context, initiativeID string) ([]PhaseCostRow, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT r.stage, m.usage_json, m.started_at, m.finished_at
+		FROM runs r JOIN run_manifests m ON m.run_id = r.id
+		WHERE r.initiative_id = ? AND r.kind = ?
+		ORDER BY r.stage ASC`, initiativeID, domain.RunModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byStage := map[string]*PhaseCostRow{}
+	order := make([]string, 0)
+	for rows.Next() {
+		var stage, usage string
+		var started, finished int64
+		if err := rows.Scan(&stage, &usage, &started, &finished); err != nil {
+			return nil, err
+		}
+		if stage == "" {
+			stage = "other"
+		}
+		row, ok := byStage[stage]
+		if !ok {
+			row = &PhaseCostRow{Stage: stage}
+			byStage[stage] = row
+			order = append(order, stage)
+		}
+		var u domain.RunUsage
+		_ = jsonUnmarshal(usage, &u)
+		row.CostUSD += u.CostUSD
+		row.Calls++
+		if u.DurationMS > 0 {
+			row.DurationMS += u.DurationMS
+		} else if finished > started {
+			row.DurationMS += finished - started
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]PhaseCostRow, 0, len(order))
+	for _, stage := range order {
+		out = append(out, *byStage[stage])
+	}
+	return out, nil
+}
+
+// AgentRunStats summarizes an initiative's coding-agent runs (C3, wave 3
+// contract): how many ran, their total duration, and each run's own output
+// (for ParseAgentCostUSD's best-effort cost parse), oldest first.
+type AgentRunStats struct {
+	Runs       int
+	DurationMS int64
+}
+
+// ListAgentRunStats returns the count and total duration of an initiative's
+// RunAgent-kind runs (C3, wave 3 contract).
+func (db *DB) ListAgentRunStats(ctx context.Context, initiativeID string) (AgentRunStats, error) {
+	var out AgentRunStats
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT m.usage_json, m.started_at, m.finished_at
+		FROM runs r JOIN run_manifests m ON m.run_id = r.id
+		WHERE r.initiative_id = ? AND r.kind = ?`, initiativeID, domain.RunAgent)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var usage string
+		var started, finished int64
+		if err := rows.Scan(&usage, &started, &finished); err != nil {
+			return out, err
+		}
+		out.Runs++
+		var u domain.RunUsage
+		_ = jsonUnmarshal(usage, &u)
+		if u.DurationMS > 0 {
+			out.DurationMS += u.DurationMS
+		} else if finished > started {
+			out.DurationMS += finished - started
+		}
+	}
+	return out, rows.Err()
+}
+
+// SetOperationStage records the engine's current step on the initiative's
+// running operation (C3, wave 3 contract). It is a plain, event-free update:
+// the stage is a cosmetic progress hint for the CLI/UI wait loop, not a
+// durable domain fact, and an event per stage change would spam the event log
+// that BuildTimeline reads. A no-op (not an error) when the initiative has no
+// running operation right now -- e.g. a synchronous call outside
+// launchOperation, such as change-set review.
+func (db *DB) SetOperationStage(ctx context.Context, initiativeID, stage string) error {
+	if initiativeID == "" {
+		return nil
+	}
+	_, err := db.SQL().ExecContext(ctx, `
+		UPDATE operations SET stage = ?
+		WHERE id = (
+			SELECT id FROM operations
+			WHERE initiative_id = ? AND status = ?
+			ORDER BY created_at DESC LIMIT 1
+		)`, stage, initiativeID, domain.OperationRunning)
+	return err
+}
+
 // ListOperationsByInitiative returns an initiative's operations, most recent
 // first, so the UI can find the running one and show elapsed time.
 func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID string) ([]domain.Operation, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, project_id, initiative_id, type, status, result_ref, error, created_at, finished_at
+		SELECT id, project_id, initiative_id, type, status, result_ref, error, stage, created_at, finished_at
 		FROM operations WHERE initiative_id = ? ORDER BY created_at DESC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -315,7 +447,7 @@ func (db *DB) ListOperationsByInitiative(ctx context.Context, initiativeID strin
 		var iniID, resultRef sql.NullString
 		var finished sql.NullInt64
 		var created int64
-		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &created, &finished); err != nil {
+		if err := rows.Scan(&op.ID, &op.ProjectID, &iniID, &op.Type, &op.Status, &resultRef, &op.Error, &op.Stage, &created, &finished); err != nil {
 			return nil, err
 		}
 		op.InitiativeID = iniID.String

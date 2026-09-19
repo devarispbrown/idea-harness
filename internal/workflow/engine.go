@@ -61,17 +61,17 @@ const (
 
 // Engine drives the M1 workflow.
 type Engine struct {
-	db            *store.DB
-	blobs         *blob.Store // redacted store: model artifacts/context
-	rawBlobs      *blob.Store // redaction-free store: diff/apply/revert content
-	redactor      *security.Redactor
-	registry      *model.Registry
-	cfg           config.HarnessConfig
-	log           *slog.Logger
+	db       *store.DB
+	blobs    *blob.Store // redacted store: model artifacts/context
+	rawBlobs *blob.Store // redaction-free store: diff/apply/revert content
+	redactor *security.Redactor
+	registry *model.Registry
+	cfg      config.HarnessConfig
+	log      *slog.Logger
 	// liveMu guards live: the running agent of each initiative, readable
 	// while Execute holds mu (see runstate.go).
-	liveMu sync.Mutex
-	live   map[string]*liveAttempt
+	liveMu        sync.Mutex
+	live          map[string]*liveAttempt
 	workRoot      string
 	workspaceRoot string
 	dotEnv        map[string]string // the project's .env, for provider keys
@@ -95,6 +95,50 @@ type Engine struct {
 	// concurrent run of another.
 	modelMu       sync.Mutex
 	modelOverride map[string]string
+
+	// noteMu guards noteOverride, a per-initiative human note set for the next
+	// Execute/Retry run only (D-a, "Rerun with a note to the agent"). Modelled
+	// on modelOverride/modelMu above.
+	noteMu       sync.Mutex
+	noteOverride map[string]string
+}
+
+// SetNoteOverride records a human note to steer the given initiative's next
+// Execute or Retry (D-a, wave 3 contract). Cleared once that run finishes.
+func (e *Engine) SetNoteOverride(initiativeID, note string) {
+	e.noteMu.Lock()
+	if e.noteOverride == nil {
+		e.noteOverride = map[string]string{}
+	}
+	e.noteOverride[initiativeID] = note
+	e.noteMu.Unlock()
+}
+
+func (e *Engine) currentNoteOverride(initiativeID string) string {
+	e.noteMu.Lock()
+	defer e.noteMu.Unlock()
+	return e.noteOverride[initiativeID]
+}
+
+func (e *Engine) clearNoteOverride(initiativeID string) {
+	e.noteMu.Lock()
+	delete(e.noteOverride, initiativeID)
+	e.noteMu.Unlock()
+}
+
+// setStage records the current step of initiativeID's running operation (C3,
+// wave 3 contract), for the CLI/UI wait loop to show instead of a bare "still
+// working…". Best-effort: a failure to persist a cosmetic progress hint must
+// never fail the workflow step it describes, and it is a no-op (not an error)
+// when there is no running operation to attach to -- e.g. a synchronous call
+// outside launchOperation, such as change-set review.
+func (e *Engine) setStage(ctx context.Context, initiativeID, stage string) {
+	if initiativeID == "" || stage == "" {
+		return
+	}
+	if err := e.db.SetOperationStage(ctx, initiativeID, stage); err != nil {
+		e.log.Warn("could not record the operation stage", "initiative", initiativeID, "stage", stage, "error", err)
+	}
 }
 
 // redact applies the engine's known-values redactor to a free-text string at the
@@ -283,7 +327,7 @@ func isTransientModelError(err error) bool {
 
 // runModel runs one structured-output model call and persists run provenance.
 func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName, schemaName, schemaJSON string, inputs []ccontext.Input, userPrompt string) (string, map[string]any, error) {
-	runID, err := e.db.CreateRun(ctx, domain.RunModel, "", roleName)
+	runID, err := e.db.CreateRun(ctx, domain.RunModel, "", roleName, initiativeID, stageKey)
 	if err != nil {
 		return "", nil, err
 	}
@@ -382,9 +426,13 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		ActualModel:    resp.ActualModel,
 		ContextDigest:  contextDigest,
 		ResultDigest:   resultDigest,
-		Usage:          domain.RunUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, CostUSD: resp.Usage.CostUSD},
-		StartedAt:      time.Now().UTC(),
-		FinishedAt:     time.Now().UTC(),
+		Usage:          domain.RunUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, CostUSD: resp.Usage.CostUSD, DurationMS: time.Since(reqStart).Milliseconds()},
+		// reqStart, not time.Now(): both fields used to be stamped "now" at
+		// this point, AFTER the request already completed, so the manifest's
+		// own StartedAt/FinishedAt never reflected the call's actual duration
+		// (C3, wave 3 contract needs it for GET .../costs `seconds`).
+		StartedAt:  reqStart,
+		FinishedAt: time.Now().UTC(),
 	}); err != nil {
 		return runID, nil, err
 	}
@@ -523,12 +571,27 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	// D-a: a rerun note on `POST .../retry` (wave 3 contract). Retry re-runs
+	// this framing→research→PRD→review pipeline, not the implementer, so there
+	// is no "implementer's brief" for it to join yet -- the closest faithful
+	// place is the framing prompt that starts that pipeline back up, and the
+	// framing run is what records it.
+	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	if note != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "human_note", Content: "Note from the human, for this retry only: " + note})
+	}
+	e.setStage(ctx, initiativeID, "Framing the idea")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageFraming, RoleOrchestrator, "idea_brief", schema.IdeaBrief,
 		inputs,
 		"Framing task:\n"+idea,
 	)
 	if err != nil {
 		return err
+	}
+	if note != "" {
+		if err := e.db.SetRunNote(ctx, runID, note); err != nil {
+			e.log.Warn("could not record the rerun note on the run", "initiative", initiativeID, "run", runID, "error", err)
+		}
 	}
 
 	body := renderIdeaBrief(obj)
@@ -668,6 +731,7 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	e.setStage(ctx, initiativeID, "Researching")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageResearch, RoleResearchAnalyst, "research_brief", schema.ResearchBrief,
 		inputs,
 		"Research task:\n"+idea,
@@ -734,6 +798,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
 
+	e.setStage(ctx, initiativeID, "Writing the PRD")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageProductDefinition, RoleProductManager, "prd", schema.PRD, inputs, "Author the PRD.")
 	if err != nil {
 		return err
@@ -838,6 +903,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		}
 
 		detFindings := review.DeterministicChecks(initiativeID, active)
+		e.setStage(ctx, initiativeID, fmt.Sprintf("Reviewing the PRD (cycle %d)", cycle))
 		advFindings, err := e.runAdversarialReview(ctx, initiativeID, active, rigor)
 		if err != nil {
 			return domain.InitiativeFailed, err
@@ -1281,10 +1347,10 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		return err
 	}
 	req := model.Request{
-		Model:     modelName,
-		System:    "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
-		Messages:  []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
-		Images:    []model.Image{{Data: image, MediaType: mediaType}},
+		Model:    modelName,
+		System:   "You are a product analyst. Describe this UI mockup or wireframe precisely and concretely: overall layout, screens/sections, key elements and controls, user flows, and any visible annotations or labels. Output plain text, no markdown fences.",
+		Messages: []model.Message{{Role: "user", Content: "Describe this mockup for the design team."}},
+		Images:   []model.Image{{Data: image, MediaType: mediaType}},
 		// Under every declared ceiling today; routed through the cap anyway so
 		// this call site cannot drift into the defect the other one had.
 		MaxOutput: minOutput(2048, prov),

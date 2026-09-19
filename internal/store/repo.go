@@ -41,6 +41,13 @@ func (db *DB) CreateInitiative(ctx context.Context, ini *domain.Initiative) erro
 	if !ini.Status.Valid() {
 		ini.Status = domain.InitiativeRunning
 	}
+	// Short titles are generated deterministically on create (C1, wave 3
+	// contract), from the description (the full idea text -- Title carries the
+	// same text today, see cmdNew). A caller that already supplied one (e.g. a
+	// test fixture) is left alone.
+	if ini.ShortTitle == "" {
+		ini.ShortTitle = domain.GenerateShortTitle(ini.Description)
+	}
 	return db.Apply(ctx, Event{
 		AggregateType: "initiative",
 		AggregateID:   ini.ID,
@@ -48,11 +55,32 @@ func (db *DB) CreateInitiative(ctx context.Context, ini *domain.Initiative) erro
 		EventType:     "initiative.created",
 	}, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
-			INSERT INTO initiatives (id, title, description, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			ini.ID, ini.Title, ini.Description, ini.Status, ini.CreatedAt.UnixMilli(), ini.UpdatedAt.UnixMilli())
+			INSERT INTO initiatives (id, title, description, status, short_title, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			ini.ID, ini.Title, ini.Description, ini.Status, ini.ShortTitle, ini.CreatedAt.UnixMilli(), ini.UpdatedAt.UnixMilli())
 		return err
 	})
+}
+
+// backfillShortTitle returns ini.ShortTitle, generating and persisting one
+// first if the row predates the short_title column (C1, wave 3 contract). The
+// write is best-effort: a read path should never fail because the backfill
+// could not be saved, so the generated value is still returned to the caller
+// even if persisting it errors (it will simply be regenerated -- identically,
+// since generation is deterministic -- next time).
+func (db *DB) backfillShortTitle(ctx context.Context, initiativeID, description, existing string) string {
+	if existing != "" {
+		return existing
+	}
+	generated := domain.GenerateShortTitle(description)
+	if generated == "" {
+		return generated
+	}
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE initiatives SET short_title = ? WHERE id = ? AND short_title = ''`, generated, initiativeID); err != nil {
+		// Best-effort: see doc comment.
+		_ = err
+	}
+	return generated
 }
 
 // GetInitiative returns one initiative by id.
@@ -60,21 +88,22 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 	var ini domain.Initiative
 	var created, updated int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, short_title, created_at, updated_at
 		FROM initiatives WHERE id = ?`, initiativeID).
-		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &created, &updated)
+		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &ini.ShortTitle, &created, &updated)
 	if err != nil {
 		return ini, notFoundIfNoRows(err, "initiative", initiativeID)
 	}
 	ini.CreatedAt = time.UnixMilli(created)
 	ini.UpdatedAt = time.UnixMilli(updated)
+	ini.ShortTitle = db.backfillShortTitle(ctx, ini.ID, ini.Description, ini.ShortTitle)
 	return ini, nil
 }
 
 // ListInitiatives returns all initiatives ordered by creation.
 func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, short_title, created_at, updated_at
 		FROM initiatives ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -84,12 +113,16 @@ func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) 
 	for rows.Next() {
 		var ini domain.Initiative
 		var created, updated int64
-		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &created, &updated); err != nil {
+		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &ini.ShortTitle, &created, &updated); err != nil {
 			return nil, err
 		}
 		ini.CreatedAt = time.UnixMilli(created)
 		ini.UpdatedAt = time.UnixMilli(updated)
 		out = append(out, ini)
+	}
+	rows.Close()
+	for i := range out {
+		out[i].ShortTitle = db.backfillShortTitle(ctx, out[i].ID, out[i].Description, out[i].ShortTitle)
 	}
 	return out, rows.Err()
 }
