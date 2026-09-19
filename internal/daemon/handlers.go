@@ -203,8 +203,64 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
 	}
+	// Review A4 #5: "N items may be invalid since DEC-n changed", with the
+	// re-plan/review path named, plus the itemized list for the UI. Composed
+	// here for the same reason NextTask/RunBlockedReason/PartialWork are:
+	// BuildGuidance has no store access.
+	if items, err := pr.db.ListStaleItems(r.Context(), ini.ID); err == nil && len(items) > 0 {
+		refs := make([]projection.StaleItemRef, 0, len(items))
+		var codes []string
+		seenCode := map[string]bool{}
+		for _, it := range items {
+			label := s.staleItemLabel(r.Context(), pr, ini.ID, it)
+			refs = append(refs, projection.StaleItemRef{StaleID: it.ID, Type: it.TargetType, ID: it.TargetID, Label: label, Reason: it.Reason})
+			code, _, _ := strings.Cut(it.Reason, " ")
+			if code != "" && !seenCode[code] {
+				seenCode[code] = true
+				codes = append(codes, code)
+			}
+		}
+		g.StaleItems = refs
+		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. Run `idea revise-plan` and review before continuing, or acknowledge the items.",
+			g.Why, len(items), strings.Join(codes, ", "))
+	}
 
 	writeJSON(w, http.StatusOK, g)
+}
+
+// staleItemLabel resolves a human-readable label for a stale item, best-effort
+// (an empty label is omitted by the JSON tag, not an error).
+func (s *Server) staleItemLabel(ctx context.Context, pr *projectRuntime, initiativeID string, it domain.StaleItem) string {
+	switch it.TargetType {
+	case "requirement":
+		if req, err := pr.db.GetRequirementByRef(ctx, initiativeID, it.TargetID); err == nil {
+			return req.Code
+		}
+	case "task":
+		if t, err := pr.db.GetTask(ctx, it.TargetID); err == nil {
+			return t.Code
+		}
+	case "change_set":
+		if cs, err := pr.db.GetChangeSet(ctx, it.TargetID); err == nil {
+			return cs.HumanID
+		}
+	}
+	return ""
+}
+
+// handleAckStale explicitly acknowledges one stale item, clearing it (review
+// A4 #5: "explicitly acknowledging the item clears the stale state").
+func (s *Server) handleAckStale(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := pr.db.ClearStaleItem(r.Context(), ini.ID, r.PathValue("staleId"), store.HumanActor); err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"cleared": true})
 }
 
 func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
@@ -945,36 +1001,37 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title      string   `json:"title"`
-		Statement  string   `json:"statement"`
-		Priority   string   `json:"priority"`
-		Estimate   string   `json:"estimate"`
-		Implements string   `json:"implements"`
-		DependsOn  []string `json:"depends_on"`
+		Title          string   `json:"title"`
+		Statement      string   `json:"statement"`
+		Priority       string   `json:"priority"`
+		Estimate       string   `json:"estimate"`
+		Implements     string   `json:"implements"`
+		RequirementIDs []string `json:"requirement_ids"`
+		DependsOn      []string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
-	// Resolve the implements requirement (by code or id) if given.
-	implementsID := ""
+	// Resolve the requirement reference(s): `implements` (single, kept for
+	// compatibility) plus `requirements_ids` (N:M, review A4 #3/#4). A task
+	// added after the plan is approved must name at least one -- unlike the
+	// planner's own unresolved-reference finding, this is refused synchronously
+	// rather than parked, since there is no plan-review cycle to catch it here.
+	var reqRefs []string
 	if body.Implements != "" {
-		reqs, err := pr.db.ListRequirements(r.Context(), ini.ID)
-		if err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		for _, req := range reqs {
-			if req.Code == body.Implements || req.ID == body.Implements {
-				implementsID = req.ID
-				break
-			}
-		}
-		if implementsID == "" {
-			writeError(w, http.StatusBadRequest, "implements references an unknown requirement")
-			return
-		}
+		reqRefs = append(reqRefs, body.Implements)
+	}
+	reqRefs = append(reqRefs, body.RequirementIDs...)
+	if len(reqRefs) == 0 {
+		writeError(w, http.StatusBadRequest, "requirement_ids is required (at least one)")
+		return
+	}
+	implementsIDs, err := s.resolveRequirementRefs(r.Context(), pr, ini.ID, reqRefs)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 
 	// Resolve depends_on titles to existing task ids.
@@ -995,11 +1052,45 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		Priority:     priority,
 		Estimate:     body.Estimate,
 	}
-	if err := pr.db.CreateTask(r.Context(), task, implementsID, depIDs); err != nil {
+	if err := pr.db.CreateTaskMulti(r.Context(), task, implementsIDs, depIDs); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+// resolveRequirementRefs resolves each ref to a Requirement.ID, matching by
+// exact id or by NormalizeRequirementRef'd code (review A4 #4: trim,
+// case-insensitive, "REQ-3: title" forms). Duplicates are dropped; any ref
+// that resolves to nothing is a 400 naming it, mirroring `depends_on`'s own
+// unknown-reference refusal.
+func (s *Server) resolveRequirementRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
+	reqs, err := pr.db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	byCode := make(map[string]string, len(reqs))
+	byID := make(map[string]string, len(reqs))
+	for _, req := range reqs {
+		byCode[workflow.NormalizeRequirementRef(req.Code)] = req.ID
+		byID[req.ID] = req.ID
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		id, ok := byID[ref]
+		if !ok {
+			id, ok = byCode[workflow.NormalizeRequirementRef(ref)]
+		}
+		if !ok {
+			return nil, fmt.Errorf("requirement_ids references an unknown requirement %q", ref)
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
@@ -1018,14 +1109,34 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title     string `json:"title"`
-		Statement string `json:"statement"`
-		Priority  string `json:"priority"`
-		Estimate  string `json:"estimate"`
+		Title          string   `json:"title"`
+		Statement      string   `json:"statement"`
+		Priority       string   `json:"priority"`
+		Estimate       string   `json:"estimate"`
+		RequirementIDs []string `json:"requirement_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+	// requirement_ids is optional on PATCH: omitted (nil) leaves the task's
+	// existing requirement links untouched. Present, it replaces them
+	// entirely, and (review A4 #3) must name at least one -- clearing a task's
+	// last requirement is refused the same way adding one with none is.
+	if body.RequirementIDs != nil {
+		if len(body.RequirementIDs) == 0 {
+			writeError(w, http.StatusBadRequest, "requirement_ids is required (at least one)")
+			return
+		}
+		implementsIDs, err := s.resolveRequirementRefs(r.Context(), pr, ini.ID, body.RequirementIDs)
+		if err != nil {
+			s.writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := pr.db.ReplaceTaskRequirements(r.Context(), ini.ID, task.ID, implementsIDs); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	priority := task.Priority
 	if body.Priority != "" {

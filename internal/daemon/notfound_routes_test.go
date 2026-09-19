@@ -76,6 +76,7 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		"{taskId}":    "t-unused",
 		"{docId}":     "d-unused",
 		"{reqId}":     "REQ-1",
+		"{staleId}":   "s-unused",
 	}
 
 	routes := idRoutes(t)
@@ -193,6 +194,15 @@ func expectedKind(path, wildcard string) string {
 		return "doc"
 	case "{reqId}":
 		return "requirement"
+	}
+	if wildcard != "{id}" {
+		// An unlisted wildcard (e.g. {staleId}) has no fixed expected noun here;
+		// the loop below only knows how to name what precedes an `{id}` segment,
+		// and reusing it for the wrong wildcard misnamed the actual route under
+		// test. Falling through unconditionally made `{staleId}` inherit `{id}`'s
+		// "initiative" from the very next segment, which is a different pair
+		// entirely.
+		return ""
 	}
 	// {id} means whatever collection precedes it.
 	segs := strings.Split(strings.TrimPrefix(path, "/api/v1/"), "/")
