@@ -143,7 +143,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   explicit untrusted-data marker wherever it's included, and its
   truncation now cuts on a UTF-8 rune boundary instead of a raw byte
   offset.
-- **Migration 31** sets `findings.secret_overridable = 0` where
+- **Migration 32** sets `findings.secret_overridable = 0` where
   `secret_kind = 'configured secret value'`, a follow-up to migration 30.
   It does not (and cannot) recompute HMAC fingerprints for pre-migration-30
   `secret_allowlist` rows recorded under the old bare-sha256 scheme —
