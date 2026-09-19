@@ -11,6 +11,43 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **`idea executors setup` honors the positional kind.** `idea executors setup
+  omp --yes` silently ignored the positional argument and configured
+  `hermes`, with no error and nothing in `--help` explaining that `--kind` was
+  the only way to choose. The positional and `--kind` are now both accepted
+  (a disagreement between them is refused), and `idea help` / `docs/cli.md`
+  show `executors setup [<kind>]`.
+- **A retired/unavailable model 404s with a clear, actionable error.**
+  `gemini-2.5-flash` and `gemini-2.5-pro` return 404 "no longer available to
+  new users" and have been removed from the bundled catalog (they were kept,
+  deprioritized, by an earlier fix, which was not enough — an ICP walkthrough
+  still hit exactly this 404). Every provider's 404 now names the model and
+  says how to change it (`idea model set <provider>/<model>`, or Settings →
+  Providers) instead of a bare `status 404`.
+- **A known-incompatible executor/model combination is refused before a
+  wasted image pull or paid call.** `hermes` + `openai/gpt-4.1-mini` failed
+  deterministically, every run (Hermes Agent's own 64,000-token context floor
+  — see `docs/agents.md`, "Known executor/model compatibility" — is guessed
+  via auto-detection for every provider here, since none of them declare
+  `model.context_length`, and that guess lands under the floor for this
+  model). `idea executors setup`, the Build page's run-readiness check, and
+  `idea execute` itself now run the same small, data-driven table
+  (`internal/executor/compat.go`) and refuse a known-bad pairing outright, or
+  recommend `--smoke` for an untested one.
+- **`idea retry` resumes after the last completed phase instead of restarting
+  framing from scratch.** A provider failure mid-PRD-authoring, followed by
+  `idea retry`, used to re-run framing and research unconditionally even
+  though both had already succeeded — re-asking framing's clarifying
+  questions and re-running research for no reason, which looked, from the
+  outside, like the human's prior answers had been discarded. Retry now
+  checks which of the idea-brief/research-brief/PRD artifacts already exist
+  and resumes right after the last one, so an already-succeeded phase is
+  never redone and decisions/questions already on the initiative reach
+  product definition exactly as before. Transient provider errors (429/500/
+  502/503/504/529, "overloaded", "rate limit", …) were already retried with
+  backoff inside the model call itself before this fix, including 503 — that
+  half of the ICP finding did not reproduce, and is now pinned by a test that
+  drives a real 503 through the HTTP transport.
 - **The secret sweep no longer blocks on a bare word.** `password`, `token`,
   `secret`, `auth` and similar vocabulary markers used to hard-reject a change
   set anywhere they appeared in a patch, with no file or line and no way past

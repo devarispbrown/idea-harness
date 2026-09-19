@@ -99,7 +99,40 @@ Two providers need more than a base URL:
 **Model ids go stale.** On 2026-09-17 Google returned 404 for `gemini-2.5-flash` and
 `gemini-2.5-pro` ("no longer available to new users"), while its model listing still showed them.
 A dead model id makes the agent exit without writing anything, and `--smoke` prints the provider's
-own error when that happens. Run `--smoke` whenever you change the model.
+own error when that happens. Run `--smoke` whenever you change the model. Both ids have since been
+removed from the bundled catalog (`internal/model/catalog.go`) so a new project cannot pick them up
+as a default; a real API call to any model id, dead or otherwise, now names the model in the error
+and says how to change it (`idea model set <provider>/<model>`, or Settings → Providers).
+
+### Known executor/model compatibility
+
+Not every model a provider serves works with a coding-agent executor, even though `idea-harness`'s
+own model calls (framing, research, PRD, review) accept any model id. An ICP walkthrough found
+`hermes` + `openai/gpt-4.1-mini` failed deterministically — every run, not intermittently — because
+Hermes Agent refuses to start below 64,000 tokens of context
+([FAQ](https://hermes-agent.nousresearch.com/docs/reference/faq)), and every provider here is wired
+into Hermes as an explicit `custom_provider` (see `hermescfg.go`'s own comment on why), for which
+idea-harness never declares `model.context_length`. Without it, Hermes falls back to its own
+model-family auto-detection to guess the window, and for `gpt-4.1-mini` that guess lands under the
+floor — the same failure mode as [NousResearch/hermes-agent#24000](https://github.com/NousResearch/hermes-agent/issues/24000),
+a custom endpoint falling back to 32,768 tokens.
+
+`idea executors setup`, the Build page's run-readiness check, and `idea execute` itself all run the
+same small, data-driven table (`internal/executor/compat.go`) before spending an image pull or a
+paid call on a combination already known not to work:
+
+| Kind | Model | Verdict | Why |
+|---|---|---|---|
+| `hermes` | `openai/gpt-4.1-mini` | **Refused** | Hermes's context-window auto-detection puts it under its own 64k floor; see above. |
+| `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
+| `hermes` | anything else | Warned | Not known-bad, but not verified either — run `--smoke` before relying on it. |
+
+A refused combination stops `idea executors setup` and `idea execute` before anything runs, naming
+the model and why. An untested one is a warning, not a block — most models nobody has run through
+`--smoke` yet work fine — and both `idea executors setup --smoke` and the Build page's **Run smoke
+test** are the way to confirm one before a real task depends on it. Add a row to that table only
+once a combination has actually been observed to fail every time, with a reason; it is not a place
+to guess at every model nobody has tried.
 
 ### Manual (equivalent)
 

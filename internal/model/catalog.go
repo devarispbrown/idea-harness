@@ -18,17 +18,29 @@ package model
 // claude-3-5-haiku-latest, claude-opus-4-1, gemini-2.0-flash, gemini-1.5-pro
 // and openrouter's anthropic/claude-3.7-sonnet.
 //
-//   - gemini: gemini-2.5-flash and gemini-2.5-pro still appear in Google's
-//     listing, but return 404 "no longer available to new users". They stay
-//     for accounts that can still reach them, and must never lead.
-//     gemini-3.8-flash returned 503 "high demand" and gemini-3.1-pro-preview
-//     returned 429 (quota), so neither leads, but both exist.
+// Removed 2026-09-19 (ICP walkthrough finding: "the bundled model catalog
+// lists deprecated models (e.g. gemini-2.5-flash) that 404 at call time"):
+// gemini-2.5-flash and gemini-2.5-pro, which an earlier revision of this
+// catalog kept, deprioritized, "for accounts that can still reach them". A
+// model this catalog already knows returns "no longer available to new
+// users" for every new account has no business staying in a list whose whole
+// purpose is steering new setups away from dead ids -- being last in the list
+// still means a project's config or the Settings picker can offer it. If your
+// account can still reach one of them, set it explicitly with
+// `idea model set gemini/gemini-2.5-flash`; a name absent from this list is a
+// warning, never a rejection (see the package doc above), and a 404 against
+// any model, catalog member or not, now names the model in the error (see
+// model.httpError).
+//
+//   - gemini: gemini-3.8-flash returned 503 "high demand" and
+//     gemini-3.1-pro-preview returned 429 (quota) on 2026-09-17, so neither
+//     leads, but both exist and are not known-dead the way gemini-2.5-* is.
 //   - ollama: these are library names the operator must pull first. The
 //     catalog cannot verify them against a server it does not run.
 var DefaultModels = map[string][]string{
 	"openai":     {"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3-mini"},
 	"anthropic":  {"claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-4-8", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"},
-	"gemini":     {"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-2.5-pro"},
+	"gemini":     {"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"},
 	"deepseek":   {"deepseek-v4-pro", "deepseek-flash", "deepseek-chat", "deepseek-reasoner"},
 	"openrouter": {"anthropic/claude-sonnet-5", "openai/gpt-5.6-luna", "google/gemini-3.6-flash", "deepseek/deepseek-v4-pro-0813", "qwen/qwen3.8-max-0902", "moonshotai/kimi-k3", "z-ai/glm-5.3", "openai/gpt-4o", "meta-llama/llama-4-maverick"},
 	"ollama":     {"qwen3.8", "gpt-oss:20b", "gemma4:26b", "llama3.1", "llama3.2", "qwen2.5", "mistral", "deepseek-r1"},

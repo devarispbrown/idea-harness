@@ -60,6 +60,58 @@ func TestProviderErrorsCarryTheResponseBody(t *testing.T) {
 	}
 }
 
+// TestModelNotFoundErrorNamesTheModelAndHowToFixIt pins the ICP walkthrough
+// finding: a retired/unknown model id 404s at call time (a stale catalog
+// entry, or a config left pointing at a model the provider withdrew), and the
+// message must name the model and how to change it -- not just "status 404".
+func TestModelNotFoundErrorNamesTheModelAndHowToFixIt(t *testing.T) {
+	const upstream = `{"error":{"message":"The model ` + "`gemini-2.5-flash`" + ` is not available to your project"}}`
+
+	for _, c := range []struct {
+		name string
+		call func(baseURL string) error
+	}{
+		{"openai", func(u string) error {
+			_, err := NewOpenAI("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+		{"anthropic", func(u string) error {
+			_, err := NewAnthropic("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+		{"gemini", func(u string) error {
+			_, err := NewGemini("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(upstream))
+			}))
+			defer ts.Close()
+
+			err := c.call(ts.URL)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "gemini-2.5-flash") {
+				t.Errorf("error does not name the model that 404'd: %v", err)
+			}
+			if !strings.Contains(msg, "404") {
+				t.Errorf("error does not carry the status: %v", err)
+			}
+			if !strings.Contains(msg, "idea model set") {
+				t.Errorf("error does not say how to change the model: %v", err)
+			}
+			if !strings.Contains(msg, "not available to your project") {
+				t.Errorf("error discards the upstream body: %v", err)
+			}
+		})
+	}
+}
+
 // TestProviderErrorBodyIsScrubbed: a provider that echoes the request can echo
 // the credential with it. An error travels into logs, Findings and stored
 // artifacts, so a key must not travel with it.
