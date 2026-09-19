@@ -81,6 +81,40 @@ type projectRuntime struct {
 	registry *model.Registry
 	engine   *workflow.Engine
 	redactor *security.Redactor
+
+	// planEditMu guards planEditLocks itself (not the edits); planEditLocks
+	// holds one *sync.Mutex per initiative id, lazily created (review M5).
+	planEditMu    sync.Mutex
+	planEditLocks map[string]*sync.Mutex
+}
+
+// lockPlanEdit serializes the Plan-editing endpoints (add/update/delete/
+// cancel/reorder task, set depends_on, merge, split) per initiative (review
+// M5): taskEditableGuard, the cycle check, and the write(s) that follow it
+// are each individually correct but together form a check-then-act sequence
+// with no lock. Two concurrent set-depends_on requests (A->B and B->A) each
+// ran wouldCycle against the graph as it stood before either write landed,
+// both saw no cycle, and together created one; an Execute could also start
+// between the guard and the write. Call the returned func to release,
+// typically via `defer lockPlanEdit(...)()` immediately after resolving the
+// initiative, so the guard check through every write in the handler runs
+// under the lock.
+//
+// Locks are per-initiative, not per-project: two different initiatives in
+// the same project may still edit their plans concurrently.
+func (pr *projectRuntime) lockPlanEdit(initiativeID string) func() {
+	pr.planEditMu.Lock()
+	m, ok := pr.planEditLocks[initiativeID]
+	if !ok {
+		if pr.planEditLocks == nil {
+			pr.planEditLocks = map[string]*sync.Mutex{}
+		}
+		m = &sync.Mutex{}
+		pr.planEditLocks[initiativeID] = m
+	}
+	pr.planEditMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // NewRuntime opens (creating if needed) the global state and token.
