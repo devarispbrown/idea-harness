@@ -976,6 +976,20 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	if err != nil {
 		return "", err
 	}
+	// Read-only and lock-free (review A3): a file the change set touched has
+	// changed in the workspace since apply, so reverting now would erase that
+	// edit. Checked before the claim so a stale revert answers 409 synchronously
+	// instead of starting an operation whose only failure path is the log --
+	// the same defect apply and revert's own status guard were fixed for
+	// (handleApplyChangeSet/handleRevertChangeSet). RevertChangeSet re-checks
+	// this itself, under the engine lock, immediately before it restores
+	// anything, so a race in the gap between this read and the claim below is
+	// still refused safely.
+	if reason, err := pr.engine.RevertBlockedReason(ctx, initiativeID, changeSetID); err != nil {
+		return "", err
+	} else if reason != "" {
+		return "", preconditionf("%s", reason)
+	}
 	// Claim from every non-running state.
 	//
 	// The list is deliberately permissive, and derived by probing rather than by

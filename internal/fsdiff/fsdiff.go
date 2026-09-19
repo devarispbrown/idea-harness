@@ -237,6 +237,61 @@ func StaleBase(root string, changes []domain.FileChange) []string {
 	return stale
 }
 
+// StalePost reports every change whose post-image no longer matches root, one
+// line per file. An empty result means a revert can restore the pre-image
+// without erasing anything written into the workspace after apply.
+//
+// This is StaleBase's mirror at the opposite end of a change set's life:
+// StaleBase protects an edit made BEFORE apply ran by comparing the workspace
+// against each change's BaseDigest; StalePost protects an edit made AFTER
+// apply ran by comparing the workspace against each change's Digest -- the
+// post-image apply itself wrote. Both refuse rather than overwrite, and both
+// write nothing when they refuse (review A3: an ICP user's comment added to
+// src/app.js after apply was silently erased by a revert that never looked).
+//
+// Keyed on ChangeType, like StaleBase: an add has nothing to compare on the
+// "base" side but everything on the "post" side, and a delete is the reverse.
+// A change with no ChangeType predates this check and is restored as before.
+func StalePost(root string, changes []domain.FileChange) []string {
+	var stale []string
+	for _, c := range changes {
+		if c.ChangeType == "" {
+			continue
+		}
+		dest, err := security.ResolveWithin(root, c.Path)
+		if err != nil {
+			stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+			continue
+		}
+		fi, err := os.Lstat(dest)
+		exists := err == nil
+		switch c.ChangeType {
+		case domain.FileDeleted:
+			if exists {
+				stale = append(stale, c.Path+": the change deleted it, but it exists in the workspace now")
+			}
+		case domain.FileAdded, domain.FileModified:
+			if !exists {
+				stale = append(stale, c.Path+": the change wrote it, but it is missing from the workspace now")
+				continue
+			}
+			if !fi.Mode().IsRegular() {
+				stale = append(stale, c.Path+": it is no longer a regular file in the workspace")
+				continue
+			}
+			data, err := os.ReadFile(dest)
+			if err != nil {
+				stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+				continue
+			}
+			if blob.Digest(data) != c.Digest {
+				stale = append(stale, c.Path+": it was edited in the workspace after apply")
+			}
+		}
+	}
+	return stale
+}
+
 // Prepare captures the pre-image of every touched path (persisting each via put)
 // WITHOUT mutating root. It returns the pre-image manifest so a caller can
 // persist it BEFORE any byte is written, making an interrupted apply recoverable
