@@ -920,6 +920,11 @@ paths:
       tags: [understanding]
       operationId: getImpact
       summary: Dependents and staleness for one graph node
+      description: |
+        A task's change sets are not graph edges (`ChangeSet.TaskID` links them instead), so when the
+        walk reaches a task, its change sets are added as synthetic dependents (`edge_type:
+        "change_set"`) -- otherwise impact on a requirement or decision could reach the task and stop
+        there (review A4 #4/#5).
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1150,6 +1155,41 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/StaleId"
+    post:
+      tags: [graph]
+      operationId: ackStaleItem
+      summary: Acknowledge a stale item, clearing it
+      description: |
+        Review A4 #5: a decision reopened (or re-resolved differently) after tasks/change sets were
+        built on it marks the requirements that cite it, their tasks, and their applied change sets
+        stale (`GET /guidance`'s `stale_items`, and `staleness: "stale"` on `/impact`). Clears one
+        item by acknowledging it; re-planning (`revise-plan`/`reopen-phase`) clears every stale item
+        for the initiative at once instead.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cleared: { type: boolean }
+                required: [cleared]
+        "400":
+          description: The stale item does not exist, belongs to another initiative, or is already cleared.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -1372,9 +1412,12 @@ paths:
       summary: Add a task to the plan
       description: |
         Only while the plan is editable: the initiative must be `plan_approved` or
-        `needs_human_judgment` and have no unfinished operation. `implements` may name a
-        requirement by code or id; `depends_on` entries may name existing tasks by title, code or
-        id. Title and statement are redacted before they are stored.
+        `needs_human_judgment` and have no unfinished operation. A task implements one or more
+        requirements, N:M (review A4 #3/#4): `implements` (single, kept for compatibility) and
+        `requirement_ids` (one or more) are merged, resolved by exact id or by code (tolerant of
+        case and a "REQ-3: title" form), and de-duplicated; **at least one is required**. `depends_on`
+        entries may name existing tasks by title, code or id. Title and statement are redacted before
+        they are stored.
       requestBody:
         required: true
         content:
@@ -1393,7 +1436,11 @@ paths:
                 estimate: { type: string }
                 implements:
                   type: string
-                  description: Requirement code or id.
+                  description: A single requirement code or id, kept for compatibility. Prefer requirement_ids.
+                requirement_ids:
+                  type: array
+                  items: { type: string }
+                  description: One or more requirement codes or ids. Merged with `implements`; at least one of the two is required.
                 depends_on:
                   type: array
                   items: { type: string }
@@ -1407,7 +1454,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`title is required`, `implements references an unknown requirement`, or `depends_on references an unknown task \"...\"`."
+          description: "`title is required`, `requirement_ids is required (at least one)`, `requirement_ids references an unknown requirement \"...\"`, or `depends_on references an unknown task \"...\"`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1471,6 +1518,9 @@ paths:
         Only the fields present are changed; an empty or blank string leaves the current value in
         place. Subject to the same editable window as `POST /tasks`, plus: the task must belong to
         this initiative, must not be `done` or `cancelled`, and must have no change sets yet.
+        `requirement_ids`, when present, REPLACES the task's requirement links entirely (resolved
+        the same tolerant way as `POST /tasks`); omit the field to leave them untouched. An empty
+        array is refused -- at least one requirement is required (review A4 #3).
       requestBody:
         required: true
         content:
@@ -1484,6 +1534,10 @@ paths:
                 estimate:
                   type: string
                   description: Written through as given, so an empty string clears it.
+                requirement_ids:
+                  type: array
+                  items: { type: string }
+                  description: Replaces the task's requirement links. Omit to leave unchanged; an empty array is a 400.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1492,7 +1546,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`invalid body` or `invalid priority`."
+          description: "`invalid body`, `invalid priority`, `requirement_ids is required (at least one)`, or `requirement_ids references an unknown requirement \"...\"`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3078,6 +3132,12 @@ components:
       required: true
       description: Task id. A task belonging to another initiative is refused by the editable guard.
       schema: { type: string }
+    StaleId:
+      name: staleId
+      in: path
+      required: true
+      description: Stale-mark id, as returned in `stale_items[].id` on `/guidance`.
+      schema: { type: string }
     DecisionId:
       name: id
       in: path
@@ -3267,7 +3327,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 86 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 87 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -4013,7 +4073,38 @@ components:
               type: string
               description: Why nothing was kept, when the stopped run's files looked like they held a secret.
           required: [task_id, files]
+        stale_items:
+          type: array
+          items: { $ref: "#/components/schemas/StaleItemRef" }
+          description: |
+            The requirements, tasks and change sets marked stale by a decision that was reopened or
+            re-resolved after they were built on it (review A4 #5). Omitted when nothing is stale.
+            When present, `why` also carries a sentence naming the count and the decision code, and
+            the recommended path (`idea revise-plan`, or acknowledge each item via
+            `POST .../stale/{staleId}/ack`).
       required: [action, why, affected]
+
+    StaleItemRef:
+      type: object
+      title: StaleItemRef
+      description: One item marked stale on the Recommended Next Move projection (review A4 #5).
+      properties:
+        stale_id:
+          type: string
+          description: The stale mark's own id -- what `POST …/stale/{staleId}/ack` takes. Distinct from `id`.
+        type:
+          type: string
+          description: "The graph node's type: `requirement`, `task` or `change_set`."
+        id:
+          type: string
+          description: The graph node's id (the requirement/task/change set), not the stale mark's id.
+        label:
+          type: string
+          description: The item's human code (`REQ-3`, `TASK-2`, `CHG-1`), when it could be resolved.
+        reason:
+          type: string
+          description: Why it is stale, e.g. `"DEC-9 changed"`.
+      required: [stale_id, type, id, reason]
 
     NextTaskRef:
       type: object
@@ -4066,7 +4157,11 @@ components:
 
     ImpactItem:
       title: ImpactItem
-      description: A `TraceItem` plus a staleness classification for the dependent node.
+      description: |
+        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"`
+        (supersedes/invalidates edges), `"revalidate"` (every other edge type), or `"stale"` (review
+        A4 #5: an active stale mark on this exact node, which always wins over the edge-type
+        classification).
       allOf:
         - $ref: "#/components/schemas/TraceItem"
         - type: object

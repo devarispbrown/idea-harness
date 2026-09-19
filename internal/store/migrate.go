@@ -570,6 +570,27 @@ CREATE TABLE IF NOT EXISTS secret_allowlist (
 );
 CREATE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint ON secret_allowlist(fingerprint);
 `,
+	// 25: stale_marks -- the staleness primitive (review A4 #5). A decided
+	// decision reopened (or re-resolved differently) after tasks/change sets
+	// were built on it marks the requirements that cite it, their tasks, and
+	// the applied change sets for those tasks, stale. `cleared_at IS NULL`
+	// selects the active marks; a mark clears via re-planning or an explicit
+	// human acknowledgement, never by deletion, so the record survives.
+	`
+CREATE TABLE IF NOT EXISTS stale_marks (
+	id            TEXT PRIMARY KEY,
+	initiative_id TEXT NOT NULL,
+	target_type   TEXT NOT NULL,
+	target_id     TEXT NOT NULL,
+	reason        TEXT NOT NULL,
+	decision_id   TEXT NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	cleared_at    INTEGER,
+	cleared_by    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_stale_marks_initiative ON stale_marks(initiative_id, cleared_at);
+CREATE INDEX IF NOT EXISTS idx_stale_marks_target ON stale_marks(initiative_id, target_type, target_id, cleared_at);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

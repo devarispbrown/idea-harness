@@ -102,6 +102,23 @@ type Guidance struct {
 	// to continue from, omitted when nothing was kept. Same population note
 	// as NextTask.
 	PartialWork *PartialWorkRef `json:"partial_work,omitempty"`
+	// StaleItems lists the requirements, tasks and change sets marked stale by
+	// a decision that was reopened or re-resolved after they were built
+	// (review A4 #5: "impact is true"), omitted when nothing is stale. Same
+	// population note as NextTask: the daemon handler appends both this field
+	// and a sentence onto Why, since BuildGuidance has no store access.
+	StaleItems []StaleItemRef `json:"stale_items,omitempty"`
+}
+
+// StaleItemRef names one stale item on the Recommended Next Move projection.
+// StaleID is the stale-mark's own id -- what POST …/stale/{staleId}/ack takes
+// -- distinct from ID, the graph node (requirement/task/change_set) it marks.
+type StaleItemRef struct {
+	StaleID string `json:"stale_id"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Reason  string `json:"reason"`
 }
 
 // PartialWorkRef names a stopped run's kept files for the Build page.

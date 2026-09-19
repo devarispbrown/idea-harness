@@ -232,12 +232,13 @@ const ExecutionPlan = `{
         "properties": {
           "title": {"type": "string"},
           "statement": {"type": "string"},
-          "requirement": {"type": "string"},
+          "requirement": {"type": "string", "description": "A single requirement code, kept for compatibility. Prefer requirements."},
+          "requirements": {"type": "array", "items": {"type": "string"}, "description": "One or more requirement codes this task implements."},
           "priority": {"enum": ["must", "should", "could"]},
           "estimate": {"type": "string"},
           "depends_on": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["title", "statement", "requirement", "priority"]
+        "required": ["title", "statement", "priority"]
       }
     }
   },

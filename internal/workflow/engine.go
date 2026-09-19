@@ -1071,6 +1071,21 @@ func activeRequirements(reqs []domain.Requirement) []domain.Requirement {
 	return out
 }
 
+// activeDecisions filters out superseded decisions (review A2: "superseded
+// requirements and superseded decisions are excluded from the inputs to
+// design, plan, revise and review" -- decisions are open | decided |
+// superseded; there is no "rejected"). Mirrors activeRequirements so the M2
+// design/plan inputs and activeRequirements share one filtering idiom.
+func activeDecisions(decs []domain.Decision) []domain.Decision {
+	out := make([]domain.Decision, 0, len(decs))
+	for _, d := range decs {
+		if d.Status != domain.DecisionSuperseded {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func str(v any) string {
 	if s, ok := v.(string); ok {
 		return s
