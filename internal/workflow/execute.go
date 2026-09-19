@@ -1198,16 +1198,28 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	}
 
 	// Fail closed: the build/test command executes the agent's code, so it must
-	// never run on the host. It requires a configured toolchain image (review H3).
-	if e.cfg.Check.Image == "" {
-		base.Severity = domain.SeverityHigh
-		base.Code = domain.DenyCodeHostExec
-		base.Finding = description + " — FAIL (no sandbox image)"
-		base.Disposition = domain.DispositionRejected
-		base.Evidence = "check.image is not configured; refusing to run " + category + " on the host"
-		base.Impact = "deterministic check could not run safely"
-		base.Recommendation = "set check.image to a toolchain image (e.g. golang:1.25, node:22)"
-		return base
+	// never run on the host. It requires a toolchain image, configured
+	// explicitly or derived from the project's own toolchain markers when
+	// unambiguous (review C5): an ICP journey's check ran Node 24 against a
+	// Node 26 project and wasted the whole run, because the configured image
+	// never had anything to do with the project it was checking.
+	image := e.cfg.Check.Image
+	imageNote := ""
+	if image == "" {
+		derived, evidence := detectToolchainImage(e.workspaceRoot)
+		if derived != "" {
+			image = derived
+			imageNote = "check.image not configured; derived " + evidence
+		} else {
+			base.Severity = domain.SeverityHigh
+			base.Code = domain.DenyCodeHostExec
+			base.Finding = description + " — FAIL (no sandbox image)"
+			base.Disposition = domain.DispositionRejected
+			base.Evidence = "check.image is not configured; refusing to run " + category + " on the host (" + evidence + ")"
+			base.Impact = "deterministic check could not run safely"
+			base.Recommendation = "set check.image to a toolchain image (e.g. golang:1.25, node:22)"
+			return base
+		}
 	}
 
 	timeout := 10 * time.Minute
@@ -1219,21 +1231,29 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 
 	// Run inside an isolated container (no network, read-only root, dropped
 	// capabilities) with only the work root mounted.
-	sandbox := executor.NewContainerSandbox(e.cfg.Check.Image)
+	sandbox := executor.NewContainerSandbox(image)
 	stdout, stderr, exitCode, runErr := sandbox.Run(checkCtx, executor.RunOptions{
 		WorkRoot: workRoot,
 		RepoRoot: e.workspaceRoot, // read-only /repo mount so checks can read the real project
 		Cmd:      []string{"sh", "-c", cmd},
 	})
+	// imagePrefix shows the image every non-skipped finding below carries
+	// (review C5: "show the derived image in the check finding"), and notes
+	// when it was derived rather than configured.
+	imagePrefix := "image: " + image
+	if imageNote != "" {
+		imagePrefix += " (" + imageNote + ")"
+	}
+	imagePrefix += "\n"
 	if runErr != nil {
 		// Docker unavailable or launch failed → fail closed, never host-exec.
 		base.Severity = domain.SeverityHigh
 		base.Code = domain.DenyCodeHostExec
 		base.Finding = description + " — FAIL (sandbox unavailable)"
 		base.Disposition = domain.DispositionRejected
-		base.Evidence = fmt.Sprintf("sandbox launch failed: %v\n%s", runErr, truncateOutput(stderr))
+		base.Evidence = imagePrefix + fmt.Sprintf("sandbox launch failed: %v\n%s", runErr, truncateOutput(stderr))
 		base.Impact = "deterministic check could not run safely"
-		base.Recommendation = "ensure Docker is available and check.image is pullable"
+		base.Recommendation = "ensure Docker is available and " + image + " is pullable"
 		return base
 	}
 	out := stdout + stderr
@@ -1242,10 +1262,10 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		base.Finding = description + " — FAIL"
 		base.Disposition = domain.DispositionRejected // review M5: a rejected change set's findings are closed, not left open
 		if checkCtx.Err() == context.DeadlineExceeded {
-			base.Evidence = fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(out))
+			base.Evidence = imagePrefix + fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(out))
 			base.Recommendation = "the " + category + " command hung; fix it or raise check_timeout_seconds"
 		} else {
-			base.Evidence = fmt.Sprintf("exit code %d\n%s", exitCode, truncateOutput(out))
+			base.Evidence = imagePrefix + fmt.Sprintf("exit code %d\n%s", exitCode, truncateOutput(out))
 			base.Recommendation = "fix the failure and re-execute"
 		}
 		base.Impact = "deterministic check failed"
@@ -1253,7 +1273,7 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	}
 	base.Severity = domain.SeverityObservation
 	base.Finding = description + " — pass"
-	base.Evidence = truncateOutput(out)
+	base.Evidence = imagePrefix + truncateOutput(out)
 	base.Impact = "deterministic check passed"
 	return base
 }
