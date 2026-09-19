@@ -337,11 +337,23 @@ func TestSetOperationStage(t *testing.T) {
 		t.Fatalf("Stage did not update: got %q", op.Stage)
 	}
 
-	// Once finished, stage is frozen -- SetOperationStage only ever targets a
-	// RUNNING operation, so it must not resurrect a terminal one.
+	// Finishing clears the stage (review Low fix: it used to stay showing the
+	// last step forever, e.g. "Reviewing the PRD (cycle 1)" on an operation
+	// that has been done for days).
 	if err := db.SetOperationStatus(ctx, opID, domain.OperationSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
+	op, err = db.GetOperation(ctx, opID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Fatalf("a finished operation's stage was not cleared: got %q", op.Stage)
+	}
+
+	// And once finished, stage is frozen at "" -- SetOperationStage only
+	// ever targets a RUNNING operation, so it must not resurrect a terminal
+	// one's stage.
 	if err := db.SetOperationStage(ctx, ini.ID, "should not apply"); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +361,57 @@ func TestSetOperationStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.Stage != "Reviewing the PRD (cycle 1)" {
+	if op.Stage != "" {
 		t.Fatalf("stage changed on a finished operation: got %q", op.Stage)
+	}
+}
+
+// TestOperationStageClearedOnFailureAndCancel extends
+// TestSetOperationStage's coverage to the other two terminal writers
+// (review Low fix): SetOperationFailed and CancelOperationStatus must also
+// clear a running operation's stage, not just SetOperationStatus's own
+// success path.
+func TestOperationStageClearedOnFailureAndCancel(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "t", Description: "d"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	failedOp, err := db.CreateOperation(ctx, "proj", ini.ID, "advance_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationStage(ctx, ini.ID, "Agent running TASK-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationFailed(ctx, failedOp, domain.OperationFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := db.GetOperation(ctx, failedOp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Errorf("SetOperationFailed did not clear stage: got %q", op.Stage)
+	}
+
+	cancelOp, err := db.CreateOperation(ctx, "proj", ini.ID, "advance_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationStage(ctx, ini.ID, "Running checks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CancelOperationStatus(ctx, cancelOp); err != nil {
+		t.Fatal(err)
+	}
+	op, err = db.GetOperation(ctx, cancelOp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Errorf("CancelOperationStatus did not clear stage: got %q", op.Stage)
 	}
 }

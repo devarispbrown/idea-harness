@@ -560,7 +560,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   A timeline entry whose `ref` names a change set or decision is now a real, keyboard-reachable link
   to it. Queue rows are real `<button>`s (previously a bare `<li onClick>`, unreachable by keyboard
   or a screen reader). `StaleBanner` uses `role="status"` instead of `role="alert"`. The web cost
-  line now includes agent seconds in its time figure, matching `idea status`.
+  line now includes agent seconds in its time figure, matching `idea status`. An operation's `stage`
+  is now cleared once it reaches a terminal status (succeeded, failed, or cancelled), instead of
+  showing the last step it was on forever after. `GET .../costs`' `by_phase` is now ordered by the
+  pipeline's own step order, not alphabetically by raw stage key.
 
 ## [0.5.1] - 2026-09-18
 

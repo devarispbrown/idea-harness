@@ -74,6 +74,57 @@ func TestBuildCostsByPhase(t *testing.T) {
 	}
 }
 
+// TestBuildCostsByPhase_PipelineOrder pins the review Low fix: by_phase is
+// ordered by the pipeline's own step order, not alphabetically by raw stage
+// key ("review" sorted before "research", "architecture" before "framing").
+// An unlisted stage (a future key, or a stray non-pipeline one) still
+// appears, sorted after every known stage.
+func TestBuildCostsByPhase_PipelineOrder(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	mustRun := func(stage string) {
+		t.Helper()
+		runID, err := db.CreateRun(ctx, domain.RunModel, "", "role", ini.ID, stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.CreateRunManifest(ctx, &domain.RunManifest{
+			RunID: runID, RequestedModel: "m", ActualModel: "m",
+			Usage: domain.RunUsage{CostUSD: 0.01, DurationMS: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Created out of pipeline order on purpose.
+	mustRun("review")
+	mustRun("architecture")
+	mustRun("some_future_stage")
+	mustRun("framing")
+	mustRun("research")
+
+	costs, err := BuildCosts(ctx, db, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range costs.ByPhase {
+		got = append(got, p.Phase)
+	}
+	want := []string{"framing", "research", "review", "architecture", "some_future_stage"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: got %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // TestAgentCostFromRuns_NotMeasuredByDefault pins the safe default: with no
 // change sets (or none whose AgentOutput parses), usd is nil with a note --
 // never a guess.
