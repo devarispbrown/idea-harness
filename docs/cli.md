@@ -46,6 +46,8 @@ if this file has drifted.
 | `idea change <id>` | show a change set | `--json` | yes |
 | `idea apply <id>` | apply an approved change set | none | takes no flags |
 | `idea revert <id>` | roll back a change set | none | takes no flags |
+| `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
+| `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
 | `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
@@ -137,6 +139,24 @@ idea daemon         # then run `idea new` in another terminal
 ```
 
 The web UI shows a **Live activity** feed (the same events, polled on a timer — see [`ui.md`](ui.md)).
+
+## Apply and revert protect edits made outside the harness
+
+`idea apply` refuses to overwrite a file you edited in the workspace after the agent ran (it
+compares the workspace against the change set's pre-image). `idea revert` is the mirror at the
+other end: it refuses to erase a file you edited *after* apply, by comparing the workspace against
+the change set's post-image (review A3). Both write nothing when they refuse and both name the
+files:
+
+```
+$ idea revert CHG-3
+idea: revert refused: the workspace changed since CHG-3 was applied: src/app.js: it was edited in
+the workspace after apply; commit or discard your edits to src/app.js, then revert
+```
+
+There is no `--force`. The change set stays `applied`; commit or discard the listed edits yourself,
+then run `idea revert` again. This is a synchronous `409`, not an operation that starts and fails in
+the background — see [`api.md`](api.md#errors) for the exact contract.
 
 ## How it works
 
