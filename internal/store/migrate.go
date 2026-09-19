@@ -519,6 +519,57 @@ ALTER TABLE change_sets ADD COLUMN executor TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE change_sets ADD COLUMN agent_output TEXT NOT NULL DEFAULT '';
 `,
+	// 23: secret_sweep findings carry WHERE the credential was found (secret_
+	// path/secret_kind) and a fingerprint of the value (never the value) so a
+	// human's "not a secret" disposition can allowlist it (review changes #1,
+	// ICP round). The disposition CHECK is widened to admit not_a_secret --
+	// SQLite cannot ALTER a CHECK in place, so the table is rebuilt again, as
+	// migration 6 did for `mitigate`.
+	`
+CREATE TABLE findings_new (
+	id                TEXT PRIMARY KEY,
+	initiative_id     TEXT NOT NULL DEFAULT '',
+	review_run_id     TEXT NOT NULL,
+	target_type       TEXT NOT NULL,
+	target_id         TEXT NOT NULL,
+	severity          TEXT NOT NULL,
+	confidence        TEXT NOT NULL,
+	category          TEXT NOT NULL,
+	code              TEXT NOT NULL DEFAULT '',
+	finding           TEXT NOT NULL,
+	evidence          TEXT NOT NULL,
+	impact            TEXT NOT NULL,
+	recommendation    TEXT NOT NULL,
+	disposition       TEXT,
+	disposition_actor TEXT NOT NULL,
+	note              TEXT NOT NULL DEFAULT '',
+	secret_fingerprint TEXT NOT NULL DEFAULT '',
+	secret_kind        TEXT NOT NULL DEFAULT '',
+	secret_path        TEXT NOT NULL DEFAULT '',
+	created_at        INTEGER NOT NULL,
+	CHECK (disposition IS NULL OR disposition IN ('fixed','accepted_risk','not_applicable','duplicate','deferred','rejected','mitigate','not_a_secret'))
+);
+INSERT INTO findings_new (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at)
+SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at FROM findings;
+DROP TABLE findings;
+ALTER TABLE findings_new RENAME TO findings;
+`,
+	// 24: the project-scoped "not a secret" allowlist (review changes #1). One
+	// row per human disposition, keyed by the fingerprint the sweep re-checks;
+	// path/kind are kept as they were AT THE TIME, for the Settings list, not
+	// as a live join back to the finding (which may since have been deleted
+	// with its change set's initiative).
+	`
+CREATE TABLE IF NOT EXISTS secret_allowlist (
+	id          TEXT PRIMARY KEY,
+	fingerprint TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	path        TEXT NOT NULL,
+	actor       TEXT NOT NULL,
+	created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint ON secret_allowlist(fingerprint);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

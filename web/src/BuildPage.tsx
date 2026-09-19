@@ -392,7 +392,7 @@ export default function BuildPage({
               </div>
               <div className="deny-desc">
                 A deterministic boundary rejected this change set. It cannot be approved, overridden,
-                or applied — system deny beats human approve. The task will be re-planned.
+                or applied — system deny beats human approve. Run the task again.
               </div>
               {(deny.evidence || deny.category) && (
                 <div className="deny-evidence">{deny.evidence || deny.category}</div>

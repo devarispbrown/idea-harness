@@ -3,30 +3,44 @@
 package security
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"sort"
 	"strings"
 )
 
-// credentialPatterns is the redaction catalog (§48). Order matters only for
-// readability; all matches are replaced with [REDACTED].
-var credentialPatterns = []*regexp.Regexp{
+// credentialPattern is one entry in the redaction/detection catalog: a regexp
+// and the human-readable kind of secret it matches (§ D2 secret sweep). Each
+// regexp carries exactly one capturing group around the secret VALUE itself
+// (not any vendor prefix), so a match's fingerprint (see Fingerprint) is
+// computed over the value alone and stays stable across quoting and
+// surrounding whitespace (review changes #1). A pattern with no meaningful
+// prefix (a PEM block, a JWT) wraps the whole match in that group.
+type credentialPattern struct {
+	re   *regexp.Regexp
+	kind string
+}
+
+// credentialCatalog is the redaction and detection catalog (§48). Order
+// matters only for readability; all matches are replaced with [REDACTED].
+var credentialCatalog = []credentialPattern{
 	// PEM private keys (multiline).
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
+	{regexp.MustCompile(`(?s)(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----)`), "PEM private key"},
 	// JWTs (three base64url segments).
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
+	{regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b`), "JWT"},
 	// AWS access key id.
-	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+	{regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), "AWS access key ID"},
 	// GitHub personal access token (classic + fine-grained) and OAuth tokens.
-	regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`),
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
-	regexp.MustCompile(`\bgh[ousr]_[A-Za-z0-9]{20,}\b`),
+	{regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), "GitHub personal access token"},
+	{regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), "GitHub fine-grained personal access token"},
+	{regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), "GitHub token"},
 	// GitLab personal access token.
-	regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`),
+	{regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), "GitLab personal access token"},
 	// Google API key.
-	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`),
+	{regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), "Google API key"},
 	// npm access token.
-	regexp.MustCompile(`\bnpm_[A-Za-z0-9]{30,}\b`),
+	{regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), "npm access token"},
 	// Anthropic, OpenAI and other `sk-` keys.
 	//
 	// Shaped as "a few short vendor segments, then a long alphanumeric run",
@@ -55,26 +69,80 @@ var credentialPatterns = []*regexp.Regexp{
 	//
 	// 1. A known provider prefix. The prefix is the evidence, so the body is
 	//    plain base64url with no further constraint.
-	regexp.MustCompile(`\bsk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}`),
+	{regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), "OpenAI/Anthropic API key"},
 	// 2. The legacy flat OpenAI key: "sk-" and one unbroken alphanumeric run.
-	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+	{regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), "OpenAI API key"},
 	// 3. Any other "sk-" token whose body carries an uppercase letter. That is
 	//    what separates a key from the false positive the previous widening hit
 	//    -- an ordinary URL slug like
 	//    sk-decomposition-of-matrices-and-linear-algebra is lowercase and
 	//    hyphenated, and never carries one.
-	regexp.MustCompile(`\bsk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,}`),
+	{regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), "API key"},
 	// Stripe live secret key.
-	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
+	{regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), "Stripe secret key"},
 	// Slack tokens (bot, app, refresh, signing, user).
-	regexp.MustCompile(`\bxox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,}\b`),
+	{regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), "Slack token"},
 	// Generic Bearer token.
-	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/-]{20,}\b`),
+	{regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), "bearer token"},
 	// Generic key=value credentials in text/URLs.
-	regexp.MustCompile(`(?i)\b(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}["']?`),
+	{regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?([A-Za-z0-9._~+/=-]{8,})["']?`), "credential assignment"},
 }
 
 const redacted = "[REDACTED]"
+
+// Fingerprint returns the stable sha256 hex digest of a secret value, used as
+// the "not a secret" allowlist key (review changes #1). It is computed over
+// the value's capture group, never the raw match text (which may include a
+// vendor prefix or surrounding quotes), so the same secret fingerprints the
+// same way regardless of quoting or whitespace.
+func Fingerprint(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// CredentialFinding is one detected credential occurrence, located but never
+// valued: the file and line it was found on, the kind of secret matched, and
+// its stable fingerprint. Overridable reports whether a human may disposition
+// this specific match "not a secret" (true for a pattern-shaped match; false
+// for a value drawn from the project's own configured secrets, which are never
+// eligible for that override).
+type CredentialFinding struct {
+	Path        string
+	Line        int
+	Kind        string
+	Fingerprint string
+	Overridable bool
+}
+
+// lineAt returns the 1-based line number of byte offset pos within s.
+func lineAt(s string, pos int) int {
+	return 1 + strings.Count(s[:pos], "\n")
+}
+
+// FindCredentialsInFile scans one file's content for every known credential
+// pattern, returning each match's line, kind and fingerprint -- never the
+// matched value itself. It is the location-aware counterpart to FindCredential,
+// used so a denial can name path:line and the kind of secret instead of just
+// rejecting silently (§ D2 secret sweep, review changes #1/#7).
+func FindCredentialsInFile(path, content string) []CredentialFinding {
+	var out []CredentialFinding
+	for _, p := range credentialCatalog {
+		for _, idx := range p.re.FindAllStringSubmatchIndex(content, -1) {
+			value := content[idx[0]:idx[1]]
+			if len(idx) >= 4 && idx[2] >= 0 {
+				value = content[idx[2]:idx[3]]
+			}
+			out = append(out, CredentialFinding{
+				Path:        path,
+				Line:        lineAt(content, idx[0]),
+				Kind:        p.kind,
+				Fingerprint: Fingerprint(value),
+				Overridable: true,
+			})
+		}
+	}
+	return out
+}
 
 // Redactor redacts known secret values and credential patterns from content.
 type Redactor struct {
@@ -106,8 +174,8 @@ func (r *Redactor) RedactString(s string) string {
 	for _, v := range r.known {
 		s = strings.ReplaceAll(s, v, redacted)
 	}
-	for _, re := range credentialPatterns {
-		s = re.ReplaceAllString(s, redacted)
+	for _, p := range credentialCatalog {
+		s = p.re.ReplaceAllString(s, redacted)
 	}
 	return s
 }
@@ -123,12 +191,46 @@ func (r *Redactor) ContainsCredential(s string) bool {
 			}
 		}
 	}
-	for _, re := range credentialPatterns {
-		if re.MatchString(s) {
+	for _, p := range credentialCatalog {
+		if p.re.MatchString(s) {
 			return true
 		}
 	}
 	return false
+}
+
+// FindKnownInFile locates every configured secret value (r.known) within one
+// file's content, by line. Unlike FindCredentialsInFile's pattern matches,
+// these are never Overridable: a value drawn from the project's own resolved
+// secrets (a provider key, a .env value) is a real credential by construction,
+// not a shape that might be a false positive.
+func (r *Redactor) FindKnownInFile(path, content string) []CredentialFinding {
+	if r == nil {
+		return nil
+	}
+	var out []CredentialFinding
+	for _, v := range r.known {
+		if v == "" {
+			continue
+		}
+		start := 0
+		for {
+			i := strings.Index(content[start:], v)
+			if i < 0 {
+				break
+			}
+			pos := start + i
+			out = append(out, CredentialFinding{
+				Path:        path,
+				Line:        lineAt(content, pos),
+				Kind:        "configured secret value",
+				Fingerprint: Fingerprint(v),
+				Overridable: false,
+			})
+			start = pos + len(v)
+		}
+	}
+	return out
 }
 
 // Redact applies pattern-based redaction only (no known values). Used as a
@@ -141,8 +243,8 @@ func Redact(s string) string {
 // none. It is the detection counterpart to Redact: the same catalog, used as a
 // hard rejection signal (§45) rather than a redaction.
 func FindCredential(s string) string {
-	for _, re := range credentialPatterns {
-		if m := re.FindString(s); m != "" {
+	for _, p := range credentialCatalog {
+		if m := p.re.FindString(s); m != "" {
 			return m
 		}
 	}

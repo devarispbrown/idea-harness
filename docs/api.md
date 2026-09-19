@@ -308,8 +308,10 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
 | POST | `/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task` | Add a plan task whose purpose is verifying that requirement, wired with a `verifies` edge. |
-| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` — one of `fixed`, `accepted_risk`, `not_applicable`, `duplicate`, `deferred`, `rejected`, `mitigate`. Anything else is a 400. |
+| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` — one of `fixed`, `accepted_risk`, `not_applicable`, `duplicate`, `deferred`, `rejected`, `mitigate`, `not_a_secret`. `not_a_secret` is valid only on a `secret_sweep` finding and also writes a secret-allowlist entry; anything else invalid is a 400. |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
+| GET | `/projects/{projectId}/secret-allowlist` | List this project's "not a secret" overrides: fingerprint prefix, kind, path at the time, actor, created_at. |
+| DELETE | `/projects/{projectId}/secret-allowlist/{id}` | Revoke one override, so the secret sweep denies that fingerprint again. |
 
 ### Change sets
 

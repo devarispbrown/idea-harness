@@ -2228,6 +2228,11 @@ paths:
       tags: [graph]
       operationId: setFindingDisposition
       summary: Set a finding's disposition
+      description: |
+        `not_a_secret` is valid only when the finding's `category` is `secret_sweep` (review
+        changes #1); every other category refuses it with 400. Recording it also writes a
+        `SecretAllowlistEntry` for the finding's `secret_fingerprint`, so the secret sweep ignores
+        that fingerprint from then on, at both Execute and Apply.
       requestBody:
         required: true
         content:
@@ -2249,7 +2254,7 @@ paths:
                   status: { type: string, const: dispositioned }
                 required: [status]
         "400":
-          description: "`disposition is required`, or the store's rejection of an unknown disposition."
+          description: "`disposition is required`, the store's rejection of an unknown disposition, or `not_a_secret` on a finding that is not `secret_sweep`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2300,6 +2305,61 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/secret-allowlist:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [graph]
+      operationId: listSecretAllowlist
+      summary: List this project's "not a secret" overrides
+      description: |
+        Every fingerprint a human dispositioned `not_a_secret` on a `secret_sweep` finding (review
+        changes #1): the secret sweep ignores each of these from then on, at both Execute and
+        Apply. The fingerprint itself is never returned in full -- only a short prefix, enough to
+        tell entries apart -- and the value it was computed from never was.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The project's allowlist entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SecretAllowlistEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/secret-allowlist/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Allowlist entry id.
+        schema: { type: string }
+    delete:
+      tags: [graph]
+      operationId: revokeSecretAllowlist
+      summary: Revoke a "not a secret" override
+      description: Removes one allowlist entry, so the secret sweep denies that fingerprint again.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: revoked }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/change-sets/{id}:
     parameters:
@@ -3207,7 +3267,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 84 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 86 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3538,7 +3598,11 @@ components:
     Disposition:
       type: string
       title: Disposition
-      enum: [fixed, accepted_risk, not_applicable, duplicate, deferred, rejected, mitigate]
+      enum: [fixed, accepted_risk, not_applicable, duplicate, deferred, rejected, mitigate, not_a_secret]
+      description: |
+        `not_a_secret` is valid only on a `secret_sweep` finding (review changes #1): recording it
+        allowlists the finding's fingerprint for the project, so a future sweep ignores that same
+        value. Every other target refuses it with 400.
 
     Finding:
       type: object
@@ -3569,8 +3633,43 @@ components:
         disposition: { $ref: "#/components/schemas/Disposition" }
         disposition_actor: { type: string }
         note: { type: string }
+        secret_fingerprint:
+          type: string
+          description: |
+            Set only on a `secret_sweep` finding raised from a per-file credential pattern match: the
+            sha256 of the matched value's capture group. Never the value itself.
+        secret_kind:
+          type: string
+          description: The kind of secret matched, e.g. "looks like an OpenAI API key". Set alongside `secret_fingerprint`.
+        secret_path:
+          type: string
+          description: The `path:line`-bearing file the match was found in. Set alongside `secret_fingerprint`.
         created_at: { type: string, format: date-time }
       required: [id, review_run_id, target_type, target_id, severity, confidence, category, finding, evidence, impact, recommendation, created_at]
+
+    SecretAllowlistEntry:
+      type: object
+      title: SecretAllowlistEntry
+      description: |
+        One human "not a secret" override (review changes #1), as `GET .../secret-allowlist`
+        projects it: fingerprint prefix, kind, path at the time, actor, created_at. Recorded when a
+        `secret_sweep` finding is dispositioned `not_a_secret`.
+      properties:
+        id: { type: string }
+        fingerprint_prefix:
+          type: string
+          description: The first characters of the sha256 fingerprint -- enough to tell entries apart, never the full digest.
+        kind:
+          type: string
+          description: The kind of secret matched, e.g. "looks like an OpenAI API key".
+        path:
+          type: string
+          description: The file the match was found in, at the time of the disposition.
+        actor:
+          type: string
+          description: Always `human` -- not_a_secret requires a human actor.
+        created_at: { type: string, format: date-time }
+      required: [id, fingerprint_prefix, kind, path, actor, created_at]
 
     TaskStatus:
       type: string

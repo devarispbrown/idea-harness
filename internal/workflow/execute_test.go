@@ -15,6 +15,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -170,7 +171,14 @@ func TestStructuredDiffCarriesAUnifiedPatch(t *testing.T) {
 	}
 }
 
-func TestExecuteRejectsOnSecretMarker(t *testing.T) {
+// TestExecuteDoesNotRejectOnSecretMarkerAlone is the ICP-round fix (review
+// D2/A1): a bare vocabulary word -- password/token/secret/auth and similar --
+// anywhere in the produced patch no longer blocks the change set. It used to
+// (see git history), with no override and no file or line, which is exactly
+// what stopped the ICP journey's per-user-API-keys-with-rate-limiting feature
+// from ever landing. The word still surfaces, but only as a non-blocking
+// "sensitive area" finding for the reviewer.
+func TestExecuteDoesNotRejectOnSecretMarkerAlone(t *testing.T) {
 	eng, db, iniID := newExecuteFixture(t)
 	ctx := context.Background()
 
@@ -183,23 +191,195 @@ func TestExecuteRejectsOnSecretMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs.Status != domain.ChangeSetRejected {
-		t.Fatalf("expected rejected (secret marker), got %q", cs.Status)
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("a bare vocabulary marker must not block; got %q", cs.Status)
 	}
 
-	// The rejection must be traceable via a blocking secret_sweep finding.
 	findings, err := db.ListFindingsByInitiative(ctx, iniID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blocked bool
+	var advisory, blocked bool
 	for _, f := range findings {
-		if f.TargetID == cs.ID && f.Category == "secret_sweep" && f.Severity == domain.SeverityCritical {
+		if f.TargetID != cs.ID {
+			continue
+		}
+		if f.Category == "sensitive_area" {
+			advisory = true
+			if f.Severity.Blocking() {
+				t.Errorf("the sensitive_area finding must not block: %+v", f)
+			}
+		}
+		if f.Category == "secret_sweep" {
 			blocked = true
 		}
 	}
-	if !blocked {
+	if !advisory {
+		t.Fatal("expected a non-blocking sensitive_area finding naming the marker")
+	}
+	if blocked {
+		t.Fatal("a bare vocabulary marker must not raise a secret_sweep finding")
+	}
+}
+
+// TestExecuteRejectsOnRealCredential is the other half: a real credential
+// VALUE (a known key format) still blocks, and the denial names where -- the
+// path:line -- and the kind of secret, never the value itself (review #2).
+func TestExecuteRejectsOnRealCredential(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key AKIAIOSFODNN7EXAMPLE", Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (real credential), got %q", cs.Status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *domain.Finding
+	for i := range findings {
+		if findings[i].TargetID == cs.ID && findings[i].Category == "secret_sweep" && findings[i].Severity == domain.SeverityCritical {
+			f = &findings[i]
+		}
+	}
+	if f == nil {
 		t.Fatal("expected a critical secret_sweep finding explaining the rejection")
+	}
+	if !strings.Contains(f.Finding, ":") || !strings.Contains(f.Finding, "AWS access key ID") {
+		t.Errorf("the denial must name path:line and the kind of secret: %q", f.Finding)
+	}
+	if strings.Contains(f.Finding, "AKIAIOSFODNN7EXAMPLE") || strings.Contains(f.Evidence, "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("the denial must never echo the credential value: %+v", f)
+	}
+	if f.SecretFingerprint == "" {
+		t.Error("expected a secret fingerprint to be recorded for a possible override")
+	}
+	if f.SecretKind != "AWS access key ID" {
+		t.Errorf("SecretKind = %q, want %q", f.SecretKind, "AWS access key ID")
+	}
+	// The deny code is what makes this a system-deny the review's
+	// --accept-findings flag cannot sign off (denyReviewOpenBlocking keys on
+	// Code != ""). Mutation-check for sweepDenyCode: make it always return "",
+	// and this fails.
+	if f.Code != domain.DenyCodeSecretSweep {
+		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeSecretSweep)
+	}
+}
+
+// TestNotASecretDispositionUnblocksFutureExecutes is the review changes #1
+// override exercised at the engine layer: disposition the raised finding
+// not_a_secret, then confirm a re-execute of the identical content is no
+// longer rejected. Mutation-check for filterAllowlisted (internal/workflow/
+// execute.go): break it to keep every match regardless of the allowlist, and
+// this fails.
+func TestNotASecretDispositionUnblocksFutureExecutes(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key AKIAIOSFODNN7EXAMPLE", Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected, got %q", cs.Status)
+	}
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category == "secret_sweep" {
+			findingID = f.ID
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+
+	// The task was reopened on rejection (SetTaskStatus -> proposed); the
+	// re-run picks it up again and produces the identical content.
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("the allowlisted fingerprint still rejected the re-run: %+v", cs2)
+	}
+}
+
+// TestConfiguredSecretValueIsNeverAllowlistable is the Overridable=false
+// invariant (review changes #1): a value drawn from the project's own
+// configured secrets (the executor's resolved key, via the engine's redactor)
+// is never eligible for the not_a_secret override -- unlike a pattern-shaped
+// match, it is not a "might be a false positive" shape, it is a real
+// credential by construction. Mutation-check: drop `m.Overridable &&` from
+// filterAllowlisted's condition, and this fails.
+func TestConfiguredSecretValueIsNeverAllowlistable(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	const known = "super-secret-configured-value-0001"
+	eng.SetRedactor(security.NewRedactor(known))
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key " + known, Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected on a configured secret value, got %q", cs.Status)
+	}
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category != "secret_sweep" {
+			continue
+		}
+		findingID = f.ID
+		if f.SecretKind != "configured secret value" {
+			t.Errorf("SecretKind = %q, want %q", f.SecretKind, "configured secret value")
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	// The store doesn't know Overridable, so the disposition itself is
+	// recorded and allowlisted...
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+
+	// ...but the sweep must still deny the identical content again.
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status != domain.ChangeSetRejected {
+		t.Fatalf("a configured secret value must still be denied after a not_a_secret disposition, got %q", cs2.Status)
 	}
 }
 
@@ -314,6 +494,80 @@ func TestReviewApproveThenApply(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "task: Implement core") {
 		t.Fatalf("hello.txt = %q, want it to contain %q", string(data), "task: Implement core")
+	}
+}
+
+// TestApplyResweepDeniesAGrownCatalog is the apply-time defense-in-depth case
+// (review D2/A1: "keep the apply-time re-sweep consistent with the execute-
+// time sweep"): a value that passed the sweep at execute time can still be
+// denied at apply if the project's configured secrets grew in between (a key
+// rotated into .env, say). It must be denied the same way execute denies one
+// -- a critical secret_sweep finding naming path:line and kind, the change set
+// recovers to rejected, and the task reopens -- not applied to the workspace.
+func TestApplyResweepDeniesAGrownCatalog(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// No redactor yet: this passes the execute-time sweep cleanly.
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The catalog "grows" between execute and apply: a value the produced
+	// content happens to contain is now a configured secret.
+	eng.SetRedactor(security.NewRedactor("Implement core"))
+
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err == nil {
+		t.Fatal("expected apply to be denied by the grown catalog")
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected the change set recovered to rejected, got %q", got.Status)
+	}
+	gotTask, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.Status != domain.TaskProposed {
+		t.Fatalf("expected the task reopened to proposed, got %q", gotTask.Status)
+	}
+	if _, err := os.Stat(filepath.Join(eng.workspaceRoot, "hello.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the workspace must not have been mutated: stat hello.txt = %v", err)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *domain.Finding
+	for i := range findings {
+		if findings[i].Category == "secret_sweep" {
+			f = &findings[i]
+		}
+	}
+	if f == nil {
+		t.Fatal("expected a secret_sweep finding from the apply-time re-sweep")
+	}
+	if !strings.Contains(f.Finding, "hello.txt:") {
+		t.Errorf("the denial must name path:line, got %q", f.Finding)
+	}
+	if f.SecretKind != "configured secret value" {
+		t.Errorf("SecretKind = %q, want %q", f.SecretKind, "configured secret value")
+	}
+	if f.Code != domain.DenyCodeSecretSweep {
+		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeSecretSweep)
 	}
 }
 
