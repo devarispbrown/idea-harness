@@ -49,7 +49,7 @@ func TestRequirementWiresToStandingDecisionNotReRaisedThisCycle(t *testing.T) {
 		`"decision":"Should rate limiting be per-key or per-IP?"}],`+
 		`"decisions":[],"open_questions":[],"risks":[]}`)
 
-	if err := eng.runProductDefinition(ctx, ini.ID, nil); err != nil {
+	if err := eng.runProductDefinition(ctx, ini.ID, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
