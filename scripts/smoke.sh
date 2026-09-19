@@ -132,6 +132,10 @@ cd "$PROJ"
 git init -q
 git config user.name "idea-harness-smoke"
 git config user.email "smoke@example.invalid"
+# On a feature branch: commit-on-apply refuses the repository's default
+# branch unless git.allow_default_branch is set, so an agent never commits
+# straight to main.
+git checkout -q -b feature/smoke
 "$ROOT/bin/idea" init
 # Enable the opt-in git commit-on-apply flag, then restart the daemon so it
 # re-loads the project config (the daemon caches config on first open).
