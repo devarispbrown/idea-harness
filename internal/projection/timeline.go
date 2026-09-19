@@ -156,6 +156,20 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 	if err != nil {
 		return nil, err
 	}
+	// lastPhase tracks the most recently emitted REAL phase (i.e. excluding
+	// the running/failed noise skipped below), across statusEvents in
+	// chronological order (ListInitiativeStatusEvents is seq ASC). Review #4,
+	// ICP re-run: SetInitiativeStatus is an unconditional write with no
+	// "did this actually change" guard, and the execute/apply/revert claim
+	// mechanism (ClaimInitiativeRunning, then release back to priorStatus)
+	// round-trips through it on EVERY build cycle -- plan_approved -> running
+	// -> plan_approved -> running -> ... -- with the plan itself untouched.
+	// Each release wrote its own initiative.status_changed(plan_approved)
+	// event, and each one rendered its own "Plan approved" entry: the
+	// timeline duplicated a milestone that happened exactly once. Only a
+	// genuine CHANGE of phase is shown now; a release back to the phase the
+	// initiative already occupied is not a new milestone.
+	var lastPhase domain.InitiativeStatus
 	for _, ev := range statusEvents {
 		// M3, review fix: "->running" is a resume, not a completed phase (it
 		// duplicated nothing, but read as a milestone it is not); "->failed"
@@ -166,10 +180,15 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 		if i := strings.LastIndex(ev.Operation, "->"); i >= 0 {
 			to = ev.Operation[i+2:]
 		}
-		switch domain.InitiativeStatus(to) {
+		toStatus := domain.InitiativeStatus(to)
+		switch toStatus {
 		case domain.InitiativeRunning, domain.InitiativeFailed:
 			continue
 		}
+		if toStatus == lastPhase {
+			continue
+		}
+		lastPhase = toStatus
 		out = append(out, domain.TimelineEntry{
 			At: ev.At, Kind: "phase_completed", Title: humanizePhaseTransition(ev.Operation),
 			Ref: domain.TimelineRef{Type: "initiative", ID: initiativeID},

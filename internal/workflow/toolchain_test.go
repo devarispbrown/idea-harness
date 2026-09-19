@@ -211,3 +211,104 @@ func TestDetectToolchainImageAmbiguousAcrossToolchains(t *testing.T) {
 		t.Error("want the ambiguity explained in the evidence")
 	}
 }
+
+// TestDetectCheckCommandsNothingRecognized is defect #5's fail-closed half:
+// no recognized marker means no guess at all, same as detectToolchainImage.
+func TestDetectCheckCommandsNothingRecognized(t *testing.T) {
+	build, test := detectCheckCommands(t.TempDir())
+	if build.Cmd != "" || test.Cmd != "" {
+		t.Fatalf("build=%+v test=%+v, want both empty with no markers", build, test)
+	}
+}
+
+// TestDetectCheckCommandsGo is defect #5 from the ICP re-run: "check: {}"
+// stayed empty for an obvious go.mod project even though the plan (C5 /
+// toolchain) expected build/test commands to be detected from it.
+func TestDetectCheckCommandsGo(t *testing.T) {
+	root := t.TempDir()
+	writeToolchainFile(t, root, "go.mod", "module example.com/x\n\ngo 1.24\n")
+	build, test := detectCheckCommands(root)
+	if build.Cmd != "go build ./..." || build.Source != "go.mod" {
+		t.Fatalf("build = %+v, want {go build ./... go.mod}", build)
+	}
+	if test.Cmd != "go test ./..." || test.Source != "go.mod" {
+		t.Fatalf("test = %+v, want {go test ./... go.mod}", test)
+	}
+}
+
+// TestDetectCheckCommandsNode covers package.json scripts.test/scripts.build,
+// and that the detected package manager follows the lockfile present.
+func TestDetectCheckCommandsNode(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		lockfile string
+		wantPM   string
+		hasBuild bool
+	}{
+		{"npm default (no lockfile)", "", "npm", true},
+		{"pnpm lockfile", "pnpm-lock.yaml", "pnpm", true},
+		{"yarn lockfile", "yarn.lock", "yarn", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			scripts := `"test": "vitest run"`
+			if c.hasBuild {
+				scripts = `"build": "vite build", ` + scripts
+			}
+			writeToolchainFile(t, root, "package.json", `{"scripts": {`+scripts+`}}`)
+			if c.lockfile != "" {
+				writeToolchainFile(t, root, c.lockfile, "")
+			}
+			build, test := detectCheckCommands(root)
+			if test.Cmd != c.wantPM+" test" || test.Source != "package.json scripts.test" {
+				t.Errorf("test = %+v, want {%s test package.json scripts.test}", test, c.wantPM)
+			}
+			if c.hasBuild {
+				if build.Cmd != c.wantPM+" run build" || build.Source != "package.json scripts.build" {
+					t.Errorf("build = %+v, want {%s run build package.json scripts.build}", build, c.wantPM)
+				}
+			} else if build.Cmd != "" {
+				t.Errorf("build = %+v, want empty: no scripts.build entry", build)
+			}
+		})
+	}
+}
+
+// TestDetectCheckCommandsPython covers pyproject.toml -> pytest (test only;
+// there is no unambiguous build step to guess for a Python project).
+func TestDetectCheckCommandsPython(t *testing.T) {
+	root := t.TempDir()
+	writeToolchainFile(t, root, "pyproject.toml", "[project]\nname = \"x\"\n")
+	build, test := detectCheckCommands(root)
+	if build.Cmd != "" {
+		t.Errorf("build = %+v, want empty for a Python project", build)
+	}
+	if test.Cmd != "pytest" || test.Source != "pyproject.toml" {
+		t.Fatalf("test = %+v, want {pytest pyproject.toml}", test)
+	}
+}
+
+// TestDetectCheckCommandsCargo covers Cargo.toml -> cargo build/cargo test.
+func TestDetectCheckCommandsCargo(t *testing.T) {
+	root := t.TempDir()
+	writeToolchainFile(t, root, "Cargo.toml", "[package]\nname = \"x\"\n")
+	build, test := detectCheckCommands(root)
+	if build.Cmd != "cargo build" || build.Source != "Cargo.toml" {
+		t.Fatalf("build = %+v, want {cargo build Cargo.toml}", build)
+	}
+	if test.Cmd != "cargo test" || test.Source != "Cargo.toml" {
+		t.Fatalf("test = %+v, want {cargo test Cargo.toml}", test)
+	}
+}
+
+// TestDetectCheckCommandsAmbiguousAcrossToolchains fails closed, same as
+// detectToolchainImage, rather than guessing between two recognized markers.
+func TestDetectCheckCommandsAmbiguousAcrossToolchains(t *testing.T) {
+	root := t.TempDir()
+	writeToolchainFile(t, root, "go.mod", "module example.com/x\n\ngo 1.24\n")
+	writeToolchainFile(t, root, "Cargo.toml", "[package]\nname = \"x\"\n")
+	build, test := detectCheckCommands(root)
+	if build.Cmd != "" || test.Cmd != "" {
+		t.Fatalf("build=%+v test=%+v, want both empty: two distinct toolchains must fail closed", build, test)
+	}
+}

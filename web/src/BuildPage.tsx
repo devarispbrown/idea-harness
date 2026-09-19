@@ -109,6 +109,11 @@ interface DiffFile {
   // Shown above the `content` fallback so an empty diff area doesn't read as
   // "nothing changed" when really "this couldn't be diffed".
   patch_note?: string;
+  // redacted is true when `content` holds MASKED content instead of the
+  // file's real bytes -- a change set the secret sweep denied never had its
+  // raw bytes persisted, only a masked stand-in, so the human can still see
+  // what was blocked without the raw secret ever reaching this page.
+  redacted?: boolean;
 }
 // Initiative is the slice BuildPage needs off the initiative resource. Both
 // fields are optional so this page works against a daemon that hasn't shipped
@@ -796,8 +801,14 @@ export default function BuildPage({
                           </pre>
                         ) : (
                           <>
-                            {f.patch_note && <p className="muted cs-patch-note">{f.patch_note}</p>}
-                            <pre className="cs-file-content">{f.content || "(no diff)"}</pre>
+                            {f.patch_note && (
+                              <p className={`muted cs-patch-note${f.redacted ? " cs-patch-note-redacted" : ""}`}>
+                                {f.patch_note}
+                              </p>
+                            )}
+                            <pre className={`cs-file-content${f.redacted ? " cs-file-content-redacted" : ""}`}>
+                              {f.content || "(no diff)"}
+                            </pre>
                           </>
                         )}
                       </div>

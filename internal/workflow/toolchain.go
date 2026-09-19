@@ -156,3 +156,82 @@ func detectPythonToolchain(root string) (image, source string, ok bool) {
 	}
 	return "", "", false
 }
+
+// detectedCommand is one auto-detected build or test command and the marker
+// file it was derived from (review #5, ICP re-run: "check: {}" stayed empty
+// for an obvious go.mod project; checks reported not_applicable although the
+// toolchain unambiguously implied a command). Shown on the check finding and
+// in `idea config validate`'s guidance as "detected", exactly like
+// detectToolchainImage's derived image, and always overridable by setting
+// build_cmd/test_cmd in harness.yaml.
+type detectedCommand struct {
+	Cmd    string
+	Source string
+}
+
+// detectCheckCommands derives build_cmd/test_cmd from root's toolchain
+// markers, for when the corresponding harness.yaml field is left
+// unconfigured. Like detectToolchainImage, it only ever narrows when a
+// project's toolchain is genuinely unambiguous: more than one recognized
+// marker proposing a command for the SAME slot (build or test) yields
+// nothing for that slot, never a guess between them. The caller only
+// consults this when its own configured command is empty; a configured
+// build_cmd/test_cmd is never second-guessed here or anywhere else.
+func detectCheckCommands(root string) (build, test detectedCommand) {
+	var builds, tests []detectedCommand
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		builds = append(builds, detectedCommand{"go build ./...", "go.mod"})
+		tests = append(tests, detectedCommand{"go test ./...", "go.mod"})
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if json.Unmarshal(data, &pkg) == nil {
+			pm := detectNodePackageManager(root)
+			if s := strings.TrimSpace(pkg.Scripts["build"]); s != "" {
+				builds = append(builds, detectedCommand{pm + " run build", "package.json scripts.build"})
+			}
+			if s := strings.TrimSpace(pkg.Scripts["test"]); s != "" {
+				tests = append(tests, detectedCommand{pm + " test", "package.json scripts.test"})
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
+		// pytest is the de facto standard test runner for a pyproject-managed
+		// project; a bare requirements.txt with no pyproject.toml is too
+		// ambiguous (no declared build system) to guess a runner for at all.
+		tests = append(tests, detectedCommand{"pytest", "pyproject.toml"})
+	}
+	if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err == nil {
+		builds = append(builds, detectedCommand{"cargo build", "Cargo.toml"})
+		tests = append(tests, detectedCommand{"cargo test", "Cargo.toml"})
+	}
+	if len(builds) == 1 {
+		build = builds[0]
+	}
+	if len(tests) == 1 {
+		test = tests[0]
+	}
+	return build, test
+}
+
+// detectNodePackageManager infers which package manager a Node project uses
+// from its lockfile, defaulting to npm when none is present -- the same
+// default `npm test`/`npm run build` work for a project with no lockfile at
+// all (e.g. one that hasn't been installed into this checkout yet).
+func detectNodePackageManager(root string) string {
+	switch {
+	case fileExists(filepath.Join(root, "pnpm-lock.yaml")):
+		return "pnpm"
+	case fileExists(filepath.Join(root, "yarn.lock")):
+		return "yarn"
+	default:
+		return "npm"
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

@@ -171,6 +171,102 @@ func TestStructuredDiffCarriesAUnifiedPatch(t *testing.T) {
 	}
 }
 
+// TestRunPlannerBriefNamesDetectedStackAndFileInstruction is defect #6 from
+// the ICP re-run: the implementer generated Python for a Go project because
+// nothing in its brief -- req.Brief goes to the coding agent CLI verbatim --
+// said what stack the project was already in, or even that files should be
+// written to disk rather than pasted in the response. Covers all three
+// runPlanner branches: a detected stack, a brand-new project, and an
+// existing-but-undetected one.
+func TestRunPlannerBriefNamesDetectedStackAndFileInstruction(t *testing.T) {
+	t.Run("detected stack", func(t *testing.T) {
+		fp := model.NewFakeProvider()
+		eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+		eng.SetWorkRoot(t.TempDir())
+		eng.SetWorkspaceRoot(t.TempDir())
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		ini := &domain.Initiative{Title: "x", Description: "x"}
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, ini.ID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "Go") {
+			t.Errorf("brief does not name the detected stack: %q", brief)
+		}
+		if !strings.Contains(brief, "never introduce a different language") {
+			t.Errorf("brief is missing the stack-fidelity instruction: %q", brief)
+		}
+		if !strings.Contains(brief, "Write your changes directly to files") {
+			t.Errorf("brief is missing the write-files-not-chat instruction: %q", brief)
+		}
+
+		// The planner MODEL itself also saw the detected stack, not just the
+		// orchestrator-appended tail: its own brief should be grounded in
+		// what actually exists, not invent a different project from nothing.
+		var sawStackInPrompt bool
+		for _, call := range fp.Calls() {
+			if call.JSONSchemaName == "implementation_brief" && strings.Contains(call.System, "Go") {
+				sawStackInPrompt = true
+			}
+		}
+		if !sawStackInPrompt {
+			t.Error("the planner model's own system prompt did not carry the detected stack")
+		}
+	})
+
+	t.Run("new project", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t) // empty workspace root: no markers at all
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "new project with no existing code") {
+			t.Errorf("brief does not acknowledge a brand-new project: %q", brief)
+		}
+		if !strings.Contains(brief, "Write your changes directly to files") {
+			t.Errorf("brief is missing the write-files-not-chat instruction: %q", brief)
+		}
+	})
+
+	t.Run("existing but undetected stack", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t)
+		ctx := context.Background()
+		// A file exists, but none of stackMarkers' root files are among them.
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "README.md"), []byte("hello\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "could not be auto-detected") {
+			t.Errorf("brief does not acknowledge an undetected stack: %q", brief)
+		}
+		if !strings.Contains(brief, "do not introduce a new one") {
+			t.Errorf("brief is missing the match-existing-files instruction: %q", brief)
+		}
+	})
+}
+
 // TestExecuteDoesNotRejectOnSecretMarkerAlone is the ICP-round fix (review
 // D2/A1): a bare vocabulary word -- password/token/secret/auth and similar --
 // anywhere in the produced patch no longer blocks the change set. It used to
@@ -316,6 +412,122 @@ func TestExecuteRejectsOnRealCredential(t *testing.T) {
 	// and this fails.
 	if f.Code != domain.DenyCodeSecretSweep {
 		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeSecretSweep)
+	}
+}
+
+// TestRejectedChangeSetShowsMaskedDiff is defect #1 from the ICP re-run: a
+// change set the secret sweep denies used to have NOTHING to show in the diff
+// viewer -- persistDiff is skipped on denial (by design: the raw bytes must
+// never reach the redaction-free raw store), which left StructuredDiff's
+// Content empty (Size 0) and RenderPatch's flat text reading "<path>
+// (unreadable)" for every file, indistinguishable from a genuine read error.
+// The fix persists a MASKED stand-in (persistRedactedDiff) so the human can
+// see what was blocked. Mutation-check: skip the `else` branch that calls
+// persistRedactedDiff in Execute, or make persistRedactedDiff a no-op, and
+// this fails (Redacted stays false / Content stays empty).
+func TestRejectedChangeSetShowsMaskedDiff(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	const secret = "AKIAIOSFODNN7EXAMPLE"
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key " + secret, Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected, got %q", cs.Status)
+	}
+
+	files := eng.StructuredDiff(&cs)
+	if len(files) == 0 {
+		t.Fatal("expected at least one file on the denied change set")
+	}
+	for _, f := range files {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if !f.Redacted {
+			t.Errorf("file %q: Redacted = false, want true for a denied change set", f.Path)
+		}
+		if f.Size == 0 || f.Content == "" {
+			t.Errorf("file %q: content withheld entirely (Size=%d) -- expected masked stand-in content", f.Path, f.Size)
+		}
+		if strings.Contains(f.Content, secret) {
+			t.Errorf("file %q: masked content still carries the raw secret value: %q", f.Path, f.Content)
+		}
+		if f.PatchNote == "" || !strings.Contains(f.PatchNote, "secret") {
+			t.Errorf("file %q: PatchNote = %q, want an honest explanation naming the secret withholding", f.Path, f.PatchNote)
+		}
+		if f.Patch != "" {
+			t.Errorf("file %q: expected no computed patch against masked content, got %q", f.Path, f.Patch)
+		}
+	}
+
+	rendered := eng.RenderPatch(&cs)
+	if strings.Contains(rendered, "(unreadable)") {
+		t.Errorf("RenderPatch still reports the withheld content as an opaque read failure: %q", rendered)
+	}
+	if strings.Contains(rendered, secret) {
+		t.Errorf("RenderPatch leaked the raw secret value: %q", rendered)
+	}
+	if !strings.Contains(rendered, "withheld") {
+		t.Errorf("RenderPatch does not explain why the content is withheld: %q", rendered)
+	}
+
+	// Disposition the finding "not a secret": the SAME (already-rejected, now
+	// terminal) change set must keep showing its masked content -- overriding
+	// the disposition does not retroactively materialize raw bytes that were
+	// never written -- and a re-execute of the identical content must now pass.
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category == "secret_sweep" {
+			findingID = f.ID
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+
+	stillThere, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterOverride := eng.StructuredDiff(stillThere)
+	for _, f := range afterOverride {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if !f.Redacted || f.Content == "" {
+			t.Errorf("file %q: masked diff regressed after the not_a_secret override: %+v", f.Path, f)
+		}
+	}
+
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("the allowlisted fingerprint still rejected the re-run: %+v", cs2)
+	}
+	files2 := eng.StructuredDiff(&cs2)
+	for _, f := range files2 {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if f.Redacted {
+			t.Errorf("file %q: a passing re-run should show real content, not masked: %+v", f.Path, f)
+		}
 	}
 }
 
@@ -876,6 +1088,82 @@ func TestExecutePassesConfiguredBuild(t *testing.T) {
 	}
 	if cs.Status != domain.ChangeSetReviewRequired {
 		t.Fatalf("expected review_required (build passes), got %q", cs.Status)
+	}
+}
+
+// TestExecuteDetectsCheckCommandsFromGoMod is defect #5 from the ICP re-run:
+// with no build_cmd/test_cmd configured, an obvious go.mod project used to
+// report both checks not_applicable instead of running the toolchain's own
+// build/test commands. Leaves BuildCmd/TestCmd empty with a real go.mod in
+// the workspace and asserts both checks actually RAN (never not_applicable)
+// against the real `go build`/`go test` commands, each naming go.mod as
+// where the command was detected from. It does not assert pass/fail: the
+// sandbox's own exec permissions for a compiled test binary are an
+// environment detail this test does not control, and are not what defect #5
+// is about -- only that detection engaged instead of skipping the check
+// entirely.
+func TestExecuteDetectsCheckCommandsFromGoMod(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3},
+		// check.image left unconfigured too: golang:1.25 is derived from the
+		// SAME go.mod, exactly as a real unconfigured project would see.
+	})
+	eng.SetWorkRoot(t.TempDir())
+	workspaceRoot := t.TempDir()
+	eng.SetWorkspaceRoot(workspaceRoot)
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]domain.Finding{}
+	for _, f := range findings {
+		if f.TargetID == cs.ID {
+			got[f.Category] = f
+		}
+	}
+	for _, c := range []string{"build", "tests"} {
+		f, ok := got[c]
+		if !ok {
+			t.Fatalf("missing a %s finding: %+v", c, findings)
+		}
+		if f.Disposition == domain.DispositionNotApplicable {
+			t.Errorf("%s should not be not_applicable: a go.mod command should have been detected: %+v", c, f)
+		}
+		if !strings.Contains(f.Evidence, "detected") || !strings.Contains(f.Evidence, "go.mod") {
+			t.Errorf("%s evidence should say the command was detected from go.mod: %q", c, f.Evidence)
+		}
+	}
+	// The build check compiles the real, valid package this test wrote: it
+	// must actually pass, proving the detected command is not just present
+	// but genuinely runnable, not merely non-empty.
+	if got["build"].Severity.Blocking() {
+		t.Errorf("the detected `go build ./...` should pass against a valid package: %+v", got["build"])
 	}
 }
 
