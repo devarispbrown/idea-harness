@@ -599,13 +599,13 @@ CREATE INDEX IF NOT EXISTS idx_stale_marks_target ON stale_marks(initiative_id, 
 	`
 ALTER TABLE change_sets ADD COLUMN git_commit_warning TEXT NOT NULL DEFAULT '';
 `,
-	// 24: the dedicated branch git.branch_per_initiative creates on an
+	// 27: the dedicated branch git.branch_per_initiative creates on an
 	// initiative's first apply (review C4 piece 2), so every later change set
 	// commits to the same branch rather than computing a fresh name each time.
 	`
 ALTER TABLE initiatives ADD COLUMN git_branch TEXT NOT NULL DEFAULT '';
 `,
-	// 25: the pull request `idea pr` opened for the initiative's branch
+	// 28: the pull request `idea pr` opened for the initiative's branch
 	// (review C4 piece 3), so a repeat `idea pr` is idempotent instead of
 	// opening a second PR for the same branch.
 	`
