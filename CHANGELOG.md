@@ -123,6 +123,101 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `reopen-phase`) clears every stale item for the initiative; `POST
   …/stale/{staleId}/ack` clears one explicitly.
 
+### Added — rigor, judgment and plan editing (review B1–B5, C6)
+
+- **`review.rigor: auto|quick|standard|thorough`** (new `harness.yaml` field,
+  default `auto`). Auto calibrates from a cheap project-size walk (file
+  count/LOC, the seed's own ignore rules) and the change size (requirement
+  count for the PRD/plan review, file count for the change-set review): a
+  small project and a small change get `quick`; a large project or a large
+  change gets `thorough`; everything else is `standard`. An unmeasured
+  workspace (no workspace yet) is treated as unknown, not small, and never
+  auto-selects `quick`. Documented in `docs/configuration.md` ("Review
+  rigor"). This is the ICP round's own root cause answered directly: a
+  60-line toy app's review loop demanded ABNF grammars and audit schemas and
+  produced 36, then 70, then 82 findings, never converging.
+- **A per-cycle findings cap**, by rigor level: `quick` 5, `standard` 10,
+  `thorough` 20. The highest-severity findings are kept; a dropped-count
+  advisory finding records how many were not shown.
+- **`quick` converges in one pass.** The PRD and plan review loops run
+  exactly one cycle at `quick` rigor and accept regardless of outcome — the
+  adversarial reviewer's findings stand as advisories (never falsely
+  dispositioned `fixed`) rather than gating approval or triggering a revise
+  cycle. The change-set review's blocking check is bypassed the same way. A
+  system-deny check (secret sweep, host-exec, blob-digest mismatch) is
+  unaffected at every rigor level — it is a security invariant, not a rigor
+  knob.
+- **The reviewer, PRD-author, framing ("explore") and planner prompts now
+  receive the project's measured scale, detected stack (from `go.mod`,
+  `package.json`, `Cargo.toml`, etc.), effective rigor, and — capped at 4000
+  bytes — the project's own conventions doc (a CONVENTIONS.md or
+  CONTRIBUTING.md file, when one exists)**, with an explicit instruction to
+  judge proportionately and, for the PRD/framing
+  prompts, not to add infrastructure (a database, a queue, a cache) the
+  project does not already have unless the idea itself asks for it (review
+  B5).
+- **The planner prompt now targets 2-4 vertical-slice tasks**, each shipping
+  working end-to-end functionality, rather than one task per layer or per
+  requirement — one task per requirement only when the plan is genuinely
+  that granular (review B3).
+- **Plan-editing endpoints** (review B3): `POST
+  …/initiatives/{id}/tasks/{taskId}/depends-on` sets a task's `depends_on`
+  wholesale, refusing a change that would introduce a cycle anywhere in the
+  graph; `POST …/initiatives/{id}/tasks/{taskId}/split` splits one task into
+  two or more, each defaulting to the original's requirements and inheriting
+  its dependencies; `POST …/initiatives/{id}/tasks/merge` merges two tasks —
+  requirements union onto the survivor, statements concatenate, every
+  dependency edge rewires onto the survivor, and the merged task is deleted.
+  All three share the existing task-editable guard.
+- **A change-set review finding can name its file and self-report whether it
+  is in the diff** (`path`, `in_diff` on the change-set review schema and on
+  `Finding`; review B2, adopted #5). Deterministically: a `path` that is not
+  one of the change set's files is `advisory` ("about code this change set
+  did not touch"); with no `path`, the reviewer's own `in_diff` decides
+  (defaulting to `true`, so a reviewer that never sets it is unaffected),
+  noted `"unverified"` either way. `Finding.advisory` (new field, along with
+  `path`/`in_diff`) never blocks approval regardless of severity — this is
+  the same field the rigor cap's dropped-count note uses, doubling as a
+  simple backlog marker (migration 29).
+- **Near-duplicate decisions and questions are merged at creation**, not only
+  at display (review B4, adopted #8): same `DecisionType` (for decisions) and
+  a token-Jaccard similarity of at least 0.85 after normalization
+  (`workflow.jaccardSimilarity`, reusing `dedup.go`'s `tokenize`/
+  `normalizeJudgment`) — replacing the old 0.6-of-shorter-side overlap
+  measure, which wrongly merged genuinely distinct judgments ("which
+  database?" vs. "which cache?" is now correctly kept apart: Jaccard 0.5). A
+  question that matches one already answered is not re-created; a
+  `question.reraised_answered` event links the re-raising to the answered
+  original.
+- **`POST …/initiatives/{id}/decisions/accept-recommendations`** resolves
+  every open decision with its own recommendation, actor `human`, in one call
+  (review B4) — the ICP round's "53 things need your judgment" answered
+  directly. A decision with no recommendation is left open and named in
+  `skipped`.
+- **`GET …/initiatives/{id}/triage`** ranks open decisions, questions and
+  blocking findings by impact (blocking, then severity, then dependents
+  count) and labels the top 3 `priority`, the rest `optional` (review B4).
+- **A readable 409 on task delete** (review B3): naming every dependent task
+  by code, e.g. `TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it.
+  Remove those dependencies first, or delete them too.` — it used to be the
+  undifferentiated `another task depends on this task; remove that
+  dependency first`.
+- **Guidance is honest after a fresh change-set failure** (review C6).
+  `projection.BuildGuidance` now takes the initiative's recent change sets
+  (signature change, `BuildGuidance(ini, understanding, recentChangeSets)`;
+  the daemon's `/guidance` handler is the only caller, updated) and, when the
+  latest one was rejected, had changes requested, or conflicted, names it and
+  the next step instead of the unconditional "The reviewed plan is ready to
+  build" a `plan_approved` initiative used to get regardless.
+
+### Changed — BREAKING
+
+| Was | Now |
+|---|---|
+| `projection.BuildGuidance(ini, understanding)` | `projection.BuildGuidance(ini, understanding, recentChangeSets)` — an internal Go API, not an HTTP contract; the daemon's own caller is the only one affected and is updated. Pass `nil` for the old behavior. |
+| `workflow.similarJudgment`'s near-duplicate threshold: overlap-over-shorter-side ≥ 0.6 | token-Jaccard similarity ≥ 0.85 after normalization (review B4, adopted #8) — a stricter, more accurate measure; some previously-merged near-duplicates (e.g. two decisions sharing only a couple of common words) now stay distinct. |
+| `DELETE .../tasks/{taskId}` on a task with dependents: `{"error":"another task depends on this task; remove that dependency first"}` | `{"error":"TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies first, or delete them too."}` — still a 409 with the same JSON error shape, now naming the dependents. |
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

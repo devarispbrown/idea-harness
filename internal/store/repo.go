@@ -1064,11 +1064,11 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 			disp = sql.NullString{String: string(f.Disposition), Valid: true}
 		}
 		_, err := tx.Exec(`
-			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			f.ID, f.InitiativeID, f.ReviewRunID, f.TargetType, f.TargetID, f.Severity, f.Confidence, f.Category, f.Code,
 			f.Finding, f.Evidence, f.Impact, f.Recommendation, disp, f.DispositionActor, f.Note,
-			f.SecretFingerprint, f.SecretKind, f.SecretPath, f.CreatedAt.UnixMilli())
+			f.SecretFingerprint, f.SecretKind, f.SecretPath, f.Path, f.InDiff, f.Advisory, f.CreatedAt.UnixMilli())
 		return err
 	})
 }
@@ -1076,7 +1076,7 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 // ListFindings returns findings for a review run.
 func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
 		FROM findings WHERE review_run_id = ? ORDER BY created_at ASC`, reviewRunID)
 	if err != nil {
 		return nil, err
@@ -1089,7 +1089,7 @@ func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Fi
 // change set), used by the review_open_blocking deny gate at approve time.
 func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
 		FROM findings WHERE target_type = ? AND target_id = ? ORDER BY created_at ASC`, targetType, targetID)
 	if err != nil {
 		return nil, err
@@ -1101,7 +1101,7 @@ func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID str
 // ListFindingsByInitiative returns all findings for an initiative.
 func (db *DB) ListFindingsByInitiative(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
 		FROM findings WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -1118,7 +1118,8 @@ func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
 		var disp sql.NullString
 		if err := rows.Scan(&f.ID, &f.InitiativeID, &f.ReviewRunID, &f.TargetType, &f.TargetID, &f.Severity, &f.Confidence,
 			&f.Category, &f.Code, &f.Finding, &f.Evidence, &f.Impact, &f.Recommendation, &disp,
-			&f.DispositionActor, &f.Note, &f.SecretFingerprint, &f.SecretKind, &f.SecretPath, &created); err != nil {
+			&f.DispositionActor, &f.Note, &f.SecretFingerprint, &f.SecretKind, &f.SecretPath,
+			&f.Path, &f.InDiff, &f.Advisory, &created); err != nil {
 			return nil, err
 		}
 		f.CreatedAt = time.UnixMilli(created)

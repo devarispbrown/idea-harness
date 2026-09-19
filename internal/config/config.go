@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,30 @@ type ReviewConfig struct {
 	MaxCycles  int     `json:"max_cycles" yaml:"max_cycles"`
 	MaxTokens  int64   `json:"max_tokens" yaml:"max_tokens"`
 	MaxCostUSD float64 `json:"max_cost_usd" yaml:"max_cost_usd"`
+	// Rigor calibrates how much scrutiny the PRD, plan and change-set reviews
+	// apply (review B1): one of "auto" (the default -- calibrated from
+	// project size and change size), "quick", "standard", or "thorough".
+	// Auto exists because a fixed rigor level was the ICP round's root
+	// cause: a 60-line toy app got the same review depth as an enterprise
+	// system, and the loop never converged.
+	Rigor string `json:"rigor,omitempty" yaml:"rigor,omitempty"`
+}
+
+// RigorLevels are review.rigor's allowed configured values.
+var RigorLevels = []string{"auto", "quick", "standard", "thorough"}
+
+// ValidRigor reports whether s is a recognized review.rigor value. Empty is
+// valid and means "auto" (applyDefaults fills it in).
+func ValidRigor(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, r := range RigorLevels {
+		if s == r {
+			return true
+		}
+	}
+	return false
 }
 
 // ProviderConfig describes one model provider (§40). API keys are resolved
@@ -198,7 +223,7 @@ func Default() Config {
 	return Config{
 		Harness: HarnessConfig{
 			Network:   NetworkDisabled,
-			Review:    ReviewConfig{MaxCycles: 3},
+			Review:    ReviewConfig{MaxCycles: 3, Rigor: "auto"},
 			Providers: map[string]ProviderConfig{},
 			Executor:  ExecutorConfig{Kind: ExecutorInternal},
 		},
@@ -254,6 +279,9 @@ func Load(dir string) (Config, error) {
 	if cfg.Harness.Review.MaxCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
 	}
+	if !ValidRigor(cfg.Harness.Review.Rigor) {
+		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
+	}
 	return cfg, nil
 }
 
@@ -283,6 +311,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Harness.Review.MaxCycles == 0 && c.Harness.Review.MaxTokens == 0 && c.Harness.Review.MaxCostUSD == 0 {
 		c.Harness.Review.MaxCycles = 3
+	}
+	if c.Harness.Review.Rigor == "" {
+		c.Harness.Review.Rigor = "auto"
 	}
 	if c.Harness.Executor.Kind == "" {
 		c.Harness.Executor.Kind = ExecutorInternal

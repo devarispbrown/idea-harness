@@ -404,8 +404,11 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 		reqByCode[NormalizeRequirementRef(r.Code)] = r.ID
 	}
 
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(reqs)})
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Decompose the converged design into an ordered, dependency-linked set of Tasks. Each Task implements one or more Requirements (referenced by code). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title."},
+		{Selector: "immutable_policy", Content: "Decompose the converged design into 2-4 Tasks, each shipping a working vertical slice end to end -- not one task per layer or per requirement. A Task implements one or more Requirements (referenced by code); it is fine, and expected, for one task to implement several. Only go finer than 2-4 tasks when the plan is genuinely that granular (many independent, unrelated slices). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title."},
+		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, projectConventions(e.workspaceRoot))},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
@@ -573,12 +576,17 @@ const DeterministicPlanCheckRun = "deterministic-plan-check"
 const PlanFindingTarget = "execution_plan"
 
 func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	tasks, _ := e.db.ListTasks(ctx, initiativeID)
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(tasks)})
+
 	det := e.deterministicPlanChecks(ctx, initiativeID)
-	adv, err := e.runPlanAdversarialReview(ctx, initiativeID)
+	adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor)
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
 	all := append(det, adv...)
+	all = capFindings(all, findingCap(rigor), rigor)
 	for i := range all {
 		all[i].InitiativeID = initiativeID
 		if all[i].ReviewRunID == "" {
@@ -603,12 +611,17 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	}
 
 	blocked, reason := review.EvaluateApproval(all)
-	if blocked {
+	if blocked && rigor != RigorQuick {
 		e.log.Warn("plan review blocked", "initiative", initiativeID, "reason", reason)
 		if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanReview, RoleAdversarialReviewer); err != nil {
 			return domain.InitiativeFailed, err
 		}
 		return domain.InitiativeNeedsHumanJudgment, nil
+	}
+	if blocked {
+		// Quick converges in one pass and accepts with advisories (review
+		// B1): the findings stand but do not gate plan approval.
+		e.log.Info("plan review passed (quick, advisory)", "initiative", initiativeID, "findings", len(all))
 	}
 	if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativePlanApproved, RoleAdversarialReviewer); err != nil {
 		return domain.InitiativeFailed, err
@@ -778,8 +791,9 @@ func overlapCount(set map[string]bool, tokens []string) int {
 	return n
 }
 
-func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
-	tasks, _ := e.db.ListTasks(ctx, initiativeID)
+func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string, tasks []domain.Task, rigor RigorLevel) ([]domain.Finding, error) {
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	conventions := projectConventions(e.workspaceRoot)
 	// "plan_review", not "review". The name is a demo/test discriminator only:
 	// JSONSchemaName is read by nothing but the fake provider. Real providers
 	// never see it at all -- runModel inlines the schema text into the system
@@ -791,6 +805,7 @@ func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID stri
 	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
+			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(tasks)}, rigor, conventions)},
 			{Selector: "tasks", Content: renderTasks(tasks)},
 		},
 		"Adversarial review of the execution plan.",

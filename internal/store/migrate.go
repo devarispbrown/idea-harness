@@ -611,6 +611,15 @@ ALTER TABLE initiatives ADD COLUMN git_branch TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE initiatives ADD COLUMN pr_url TEXT NOT NULL DEFAULT '';
 `,
+	// 29: change-set review findings carry an optional `path` and a reviewer
+	// self-reported `in_diff` (review B2, adopted #5), and any finding can be
+	// marked `advisory` -- non-blocking regardless of severity (review B1's
+	// rigor cap note, and B2's "about code this change set did not touch").
+	`
+ALTER TABLE findings ADD COLUMN path TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN in_diff INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE findings ADD COLUMN advisory INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -105,19 +105,65 @@ func TestBuildGuidancePrecedence(t *testing.T) {
 	// Judgment outranks stage advancement.
 	ini := domain.Initiative{Status: domain.InitiativeApproved}
 	u := Understanding{}
-	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "design & execution plan") {
+	if nm := BuildGuidance(ini, u, nil); !strings.Contains(nm.Action, "design & execution plan") {
 		t.Fatalf("approved should guide toward M2, got %q", nm.Action)
 	}
 
 	ini = domain.Initiative{Status: domain.InitiativePlanApproved}
-	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "Execution plan approved") {
+	if nm := BuildGuidance(ini, u, nil); !strings.Contains(nm.Action, "Execution plan approved") {
 		t.Fatalf("plan_approved should report a done plan, got %q", nm.Action)
 	}
 
 	ini = domain.Initiative{Status: domain.InitiativeRunning}
 	u = Understanding{Decisions: []DecisionView{{Status: domain.DecisionOpen}}}
-	if nm := BuildGuidance(ini, u); !strings.Contains(nm.Action, "decision") {
+	if nm := BuildGuidance(ini, u, nil); !strings.Contains(nm.Action, "decision") {
 		t.Fatalf("open decision should outrank, got %q", nm.Action)
+	}
+}
+
+// TestBuildGuidanceNeverSaysReadyToBuildOverAFreshFailure is review C6: a
+// denied, rejected, or failed change set (this codebase funnels all three
+// into ChangeSetRejected -- see execute.go's checks-running -> rejected
+// transitions) must produce an honest status, never the old unconditional
+// "ready to build".
+func TestBuildGuidanceNeverSaysReadyToBuildOverAFreshFailure(t *testing.T) {
+	ini := domain.Initiative{Status: domain.InitiativePlanApproved}
+	u := Understanding{}
+
+	// No change sets yet: the old, unconditional guidance stands.
+	if nm := BuildGuidance(ini, u, nil); !strings.Contains(nm.Action, "Execution plan approved") {
+		t.Fatalf("no change sets yet should still say the plan is ready, got %q", nm.Action)
+	}
+
+	for _, status := range []domain.ChangeSetStatus{
+		domain.ChangeSetRejected, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted,
+	} {
+		recent := []domain.ChangeSet{{ID: "cs-1", HumanID: "CHG-3", Status: status}}
+		nm := BuildGuidance(ini, u, recent)
+		if strings.Contains(nm.Action, "ready to build") || strings.Contains(nm.Why, "ready to build") ||
+			nm.Action == "Execution plan approved" {
+			t.Fatalf("status %q: guidance still said the old unconditional thing: %+v", status, nm)
+		}
+		if !strings.Contains(nm.Why, "CHG-3") {
+			t.Fatalf("status %q: guidance did not name the change set: %+v", status, nm)
+		}
+	}
+
+	// A change set that succeeded (approved/applied) is not a failure --
+	// guidance reverts to the ordinary "ready to build" message.
+	recent := []domain.ChangeSet{{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetApplied}}
+	if nm := BuildGuidance(ini, u, recent); !strings.Contains(nm.Action, "Execution plan approved") {
+		t.Fatalf("a successful latest change set should not trigger the failure path, got %q", nm.Action)
+	}
+
+	// Only the LATEST (last in the ascending-by-created_at slice) matters: an
+	// earlier rejection followed by a successful retry is not a fresh failure.
+	recovered := []domain.ChangeSet{
+		{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetRejected},
+		{ID: "cs-2", HumanID: "CHG-2", Status: domain.ChangeSetApplied},
+	}
+	if nm := BuildGuidance(ini, u, recovered); !strings.Contains(nm.Action, "Execution plan approved") {
+		t.Fatalf("a later successful change set should supersede an earlier rejection, got %q", nm.Action)
 	}
 }
 
@@ -200,7 +246,7 @@ func TestNormalizeDecisionQuestionFoldsCaseWhitespaceAndSourcePrefix(t *testing.
 // that is fully wired is worse than no message.
 func TestPlanApprovedGuidanceDoesNotClaimMilestone3IsPending(t *testing.T) {
 	ini := domain.Initiative{Status: domain.InitiativePlanApproved}
-	nm := BuildGuidance(ini, Understanding{})
+	nm := BuildGuidance(ini, Understanding{}, nil)
 	if strings.Contains(nm.Why, "Milestone 3") {
 		t.Fatalf("plan_approved guidance still claims a future milestone: %q", nm.Why)
 	}

@@ -25,6 +25,7 @@ review:
   max_cycles: 3        # review passes in M1 before needs_human_judgment (0 also means 3)
   max_tokens: 0        # per-response output-token ceiling (0 = no ceiling)
   max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
+  rigor: auto          # auto | quick | standard | thorough (review B1)
 
 # Research sources (fetched — public addresses only — during research when
 # network is enabled). Offline/empty means the researcher marks everything as
@@ -76,6 +77,7 @@ Top-level fields:
 | `review.max_cycles` | how many **review passes** the M1 review loop may run before it stops and sets the initiative to `needs_human_judgment`. A revise happens between passes, so `n` passes allow at most `n-1` revisions. `0` is **not** unlimited: the engine coerces any value `<= 0` to 3 | `3` |
 | `review.max_tokens` | ceiling on the **output tokens of a single model response**. A response over it fails that stage — it is a per-call cap, not a pool that drains | `0` (no ceiling) |
 | `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |
+| `review.rigor` | `auto` \| `quick` \| `standard` \| `thorough` — how much scrutiny the PRD, plan and change-set reviews apply (review B1). See "Review rigor" below | `auto` |
 | `research.urls` | seed URLs fetched during research when `network: enabled` | none |
 | `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
@@ -195,6 +197,54 @@ so it is worth being exact:
 
 Reading `0` as "unlimited" is right for `max_tokens` and `max_cost_usd` and wrong for `max_cycles`,
 which the engine rewrites to 3. `idea config validate` rejects a negative `max_cycles`.
+
+### Review rigor (review B1)
+
+`review.rigor` calibrates how much scrutiny the PRD review (M1), the execution-plan review (M2),
+and the change-set review (M3) each apply. It exists because a fixed rigor level was an ICP round's
+root cause: a 60-line toy app's review loop demanded ABNF grammars and audit schemas, produced 36,
+then 70, then 82 findings, and never converged — every finding treated as if the project were an
+enterprise system, regardless of its actual size.
+
+- **`auto`** (the default) calibrates per review, from two things:
+  - **project size** — a cheap file-count and line-count walk of the workspace, using the same
+    ignore rules the executor's seed copy uses (tracked + untracked-but-not-ignored files in a git
+    repository; a plain walk skipping dotdirs and `node_modules`/`vendor`/`dist`/`build`/`target`
+    outside one);
+  - **change size** — the requirement count for the PRD/plan review, or the file count for the
+    change-set review.
+
+  A small project AND a small change calibrate to `quick`; a large project OR a large change
+  calibrates to `thorough` (touching one file of a 500-file codebase still gets more scrutiny than a
+  greenfield throwaway); anything else is `standard`. A workspace that could not be measured (no
+  workspace yet, a brand-new idea) is treated as **unknown, not small** — it calibrates to at worst
+  `standard`, never the least-scrutiny `quick`.
+- **`quick`**, **`standard`**, **`thorough`** override calibration outright.
+
+Effects, at every level:
+
+- **Only critical/high findings ever block approval** (this was already true — `Severity.Blocking()`
+  — and rigor does not change it). Medium and below are always advisory.
+- **A per-cycle findings cap** keeps the highest-severity findings and drops the rest: `quick` 5,
+  `standard` 10, `thorough` 20. A dropped finding is not silent — an extra observation-severity,
+  advisory finding records how many were dropped ("N lower-severity finding(s) not shown").
+- **`quick` converges in one pass.** The PRD and plan review loops run exactly one cycle at `quick`
+  and then accept, whatever the adversarial reviewer found — the findings stay on record as
+  advisories (never falsely dispositioned "fixed"), but they do not gate approval and there is no
+  revise cycle. The change-set review's own blocking check is bypassed the same way, but a
+  **system-deny** check (the secret sweep, host-exec, a blob-digest mismatch) is a security
+  invariant, not a rigor knob, and is never affected.
+- **The reviewer, PRD-author and planner prompts all receive the project's measured scale, the
+  detected stack (from root-level marker files: `go.mod`, `package.json`, `Cargo.toml`, …), the
+  effective rigor level, and — capped at 4000 bytes — the project's own conventions doc (a
+  CONVENTIONS.md or CONTRIBUTING.md file, first one found, when one exists)**, with an explicit
+  instruction to judge proportionately and not demand infrastructure or formal schemas a small
+  project doesn't have (this is also review B5's proportionate-PRD behavior — the PRD and framing
+  prompts get the same section, plus an explicit "do not add infrastructure the project does not
+  have unless the idea asks for it").
+
+`idea config validate` rejects any `review.rigor` value other than `auto`, `quick`, `standard`, or
+`thorough`.
 
 Each provider entry supports:
 

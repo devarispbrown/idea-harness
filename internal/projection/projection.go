@@ -305,6 +305,98 @@ func DedupDecisions(decs []domain.Decision) []domain.Decision {
 	return out
 }
 
+// TriageItem is one open judgment item ranked for the triage view (review B4,
+// adopted #8's guidance/decisions triage): "the top 3 open items by impact
+// (blocking > high severity > dependents count). The rest are labelled
+// optional."
+type TriageItem struct {
+	Type       string          `json:"type"` // "decision" | "question" | "finding"
+	ID         string          `json:"id"`
+	Label      string          `json:"label"`
+	Blocking   bool            `json:"blocking"`
+	Severity   domain.Severity `json:"severity,omitempty"`
+	Dependents int             `json:"dependents"`
+	// Rank is "priority" for the top 3 by impact, "optional" for the rest --
+	// the ICP round's own words for what six audits could not get past: "53
+	// things need your judgment", none of them ranked.
+	Rank string `json:"rank"`
+}
+
+// severityRank orders Severity from most (5) to least (1) severe, matching
+// workflow.severityRank -- kept as its own copy here since projection must
+// not depend on workflow (the same reasoning normalizeDecisionQuestion's own
+// doc comment gives for not importing workflow.normalizeJudgment).
+func severityRank(s domain.Severity) int {
+	switch s {
+	case domain.SeverityCritical:
+		return 5
+	case domain.SeverityHigh:
+		return 4
+	case domain.SeverityMedium:
+		return 3
+	case domain.SeverityLow:
+		return 2
+	case domain.SeverityObservation:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// BuildTriage ranks open decisions, open questions, and open blocking
+// findings into a single priority order and labels the top 3 "priority", the
+// rest "optional" (review B4, adopted #8). dependents maps a decision or
+// question's id to how many other objects (requirements, tasks, change sets)
+// cite it -- the caller supplies it since counting edges needs store access
+// this package's other Build* functions do not have either.
+//
+// Ranking key, highest first: blocking, then severity (findings only --
+// decisions/questions have none and rank below any finding of the same
+// blocking-ness), then dependents count. Ties preserve input order (each
+// slice's own, decisions/questions/findings concatenated in that order) for a
+// deterministic, boring sort.
+func BuildTriage(decisions []domain.Decision, questions []domain.Question, findings []domain.Finding, dependents map[string]int) []TriageItem {
+	items := make([]TriageItem, 0, len(decisions)+len(questions)+len(findings))
+	for _, d := range decisions {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		items = append(items, TriageItem{Type: "decision", ID: d.ID, Label: d.Question, Dependents: dependents[d.ID]})
+	}
+	for _, q := range questions {
+		if q.Status != domain.QuestionOpen {
+			continue
+		}
+		items = append(items, TriageItem{Type: "question", ID: q.ID, Label: q.Question, Dependents: dependents[q.ID]})
+	}
+	for _, f := range findings {
+		if f.Advisory || f.Disposition != "" {
+			continue
+		}
+		items = append(items, TriageItem{
+			Type: "finding", ID: f.ID, Label: f.Finding,
+			Blocking: f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Blocking != items[j].Blocking {
+			return items[i].Blocking
+		}
+		if r1, r2 := severityRank(items[i].Severity), severityRank(items[j].Severity); r1 != r2 {
+			return r1 > r2
+		}
+		return items[i].Dependents > items[j].Dependents
+	})
+	for i := range items {
+		if i < 3 {
+			items[i].Rank = "priority"
+		} else {
+			items[i].Rank = "optional"
+		}
+	}
+	return items
+}
+
 // summarize renders a deterministic, provenance-backed prose summary (§5).
 // It is assembled from entity state — never LLM narration, never a separate
 // source of truth.
@@ -414,9 +506,63 @@ func judgmentItems(u *Understanding) []string {
 	return out
 }
 
+// latestChangeSetOutcome returns the most recently created change set among
+// recentChangeSets (oldest-first, ListChangeSets' own ordering) whose status
+// means the last thing that happened here was NOT success, plus true -- or
+// (zero value, false) when recentChangeSets is empty or its latest entry is
+// still in flight or already approved/applied.
+//
+// rejected covers a failed deterministic check (a build/test failure, a
+// secret-sweep credential match) as well as a human/system rejection: this
+// codebase funnels all three into ChangeSetRejected (see execute.go's
+// checks-running -> rejected transitions), so there is one status to ask
+// about, not three (review C6: "denied, rejected or failed").
+func latestChangeSetOutcome(recentChangeSets []domain.ChangeSet) (domain.ChangeSet, bool) {
+	if len(recentChangeSets) == 0 {
+		return domain.ChangeSet{}, false
+	}
+	latest := recentChangeSets[len(recentChangeSets)-1]
+	switch latest.Status {
+	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
+		return latest, true
+	}
+	return domain.ChangeSet{}, false
+}
+
+// changeSetFailureWhy renders the honest-status sentence for a change set
+// that did not succeed (review C6), naming what happened and the next step.
+// It deliberately does not cite finding detail (a secret's file:line, a
+// failing test's name) -- BuildGuidance is a pure function of Understanding
+// and recentChangeSets with no store access, exactly like NextTask/
+// RunBlockedReason/PartialWork/StaleItems above; a handler with db access may
+// append more (see handleGuidance).
+func changeSetFailureWhy(cs domain.ChangeSet) (action, why string) {
+	switch cs.Status {
+	case domain.ChangeSetRejected:
+		return "Resolve " + cs.HumanID, fmt.Sprintf(
+			"%s was rejected -- a check or the review found a problem it would not pass. "+
+				"`idea reviews` shows why; once it is addressed, run the task again.", cs.HumanID)
+	case domain.ChangeSetChangesRequested:
+		return "Address requested changes on " + cs.HumanID, fmt.Sprintf(
+			"%s needs changes before it can be applied. Run the task again to produce a new change set.", cs.HumanID)
+	case domain.ChangeSetConflicted:
+		return "Resolve the conflict on " + cs.HumanID, fmt.Sprintf(
+			"%s could not be applied cleanly -- the workspace changed since it was produced. "+
+				"Retry the apply or reject it and run the task again.", cs.HumanID)
+	}
+	return "", ""
+}
+
 // BuildGuidance computes the Recommended Next Move with deterministic
 // precedence: judgment items outrank stage advancement (§6, §9).
-func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance {
+//
+// recentChangeSets is the initiative's change sets, oldest first (review C6,
+// a signature change from the earlier BuildGuidance(ini, understanding)):
+// guidance must not say "ready to build" over a change set that was just
+// denied, rejected, or failed -- it says what happened and the next step
+// instead. Callers with no change sets to report (a fresh initiative, or one
+// with none yet) pass nil, which behaves exactly as before.
+func BuildGuidance(ini domain.Initiative, understanding Understanding, recentChangeSets []domain.ChangeSet) Guidance {
 	openQuestions := 0
 	for _, q := range understanding.Questions {
 		if q.Status == domain.QuestionOpen {
@@ -456,6 +602,13 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 	case domain.InitiativeApproved:
 		return Guidance{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
 	case domain.InitiativePlanApproved:
+		// Review C6: never say "ready to build" over a change set that was
+		// just denied, rejected, or failed -- say what happened and the next
+		// step instead.
+		if cs, ok := latestChangeSetOutcome(recentChangeSets); ok {
+			action, why := changeSetFailureWhy(cs)
+			return Guidance{Action: action, Why: why, Affected: []string{"Execution Plan", cs.HumanID}}
+		}
 		// B5: this used to say "Implementation and ChangeSets arrive in
 		// Milestone 3" -- true when it was written, false since Milestone 3
 		// shipped. Execute/apply/verify are live; say what to actually do.

@@ -116,7 +116,7 @@ func TestProjectionsNeverEmitNullArrays(t *testing.T) {
 	} {
 		withStatus := *ini
 		withStatus.Status = st
-		g := BuildGuidance(withStatus, u)
+		g := BuildGuidance(withStatus, u, nil)
 		if got := nullArrayFields(t, g); len(got) > 0 {
 			t.Errorf("guidance for status %q emits null for %s", st, strings.Join(got, ", "))
 		}

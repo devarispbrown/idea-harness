@@ -47,28 +47,52 @@ func tokenize(s string) []string {
 	return out
 }
 
-// similarJudgment reports whether two judgments are near-duplicates — high
-// significant-token overlap relative to the shorter one. This suppresses the
-// semantic duplicates that exact-text matching misses (e.g. "How many mailboxes
-// are included by default?" vs "How many mailboxes per domain purchase?").
-func similarJudgment(a, b string) bool {
+// jaccardSimilarity returns the Jaccard similarity of a and b's significant
+// token sets (tokenize's output, deduplicated): |intersection| / |union|. 0
+// when either side tokenizes to nothing.
+func jaccardSimilarity(a, b string) float64 {
 	ta := tokenize(a)
 	tb := tokenize(b)
 	if len(ta) == 0 || len(tb) == 0 {
-		return false
+		return 0
 	}
-	overlap := 0
+	setA := make(map[string]bool, len(ta))
 	for _, t := range ta {
-		for _, u := range tb {
-			if t == u {
-				overlap++
-				break
-			}
+		setA[t] = true
+	}
+	setB := make(map[string]bool, len(tb))
+	for _, t := range tb {
+		setB[t] = true
+	}
+	inter := 0
+	for t := range setA {
+		if setB[t] {
+			inter++
 		}
 	}
-	den := len(ta)
-	if len(tb) < den {
-		den = len(tb)
+	union := len(setA) + len(setB) - inter
+	if union == 0 {
+		return 0
 	}
-	return float64(overlap)/float64(den) >= 0.6
+	return float64(inter) / float64(union)
+}
+
+// nearDuplicateThreshold is the token-Jaccard similarity, after
+// normalizeJudgment strips revise-cycle prefixes, at or above which two
+// decisions (of the same DecisionType) or two questions are merged at
+// creation (review B4, adopted #8).
+//
+// 0.85, not the looser overlap-over-shorter-side measure this replaced: "Which
+// database should we use?" vs "Which cache should we use?" shares "which" and
+// "use" against each side's own {which,database,use}/{which,cache,use} --
+// Jaccard 2/4 = 0.5, correctly kept apart, where the old 0.6-of-shorter-side
+// rule (2/3 = 0.67) wrongly merged them.
+const nearDuplicateThreshold = 0.85
+
+// similarJudgment reports whether two judgments are near-duplicates by token
+// Jaccard similarity (review B4, adopted #8) after normalizeJudgment. Callers
+// comparing decisions must also check DecisionType equality themselves --
+// this function only ever compares text.
+func similarJudgment(a, b string) bool {
+	return jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b)) >= nearDuplicateThreshold
 }

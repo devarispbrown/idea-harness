@@ -1622,11 +1622,175 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: |
-            The editable-window message, or
-            `another task depends on this task; remove that dependency first`.
+            The editable-window message, or a readable refusal naming every task that still
+            depends on this one (review B3), e.g.
+            `TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies
+            first, or delete them too.` (it used to be the undifferentiated
+            `another task depends on this task; remove that dependency first`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: setTaskDependsOn
+      summary: Set a task's dependencies (review B3)
+      description: |
+        Replaces the task's `depends_on` wholesale (unlike `PATCH .../tasks/{taskId}`, which
+        leaves it untouched when omitted) -- an empty list is a legitimate request, "make this
+        task depend on nothing". Entries may name existing tasks by title, code or id, the same
+        tolerant resolution `POST /tasks` uses. Refused if the change would introduce a
+        dependency cycle anywhere in the initiative's task graph, not just a direct one. Subject
+        to the same editable window as `PATCH .../tasks/{taskId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                depends_on:
+                  type: array
+                  items: { type: string }
+              required: [depends_on]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The task after the edit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`invalid body`, `depends_on references an unknown task \"...\"`, `a task cannot depend on itself`, or `that dependency would create a cycle: ...`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/split:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: splitTask
+      summary: Split a task into two or more (review B3)
+      description: |
+        Each replacement task's `requirement_ids` defaults to the original task's own
+        requirements when omitted. Every replacement inherits the original's outgoing
+        `depends_on`, and anything that depended on the original now depends on ALL the
+        replacements (a safe superset; narrow it afterward with `POST .../depends-on`). The
+        original task is deleted once the replacements exist. Subject to the same editable
+        window as `PATCH .../tasks/{taskId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tasks:
+                  type: array
+                  minItems: 2
+                  items:
+                    type: object
+                    properties:
+                      title: { type: string, description: Required, non-blank. }
+                      statement: { type: string }
+                      requirement_ids:
+                        type: array
+                        items: { type: string }
+                        description: Defaults to the original task's own requirements when omitted.
+                    required: [title]
+              required: [tasks]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The new replacement tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`tasks must name at least 2 replacement tasks`, `each replacement task needs a title`, or `requirement_ids references an unknown requirement \"...\"`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/merge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [tasks]
+      operationId: mergeTasks
+      summary: Merge two tasks into one (review B3)
+      description: |
+        `task_ids` names exactly two tasks; the first survives. The requirements each task
+        implements are unioned onto the survivor, their statements are concatenated (survivor's,
+        blank line, merged task's), every dependency edge either task held is rewired onto the
+        survivor (including anything that depended on the merged task), and the merged task is
+        deleted. Subject to the same editable window as `PATCH .../tasks/{taskId}`, checked for
+        BOTH tasks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_ids:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  items: { type: string }
+                  description: "[survivor, task to merge in]."
+              required: [task_ids]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The survivor task after the merge.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`task_ids must name exactly 2 tasks`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found: ...`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel:
@@ -1893,6 +2057,72 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Decision" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [decisions]
+      operationId: acceptRecommendations
+      summary: Resolve every open decision with its recommendation (review B4)
+      description: |
+        Answers the ICP round's "53 things need your judgment" in one call: every OPEN decision
+        on the initiative is resolved with its own `recommendation`, actor `human`. A decision the
+        model raised with no recommendation is left open and named in `skipped` rather than
+        resolved with an empty string.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: What was resolved and what was skipped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resolved:
+                    type: array
+                    items: { type: string }
+                    description: Codes of the decisions resolved.
+                  skipped:
+                    type: array
+                    items: { type: string }
+                    description: Codes of open decisions left open because they had no recommendation.
+                required: [resolved, skipped]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/triage:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [decisions]
+      operationId: triage
+      summary: What needs your judgment first (review B4)
+      description: |
+        Ranks every open decision, open question, and open blocking finding by impact --
+        blocking, then severity, then dependents count (how many requirements cite an open
+        decision) -- and labels the top 3 `priority`; the rest `optional`.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The ranked items.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/TriageItem" }
+                required: [items]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -3396,7 +3626,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 89 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 94 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3658,6 +3888,32 @@ components:
           format: date-time
       required: [id, initiative_id, question, status, created_at]
 
+    TriageItem:
+      type: object
+      title: TriageItem
+      description: One ranked open judgment item (review B4's triage view).
+      properties:
+        type:
+          type: string
+          enum: [decision, question, finding]
+        id: { type: string }
+        label: { type: string }
+        blocking:
+          type: boolean
+          description: Findings only -- an open decision/question is never "blocking" in this sense.
+        severity:
+          allOf:
+            - $ref: "#/components/schemas/Severity"
+          description: Findings only; empty for a decision or question.
+        dependents:
+          type: integer
+          description: How many requirements cite this open decision. Always 0 for a question or a finding today.
+        rank:
+          type: string
+          enum: [priority, optional]
+          description: "`priority` for the top 3 by impact (blocking, then severity, then dependents); `optional` for the rest."
+      required: [type, id, label, blocking, dependents, rank]
+
     SuggestedAnswer:
       type: object
       title: SuggestedAnswer
@@ -3779,6 +4035,25 @@ components:
         secret_path:
           type: string
           description: The `path:line`-bearing file the match was found in. Set alongside `secret_fingerprint`.
+        path:
+          type: string
+          description: |
+            The file this finding is about, self-reported by the reviewer (change-set review
+            only; review B2). Optional.
+        in_diff:
+          type: boolean
+          description: |
+            Self-report: whether this finding is about code the change set actually touches.
+            Only consulted when `path` is empty; defaults to `true` when the reviewer omits it
+            entirely, so an older prompt or a scripted response is never silently downgraded
+            (review B2).
+        advisory:
+          type: boolean
+          description: |
+            Never blocks approval, whatever the severity (review B1, B2). Set when: a rigor cap
+            dropped lower-severity findings this cycle (the note on THIS finding names how many);
+            a `path` is not one of the change set's files ("about code this change set did not
+            touch"); or, with no `path`, `in_diff` is `false` ("unverified").
         created_at: { type: string, format: date-time }
       required: [id, review_run_id, target_type, target_id, severity, confidence, category, finding, evidence, impact, recommendation, created_at]
 
