@@ -144,6 +144,52 @@ func TestCommitScopesPathsAndReturnsSHA(t *testing.T) {
 	}
 }
 
+// TestCommitIgnoresPreStagedContentOutsideScope is review H2: a file the
+// USER already staged (e.g. mid-way through their own unrelated edit) before
+// the daemon ever ran must never enter the agent's commit, even though
+// `git add -- <paths>` above stages the in-scope paths onto that same
+// pre-existing index. Without `commit --only`, a plain `git commit` commits
+// the WHOLE index, silently including it.
+func TestCommitIgnoresPreStagedContentOutsideScope(t *testing.T) {
+	repo := initRepo(t)
+	writeFile(t, repo, "a.txt", "base-a")
+	writeFile(t, repo, "staged-by-user.txt", "base-staged")
+	gitOut(t, repo, "add", "a.txt", "staged-by-user.txt")
+	gitOut(t, repo, "commit", "-q", "-m", "base")
+
+	writeFile(t, repo, "a.txt", "changed-a")
+	// The user's own pre-staged, unrelated edit -- added to the index BEFORE
+	// Commit is ever called, mimicking a mid-edit the daemon must not touch.
+	writeFile(t, repo, "staged-by-user.txt", "user-was-mid-edit")
+	gitOut(t, repo, "add", "staged-by-user.txt")
+
+	sha, err := Commit(t.Context(), repo, []string{"a.txt"}, "CHG-CHG-1: scope test")
+	if err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if sha == "" {
+		t.Fatal("Commit() sha is empty, want a commit (a.txt has a real change)")
+	}
+
+	committed := map[string]bool{}
+	for _, line := range strings.Split(gitOut(t, repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			committed[p] = true
+		}
+	}
+	if committed["staged-by-user.txt"] {
+		t.Fatalf("committed files = %v: the user's pre-staged edit outside the change set was committed", committed)
+	}
+	if !committed["a.txt"] {
+		t.Fatalf("committed files = %v, missing a.txt", committed)
+	}
+	// The pre-staged content must remain staged in the index (untouched),
+	// not partially consumed by the scoped commit.
+	if got := gitOut(t, repo, "diff", "--cached", "--name-only"); got != "staged-by-user.txt" {
+		t.Fatalf("index after commit = %q, want staged-by-user.txt to remain staged", got)
+	}
+}
+
 func TestCommitEmptyDiffNoOp(t *testing.T) {
 	repo := initRepo(t)
 	writeFile(t, repo, "a.txt", "base")

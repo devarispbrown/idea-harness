@@ -1572,6 +1572,16 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		paths = append(paths, f.Path)
 	}
 
+	// Merge/rebase/cherry-pick/detached-HEAD are checked BEFORE any checkout
+	// (review H2): switching branches (below) while one of those is in
+	// progress is exactly the hazard the guard exists to prevent, so it must
+	// run first, not after branch-per-initiative has already moved HEAD.
+	if reason, err := git.PreCommitGuardReason(ctx, e.workspaceRoot); err != nil {
+		return "", "", err
+	} else if reason != "" {
+		return "", "not committed because " + reason, nil
+	}
+
 	if e.cfg.Git.BranchPerInitiative {
 		ini, iniErr := e.db.GetInitiative(ctx, cs.InitiativeID)
 		if iniErr != nil {
@@ -1591,7 +1601,10 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		}
 	}
 
-	if reason, err := git.CommitGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
+	// The default-branch check runs AFTER the branch switch above (review
+	// H2): it must judge the initiative's own branch, once
+	// branch-per-initiative has switched to it, not whatever HEAD was before.
+	if reason, err := git.DefaultBranchGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
 		return "", "", err
 	} else if reason != "" {
 		return "", "not committed because " + reason, nil
