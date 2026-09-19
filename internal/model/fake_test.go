@@ -47,3 +47,39 @@ func TestFakeProviderCompleteDoesNotDoubleUpTheSchemaInstruction(t *testing.T) {
 		t.Fatalf("demo idea brief contains the schema instruction: %s", resp.RawJSON)
 	}
 }
+
+// TestFirstRequirementCodePrefersTheRequirementsSection is the low-priority
+// review item: a requirement code mentioned in an earlier context section
+// (e.g. "decisions", carrying history text that names a requirement since
+// superseded) must not win over the live code the "requirements" section
+// itself lists -- design/plan only ever sees live requirements, so citing
+// the dead one produced demo output that referenced a requirement no longer
+// in scope. Mutation-check: revert firstRequirementCode to the old
+// scan-messages-then-whole-System order, and this fails.
+func TestFirstRequirementCodePrefersTheRequirementsSection(t *testing.T) {
+	system := "--- decisions (trust: trusted) ---\n" +
+		"DEC-1: chose Postgres. REQ-1 was superseded because it assumed MySQL." +
+		"\n\n--- requirements (trust: trusted) ---\n" +
+		"- REQ-3: Persist data\n" +
+		"  - metric target (condition)" +
+		"\n\n--- task (trust: trusted) ---\n" +
+		"Build the plan"
+
+	if got := firstRequirementCode(Request{System: system}); got != "REQ-3" {
+		t.Fatalf("firstRequirementCode = %q, want REQ-3 (the live requirements section), not the superseded REQ-1 mentioned earlier", got)
+	}
+}
+
+// TestFirstRequirementCodeFallsBackWithoutARequirementsSection confirms the
+// old behavior survives when there is no "requirements" section to prefer
+// (e.g. a request that never includes one).
+func TestFirstRequirementCodeFallsBackWithoutARequirementsSection(t *testing.T) {
+	system := "--- task (trust: trusted) ---\nBuild REQ-2 out fully"
+	if got := firstRequirementCode(Request{System: system}); got != "REQ-2" {
+		t.Fatalf("firstRequirementCode = %q, want REQ-2", got)
+	}
+
+	if got := firstRequirementCode(Request{}); got != "" {
+		t.Fatalf("firstRequirementCode = %q, want empty for a request naming no requirement", got)
+	}
+}
