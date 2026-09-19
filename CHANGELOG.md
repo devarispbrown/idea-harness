@@ -9,6 +9,47 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Only live inputs reach design and plan (review A2).** Design, product
+  design, verification design, the execution plan, and plan review used to
+  see every requirement and decision ever raised, including ones a later
+  review cycle superseded and decided human decisions the model then treated
+  as still open for debate. They now see only `activeRequirements` (already
+  used by the M1 loop) and the equivalent `activeDecisions`. A deterministic
+  check blocks the plan (`plan_traceability`, target `execution_plan`) when a
+  task's own text cites a superseded requirement code; a second, advisory-only
+  check flags a task whose words overlap a decided decision's rejected option
+  more than its actual resolution (a heuristic, documented as such on the
+  finding's `note`).
+- **Generated tasks were silently missing their `implements` edge (review A4,
+  JTBD 5).** Root cause: `runExecutionPlan` matched the model's free-text
+  requirement reference against `Requirement.Code` and, on a miss, passed an
+  empty target id to `createTask`, which wires nothing and records nothing —
+  unlike an unresolved `depends_on`, which already failed loudly. A task's
+  requirement reference (`requirement` for compatibility, plus the new
+  `requirements` array) now resolves tolerantly (trimmed, case-insensitive,
+  "REQ-3: title" forms) and, on a genuine miss, raises a blocking
+  `plan_traceability` finding and parks the initiative for re-planning, the
+  same way `depends_on` does.
+- **A task can implement more than one requirement (N:M).** `CreateTaskMulti`
+  and the `add task` / `update task` API (`requirement_ids`, merged with the
+  single `implements` field) wire an `implements` edge to each. Adding or
+  editing a task now requires naming at least one requirement.
+- **`impact`/`why` reached a dead end at a task (review A4).** A task's change
+  sets are linked by `ChangeSet.TaskID`, not a graph edge, so `impact
+  requirement REQ-n` or `impact decision DEC-n` could reach the task and never
+  the change sets built from it. `Impact`/`ImpactCounts` now include a task's
+  change sets as synthetic dependents.
+- **Reopening a decided decision now marks its dependents stale.** The
+  requirements that cite it, their tasks, and the applied change sets for
+  those tasks are marked stale (a new `stale_marks` table/primitive) and
+  surfaced as `stale_items` on `GET …/guidance` (with a "N items may be
+  invalid since DEC-n changed" sentence naming the re-plan/review path) and as
+  `staleness: "stale"` on `GET …/impact`. Re-planning (`revise-plan` /
+  `reopen-phase`) clears every stale item for the initiative; `POST
+  …/stale/{staleId}/ack` clears one explicitly.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added
