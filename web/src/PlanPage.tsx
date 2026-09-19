@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post, resource, token } from "./api";
+import { get, post, resource, token, unwrapError } from "./api";
 import PhasePage from "./PhasePage";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
@@ -17,12 +17,26 @@ interface Task {
   status: string;
   priority: string;
   estimate: string;
+  // requirement_ids / depends_on: not yet documented in docs/openapi.yaml's
+  // Task schema (contract assumption -- see the wave-3 report). Optional so
+  // requirement chips and the dependencies editor both degrade to "nothing
+  // selected" rather than breaking against a daemon that doesn't echo them
+  // back on GET/POST .../tasks yet.
+  requirement_ids?: string[];
+  depends_on?: string[];
 }
 interface Artifact {
   id: string;
   kind: string;
   version: number;
 }
+interface Requirement {
+  id: string;
+  code: string;
+  statement: string;
+}
+
+const emptyDraft = () => ({ title: "", statement: "", priority: "should", estimate: "", requirementIds: [] as string[] });
 
 export default function PlanPage({
   projectId,
@@ -38,14 +52,39 @@ export default function PlanPage({
   const [tasks, setTasks] = useState<Task[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [findings, setFindings] = useState<FindingItem[]>([]);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ title: "", statement: "", priority: "should", estimate: "" });
+  const [draft, setDraft] = useState(emptyDraft());
   const [adding, setAdding] = useState(false);
   const [hasChangeSets, setHasChangeSets] = useState(false);
   const [error, setError] = useState("");
 
+  // Merge (review B3, task 6): pick exactly two tasks, then choose which one
+  // survives.
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelected, setMergeSelected] = useState<string[]>([]);
+  const [mergeSurvivor, setMergeSurvivor] = useState<string | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
+
+  // Split (review B3, task 6): a small form for exactly two replacement
+  // tasks, each with its own title/statement/requirements.
+  const [splitTarget, setSplitTarget] = useState<string | null>(null);
+  const [splitDraft, setSplitDraft] = useState([
+    { title: "", statement: "", requirementIds: [] as string[] },
+    { title: "", statement: "", requirementIds: [] as string[] },
+  ]);
+  const [splitBusy, setSplitBusy] = useState(false);
+  const [splitError, setSplitError] = useState("");
+
+  // Dependencies (review B3, task 6): a multi-select of every other task.
+  const [depsTarget, setDepsTarget] = useState<string | null>(null);
+  const [depsSelected, setDepsSelected] = useState<string[]>([]);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<Record<string, string>>({});
+
   const load = useCallback(async () => {
-    const [t, a, c, f] = await Promise.all([
+    const [t, a, c, f, r] = await Promise.all([
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
       get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
       // Change sets, because both plan-level actions are refused once one
@@ -54,11 +93,15 @@ export default function PlanPage({
       // D1: the plan-review findings belong here, not on Define — see
       // judgmentScope.ts for why target_type is what tells them apart.
       get<FindingItem[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
+      // Requirement codes/statements for the "+ Add a task" and split forms'
+      // multi-selects, and for each task's requirement chips.
+      get<Requirement[]>(resource(projectId, initiativeId, "requirements")).catch(() => []),
     ]);
     setTasks(t ?? []);
     setArtifacts(a ?? []);
     setHasChangeSets((c ?? []).length > 0);
     setFindings(f ?? []);
+    setRequirements(r ?? []);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -82,7 +125,7 @@ export default function PlanPage({
     });
     if (!res.ok) {
       const t = await res.text();
-      setError(t || `edit failed (${res.status})`);
+      setError(unwrapError(t, res.status, res.statusText));
       return;
     }
     setEditing(null);
@@ -101,7 +144,13 @@ export default function PlanPage({
     });
     if (!res.ok) {
       const t = await res.text();
-      setError(t || `delete failed (${res.status})`);
+      // task 6: the ICP journey hit "a raw JSON error on delete" here -- the
+      // backend's 409 already names every dependent task readably
+      // ("TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove
+      // those dependencies first, or delete them too."); unwrapError is what
+      // actually surfaces that sentence instead of the raw `{"error":...}`
+      // body.
+      setError(unwrapError(t, res.status, res.statusText));
       return;
     }
     await load();
@@ -131,8 +180,9 @@ export default function PlanPage({
         statement: draft.statement,
         priority: draft.priority,
         estimate: draft.estimate,
+        requirement_ids: draft.requirementIds,
       });
-      setDraft({ title: "", statement: "", priority: "should", estimate: "" });
+      setDraft(emptyDraft());
       setAdding(false);
     });
   const move = (index: number, dir: -1 | 1) => {
@@ -168,6 +218,130 @@ export default function PlanPage({
       return;
     }
     await load();
+  };
+
+  // ---- task 6: merge ----------------------------------------------------
+
+  const toggleMergeSelect = (id: string) => {
+    setMergeError("");
+    setMergeSelected((sel) => {
+      if (sel.includes(id)) return sel.filter((x) => x !== id);
+      if (sel.length >= 2) return sel; // exactly two at a time
+      const next = [...sel, id];
+      if (next.length === 2) setMergeSurvivor(next[0]);
+      return next;
+    });
+  };
+  const cancelMerge = () => {
+    setMergeMode(false);
+    setMergeSelected([]);
+    setMergeSurvivor(null);
+    setMergeError("");
+  };
+  const doMerge = async () => {
+    if (mergeSelected.length !== 2 || !mergeSurvivor) return;
+    const other = mergeSelected.find((id) => id !== mergeSurvivor);
+    if (!other) return;
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/merge`, {
+        task_ids: [mergeSurvivor, other],
+      });
+      cancelMerge();
+      await load();
+    } catch (e) {
+      setMergeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMergeBusy(false);
+    }
+  };
+
+  // ---- task 6: split ------------------------------------------------------
+
+  const openSplit = (t: Task) => {
+    setSplitTarget(t.id);
+    setSplitError("");
+    setSplitDraft([
+      { title: "", statement: "", requirementIds: t.requirement_ids ?? [] },
+      { title: "", statement: "", requirementIds: t.requirement_ids ?? [] },
+    ]);
+  };
+  const closeSplit = () => {
+    setSplitTarget(null);
+    setSplitError("");
+  };
+  const updateSplitDraft = (index: 0 | 1, field: "title" | "statement", value: string) => {
+    setSplitDraft((d) => {
+      const next = [...d] as typeof d;
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
+  };
+  const toggleSplitRequirement = (index: 0 | 1, reqId: string) => {
+    setSplitDraft((d) => {
+      const next = [...d] as typeof d;
+      const cur = next[index].requirementIds;
+      next[index] = {
+        ...next[index],
+        requirementIds: cur.includes(reqId) ? cur.filter((x) => x !== reqId) : [...cur, reqId],
+      };
+      return next;
+    });
+  };
+  const submitSplit = async () => {
+    if (!splitTarget) return;
+    if (!splitDraft[0].title.trim() || !splitDraft[1].title.trim()) {
+      setSplitError("Both replacement tasks need a title.");
+      return;
+    }
+    setSplitBusy(true);
+    setSplitError("");
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/${splitTarget}/split`, {
+        tasks: splitDraft.map((t) => ({
+          title: t.title,
+          statement: t.statement,
+          requirement_ids: t.requirementIds,
+        })),
+      });
+      closeSplit();
+      await load();
+    } catch (e) {
+      setSplitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSplitBusy(false);
+    }
+  };
+
+  // ---- task 6: dependencies -----------------------------------------------
+
+  const openDeps = (t: Task) => {
+    setDepsTarget(t.id);
+    setDepsSelected(t.depends_on ?? []);
+    setDepsError((e) => ({ ...e, [t.id]: "" }));
+  };
+  const closeDeps = () => setDepsTarget(null);
+  const toggleDepsSelect = (id: string) => {
+    setDepsSelected((sel) => (sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]));
+  };
+  const saveDeps = async (taskId: string) => {
+    setDepsBusy(true);
+    setDepsError((e) => ({ ...e, [taskId]: "" }));
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/tasks/${taskId}/depends-on`, {
+        depends_on: depsSelected,
+      });
+      closeDeps();
+      await load();
+    } catch (e) {
+      // task 6: a cycle refusal ("that dependency would create a cycle: ...")
+      // is already a readable sentence from the backend -- shown as-is,
+      // inline, rather than swallowed or replaced with a generic message.
+      setDepsError((prev) => ({ ...prev, [taskId]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setDepsBusy(false);
+    }
   };
 
   const docs: DocumentRowProps[] = plan
@@ -246,8 +420,11 @@ export default function PlanPage({
   // D2: once approved, the plan is the fixed input to Build — Edit/Delete are
   // hidden so the approved document cannot be silently rewritten out from
   // under it. Reorder/Cancel are left alone; only D2 asked for these two.
+  // Wave 3: merge/split/dependsOn (review B3) track reorder exactly.
   const can = planTaskActions(status);
   const tasksEditable = can.edit;
+
+  const requirementLabel = (id: string) => requirements.find((r) => r.id === id)?.code ?? id;
 
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
@@ -313,6 +490,45 @@ export default function PlanPage({
           </div>
         </>
       )}
+      {can.merge && tasks.length >= 2 && (
+        <div className="plan-merge-bar">
+          {!mergeMode ? (
+            <button className="plan-add" style={{ width: "auto" }} onClick={() => setMergeMode(true)}>
+              Merge tasks…
+            </button>
+          ) : (
+            <>
+              <span className="muted">Select two tasks to merge{mergeSelected.length > 0 ? ` (${mergeSelected.length}/2)` : ""}.</span>
+              <button className="jc-secondary" onClick={cancelMerge}>Cancel</button>
+            </>
+          )}
+        </div>
+      )}
+      {mergeMode && mergeSelected.length === 2 && (
+        <section className="plan-merge-panel">
+          <div className="muted">Merge into which task? The other's statement and requirements are folded in.</div>
+          <div className="plan-merge-choices">
+            {mergeSelected.map((id) => {
+              const t = tasks.find((x) => x.id === id);
+              return (
+                <label key={id} className="plan-merge-choice">
+                  <input
+                    type="radio"
+                    name="merge-survivor"
+                    checked={mergeSurvivor === id}
+                    onChange={() => setMergeSurvivor(id)}
+                  />
+                  {t ? `${t.code}: ${t.title}` : id}
+                </label>
+              );
+            })}
+          </div>
+          <button className="jc-primary" disabled={mergeBusy} onClick={doMerge}>
+            {mergeBusy ? "Merging…" : "Merge"}
+          </button>
+          {mergeError && <p className="error">{mergeError}</p>}
+        </section>
+      )}
       <section className="plan-card">
         {tasks.map((t, i) =>
           editing === t.id ? (
@@ -345,16 +561,110 @@ export default function PlanPage({
                 value={draft.estimate}
                 onChange={(e) => setDraft((d) => ({ ...d, estimate: e.target.value }))}
               />
-              <button className="jc-primary" onClick={() => update(t.id, draft)}>Save</button>
+              <button
+                className="jc-primary"
+                onClick={() =>
+                  update(t.id, {
+                    title: draft.title,
+                    statement: draft.statement,
+                    priority: draft.priority,
+                    estimate: draft.estimate,
+                  })
+                }
+              >
+                Save
+              </button>
               <button className="jc-secondary" onClick={() => setEditing(null)}>Cancel</button>
+            </div>
+          ) : splitTarget === t.id ? (
+            <div key={t.id} className="plan-row plan-split-form">
+              <div className="plan-split-title">Split {t.code} into two tasks</div>
+              {([0, 1] as const).map((idx) => (
+                <div key={idx} className="plan-split-task">
+                  <input
+                    className="text-input"
+                    placeholder={`Task ${idx + 1} title`}
+                    value={splitDraft[idx].title}
+                    onChange={(e) => updateSplitDraft(idx, "title", e.target.value)}
+                  />
+                  <input
+                    className="text-input"
+                    placeholder="Statement"
+                    value={splitDraft[idx].statement}
+                    onChange={(e) => updateSplitDraft(idx, "statement", e.target.value)}
+                  />
+                  <div className="plan-req-select">
+                    {requirements.map((r) => (
+                      <label key={r.id} className="plan-req-option">
+                        <input
+                          type="checkbox"
+                          checked={splitDraft[idx].requirementIds.includes(r.id)}
+                          onChange={() => toggleSplitRequirement(idx, r.id)}
+                        />
+                        {r.code}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <div className="plan-row-actions">
+                <button className="jc-primary" disabled={splitBusy} onClick={submitSplit}>
+                  {splitBusy ? "Splitting…" : "Split"}
+                </button>
+                <button className="jc-secondary" onClick={closeSplit}>Cancel</button>
+              </div>
+              {splitError && <p className="error">{splitError}</p>}
+            </div>
+          ) : depsTarget === t.id ? (
+            <div key={t.id} className="plan-row plan-deps-form">
+              <div className="plan-split-title">{t.code}'s dependencies</div>
+              <div className="plan-req-select">
+                {tasks
+                  .filter((other) => other.id !== t.id)
+                  .map((other) => (
+                    <label key={other.id} className="plan-req-option">
+                      <input
+                        type="checkbox"
+                        checked={depsSelected.includes(other.id)}
+                        onChange={() => toggleDepsSelect(other.id)}
+                      />
+                      {other.code}: {other.title}
+                    </label>
+                  ))}
+              </div>
+              <div className="plan-row-actions">
+                <button className="jc-primary" disabled={depsBusy} onClick={() => saveDeps(t.id)}>
+                  {depsBusy ? "Saving…" : "Save dependencies"}
+                </button>
+                <button className="jc-secondary" onClick={closeDeps}>Cancel</button>
+              </div>
+              {/* task 6: a cycle refusal reads exactly as the backend wrote
+                  it -- it already names the cycle. */}
+              {depsError[t.id] && <p className="error">{depsError[t.id]}</p>}
             </div>
           ) : (
             <div key={t.id} className="plan-row">
+              {mergeMode && (
+                <input
+                  type="checkbox"
+                  checked={mergeSelected.includes(t.id)}
+                  onChange={() => toggleMergeSelect(t.id)}
+                  aria-label={`Select ${t.code} to merge`}
+                />
+              )}
               <span className="plan-grab">⠿</span>
               <span className="plan-code">{t.code}</span>
               <div className="plan-body">
                 <div className="plan-title">{t.title}</div>
                 {t.statement && <div className="plan-sub">{t.statement}</div>}
+                {/* task 6: each task's requirements as chips. */}
+                {(t.requirement_ids ?? []).length > 0 && (
+                  <div className="plan-req-chips">
+                    {(t.requirement_ids ?? []).map((rid) => (
+                      <span key={rid} className="plan-req-chip">{requirementLabel(rid)}</span>
+                    ))}
+                  </div>
+                )}
               </div>
               <span className={`plan-prio prio-${t.priority}`}>{t.priority}</span>
               <span className="plan-est">{t.estimate || "–"}</span>
@@ -377,12 +687,14 @@ export default function PlanPage({
                           label: "Edit",
                           onClick: () => {
                             setEditing(t.id);
-                            setDraft({ title: t.title, statement: t.statement, priority: t.priority, estimate: t.estimate });
+                            setDraft({ ...emptyDraft(), title: t.title, statement: t.statement, priority: t.priority, estimate: t.estimate });
                           },
                         },
                         { key: "delete", label: "Delete", onClick: () => remove(t.id, t.title) },
                       ]
                     : []),
+                  ...(can.split ? [{ key: "split", label: "Split", onClick: () => openSplit(t) }] : []),
+                  ...(can.dependsOn ? [{ key: "deps", label: "Dependencies", onClick: () => openDeps(t) }] : []),
                   ...(can.cancel && t.status !== "cancelled" && t.status !== "done"
                     ? [{ key: "cancel", label: "Cancel", onClick: () => cancel(t.id) }]
                     : []),
@@ -426,14 +738,42 @@ export default function PlanPage({
               onChange={(e) => setDraft((d) => ({ ...d, statement: e.target.value }))}
               placeholder="Statement"
             />
-            <button className="jc-primary" onClick={add} disabled={!draft.title.trim()}>Add</button>
-            <button className="jc-secondary" onClick={() => setAdding(false)}>Cancel</button>
+            {/* task 6: "added tasks with no requirement" -- requirement_ids
+                is now required here too, same as the backend enforces. */}
+            <div className="plan-req-select">
+              {requirements.length === 0 && <span className="muted">No requirements yet.</span>}
+              {requirements.map((r) => (
+                <label key={r.id} className="plan-req-option">
+                  <input
+                    type="checkbox"
+                    checked={draft.requirementIds.includes(r.id)}
+                    onChange={() =>
+                      setDraft((d) => ({
+                        ...d,
+                        requirementIds: d.requirementIds.includes(r.id)
+                          ? d.requirementIds.filter((x) => x !== r.id)
+                          : [...d.requirementIds, r.id],
+                      }))
+                    }
+                  />
+                  {r.code}
+                </label>
+              ))}
+            </div>
+            <button
+              className="jc-primary"
+              onClick={add}
+              disabled={!draft.title.trim() || draft.requirementIds.length === 0}
+            >
+              Add
+            </button>
+            <button className="jc-secondary" onClick={() => { setAdding(false); setDraft(emptyDraft()); }}>Cancel</button>
           </div>
         ) : (
           <button
             className="plan-add"
             onClick={() => {
-              setDraft({ title: "", statement: "", priority: "should", estimate: "" });
+              setDraft(emptyDraft());
               setAdding(true);
             }}
           >
