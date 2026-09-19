@@ -302,3 +302,44 @@ func TestQuickRigorChangeSetReviewStillBlocksCriticalFindings(t *testing.T) {
 		t.Fatalf("expected approved after accept-findings, got %q", got2.Status)
 	}
 }
+
+// TestChangeSetReviewFailsWhenPatchCannotLoad is review H2: a patch that
+// fails to load must fail the review outright, not silently review against
+// an empty file set (which would make EVERY path-bearing finding
+// "advisory" via classifyDiffEvidence -- the unsafe direction for a real
+// blocker).
+func TestChangeSetReviewFailsWhenPatchCannotLoad(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the change set's patch_digest so loadPatch's blob lookup fails.
+	if _, err := db.SQL().Exec(`UPDATE change_sets SET patch_digest = ? WHERE id = ?`, "not-a-real-digest", cs.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err == nil {
+		t.Fatal("expected the review to fail when the patch cannot load, not silently succeed")
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == domain.ChangeSetApproved {
+		t.Fatalf("expected the change set to remain unapproved, got %q", got.Status)
+	}
+}
