@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 )
 
 func fakeImageCache(st imageState) *imagePresenceCache {
@@ -180,14 +181,30 @@ func TestAnUnknownImageStateDoesNotBlock(t *testing.T) {
 	}
 }
 
-// A known-incompatible model blocks the Build page's run button exactly as it
-// would block `idea execute` -- the ICP walkthrough's hermes + gpt-4.1-mini
-// failed every time, and nothing in the Build page said so beforehand.
-func TestExecutorStatusReportsAKnownIncompatibleModelAsAProblem(t *testing.T) {
+// gpt-4.1-mini was the ICP walkthrough's motivating example (hermes +
+// gpt-4.1-mini failed every time), but the root cause was fixable
+// (hermescfg.go now declares model.context_length explicitly for it), so the
+// Build page no longer blocks it -- only the usual untested-model note.
+func TestExecutorStatusDoesNotBlockGPT41MiniNowThatContextLengthIsDeclared(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "k")
 	rt := &Runtime{images: fakeImageCache(imagePresent)}
 	st := rt.executorStatus(hermesProject("openai/gpt-4.1-mini", nil), "hermes", true)
-	if st.Problem == "" || !strings.Contains(st.Problem, "gpt-4.1-mini") {
+	if st.Problem != "" {
+		t.Errorf("status = %+v, want no problem now that the root cause is fixed", st)
+	}
+}
+
+// A known-incompatible model blocks the Build page's run button exactly as it
+// would block `idea execute` -- the table exists for a combination that turns
+// out to be genuinely, unfixably incompatible (none are known as of this fix;
+// see internal/executor/compat.go).
+func TestExecutorStatusReportsAKnownIncompatibleModelAsAProblem(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	restore := executor.TestOnlySetKnownIncompatible("hermes", "openai/gpt-9-ghost", "a test fixture, not a real defect")
+	t.Cleanup(restore)
+	rt := &Runtime{images: fakeImageCache(imagePresent)}
+	st := rt.executorStatus(hermesProject("openai/gpt-9-ghost", nil), "hermes", true)
+	if st.Problem == "" || !strings.Contains(st.Problem, "gpt-9-ghost") {
 		t.Errorf("status = %+v, want a problem naming the incompatible model", st)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/daemon"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 )
 
 // An unknown provider must fail before the multi-gigabyte image pull, and the
@@ -82,19 +83,41 @@ func TestExecutorSetupRejectsConflictingPositionalAndFlagKind(t *testing.T) {
 	}
 }
 
-// A known-incompatible executor/model combination (docs/agents.md, "Known
-// executor/model compatibility") is refused before the multi-gigabyte image
-// pull, the same as an unknown provider is -- it is going to fail every time,
-// so there is no reason to spend the pull or a paid call finding that out.
+// gpt-4.1-mini was the ICP walkthrough's motivating example for the
+// compatibility table (docs/agents.md, "Known executor/model
+// compatibility"), but investigating it found a fixable root cause
+// (hermescfg.go now declares model.context_length explicitly -- see its own
+// doc comment) rather than a genuine incompatibility, so it is not refused.
+// It is also not verified, so setup still prints an untested/--smoke
+// advisory on its way to the (expected, unrelated) pull failure.
+func TestExecutorSetupWarnsButProceedsForAnUntestedModel(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers.Providers = []cliProvider{{Name: "openai", Type: "openai", BaseURL: "https://api.openai.com/v1"}}
+	_, stderr, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-4.1-mini",
+		"--image", "example/does-not-exist:never", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "pull failed") {
+		t.Fatalf("expected the (unrelated) image pull to fail, got: %v", err)
+	}
+	if !strings.Contains(stderr, "gpt-4.1-mini") || !strings.Contains(stderr, "--smoke") {
+		t.Errorf("stderr does not carry the untested-model advisory: %q", stderr)
+	}
+}
+
+// A row placed in the known-incompatible table is still refused before the
+// multi-gigabyte image pull, the same as an unknown provider is -- the table
+// exists for a combination that turns out to be genuinely, unfixably
+// incompatible (none are known as of this fix; see compat.go).
 func TestExecutorSetupRejectsAKnownIncompatibleCombination(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.providers.Providers = []cliProvider{{Name: "openai", Type: "openai", BaseURL: "https://api.openai.com/v1"}}
-	_, _, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-4.1-mini",
+	saved := executor.TestOnlySetKnownIncompatible("hermes", "openai/gpt-9-ghost", "a test fixture, not a real defect")
+	t.Cleanup(saved)
+	_, _, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-9-ghost",
 		"--image", "example/does-not-exist:never", "--yes")
 	if err == nil {
 		t.Fatal("a known-incompatible combination was accepted")
 	}
-	if !strings.Contains(err.Error(), "gpt-4.1-mini") {
+	if !strings.Contains(err.Error(), "gpt-9-ghost") {
 		t.Errorf("the refusal does not name the model: %v", err)
 	}
 	if strings.Contains(err.Error(), "pull") {

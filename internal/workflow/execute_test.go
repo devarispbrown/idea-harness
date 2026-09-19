@@ -14,6 +14,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
@@ -1278,21 +1279,37 @@ func TestKeyedProviderWithoutAKeyIsRefused(t *testing.T) {
 	}
 }
 
-// A known-incompatible executor/model combination is refused before the
-// container starts (docs/agents.md, "Known executor/model compatibility"):
-// hermes + gpt-4.1-mini failed deterministically, every run, in the ICP
-// walkthrough, with no signal until the agent had already been launched and
-// produced nothing.
-func TestSelectExecutorRefusesAKnownIncompatibleModel(t *testing.T) {
+// gpt-4.1-mini was the ICP walkthrough's motivating example (hermes +
+// gpt-4.1-mini failed deterministically), but the root cause turned out to be
+// fixable (hermescfg.go now declares model.context_length explicitly for it
+// -- see execute.go's compat-check comment and model.ContextWindowFor), not a
+// genuine incompatibility, so selectExecutor no longer refuses it.
+func TestSelectExecutorAcceptsGPT41MiniNowThatContextLengthIsDeclared(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	e := &Engine{cfg: config.HarnessConfig{
 		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-4.1-mini"},
+	}}
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("selectExecutor refused gpt-4.1-mini, though its root cause is fixed: %v", err)
+	}
+}
+
+// A row placed in the known-incompatible table is still refused before the
+// container starts (docs/agents.md, "Known executor/model compatibility") --
+// the table exists for a combination that turns out to be genuinely,
+// unfixably incompatible (none are known as of this fix; see compat.go).
+func TestSelectExecutorRefusesAKnownIncompatibleModel(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	restore := executor.TestOnlySetKnownIncompatible("hermes", "openai/gpt-9-ghost", "a test fixture, not a real defect")
+	t.Cleanup(restore)
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-9-ghost"},
 	}}
 	_, err := e.selectExecutor()
 	if err == nil {
 		t.Fatal("a known-incompatible executor/model combination was accepted")
 	}
-	if !strings.Contains(err.Error(), "gpt-4.1-mini") {
+	if !strings.Contains(err.Error(), "gpt-9-ghost") {
 		t.Errorf("the refusal does not name the model: %v", err)
 	}
 }

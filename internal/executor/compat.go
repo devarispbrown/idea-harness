@@ -28,20 +28,17 @@ type modelIncompatibility struct {
 // combination has actually been observed to fail every time, with a reason --
 // this is not a place to guess at every model nobody has tried yet; that is
 // what the "untested" warning below is for.
-var knownIncompatible = []modelIncompatibility{
-	{
-		kind: "hermes",
-		spec: "openai/gpt-4.1-mini",
-		reason: "Hermes Agent requires at least 64,000 tokens of context for its tool-calling loop " +
-			"(https://hermes-agent.nousresearch.com/docs/reference/faq) and refuses to start below that floor. " +
-			"Every provider here is wired into Hermes as an explicit custom_provider (see hermescfg.go), which " +
-			"idea-harness never declares model.context_length for -- so Hermes falls back to its own model-family " +
-			"auto-detection to guess the window. For gpt-4.1-mini that guess deterministically lands under the " +
-			"floor (the same failure mode as NousResearch/hermes-agent#24000, a custom endpoint falling back to " +
-			"32,768 tokens), so the agent never starts. Choose a verified model below, or a model you know has a " +
-			"large context window.",
-	},
-}
+//
+// Empty today. hermes + openai/gpt-4.1-mini is what motivated this table, but
+// investigating it found a root cause this codebase could actually fix
+// (hermescfg.go now declares model.context_length explicitly -- see its own
+// doc comment and model.ContextWindowFor), not a real model limitation:
+// gpt-4.1-mini has roughly a 1M-token context window, well above Hermes's own
+// 64,000-token floor, and only failed because nothing told Hermes that and its
+// own auto-detection guessed wrong. The table -- and this function -- stay for
+// the next combination that turns out to be genuinely, unfixably incompatible
+// rather than the same shape of bug.
+var knownIncompatible = []modelIncompatibility{}
 
 // verifiedModels lists the "provider/model" specs docs/agents.md's compatibility
 // table names as actually run end-to-end (`--smoke`) against the pinned image.
@@ -94,4 +91,17 @@ func CheckModelCompat(kind, modelSpec string) ModelCompat {
 func hasProviderPrefix(modelSpec, wildcardSpec string) bool {
 	provider := wildcardSpec[:len(wildcardSpec)-2]
 	return len(modelSpec) > len(provider) && modelSpec[:len(provider)+1] == provider+"/"
+}
+
+// TestOnlySetKnownIncompatible appends a fixture row to the known-incompatible
+// table and returns a func that restores it -- for a test outside this
+// package (internal/cli's executor-setup tests) that needs to prove the
+// refusal mechanism still works, without the test depending on knownIncompatible
+// actually holding a real row (it does not, as of the fix that made
+// gpt-4.1-mini's context window explicit instead of refusing it -- see
+// knownIncompatible's own doc comment). Never call this outside a test.
+func TestOnlySetKnownIncompatible(kind, spec, reason string) (restore func()) {
+	saved := knownIncompatible
+	knownIncompatible = append(append([]modelIncompatibility{}, saved...), modelIncompatibility{kind: kind, spec: spec, reason: reason})
+	return func() { knownIncompatible = saved }
 }

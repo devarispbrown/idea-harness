@@ -104,35 +104,58 @@ removed from the bundled catalog (`internal/model/catalog.go`) so a new project 
 as a default; a real API call to any model id, dead or otherwise, now names the model in the error
 and says how to change it (`idea model set <provider>/<model>`, or Settings → Providers).
 
+### Hermes declares the model's context window explicitly
+
+Hermes Agent refuses to start below 64,000 tokens of context
+([FAQ](https://hermes-agent.nousresearch.com/docs/reference/faq)). Left to guess, it resolves a
+model's context window through its own chain — a config override, then a custom provider's
+per-model setting, a cached prior discovery, its own `/v1/models` query against the endpoint, and
+finally a model-family pattern falling back to 128K. Every provider here is wired into Hermes as an
+explicit `custom_provider` (see `hermescfg.go`'s own comment on why idea-harness does not rely on
+Hermes's built-in provider names), which gives that chain the least to go on — and for
+`openai/gpt-4.1-mini` its family-pattern guess landed under the 64k floor even though the model's
+real window is roughly 1M tokens, the same failure mode as
+[NousResearch/hermes-agent#24000](https://github.com/NousResearch/hermes-agent/issues/24000) (a
+custom endpoint falling back to 32,768 tokens). An ICP walkthrough hit exactly this: `hermes` +
+`openai/gpt-4.1-mini` failed deterministically, every run, with the agent refusing to start.
+
+The generated config now declares `model.context_length` explicitly instead of leaving Hermes to
+guess (`internal/model/catalog.go`'s `ContextWindowFor`, wired into `hermescfg.go`):
+
+- A handful of specific `provider/model` ids have a figure checked against that provider's own
+  model documentation (`ModelContextWindows` — `openai/gpt-4.1-mini` and `openai/gpt-4.1` are both
+  1,047,576; `openai/gpt-4o` and `openai/gpt-4o-mini` are 128,000; `openai/o3-mini` is 200,000).
+- Everything else gets a conservative per-provider default (`contextWindowFallback`): 128,000 for
+  OpenAI, DeepSeek and OpenRouter, 200,000 for Anthropic, 1,000,000 for Gemini — each already the
+  figure this codebase states in that provider's own `Capabilities.ContextLimit`, not a fresh guess,
+  and comfortably above the 64k floor.
+- Ollama gets no explicit value, deliberately: a local model's real context ranges from ~2k to over
+  1M depending entirely on what the operator pulled, so a blanket number here could just as easily
+  understate it (harmless) as overstate it (Hermes then sends a prompt the local server truncates or
+  rejects — a new, different failure). Ollama's endpoint can report its real context directly,
+  which is why Hermes's own docs single it out as the one case its auto-detection is actually
+  reliable for — so it is left to that.
+
 ### Known executor/model compatibility
 
-Not every model a provider serves works with a coding-agent executor, even though `idea-harness`'s
-own model calls (framing, research, PRD, review) accept any model id. An ICP walkthrough found
-`hermes` + `openai/gpt-4.1-mini` failed deterministically — every run, not intermittently — because
-Hermes Agent refuses to start below 64,000 tokens of context
-([FAQ](https://hermes-agent.nousresearch.com/docs/reference/faq)), and every provider here is wired
-into Hermes as an explicit `custom_provider` (see `hermescfg.go`'s own comment on why), for which
-idea-harness never declares `model.context_length`. Without it, Hermes falls back to its own
-model-family auto-detection to guess the window, and for `gpt-4.1-mini` that guess lands under the
-floor — the same failure mode as [NousResearch/hermes-agent#24000](https://github.com/NousResearch/hermes-agent/issues/24000),
-a custom endpoint falling back to 32,768 tokens.
-
-`idea executors setup`, the Build page's run-readiness check, and `idea execute` itself all run the
-same small, data-driven table (`internal/executor/compat.go`) before spending an image pull or a
-paid call on a combination already known not to work:
+`idea executors setup`, the Build page's run-readiness check, and `idea execute` itself all run a
+small, data-driven table (`internal/executor/compat.go`) before spending an image pull or a paid
+call on a model×executor combination already known not to work. As of this fix the table is empty:
+investigating `hermes` + `openai/gpt-4.1-mini` found the fixable root cause above rather than a
+genuine incompatibility, so it is not refused — it still gets the same "untested" advisory below,
+since nobody has actually run it through `--smoke` yet.
 
 | Kind | Model | Verdict | Why |
 |---|---|---|---|
-| `hermes` | `openai/gpt-4.1-mini` | **Refused** | Hermes's context-window auto-detection puts it under its own 64k floor; see above. |
 | `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
-| `hermes` | anything else | Warned | Not known-bad, but not verified either — run `--smoke` before relying on it. |
+| `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
 
-A refused combination stops `idea executors setup` and `idea execute` before anything runs, naming
-the model and why. An untested one is a warning, not a block — most models nobody has run through
-`--smoke` yet work fine — and both `idea executors setup --smoke` and the Build page's **Run smoke
-test** are the way to confirm one before a real task depends on it. Add a row to that table only
-once a combination has actually been observed to fail every time, with a reason; it is not a place
-to guess at every model nobody has tried.
+A row placed in the table stops `idea executors setup` and `idea execute` before anything runs,
+naming the model and why — reserved for a combination that turns out to be genuinely, unfixably
+incompatible, not a stand-in for "nobody has tried this yet" (that is what the untested warning is
+for). An untested combination is a warning, not a block, since most models nobody has run through
+`--smoke` yet work fine — `idea executors setup --smoke` and the Build page's **Run smoke test** are
+the way to confirm one before a real task depends on it.
 
 ### Manual (equivalent)
 
