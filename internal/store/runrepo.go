@@ -179,8 +179,17 @@ func (db *DB) SetOperationStatus(ctx context.Context, opID string, status domain
 		Operation:     string(status),
 	}, func(tx *sql.Tx) error {
 		finished := sql.NullInt64{}
-		if status == domain.OperationSucceeded || status == domain.OperationFailed || status == domain.OperationCancelled {
+		terminal := status == domain.OperationSucceeded || status == domain.OperationFailed || status == domain.OperationCancelled
+		if terminal {
 			finished = sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
+		}
+		// review Low fix: a terminal operation's `stage` is cleared, not left
+		// showing the last step it was on ("Reviewing the PRD (cycle 2)")
+		// forever after it finished.
+		if terminal {
+			_, err := tx.Exec(`UPDATE operations SET status = ?, result_ref = ?, finished_at = ?, stage = '' WHERE id = ?`,
+				status, nullable(resultRef), finished, opID)
+			return err
 		}
 		_, err := tx.Exec(`UPDATE operations SET status = ?, result_ref = ?, finished_at = ? WHERE id = ?`,
 			status, nullable(resultRef), finished, opID)
@@ -234,7 +243,9 @@ func (db *DB) SetOperationFailed(ctx context.Context, opID string, status domain
 		Operation:     string(status),
 	}, func(tx *sql.Tx) error {
 		finished := sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
-		_, err := tx.Exec(`UPDATE operations SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
+		// review Low fix: always terminal here, so stage is always cleared
+		// (see SetOperationStatus's own comment on the same fix).
+		_, err := tx.Exec(`UPDATE operations SET status = ?, error = ?, finished_at = ?, stage = '' WHERE id = ?`,
 			status, errMsg, finished, opID)
 		return err
 	})
@@ -265,8 +276,9 @@ func (db *DB) CancelOperationStatus(ctx context.Context, opID string) error {
 		Operation:     string(domain.OperationCancelled),
 	}, func(tx *sql.Tx) error {
 		finished := sql.NullInt64{Int64: time.Now().UTC().UnixMilli(), Valid: true}
+		// review Low fix: cleared here too (always terminal).
 		res, err := tx.Exec(
-			`UPDATE operations SET status = ?, finished_at = ?
+			`UPDATE operations SET status = ?, finished_at = ?, stage = ''
 			 WHERE id = ? AND status IN (?, ?)`,
 			domain.OperationCancelled, finished, opID,
 			domain.OperationPending, domain.OperationRunning)

@@ -214,6 +214,87 @@ func TestListEventsForInitiativeScoping(t *testing.T) {
 	}
 }
 
+// TestListEventsForInitiativeCoversEveryAggregateType pins M2, review fix:
+// requirements.superseded and assertions.superseded record their bulk event
+// with aggregate_id = the INITIATIVE id (not any one requirement/assertion
+// row), so the per-row subquery alone never matched it; and
+// verification_evidence, stale_item, context_doc and doc_comment events were
+// not covered by any clause at all. Every one of them must now come back,
+// still correctly scoped to the initiative that owns it.
+func TestListEventsForInitiativeCoversEveryAggregateType(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	other := &domain.Initiative{Title: "other", Description: "o"}
+	if err := db.CreateInitiative(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+
+	req := &domain.Requirement{InitiativeID: ini.ID, Code: "REQ-1", Statement: "s", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeRequirements(ctx, ini.ID, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	assertion := &domain.Assertion{InitiativeID: ini.ID, Type: domain.AssertionFact, Statement: "s"}
+	if err := db.CreateAssertion(ctx, assertion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeAssertions(ctx, ini.ID, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	ev := &domain.VerificationEvidence{
+		InitiativeID: ini.ID, RequirementID: req.ID, CriterionKey: domain.CriterionKey(req.ID, 0),
+		Kind: domain.VerificationAcceptance, Status: domain.VerificationPass, VerifiedBy: HumanActor,
+	}
+	if err := db.CreateVerificationEvidence(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	doc := &domain.ContextDoc{InitiativeID: ini.ID, Kind: "prd", Title: "t", Digest: "d", Format: "text"}
+	if err := db.CreateContextDoc(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	comment := &domain.DocComment{InitiativeID: ini.ID, ArtifactVersionID: "v1", Text: "note"}
+	if err := db.CreateDocComment(ctx, comment); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := db.ListEventsForInitiative(ctx, ini.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, e := range events {
+		seen[e.EventType] = true
+	}
+	for _, want := range []string{
+		"requirements.superseded", "assertions.superseded",
+		"verification_evidence.created", "context_doc.created", "doc_comment.created",
+	} {
+		if !seen[want] {
+			t.Errorf("missing %q in the initiative's scoped event list: %+v", want, events)
+		}
+	}
+
+	// None of it leaks to a different initiative.
+	otherEvents, err := db.ListEventsForInitiative(ctx, other.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range otherEvents {
+		if seen[e.EventType] && (e.EventType == "requirements.superseded" || e.EventType == "assertions.superseded" ||
+			e.EventType == "verification_evidence.created" || e.EventType == "context_doc.created" || e.EventType == "doc_comment.created") {
+			t.Errorf("a different initiative's scoped event list leaked %q: %+v", e.EventType, e)
+		}
+	}
+}
+
 // TestSetOperationStage pins C3's stage callback: it updates the RUNNING
 // operation for an initiative, and is a harmless no-op when there is none.
 func TestSetOperationStage(t *testing.T) {
@@ -256,11 +337,23 @@ func TestSetOperationStage(t *testing.T) {
 		t.Fatalf("Stage did not update: got %q", op.Stage)
 	}
 
-	// Once finished, stage is frozen -- SetOperationStage only ever targets a
-	// RUNNING operation, so it must not resurrect a terminal one.
+	// Finishing clears the stage (review Low fix: it used to stay showing the
+	// last step forever, e.g. "Reviewing the PRD (cycle 1)" on an operation
+	// that has been done for days).
 	if err := db.SetOperationStatus(ctx, opID, domain.OperationSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
+	op, err = db.GetOperation(ctx, opID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Fatalf("a finished operation's stage was not cleared: got %q", op.Stage)
+	}
+
+	// And once finished, stage is frozen at "" -- SetOperationStage only
+	// ever targets a RUNNING operation, so it must not resurrect a terminal
+	// one's stage.
 	if err := db.SetOperationStage(ctx, ini.ID, "should not apply"); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +361,57 @@ func TestSetOperationStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.Stage != "Reviewing the PRD (cycle 1)" {
+	if op.Stage != "" {
 		t.Fatalf("stage changed on a finished operation: got %q", op.Stage)
+	}
+}
+
+// TestOperationStageClearedOnFailureAndCancel extends
+// TestSetOperationStage's coverage to the other two terminal writers
+// (review Low fix): SetOperationFailed and CancelOperationStatus must also
+// clear a running operation's stage, not just SetOperationStatus's own
+// success path.
+func TestOperationStageClearedOnFailureAndCancel(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "t", Description: "d"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	failedOp, err := db.CreateOperation(ctx, "proj", ini.ID, "advance_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationStage(ctx, ini.ID, "Agent running TASK-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationFailed(ctx, failedOp, domain.OperationFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := db.GetOperation(ctx, failedOp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Errorf("SetOperationFailed did not clear stage: got %q", op.Stage)
+	}
+
+	cancelOp, err := db.CreateOperation(ctx, "proj", ini.ID, "advance_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationStage(ctx, ini.ID, "Running checks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CancelOperationStatus(ctx, cancelOp); err != nil {
+		t.Fatal(err)
+	}
+	op, err = db.GetOperation(ctx, cancelOp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage != "" {
+		t.Errorf("CancelOperationStatus did not clear stage: got %q", op.Stage)
 	}
 }

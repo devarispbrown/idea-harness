@@ -31,6 +31,7 @@ import {
   type PartialWork,
   type PRChecksResultLike,
 } from "./buildLogic";
+import { isHttpUrl } from "./url";
 
 interface Task {
   id: string;
@@ -480,10 +481,16 @@ export default function BuildPage({
           <div className="git-pr-row">
             <span className="git-pr-label">Branch</span>
             <span className="git-pr-branch">{initiative.git_branch}</span>
-            {initiative.pr_url ? (
+            {initiative.pr_url && isHttpUrl(initiative.pr_url) ? (
               <a className="git-pr-link" href={initiative.pr_url} target="_blank" rel="noreferrer">
                 View pull request ↗
               </a>
+            ) : initiative.pr_url ? (
+              // H5, review fix: pr_url is the last non-empty line of `gh`'s
+              // own output, not something the UI constructed -- a
+              // non-http(s) value (however that happened) renders as plain
+              // text, never as a clickable href.
+              <span className="git-pr-link muted">{initiative.pr_url}</span>
             ) : (
               <button className="cs-secondary" disabled={prBusy} onClick={createPR}>
                 {prBusy ? "Opening…" : "Create PR"}
@@ -502,7 +509,10 @@ export default function BuildPage({
                     <li key={c.name}>
                       <span className="git-pr-check-name">{c.name}</span>
                       <span className="git-pr-check-state">{c.state}</span>
-                      {c.link && (
+                      {/* H5, review fix: a check's `link` comes from the
+                          third-party CI provider, not the UI -- only an
+                          http(s) URL renders as a clickable href. */}
+                      {c.link && isHttpUrl(c.link) && (
                         <a href={c.link} target="_blank" rel="noreferrer">
                           ↗
                         </a>

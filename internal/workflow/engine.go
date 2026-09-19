@@ -358,10 +358,40 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	// Bounded retry (3 attempts): transient infra errors (503/429/…), empty
 	// output, and schema-validation failure are each retried before failing, so
 	// a transient provider error or malformed JSON does not sink the run.
+	//
+	// totalCostUSD/totalInputTokens/totalOutputTokens accumulate EVERY billed
+	// attempt (M5, review fix): chargeUSD already bills every retry against
+	// the budget, but the manifest used to record only the last attempt's
+	// own usage -- a real cost incurred by an earlier attempt that then
+	// failed validation and was retried simply vanished from GET .../costs.
 	var resp model.Response
 	var decoded *model.StructuredResult
 	var lastErr error
+	var totalCostUSD float64
+	var totalInputTokens, totalOutputTokens int64
 	const maxAttempts = 3
+	// failureManifest records whatever was actually spent before a run that
+	// ultimately fails (M5, review fix: "model runs that fail... never write
+	// a manifest, so their spend and time are missing"). A run that fails
+	// before any attempt is billed (e.g. the registry resolve above) has
+	// nothing to record and is left alone -- an empty manifest would be
+	// noise, not evidence.
+	failureManifest := func() {
+		if totalCostUSD == 0 && totalInputTokens == 0 && totalOutputTokens == 0 {
+			return
+		}
+		_ = e.db.CreateRunManifest(ctx, &domain.RunManifest{
+			RunID:          runID,
+			RequestedModel: modelSpec,
+			ActualModel:    resp.ActualModel,
+			Usage: domain.RunUsage{
+				InputTokens: totalInputTokens, OutputTokens: totalOutputTokens,
+				CostUSD: totalCostUSD, DurationMS: time.Since(reqStart).Milliseconds(),
+			},
+			StartedAt:  reqStart,
+			FinishedAt: time.Now().UTC(),
+		})
+	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp, err = prov.Complete(ctx, req)
 		if err != nil {
@@ -371,11 +401,17 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 				continue
 			}
 			e.log.Error("model request failed", "stage", stageKey, "role", roleName, "model", modelSpec, "err", err, "attempt", attempt, "duration", time.Since(reqStart).Round(time.Millisecond))
+			failureManifest()
 			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
 		}
-		// Charge every billed attempt (including retries) against the budget.
+		// Charge every billed attempt (including retries) against the budget,
+		// and accumulate it for the manifest this run eventually writes.
+		totalCostUSD += resp.Usage.CostUSD
+		totalInputTokens += resp.Usage.InputTokens
+		totalOutputTokens += resp.Usage.OutputTokens
 		if err := e.chargeUSD(resp.Usage.CostUSD); err != nil {
+			failureManifest()
 			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
 		}
@@ -405,12 +441,14 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 
 	// Enforce the review token ceiling as a hard stop (review M4).
 	if e.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > e.cfg.Review.MaxTokens {
+		failureManifest()
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, e.cfg.Review.MaxTokens)
 	}
 
 	if decoded == nil {
 		e.log.Error("structured output invalid", "stage", stageKey, "role", roleName, "err", lastErr)
+		failureManifest()
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 		return runID, nil, fmt.Errorf("workflow: %s structured output: %w", stageKey, lastErr)
 	}
@@ -426,7 +464,9 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		ActualModel:    resp.ActualModel,
 		ContextDigest:  contextDigest,
 		ResultDigest:   resultDigest,
-		Usage:          domain.RunUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, CostUSD: resp.Usage.CostUSD, DurationMS: time.Since(reqStart).Milliseconds()},
+		// The accumulated total across every attempt (M5, review fix), not
+		// just the successful last one -- see totalCostUSD's own comment.
+		Usage: domain.RunUsage{InputTokens: totalInputTokens, OutputTokens: totalOutputTokens, CostUSD: totalCostUSD, DurationMS: time.Since(reqStart).Milliseconds()},
 		// reqStart, not time.Now(): both fields used to be stamped "now" at
 		// this point, AFTER the request already completed, so the manifest's
 		// own StartedAt/FinishedAt never reflected the call's actual duration
@@ -1404,15 +1444,40 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		// this call site cannot drift into the defect the other one had.
 		MaxOutput: minOutput(2048, prov),
 	}
+	// A real run + manifest (M5, review fix: "describeImage model calls are
+	// never costed"): this call used to charge the shared budget with no run
+	// of its own, so its spend never appeared under GET .../costs at all.
+	// Best-effort -- a failure to create the tracking row must never sink
+	// the description itself, so runID stays "" and the writes below no-op.
+	runID, runErr := e.db.CreateRun(ctx, domain.RunModel, "", "vision", doc.InitiativeID, "describe_image")
+	setRunStatus := func(status domain.RunStatus) {
+		if runErr == nil {
+			_ = e.db.SetRunStatus(ctx, runID, status, "vision")
+		}
+	}
+	reqStart := time.Now()
 	resp, err := prov.Complete(ctx, req)
 	if err != nil {
+		setRunStatus(domain.RunFailed)
 		return err
 	}
 	if err := e.chargeUSD(resp.Usage.CostUSD); err != nil {
+		setRunStatus(domain.RunFailed)
 		return err
+	}
+	if runErr == nil {
+		_ = e.db.CreateRunManifest(ctx, &domain.RunManifest{
+			RunID: runID, RequestedModel: spec, ActualModel: resp.ActualModel,
+			Usage: domain.RunUsage{
+				InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
+				CostUSD: resp.Usage.CostUSD, DurationMS: time.Since(reqStart).Milliseconds(),
+			},
+			StartedAt: reqStart, FinishedAt: time.Now().UTC(),
+		})
 	}
 	text := strings.TrimSpace(resp.Text)
 	if text == "" {
+		setRunStatus(domain.RunFailed)
 		return fmt.Errorf("empty image description")
 	}
 	if redactor != nil {
@@ -1420,8 +1485,10 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 	}
 	digest, err := blobs.Put([]byte(text))
 	if err != nil {
+		setRunStatus(domain.RunFailed)
 		return fmt.Errorf("store image description: %w", err)
 	}
+	setRunStatus(domain.RunSucceeded)
 	return e.db.SetContextDocDescription(ctx, doc.ID, digest)
 }
 

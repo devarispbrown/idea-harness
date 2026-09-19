@@ -122,17 +122,34 @@ func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, 
 		SELECT e.seq, e.id, e.aggregate_type, e.aggregate_id, e.actor, e.correlation_id, e.causation_id, e.operation, e.event_type, e.payload_digest, e.created_at
 		FROM events e WHERE e.seq > ? AND (
 			(e.aggregate_type = 'initiative' AND e.aggregate_id = ?)
-			OR (e.aggregate_type = 'assertion' AND e.aggregate_id IN (SELECT id FROM assertions WHERE initiative_id = ?))
-			OR (e.aggregate_type = 'requirement' AND e.aggregate_id IN (SELECT id FROM requirements WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'assertion' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM assertions WHERE initiative_id = ?)))
+			OR (e.aggregate_type = 'requirement' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM requirements WHERE initiative_id = ?)))
 			OR (e.aggregate_type = 'decision' AND e.aggregate_id IN (SELECT id FROM decisions WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'artifact' AND e.aggregate_id IN (SELECT id FROM artifacts WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'question' AND e.aggregate_id IN (SELECT id FROM questions WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'finding' AND e.aggregate_id IN (SELECT id FROM findings WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'change_set' AND e.aggregate_id IN (SELECT id FROM change_sets WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'task' AND e.aggregate_id IN (SELECT id FROM tasks WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'verification_evidence' AND e.aggregate_id IN (SELECT id FROM verification_evidence WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'stale_item' AND e.aggregate_id IN (SELECT id FROM stale_marks WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'context_doc' AND e.aggregate_id IN (SELECT id FROM context_docs WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'doc_comment' AND e.aggregate_id IN (SELECT id FROM doc_comments WHERE initiative_id = ?))
 		)
 		ORDER BY e.seq ASC LIMIT ?`,
-		sinceSeq, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, limit)
+		// M2, review fix: SupersedeRequirements/SupersedeAssertions record
+		// their bulk event with aggregate_id = the INITIATIVE id, not any one
+		// requirement/assertion id, so the per-row subquery alone never
+		// matched it -- "requirements.superseded"/"assertions.superseded"
+		// silently disappeared from What Changed. The `e.aggregate_id = ?`
+		// direct match catches that shape; the subquery still catches every
+		// per-row event. verification_evidence, stale_item, context_doc and
+		// doc_comment were not covered by any clause at all.
+		sinceSeq, initiativeID,
+		initiativeID, initiativeID,
+		initiativeID, initiativeID,
+		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
+		initiativeID, initiativeID, initiativeID, initiativeID,
+		limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list events for initiative: %w", err)
 	}

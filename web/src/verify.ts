@@ -94,13 +94,28 @@ export interface EvidenceRequirementLike {
   evidence_tests?: EvidenceTest[];
 }
 
+// isConfirmCandidate mirrors the backend's own confirm_passing_tests
+// eligibility rule exactly (C3/H1/H4, review fix): only an `approved`
+// requirement whose mapped tests all passed. Not `draft`/`removed` (never
+// awaiting a sign-off), and never `verified`/`failed`/`waived` -- those are
+// a decision already made, human or otherwise, that confirm must not
+// silently overwrite.
+function isConfirmCandidate(r: EvidenceRequirementLike): boolean {
+  return r.status === "approved" && allEvidencePassed(r.evidence_tests);
+}
+
 // hasConfirmableEvidence gates the "Confirm all with passing tests" button
-// (task 7): it only makes sense to offer when at least one active,
-// not-yet-verified requirement actually has evidence that all passed --
-// otherwise the button would post `confirm_passing_tests` and confirm
-// nothing.
+// (task 7): it only makes sense to offer when at least one requirement is
+// actually eligible -- otherwise the button would post
+// `confirm_passing_tests` and confirm nothing.
 export function hasConfirmableEvidence(reqs: EvidenceRequirementLike[]): boolean {
-  return reqs.some(
-    (r) => r.status !== "removed" && r.status !== "verified" && r.status !== "waived" && allEvidencePassed(r.evidence_tests),
-  );
+  return reqs.some(isConfirmCandidate);
+}
+
+// confirmableRequirementCodes lists exactly which requirement codes a
+// confirm_passing_tests call would flip right now (H1, review fix): shown in
+// the confirm dialog before the human commits to it, rather than a bare
+// "are you sure?" naming nothing.
+export function confirmableRequirementCodes(reqs: (EvidenceRequirementLike & { code: string })[]): string[] {
+  return reqs.filter(isConfirmCandidate).map((r) => r.code);
 }

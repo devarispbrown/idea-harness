@@ -51,16 +51,17 @@ export default function QueuePage({ projectId }: { projectId: string }) {
       {ranked.length > 0 && (
         <ul className="w3-queue-list">
           {ranked.map((item, i) => (
-            <li
-              key={`${item.initiative_id}-${item.kind}-${i}`}
-              className="w3-queue-row"
-              onClick={() => navigate(item.href)}
-            >
-              <div>
-                <span className="idchip chip-inactive">{queueKindBadge(item.kind)}</span>{" "}
-                <span className="w3-queue-title">{queueItemText(item)}</span>
-              </div>
-              <span className="muted">#{item.rank}</span>
+            // review Low fix: a real <button>, not a bare <li onClick> --
+            // this row was invisible to keyboard navigation and screen
+            // readers (no role, no tabIndex, no key handler).
+            <li key={`${item.initiative_id}-${item.kind}-${i}`}>
+              <button type="button" className="w3-queue-row" onClick={() => navigate(item.href)}>
+                <div>
+                  <span className="idchip chip-inactive">{queueKindBadge(item.kind)}</span>{" "}
+                  <span className="w3-queue-title">{queueItemText(item)}</span>
+                </div>
+                <span className="muted">#{item.rank}</span>
+              </button>
             </li>
           ))}
         </ul>

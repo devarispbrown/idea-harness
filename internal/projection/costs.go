@@ -3,11 +3,37 @@ package projection
 import (
 	"context"
 	"regexp"
+	"sort"
 	"strconv"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
+
+// workflowStageOrder is the pipeline's own step order (mirrors
+// internal/workflow's Stage* constants -- duplicated as plain strings rather
+// than imported, to keep projection out of the workflow-engine dependency,
+// same as normalizeRequirementCode in evidence.go). Used only to order
+// GET .../costs' by_phase array for display (review Low fix: "phases are
+// listed alphabetically by raw stage key", so "review" sorted before
+// "research" and "architecture" sorted before "framing" -- readable only by
+// accident, never in the order the pipeline actually runs them). A stage not
+// listed here (a future stage key, "suggest_answers", "describe_image", or a
+// stray "agent:*" that reached this list some other way) sorts after every
+// known one, alphabetically among themselves, so nothing is ever dropped.
+var workflowStageOrder = map[string]int{
+	"framing":               0,
+	"research":              1,
+	"product_definition":    2,
+	"review":                3,
+	"architecture":          4,
+	"product_design":        5,
+	"verification_design":   6,
+	"convergence":           7,
+	"execution_plan":        8,
+	"execution_plan_review": 9,
+	"implementation_brief":  10,
+}
 
 // BuildCosts builds an initiative's spend/time summary (C3, wave 3 contract)
 // from the run records that already exist: model-call cost/duration (per
@@ -29,6 +55,18 @@ func BuildCosts(ctx context.Context, db *store.DB, initiativeID string) (domain.
 			Phase: row.Stage, USD: row.CostUSD, Seconds: float64(row.DurationMS) / 1000, Calls: row.Calls,
 		})
 	}
+	// review Low fix: pipeline order, not alphabetical by raw stage key.
+	sort.SliceStable(out.ByPhase, func(i, j int) bool {
+		oi, oki := workflowStageOrder[out.ByPhase[i].Phase]
+		oj, okj := workflowStageOrder[out.ByPhase[j].Phase]
+		if oki && okj {
+			return oi < oj
+		}
+		if oki != okj {
+			return oki // a known stage always sorts before an unlisted one
+		}
+		return out.ByPhase[i].Phase < out.ByPhase[j].Phase
+	})
 
 	agentStats, err := db.ListAgentRunStats(ctx, initiativeID)
 	if err != nil {
@@ -64,10 +102,15 @@ func AgentCostFromRuns(ctx context.Context, db *store.DB, initiativeID string, s
 			parsed++
 		}
 	}
-	// Only report a total when EVERY change set's cost was recovered: a partial
-	// sum presented as "the" spend would understate it, which is worse than
-	// admitting it was not measured.
-	if parsed == 0 || parsed != len(changeSets) {
+	// Only report a total when every actual agent RUN's cost was recovered
+	// (M6, review fix: this used to compare against len(changeSets), not the
+	// run count -- a placeholder/demo change set (Executor == "internal")
+	// never has AgentOutput to parse and never will, so one real run mixed
+	// with one placeholder change set could never report a total even though
+	// the one real run was fully measured). A partial sum presented as "the"
+	// spend would understate it, which is worse than admitting it was not
+	// measured.
+	if parsed == 0 || parsed != stats.Runs {
 		out.Note = "agent spend not measured"
 		return out
 	}
@@ -75,24 +118,37 @@ func AgentCostFromRuns(ctx context.Context, db *store.DB, initiativeID string, s
 	return out
 }
 
-// agentCostPattern matches a best-effort "cost" line in a coding agent's own
-// output, e.g. "Cost: $0.1234", "total cost: $1.20", "cost=$0.03". It is
-// deliberately loose: no real Hermes cost-output sample was available when
-// this was written (wave 3 contract, C3) and the fallback -- usd: null,
-// "agent spend not measured" -- is always safe, so a pattern that never
-// matches real output costs nothing but precision, while one that matched the
-// wrong number would misreport spend.
-var agentCostPattern = regexp.MustCompile(`(?i)(?:total\s+)?cost[:=]?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)`)
+// agentTotalCostPattern and agentCostPattern match a best-effort "cost" line
+// in a coding agent's own output, e.g. "Cost: $0.1234", "total cost: $1.20",
+// "cost=$0.03" (M6, review fix: the "$" is now mandatory -- a bare
+// "cost: 10" in, say, YAML the agent happened to print is not a dollar
+// figure and must not be read as one). No real Hermes cost-output sample was
+// available when this was first written (wave 3 contract, C3) and the
+// fallback -- usd: null, "agent spend not measured" -- is always safe, so a
+// pattern that never matches real output costs nothing but precision, while
+// one that matched the wrong number would misreport spend.
+var (
+	agentTotalCostPattern = regexp.MustCompile(`(?i)total\s+cost[:=]?\s*\$\s*([0-9]+(?:\.[0-9]+)?)`)
+	agentCostPattern      = regexp.MustCompile(`(?i)cost[:=]?\s*\$\s*([0-9]+(?:\.[0-9]+)?)`)
+)
 
 // ParseAgentCostUSD extracts a dollar cost from a coding agent's own console
-// output, best-effort (C3, wave 3 contract). ok is false when no recognizable
-// cost line is present.
+// output, best-effort (C3, wave 3 contract). A line explicitly labelled
+// "total cost" wins outright; otherwise the LAST plain "cost: $x" match wins
+// (M6, review fix: taking the first match anywhere picked up a per-step cost
+// printed before the run's own final total). ok is false when no
+// recognizable cost line is present at all.
 func ParseAgentCostUSD(output string) (usd float64, ok bool) {
-	m := agentCostPattern.FindStringSubmatch(output)
-	if m == nil {
+	if m := agentTotalCostPattern.FindStringSubmatch(output); m != nil {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return v, true
+		}
+	}
+	matches := agentCostPattern.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(m[1], 64)
+	v, err := strconv.ParseFloat(matches[len(matches)-1][1], 64)
 	if err != nil {
 		return 0, false
 	}

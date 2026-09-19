@@ -1531,7 +1531,25 @@ func hasOpenStructuralPlanFinding(ctx context.Context, pr *projectRuntime, initi
 // Pre-existing, recorded in docs/plans/deferred.md, and not closed here.
 func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiativeID, requirement string,
 	disposition domain.VerificationStatus, note string) (domain.InitiativeStatus, []workflow.Coverage, error) {
-	return r.RunVerificationGateConfirmingTests(ctx, projectID, initiativeID, requirement, disposition, note, false)
+	status, coverage, _, err := r.RunVerificationGateConfirmingTests(ctx, projectID, initiativeID, requirement, disposition, note, false)
+	return status, coverage, err
+}
+
+// ConfirmResult reports what confirmPassingTests did (C3/H2, review fix):
+// which requirement codes it actually confirmed, and which candidates it
+// looked at but skipped, and why -- so a bad requirement never aborts the
+// whole loop silently, and the caller (the HTTP handler, in turn the UI's
+// confirm dialog) can show exactly what happened instead of a bare status.
+type ConfirmResult struct {
+	Confirmed []string         `json:"confirmed"`
+	Skipped   []ConfirmSkipped `json:"skipped"`
+}
+
+// ConfirmSkipped names one requirement confirmPassingTests looked at but did
+// not confirm, and why.
+type ConfirmSkipped struct {
+	Requirement string `json:"requirement"`
+	Reason      string `json:"reason"`
 }
 
 // RunVerificationGateConfirmingTests is RunVerificationGate, with
@@ -1539,16 +1557,17 @@ func (r *Runtime) RunVerificationGate(ctx context.Context, projectID, initiative
 // {"confirm_passing_tests": true}`) additionally confirming, through the same
 // human-evidence path (actor "human"), every requirement whose mapped tests
 // all passed. Never runs without this explicit request -- nothing here is
-// invoked from any other path.
+// invoked from any other path. The returned *ConfirmResult is nil unless
+// confirmPassingTests was requested.
 func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projectID, initiativeID, requirement string,
-	disposition domain.VerificationStatus, note string, confirmPassingTests bool) (domain.InitiativeStatus, []workflow.Coverage, error) {
+	disposition domain.VerificationStatus, note string, confirmPassingTests bool) (domain.InitiativeStatus, []workflow.Coverage, *ConfirmResult, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	// Resolved here rather than in the handler, so a missing code and a refused
 	// state are decided in one place. With the lookup outside, the same failed
@@ -1556,7 +1575,7 @@ func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projec
 	// `{"requirement":"REQ-99","pass":true}` -- the same request, two precedences.
 	if requirement != "" {
 		if _, err := pr.db.GetRequirementByRef(ctx, initiativeID, requirement); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
 	// Evidence is recorded BEFORE the failed check, and that ordering is the
@@ -1568,13 +1587,16 @@ func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projec
 	// of this fix gated both and a commit review caught the over-reach.
 	if requirement != "" && disposition != "" {
 		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, requirement, disposition, note, ""); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
+	var confirmResult *ConfirmResult
 	if confirmPassingTests {
-		if err := r.confirmPassingTests(ctx, pr, initiativeID); err != nil {
-			return "", nil, err
+		result, err := r.confirmPassingTests(ctx, pr, initiativeID)
+		if err != nil {
+			return "", nil, nil, err
 		}
+		confirmResult = &result
 	}
 	// The GATE is what a failed initiative may not run -- it is the only thing
 	// here that can write `complete`. The status alone is not the test: apply,
@@ -1583,7 +1605,7 @@ func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projec
 	// for the length of those operations. The recorded reason is the durable
 	// fact; store.CompleteInitiative guards on the same predicate.
 	if ini.Status == domain.InitiativeFailed || ini.FailureReason != "" {
-		return "", nil, preconditionf(
+		return "", nil, confirmResult, preconditionf(
 			"the verification gate does not run on a failed initiative; `idea retry` re-runs it")
 	}
 	if err := pr.engine.VerifyInitiative(ctx, initiativeID); err != nil {
@@ -1592,41 +1614,84 @@ func (r *Runtime) RunVerificationGateConfirmingTests(ctx context.Context, projec
 		// translated here. Unmapped it reached the client as
 		// `400: store: initiative is not in a claimable state`.
 		if errors.Is(err, store.ErrInitiativeNotClaimable) {
-			return "", nil, preconditionf("the initiative changed state while the gate ran; re-run `idea verify`")
+			return "", nil, confirmResult, preconditionf("the initiative changed state while the gate ran; re-run `idea verify`")
 		}
-		return "", nil, err
+		return "", nil, confirmResult, err
 	}
 	ini, err = pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, confirmResult, err
 	}
 	coverage, err := pr.engine.Coverage(ctx, initiativeID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, confirmResult, err
 	}
-	return ini.Status, coverage, nil
+	return ini.Status, coverage, confirmResult, nil
 }
 
 // confirmPassingTests records human "pass" evidence, via the same path a
-// manual `idea verify REQ-n --pass` uses, for every requirement whose mapped
-// tests (projection.ComputeEvidenceTests) all passed and that is not already
-// verified (C2, wire contract). A requirement with no mapped tests, or with
-// any failing or unmapped one, is left untouched -- confirmed only means
-// "every test named for it passed", never "most of them did".
-func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, initiativeID string) error {
+// manual `idea verify REQ-n --pass` uses, for every requirement that is
+// `approved` (C3/H2/H4, review fix: never `draft`, `removed`, `verified`,
+// `failed` or `waived` -- confirming a failed/waived requirement would
+// silently overwrite a human's own explicit judgment, and the others are not
+// awaiting one), has acceptance criteria, and whose mapped tests
+// (projection.ComputeEvidenceTests) all passed. It requires at least one
+// applied change set for the initiative -- otherwise there is nothing built
+// to have produced real evidence from, whatever a stray finding might say.
+//
+// One bad requirement never aborts the loop and leaves earlier writes
+// stranded (H2): every candidate is attempted independently, and a failure
+// is recorded as skipped rather than returned, so the caller always gets a
+// complete, honest account of what happened to every requirement it looked
+// at instead of a partial confirm hidden behind a 500.
+func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, initiativeID string) (ConfirmResult, error) {
+	// Never nil (renders as JSON `null` rather than `[]`): every other
+	// wave 3 array-shaped response is documented to decode to an array, even
+	// empty, and this is no exception.
+	result := ConfirmResult{Confirmed: []string{}, Skipped: []ConfirmSkipped{}}
+	changeSets, err := pr.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return result, err
+	}
+	hasApplied := false
+	for _, cs := range changeSets {
+		if cs.Status == domain.ChangeSetApplied {
+			hasApplied = true
+			break
+		}
+	}
 	reqs, err := pr.db.ListRequirements(ctx, initiativeID)
 	if err != nil {
-		return err
+		return result, err
+	}
+	if !hasApplied {
+		for _, req := range reqs {
+			if req.SupersededBy == "" && req.Status == domain.RequirementApproved {
+				result.Skipped = append(result.Skipped, ConfirmSkipped{
+					Requirement: req.Code, Reason: "the initiative has no applied change set yet",
+				})
+			}
+		}
+		return result, nil
 	}
 	evidence, err := projection.ComputeEvidenceTests(ctx, pr.db, pr.blobs, initiativeID)
 	if err != nil {
-		return err
+		return result, err
 	}
 	for _, req := range reqs {
-		if req.SupersededBy != "" || req.Status == domain.RequirementVerified {
+		if req.SupersededBy != "" || req.Status != domain.RequirementApproved {
+			// Not a candidate at all (verified/failed/waived/draft/removed, or
+			// superseded by a later revision) -- never reported as "skipped",
+			// same as before this fix: skipped names only what looked
+			// confirmable and was not.
+			continue
+		}
+		if len(req.AcceptanceCriteria) == 0 {
+			result.Skipped = append(result.Skipped, ConfirmSkipped{Requirement: req.Code, Reason: "no acceptance criteria"})
 			continue
 		}
 		if !projection.AllTestsPassed(evidence[req.ID]) {
+			result.Skipped = append(result.Skipped, ConfirmSkipped{Requirement: req.Code, Reason: "not every mapped test passed"})
 			continue
 		}
 		// actor "": RecordHumanEvidence defaults it to store.HumanActor, so this
@@ -1634,10 +1699,12 @@ func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, i
 		// "using the existing human-evidence path with the actor set to human").
 		if err := pr.engine.RecordHumanEvidence(ctx, initiativeID, req.Code, domain.VerificationPass,
 			"confirmed: every mapped test passed", ""); err != nil {
-			return err
+			result.Skipped = append(result.Skipped, ConfirmSkipped{Requirement: req.Code, Reason: err.Error()})
+			continue
 		}
+		result.Confirmed = append(result.Confirmed, req.Code)
 	}
-	return nil
+	return result, nil
 }
 
 // ApprovePlanInitiative accepts the execution plan, findings and all.

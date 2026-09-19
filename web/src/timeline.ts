@@ -74,10 +74,38 @@ export function describeTimelineEntry(entry: TimelineEntry): string {
   return entry.detail ? `${base} — ${entry.detail}` : base;
 }
 
-// dayKey buckets an entry's timestamp to its calendar day (UTC, "YYYY-MM-DD")
-// for the "What changed" view's day-grouped list.
+// timelineEntryHref resolves a timeline entry's `ref` to somewhere the UI
+// can actually navigate (review Low fix: "the timeline ref is never linked
+// in the UI" -- the backend computed exactly which change set/decision/etc.
+// an entry was about, and the page never used it). Mirrors the daemon's own
+// queue.go href scheme for the same ref types, so a change-set entry and a
+// decision entry land where their own queue row would. null means this
+// entry's ref has nowhere to link to (e.g. "operation", "initiative"), so
+// the row stays plain, non-interactive text rather than a dead link.
+export function timelineEntryHref(initiativeId: string, ref?: TimelineRef): string | null {
+  if (!ref || !ref.id) return null;
+  switch (ref.type) {
+    case "change_set":
+      return `#/i/${initiativeId}/build`;
+    case "decision":
+      return `#/i/${initiativeId}/decision/${ref.id}`;
+    default:
+      return null;
+  }
+}
+
+// dayKey buckets an entry's timestamp to its calendar day, in the viewer's
+// own local time zone ("YYYY-MM-DD"), for the "What changed" view's
+// day-grouped list. Review Low fix: this used to bucket by UTC day
+// (`toISOString().slice(0, 10)`), so an entry from, say, 11pm Pacific showed
+// under the FOLLOWING day's heading for every viewer west of UTC -- "today"
+// and "yesterday" read wrong for most of the world.
 export function dayKey(at: string): string {
-  return new Date(at).toISOString().slice(0, 10);
+  const d = new Date(at);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 export interface TimelineDayGroup {

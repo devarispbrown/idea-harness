@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, resource } from "./api";
-import { describeTimelineEntry, groupByDay, relativeTime, type TimelineEntry } from "./timeline";
+import { describeTimelineEntry, groupByDay, relativeTime, timelineEntryHref, type TimelineEntry } from "./timeline";
 import { navigate } from "./router";
 
 // ChangedPage is the full "What changed" view (C1 / JTBD 6: "no useful
@@ -61,12 +61,26 @@ export default function ChangedPage({
         <div key={g.day} className="w3-timeline-day">
           <h4>{g.day}</h4>
           <ul className="w3-timeline-list">
-            {g.entries.map((e, i) => (
-              <li key={`${g.day}-${i}`} className="w3-timeline-row">
-                <span>{describeTimelineEntry(e)}</span>
-                <span className="w3-timeline-when">{relativeTime(e.at, now)}</span>
-              </li>
-            ))}
+            {g.entries.map((e, i) => {
+              // review Low fix: the backend's own `ref` names exactly what
+              // this entry was about; a native <button> (not a bare <li
+              // onClick>) makes it keyboard- and screen-reader-reachable,
+              // and a ref with nowhere to link to (e.g. "operation") stays
+              // plain text instead of a dead click target.
+              const href = timelineEntryHref(initiativeId, e.ref);
+              return (
+                <li key={`${g.day}-${i}`} className="w3-timeline-row">
+                  {href ? (
+                    <button type="button" className="w3-timeline-link" onClick={() => navigate(href)}>
+                      {describeTimelineEntry(e)}
+                    </button>
+                  ) : (
+                    <span>{describeTimelineEntry(e)}</span>
+                  )}
+                  <span className="w3-timeline-when">{relativeTime(e.at, now)}</span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ))}

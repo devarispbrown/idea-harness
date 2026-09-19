@@ -2,10 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import {
+  confirmableRequirementCodes,
   type EvidenceTest,
   evidenceSummary,
   hasBuiltSomething,
-  hasConfirmableEvidence,
   stripSourceTag,
   verifiedRequirementCount,
 } from "./verify";
@@ -77,8 +77,17 @@ export default function VerifyPage({
 
   // confirmPassingTests (task 7) posts the human sign-off for every
   // criterion whose mapped tests all passed -- a passing check is evidence,
-  // but a human still confirms it; nothing is auto-verified.
+  // but a human still confirms it; nothing is auto-verified. H1: a
+  // confirmation dialog names exactly which requirement codes are about to
+  // flip, so this is never a surprise one-click action.
   const confirmPassingTests = async () => {
+    if (
+      !window.confirm(
+        `Confirm ${confirmCandidates.length} requirement${confirmCandidates.length === 1 ? "" : "s"} whose tests all passed?\n\n${confirmCandidates.join(", ")}`,
+      )
+    ) {
+      return;
+    }
     setError("");
     setConfirmBusy(true);
     try {
@@ -123,9 +132,13 @@ export default function VerifyPage({
   // before anything has been built and applied, there is nothing to check
   // yet (K).
   const built = hasBuiltSomething(changeSets);
-  // task 7: only offered when it would actually confirm something -- a
-  // passing test somewhere doesn't mean every requirement has one.
-  const canConfirmPassingTests = hasConfirmableEvidence(verifiableReqs);
+  // task 7 / H1: only offered when it would actually confirm something -- a
+  // passing test somewhere doesn't mean every requirement has one -- AND
+  // once something has actually been built and applied. Manual Pass/Fail
+  // already gates on `built` for exactly this reason: confirming against
+  // code that never landed is meaningless, whatever the check output says.
+  const confirmCandidates = confirmableRequirementCodes(verifiableReqs);
+  const canConfirmPassingTests = built && confirmCandidates.length > 0;
 
   return (
     <div className="phase-page">
