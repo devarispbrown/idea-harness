@@ -68,7 +68,9 @@ func (e *Engine) Retry(ctx context.Context, initiativeID string) (domain.Initiat
 		if err := e.db.SupersedeAssertions(ctx, initiativeID, "retry"); err != nil {
 			return domain.InitiativeFailed, err
 		}
-		if err := e.runProductDefinition(ctx, initiativeID, prior); err != nil {
+		// reviseReason "": retry already superseded unconditionally above, a
+		// clean rewrite, not a code-stable revision (review ICP re-run #1).
+		if err := e.runProductDefinition(ctx, initiativeID, prior, ""); err != nil {
 			return domain.InitiativeFailed, err
 		}
 	}

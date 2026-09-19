@@ -126,3 +126,55 @@ const nearDuplicateThreshold = 0.85
 func similarJudgment(a, b string) bool {
 	return jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b)) >= nearDuplicateThreshold
 }
+
+// sameSubjectTextFloor is the minimum text-only Jaccard similarity (after
+// normalizeJudgment) required before two decisions' OPTIONS may count toward
+// a merge (review ICP re-run #2). Without this floor, two decisions that
+// merely happen to offer the same generic options -- both a plain "yes"/"no"
+// choice about entirely different subjects -- would merge on options alone.
+const sameSubjectTextFloor = 0.5
+
+// sameSubjectOptionsThreshold is the options-only Jaccard similarity, on top
+// of sameSubjectTextFloor, at or above which two decisions of the same type
+// are treated as the same subject even though their question wording falls
+// short of nearDuplicateThreshold (review ICP re-run #2).
+const sameSubjectOptionsThreshold = 0.7
+
+// optionsSimilarity is the token-Jaccard similarity of two decisions'
+// options lists (review ICP re-run #2): each list is flattened into one
+// string and tokenized the same way similarJudgment tokenizes question text,
+// so wording drift or reordering across revise cycles ("token bucket (per
+// key)" vs "token bucket algorithm") does not by itself defeat the match,
+// while still respecting tokenize's own exceptions (a short numeric token,
+// e.g. a version or a quantity, is never dropped).
+func optionsSimilarity(a, b []string) float64 {
+	return jaccardSimilarity(strings.Join(a, " "), strings.Join(b, " "))
+}
+
+// similarDecision reports whether two decisions of the SAME TYPE are
+// near-duplicates (review B4, adopted #8; review ICP re-run #2). A decision's
+// wording tends to drift more across revise-cycle rounds than its options do
+// -- an ICP re-run found the model re-asking effectively the same rate-limit
+// algorithm choice with different phrasing each round, each time creating a
+// new DEC instead of merging -- so this checks EITHER:
+//
+//  1. The pure-text rule (>= nearDuplicateThreshold), same as similarJudgment,
+//     or
+//  2. A same-subject signal: the question text is still recognizably about
+//     the same thing (>= sameSubjectTextFloor) AND the two decisions offer
+//     materially the same options (>= sameSubjectOptionsThreshold).
+//
+// The text floor in (2) is the false-merge protection: two decisions that
+// merely share generic options (e.g. both offer "yes"/"no") but are about
+// unrelated subjects have near-zero text similarity and so never merge on
+// options alone. Callers must also check DecisionType equality themselves.
+func similarDecision(aQuestion, bQuestion string, aOptions, bOptions []string) bool {
+	if similarJudgment(aQuestion, bQuestion) {
+		return true
+	}
+	textSim := jaccardSimilarity(normalizeJudgment(aQuestion), normalizeJudgment(bQuestion))
+	if textSim < sameSubjectTextFloor {
+		return false
+	}
+	return optionsSimilarity(aOptions, bOptions) >= sameSubjectOptionsThreshold
+}

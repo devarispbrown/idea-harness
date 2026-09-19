@@ -54,6 +54,7 @@ const PRD = `{
         "properties": {
           "statement": {"type": "string"},
           "priority": {"enum": ["must", "should", "could"]},
+          "code": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"REQ-4\") of the requirement this one continues/updates, copied from the Requirements context. Leave empty for a genuinely new requirement."},
           "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
           "acceptance_criteria": {
             "type": "array",

@@ -2562,7 +2562,10 @@ func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.C
 	runID, obj, err := e.runModel(ctx, cs.InitiativeID, StageReview, RoleAdversarialReviewer, ChangeSetReviewSchemaName, schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the change set. Emit structured findings. Never set accepted_risk. " +
-				"For each finding, set `path` to the file it is about when it names one, and `in_diff` to whether it is about code this change set actually touches."},
+				"For each finding, set `path` to the file it is about when it names one, and `in_diff` to whether it is about code this change set actually touches. " +
+				"Every finding must cite the specific line or path in the change set and a CONCRETE failure input or scenario that would trigger it -- not a generic category of risk. " +
+				"A speculative concern with no concrete failure input (e.g. \"could theoretically be misused\", or flagging a value already validated/normalized earlier in the same diff) is at most low severity and advisory; " +
+				"reserve critical/high for a finding you can show actually breaks with a specific input or actually contradicts a stated requirement."},
 			{Selector: "project_scale", Content: scaleAndConventions(scale, chg, rigor, conventions)},
 			{Selector: "change_set", Content: renderChangeSet(cs, e.RenderPatch(cs))},
 		},
