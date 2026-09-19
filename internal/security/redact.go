@@ -85,8 +85,35 @@ var credentialCatalog = []credentialPattern{
 	{regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), "Slack token"},
 	// Generic Bearer token.
 	{regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), "bearer token"},
-	// Generic key=value credentials in text/URLs.
-	{regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret|password|token|bearer)\s*[:=]\s*["']?([A-Za-z0-9._~+/=-]{8,})["']?`), "credential assignment"},
+	// AWS secret access key (review M3): its own env-var name, since the
+	// generic credential-assignment rule below requires the keyword
+	// (api_key/secret/password/token) to sit immediately before the
+	// separator, and "ACCESS_KEY" -- not one of those words -- comes between
+	// "SECRET" and "=" in AWS_SECRET_ACCESS_KEY. AWS secret keys are 40
+	// base64-ish characters; 30+ tolerates a truncated/rotated example.
+	{regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), "AWS secret access key"},
+	// Generic credential assignment in text/JSON/shell/URLs (review M3):
+	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., and similar.
+	//
+	// [A-Za-z0-9_]* (not \b) before the keyword, so it matches inside a
+	// snake_case or SCREAMING_CASE identifier -- DB_PASSWORD, client_secret,
+	// AWS_SECRET_ACCESS_KEY's own "_SECRET_" segment elsewhere -- where "_" is
+	// a word character and \b never fires between it and the keyword.
+	//
+	// ["']? right after the keyword (before \s*[:=]) consumes a JSON key's
+	// closing quote -- "password": -- which \s*[:=] alone cannot skip over.
+	//
+	// The value itself is one of three shapes: double-quoted, single-quoted
+	// (either may contain almost anything 8+ characters long -- a quote is
+	// itself the evidence of a literal), or, with no quote at all, a run of
+	// 8+ characters that excludes whitespace, quotes, parens, braces,
+	// brackets, commas and '.': the punctuation an identifier, member access,
+	// or function CALL uses and a bare secret literal does not. That is what
+	// keeps `token = getenv(...)` and `const token = req.headers...` from
+	// matching -- "getenv" stops at "(" (6 chars, under the 8-char floor) and
+	// "req" stops at "." (3 chars) -- while still matching an unquoted
+	// shell/env-style assignment like DB_PASSWORD=hunter2345.
+	{regexp.MustCompile(`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret|passw(?:or)?d|token)["']?\s*[:=]\s*(?:"([^"\n]{8,})"|'([^'\n]{8,})'|([^\s"'(){}\[\],.]{8,}))`), "credential assignment"},
 }
 
 const redacted = "[REDACTED]"
@@ -161,6 +188,22 @@ type CredentialFinding struct {
 // lineAt returns the 1-based line number of byte offset pos within s.
 func lineAt(s string, pos int) int {
 	return 1 + strings.Count(s[:pos], "\n")
+}
+
+// capturedValue returns a regex match's secret value: the first capturing
+// group that actually participated in the match (its indices are >= 0), or
+// the whole match when the pattern has no capturing group. Most patterns in
+// credentialCatalog have exactly one group, but the generic credential-
+// assignment rule (review M3) has three alternative groups -- one per quoting
+// style -- of which only one is ever populated per match, so "group 1" alone
+// is not enough.
+func capturedValue(content string, idx []int) string {
+	for g := 1; g*2+1 < len(idx); g++ {
+		if idx[g*2] >= 0 {
+			return content[idx[g*2] : idx[g*2+1]]
+		}
+	}
+	return content[idx[0]:idx[1]]
 }
 
 // FindCredentialsInFile scans one file's content for every known credential
@@ -304,10 +347,7 @@ func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding 
 	var out []CredentialFinding
 	for _, p := range credentialCatalog {
 		for _, idx := range p.re.FindAllStringSubmatchIndex(content, -1) {
-			value := content[idx[0]:idx[1]]
-			if len(idx) >= 4 && idx[2] >= 0 {
-				value = content[idx[2]:idx[3]]
-			}
+			value := capturedValue(content, idx)
 			preview := maskValue(value)
 			out = append(out, CredentialFinding{
 				Path:        path,
