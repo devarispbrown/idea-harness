@@ -117,17 +117,22 @@ gone stale once:
   was consulted before the row was looked up.
 - **A mutation blocked by something that depends on it**, such as deleting a task another task
   depends on.
-- **`revert` on a workspace that moved since apply** (review A3). Revert compares every file the
-  change set touched against the *post*-image apply wrote — the mirror of apply's own pre-image
-  check (`fsdiff.StaleBase`) at the opposite end of the change set's life. If a touched file no
-  longer matches (edited, deleted, or an "added" file now missing), revert refuses before writing
-  anything: `revert refused: the workspace changed since CHG-3 was applied: src/app.js: it was
-  edited in the workspace after apply; commit or discard your edits to src/app.js, then revert`.
-  There is no force option — the change set stays `applied`, and the recovery is for the human to
-  commit or discard their own edit first, then revert again. This is checked synchronously (before
-  the revert operation starts), the same way an already-reverted change set is: launching the
-  operation and failing in the background would answer `202` for a revert that erased nothing but
-  also changed nothing.
+- **`revert` on a workspace that moved since apply** (review A3, message sharpened by review M4).
+  Revert compares every file the change set touched against the *post*-image apply wrote — the
+  mirror of apply's own pre-image check (`fsdiff.StaleBase`) at the opposite end of the change
+  set's life. If a touched file no longer matches (edited, deleted, or an "added" file now
+  missing), revert refuses before writing anything: `revert refused: the workspace changed since
+  CHG-3 was applied: src/app.js: it was edited in the workspace after apply; discard (or stash)
+  your edits to src/app.js, then revert again`. The advice is **discard (or stash)**, never
+  "commit" — committing does not change a file's bytes, so it cannot make the comparison pass. When
+  a *later* change set is what actually touched the file, the advice names it instead —
+  `revert CHG-4 first` — rather than telling the human to discard what is really CHG-4's own
+  change. There is no force option — the change set stays `applied`, and the recovery is to act on
+  the advice, then revert again. This is checked synchronously (before the revert operation
+  starts), the same way an already-reverted change set is: launching the operation and failing in
+  the background would answer `202` for a revert that erased nothing but also changed nothing. The
+  refusal also records a `stale_post` finding on the change set at an observation (non-blocking)
+  severity — it does not gate `complete`.
 - **Configuration written but not applied**, when the daemon could not reload the project. The
   config file *was* written; the running daemon kept the previous one.
 

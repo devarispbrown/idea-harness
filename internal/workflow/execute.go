@@ -1747,18 +1747,28 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 		return err
 	}
 	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
-		msg := revertRefusedMessage(cs.HumanID, stale)
+		laterByFile, lerr := e.laterChangeSetsTouchingByFile(ctx, cs, staleFilePaths(stale))
+		if lerr != nil {
+			laterByFile = nil // best-effort naming; a lookup failure must not block the refusal itself
+		}
+		msg := revertRefusedMessage(cs.HumanID, stale, laterByFile)
 		_ = e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       changeSetID,
-			Severity:       domain.SeverityHigh,
+			InitiativeID: cs.InitiativeID,
+			TargetType:   "change_set",
+			TargetID:     changeSetID,
+			// review M4: stale_post is advisory, not a blocker of `complete` --
+			// hasOpenBlockingFindings only ever looks at Severity.Blocking()
+			// (critical/high), and there is nothing to accept-risk or override
+			// here: it is resolved by acting on the Recommendation, not by a
+			// disposition. Mutation-check: set this back to SeverityHigh and a
+			// pending stale_post finding blocks complete again.
+			Severity:       domain.SeverityObservation,
 			Confidence:     domain.ConfidenceHigh,
 			Category:       "stale_post",
 			Finding:        "The workspace changed after this change set was applied, so reverting it now would erase that work.",
 			Evidence:       strings.Join(stale, "\n"),
 			Impact:         "Nothing was written.",
-			Recommendation: "Commit or discard the edits to the listed files, then revert again.",
+			Recommendation: revertAdvice(staleFilePaths(stale), laterByFile),
 		})
 		return fmt.Errorf("workflow: %s", msg)
 	}
@@ -1795,10 +1805,9 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 	return nil
 }
 
-// revertRefusedMessage explains, in terms of what to do next, why cs cannot be
-// reverted while stale (fsdiff.StalePost's output, one line per file) is
-// non-empty: "commit or discard your edits to X, then revert" (review A3).
-func revertRefusedMessage(humanID string, stale []string) string {
+// staleFilePaths extracts the bare workspace-relative path from each of
+// fsdiff.StalePost's "path: reason" lines.
+func staleFilePaths(stale []string) []string {
 	files := make([]string, 0, len(stale))
 	for _, s := range stale {
 		if i := strings.Index(s, ": "); i >= 0 {
@@ -1807,9 +1816,90 @@ func revertRefusedMessage(humanID string, stale []string) string {
 			files = append(files, s)
 		}
 	}
+	return files
+}
+
+// revertAdvice builds the actionable half of the revert-refusal message
+// (review M4): for a file a LATER applied change set itself touched, the fix
+// is "revert <that change set> first" -- discarding what looks like a "user
+// edit" there would actually discard a legitimate later change. For every
+// other file, the advice is "discard (or stash) your edits to X": committing
+// does not change the file's bytes on disk, so it cannot make StalePost's
+// byte-for-byte comparison pass -- only discarding (or moving the edit aside
+// with a stash) does.
+func revertAdvice(files []string, laterByFile map[string]string) string {
+	var laterNames []string
+	seenLater := map[string]bool{}
+	var edited []string
+	for _, f := range files {
+		if human, ok := laterByFile[f]; ok && human != "" {
+			if !seenLater[human] {
+				seenLater[human] = true
+				laterNames = append(laterNames, human)
+			}
+			continue
+		}
+		edited = append(edited, f)
+	}
+	var parts []string
+	if len(laterNames) > 0 {
+		parts = append(parts, fmt.Sprintf("revert %s first", strings.Join(laterNames, ", ")))
+	}
+	if len(edited) > 0 {
+		parts = append(parts, fmt.Sprintf("discard (or stash) your edits to %s", strings.Join(edited, ", ")))
+	}
+	return strings.Join(parts, "; ") + ", then revert again"
+}
+
+// revertRefusedMessage explains, in terms of what to do next, why cs cannot
+// be reverted while stale (fsdiff.StalePost's output, one line per file) is
+// non-empty (review A3, sharpened by review M4: see revertAdvice).
+// laterByFile maps a stale path to the HumanID of a later, still-applied
+// change set that touched it, when one exists (nil or a missing entry means
+// none did, for that path).
+func revertRefusedMessage(humanID string, stale []string, laterByFile map[string]string) string {
+	files := staleFilePaths(stale)
 	return fmt.Sprintf(
-		"revert refused: the workspace changed since %s was applied: %s; commit or discard your edits to %s, then revert",
-		humanID, strings.Join(stale, "; "), strings.Join(files, ", "))
+		"revert refused: the workspace changed since %s was applied: %s; %s",
+		humanID, strings.Join(stale, "; "), revertAdvice(files, laterByFile))
+}
+
+// laterChangeSetsTouchingByFile maps each of files to the HumanID of the
+// earliest OTHER applied change set for cs's initiative, created after cs,
+// whose own patch touches that path (review M4). Used so a revert refusal
+// can tell the human which later change set to revert first instead of
+// wrongly suggesting they "discard" what is actually a legitimate later
+// change. Best-effort: a patch that fails to load for one candidate change
+// set is skipped rather than failing the whole lookup, since this only
+// sharpens advice text and must never itself block or fail a revert attempt.
+func (e *Engine) laterChangeSetsTouchingByFile(ctx context.Context, cs *domain.ChangeSet, files []string) (map[string]string, error) {
+	all, err := e.db.ListChangeSets(ctx, cs.InitiativeID)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(files))
+	for _, f := range files {
+		want[f] = true
+	}
+	result := make(map[string]string)
+	for i := range all {
+		other := all[i]
+		if other.ID == cs.ID || other.Status != domain.ChangeSetApplied || !other.CreatedAt.After(cs.CreatedAt) {
+			continue
+		}
+		patch, err := e.loadPatch(&other)
+		if err != nil {
+			continue
+		}
+		for _, fc := range patch.Files {
+			if want[fc.Path] {
+				if _, already := result[fc.Path]; !already {
+					result[fc.Path] = other.HumanID
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 // RevertBlockedReason reports why RevertChangeSet would refuse to revert
@@ -1846,7 +1936,11 @@ func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSe
 		return "", err
 	}
 	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
-		return revertRefusedMessage(cs.HumanID, stale), nil
+		laterByFile, lerr := e.laterChangeSetsTouchingByFile(ctx, cs, staleFilePaths(stale))
+		if lerr != nil {
+			laterByFile = nil
+		}
+		return revertRefusedMessage(cs.HumanID, stale, laterByFile), nil
 	}
 	return "", nil
 }
