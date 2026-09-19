@@ -34,7 +34,7 @@ func TestSlugifyTruncatesWithoutATrailingDash(t *testing.T) {
 func TestEnsureInitiativeBranchCreatesAndReuses(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestEnsureInitiativeBranchCreatesAndReuses(t *testing.T) {
 
 	// A prior apply's branch is reused verbatim, from any starting branch.
 	gitOut(t, repo, "checkout", "-q", "main")
-	again, reason, err := EnsureInitiativeBranch(t.Context(), repo, branch, "Add rate limiting", nil)
+	again, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, branch, "Add rate limiting", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestEnsureInitiativeBranchAvoidsACollidingName(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	gitOut(t, repo, "branch", "idea/add-rate-limiting")
 
-	branch, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, _, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFiles(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "unrelated.txt", "an edit the agent never touched")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestEnsureInitiativeBranchAllowsTheChangeSetsOwnDirtyFiles(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "server.js", "app.get('/health', ok)")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFilesInNestedDir(t *testing.
 	}
 	writeFile(t, repo, filepath.Join("src", "new", "unrelated.go"), "package new")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestEnsureInitiativeBranchAllowsANestedFileInScope(t *testing.T) {
 	}
 	writeFile(t, repo, filepath.Join("src", "new", "a.go"), "package new")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"src/new/a.go"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"src/new/a.go"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFileWithSpaces(t *testing.T)
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "my new file.txt", "an edit the agent never touched")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestEnsureInitiativeBranchAllowsAPathWithSpacesInScope(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "my new file.txt", "the change set's own content")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"my new file.txt"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"my new file.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestEnsureInitiativeBranchSwitchAppliesDirtyCheckToo(t *testing.T) {
 	gitOut(t, repo, "branch", "idea/add-rate-limiting")
 	writeFile(t, repo, "unrelated.txt", "a mid-edit the agent never touched")
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "idea/add-rate-limiting", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "idea/add-rate-limiting", "Add rate limiting", []string{"server.js"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,16 +228,23 @@ func TestEnsureInitiativeBranchSwitchAppliesDirtyCheckToo(t *testing.T) {
 	}
 }
 
-// TestEnsureInitiativeBranchCreatesFromDefaultNotCurrentHEAD is review H2: a
-// brand-new initiative branch must be created from the repository's default
-// branch, not from whatever HEAD happens to be checked out -- which may be
-// another initiative's own branch, stacking this initiative's commit on top
-// of that unrelated one.
-func TestEnsureInitiativeBranchCreatesFromDefaultNotCurrentHEAD(t *testing.T) {
+// TestEnsureInitiativeBranchFromUnrelatedHEADWarnsRatherThanSwitch is H6's
+// supersession of review H2's original fix here. H2 had this ALWAYS branch
+// from the repository's default rather than current HEAD, reasoning that
+// HEAD might be another initiative's own branch and stacking this
+// initiative's commit on top of it would be wrong. H6 found the sharper
+// case: doing that unconditionally is exactly what silently reverted a
+// user's own unpushed commits on the default branch to an older ref's
+// state (see TestEnsureInitiativeBranchWhenHEADIsAheadOfLocalDefaultWarnsAndKeepsHEAD).
+// The two can't both always win -- H6's decision is that the working tree is
+// NEVER moved away from wherever it already is; when that isn't the
+// resolved default branch's own commit, the new branch is created from
+// current HEAD instead, and a warning says so (surfaced as the change set's
+// git_commit_warning), rather than silently doing either thing.
+func TestEnsureInitiativeBranchFromUnrelatedHEADWarnsRatherThanSwitch(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	// A prior, unrelated initiative's branch, checked out and one commit
-	// ahead of main -- the trap: creating the new branch from current HEAD
-	// would silently include this commit too.
+	// ahead of main.
 	gitOut(t, repo, "checkout", "-q", "-b", "idea/other-initiative")
 	writeFile(t, repo, "other.txt", "other initiative's own file")
 	gitOut(t, repo, "add", "other.txt")
@@ -248,14 +255,67 @@ func TestEnsureInitiativeBranchCreatesFromDefaultNotCurrentHEAD(t *testing.T) {
 		t.Fatal("setup: idea/other-initiative should be ahead of main")
 	}
 
-	branch, reason, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reason != "" {
-		t.Fatalf("reason = %q, want none", reason)
+		t.Fatalf("reason = %q, want none: this must not be a soft refusal", reason)
 	}
-	if got := gitOut(t, repo, "rev-parse", branch); got != mainHead {
-		t.Fatalf("new branch %s is at %s, want main's HEAD %s (branched from current HEAD instead of the default branch)", branch, got, mainHead)
+	if warning == "" {
+		t.Fatal("want a warning: HEAD (idea/other-initiative) is not at the default branch's commit")
+	}
+	// H6: the tree is never moved away from HEAD's own commit. The new
+	// branch is at otherHead, not mainHead.
+	if got := gitOut(t, repo, "rev-parse", branch); got != otherHead {
+		t.Fatalf("new branch %s is at %s, want current HEAD %s (must not switch the tree to the default branch)", branch, got, otherHead)
+	}
+}
+
+// TestEnsureInitiativeBranchPrefersLocalDefaultOverStaleOriginHEAD is review
+// H6's own bug: HEAD is checked out ON the default branch itself, which has
+// unpushed commits -- origin/HEAD's remote-tracking ref is behind it. The
+// old code branched from `refs/remotes/origin/HEAD` directly, which
+// silently reverted every file outside the change set to origin's older
+// version the moment the new branch's paths didn't conflict. The fix
+// resolves the LOCAL `refs/heads/<default>` instead, which here is exactly
+// HEAD's own (newer) commit, so no warning is needed and nothing is
+// reverted.
+func TestEnsureInitiativeBranchPrefersLocalDefaultOverStaleOriginHEAD(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	// Simulate a remote whose origin/HEAD -> origin/main is behind local
+	// main by one commit (the normal state for a local tool with unpushed
+	// commits), without needing an actual remote server.
+	staleHead := gitOut(t, repo, "rev-parse", "HEAD")
+	gitOut(t, repo, "update-ref", "refs/remotes/origin/main", staleHead)
+	gitOut(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	writeFile(t, repo, "local-only.txt", "an unpushed local commit")
+	gitOut(t, repo, "add", "local-only.txt")
+	gitOut(t, repo, "commit", "-q", "-m", "unpushed local commit")
+	localHead := gitOut(t, repo, "rev-parse", "HEAD")
+	if localHead == staleHead {
+		t.Fatal("setup: local main should be ahead of the simulated origin/main")
+	}
+
+	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want none: this must not be a soft refusal", reason)
+	}
+	if branch == "" {
+		t.Fatal("want a branch, got none")
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q, want none: HEAD IS the resolved (local) default's commit", warning)
+	}
+	// The critical assertion (review H6): the tree must NOT have been moved
+	// to the stale origin/HEAD commit. local-only.txt is not reverted.
+	if got := gitOut(t, repo, "rev-parse", branch); got != localHead {
+		t.Fatalf("new branch %s is at %s, want local HEAD %s (must not silently revert to the stale origin/HEAD commit)", branch, got, localHead)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "local-only.txt")); err != nil {
+		t.Fatalf("local-only.txt must still exist in the working tree: %v", err)
 	}
 }
