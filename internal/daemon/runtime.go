@@ -179,7 +179,16 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	// Redaction choke point: the blob store redacts known secrets + patterns
 	// before any content is persisted (§47–§48). This store is for model
 	// artifacts/context only.
-	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
+	//
+	// The redactor is keyed with this project's own HMAC key (review H3), so
+	// every secret-sweep fingerprint it produces is scoped to the project
+	// rather than a bare sha256 comparable across every installation.
+	fpKey, err := db.SecretFingerprintKey(ctx)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
+	}
+	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
 	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
 	if err != nil {
 		db.Close()
@@ -246,7 +255,11 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 		return nil, err
 	}
 	dotEnv := config.LoadDotEnv(pr.rootPath)
-	redactor := security.NewRedactor(collectSecrets(cfg, dotEnv)...)
+	fpKey, err := pr.db.SecretFingerprintKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
+	}
+	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
 	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
 	if err != nil {
 		return nil, err

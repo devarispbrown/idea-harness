@@ -130,4 +130,55 @@ func TestGuidanceSurfacesStaleItemsAndAckClearsThem(t *testing.T) {
 		t.Fatal("expected acknowledging an already-cleared item to fail")
 	}
 	ackAgain.Body.Close()
+
+	// review M5: an unknown stale id is a 404, not a generic 400.
+	unknown := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/initiatives/"+iniID+"/stale/no-such-id/ack", token, "", "{}")
+	defer unknown.Body.Close()
+	if unknown.StatusCode != http.StatusNotFound {
+		t.Fatalf("ack unknown stale id = %d, want 404 (got %q)", unknown.StatusCode, readError(t, unknown))
+	}
+}
+
+// TestGuidanceAdvisesAckOrRerunWhenRevisePlanIsUnavailable is review M5: once
+// a change set holds work, `idea revise-plan` refuses -- so the guidance
+// "why" for stale items must not send the user at that guaranteed refusal.
+// It should instead say to acknowledge the items or re-run the affected
+// tasks.
+func TestGuidanceAdvisesAckOrRerunWhenRevisePlanIsUnavailable(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID, _ := reviewRequiredChangeSet(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec := &domain.Decision{InitiativeID: iniID, Type: domain.DecisionArchitecture, Question: "Which database?", Options: []string{"Postgres", "MongoDB"}}
+	if err := pr.db.CreateDecision(t.Context(), dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.ResolveDecision(t.Context(), dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: iniID, Statement: "Persist data", Priority: domain.PriorityMust}
+	if err := pr.db.CreateRequirement(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.WireRequirementDerivedFromDecision(t.Context(), iniID, req.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pr.db.ReopenDecision(t.Context(), dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	guidanceURL := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/guidance"
+	g := getStaleGuidance(t, guidanceURL, token)
+	if len(g.StaleItems) == 0 {
+		t.Fatal("expected stale items after reopening the decision")
+	}
+	if strings.Contains(g.Why, "Run `idea revise-plan`") {
+		t.Fatalf("guidance still points at revise-plan although a change set holds work: %q", g.Why)
+	}
+	if !strings.Contains(g.Why, "acknowledge") || !strings.Contains(g.Why, "re-run") {
+		t.Fatalf("guidance does not advise acking or re-running the affected tasks: %q", g.Why)
+	}
 }

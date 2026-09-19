@@ -73,41 +73,67 @@ func detectNodeToolchain(root string) (image, source string, ok bool) {
 	return "", "", false
 }
 
-// parseLeadingMajorVersion extracts a single unambiguous leading major
-// version number from a version specifier, refusing anything that looks like
-// a range (">=18 <21", two space-separated clauses) or a non-numeric tag
-// ("lts/*", "*", "latest"): C5 must fail closed on anything but a single
-// clear version, never guess at a range's intended major.
+// nodeVersionSpec matches an unambiguous Node version specifier (review M6):
+// an optional "v"/"V" prefix, 1-3 dot-separated numeric components, and an
+// optional trailing ".x" wildcard component -- "18", "v18", "18.2", "18.2.0",
+// "18.x", "18.2.x". The ENTIRE field must match (anchored both ends), so
+// anything else fails closed exactly like an unrecognized marker, never
+// guessing at the intended major:
+//
+//   - a comparison range: ">=24", "<21";
+//   - an OR'd set of ranges: "^18||^20";
+//   - a caret/tilde semver range: "^18.2.0", "~18.2.0" (both permit more than
+//     the single version they name, so neither is "unambiguous");
+//   - a non-numeric tag: "lts/*", "*", "latest".
 func parseLeadingMajorVersion(spec string) (string, bool) {
 	fields := strings.Fields(spec)
 	if len(fields) != 1 {
 		return "", false
 	}
-	tok := strings.TrimLeft(fields[0], "^~=<>vV ")
-	i := 0
-	for i < len(tok) && tok[i] >= '0' && tok[i] <= '9' {
-		i++
-	}
-	if i == 0 {
+	m := nodeVersionSpec.FindStringSubmatch(fields[0])
+	if m == nil {
 		return "", false
 	}
-	return tok[:i], true
+	return m[1], true
 }
+
+var nodeVersionSpec = regexp.MustCompile(`(?i)^v?([0-9]+)(?:\.[0-9]+){0,2}(?:\.x)?$`)
 
 // goDirective matches a go.mod `go` directive's version, e.g. "go 1.24" or
 // "go 1.24.0" (the latter form is also a toolchain-requirement version since
 // Go 1.21, but the tag is used verbatim either way).
 var goDirective = regexp.MustCompile(`^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$`)
 
+// toolchainDirective matches a go.mod `toolchain` directive's version, e.g.
+// "toolchain go1.24.1" (introduced in Go 1.21). Preferred over the `go`
+// directive when both are present (review M6): `go` names only the MINIMUM
+// version the module requires, while `toolchain` is what a `go` invocation
+// actually downloads and builds with when it differs -- a module can declare
+// `go 1.21` while `toolchain go1.24.1` is what it really runs on, and the
+// check sandbox should match the latter.
+var toolchainDirective = regexp.MustCompile(`^toolchain\s+go([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$`)
+
 func detectGoToolchain(root string) (image, source string, ok bool) {
 	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		return "", "", false
 	}
+	var goVersion, toolchainVersion string
 	for _, line := range strings.Split(string(data), "\n") {
-		if m := goDirective.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			return "golang:" + m[1], "go.mod", true
+		line = strings.TrimSpace(line)
+		if m := toolchainDirective.FindStringSubmatch(line); m != nil {
+			toolchainVersion = m[1]
+			continue
 		}
+		if m := goDirective.FindStringSubmatch(line); m != nil {
+			goVersion = m[1]
+		}
+	}
+	if toolchainVersion != "" {
+		return "golang:" + toolchainVersion, "go.mod toolchain", true
+	}
+	if goVersion != "" {
+		return "golang:" + goVersion, "go.mod", true
 	}
 	return "", "", false
 }

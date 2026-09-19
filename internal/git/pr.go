@@ -32,8 +32,9 @@ type PRRequest struct {
 	Body  string
 }
 
-// CreatePR pushes req.Branch to `origin` (with `-u`, so it is safe to call
-// again against an already-pushed branch) and runs `gh pr create`, returning
+// CreatePR pushes req.Branch to its configured upstream remote (or `origin`
+// when none is configured -- review M7) with `-u`, so it is safe to call
+// again against an already-pushed branch, and runs `gh pr create`, returning
 // the new pull request's URL. `gh` prints exactly the URL on success; a
 // caller with an existing PR for this branch should not call CreatePR again
 // -- Engine.CreatePR is the idempotent entry point that checks
@@ -42,10 +43,32 @@ func CreatePR(ctx context.Context, workTree string, req PRRequest) (string, erro
 	if _, err := exec.LookPath(GHBinPath); err != nil {
 		return "", ErrGHNotFound
 	}
-	if out, err := runGit(ctx, workTree, sanitizedEnv(), "push", "-u", "origin", req.Branch); err != nil {
-		return "", fmt.Errorf("git: push %s: %w: %s", req.Branch, err, strings.TrimSpace(out))
+	remote, err := pushRemote(ctx, workTree, req.Branch)
+	if err != nil {
+		return "", err
 	}
-	args := []string{"pr", "create", "--head", req.Branch,
+	if out, err := runGit(ctx, workTree, sanitizedPushEnv(), "push", "-u", remote, req.Branch); err != nil {
+		return "", fmt.Errorf("git: push %s %s: %w: %s", remote, req.Branch, err, strings.TrimSpace(out))
+	}
+	// gh's --head wants "owner:branch" when the branch lives on a fork (a
+	// remote other than the base repository's own "origin") rather than a
+	// plain branch name, which gh would otherwise resolve against the base
+	// repository and fail to find (review M7). This only works out the box
+	// for github.com remotes; a non-GitHub host (or a remote URL gh/git
+	// cannot parse an owner from) falls back to the plain branch name, which
+	// is correct whenever the push remote and the base repository are the
+	// same host+owner, and otherwise is a known limitation documented in
+	// docs/cli.md.
+	head := req.Branch
+	if remote != "origin" {
+		if forkOwner, oerr := remoteOwner(ctx, workTree, remote); oerr == nil && forkOwner != "" {
+			baseOwner, _ := remoteOwner(ctx, workTree, "origin")
+			if baseOwner == "" || !strings.EqualFold(baseOwner, forkOwner) {
+				head = forkOwner + ":" + req.Branch
+			}
+		}
+	}
+	args := []string{"pr", "create", "--head", head,
 		"--title", sanitizeTitle(req.Title), "--body", req.Body}
 	if req.Base != "" {
 		args = append(args, "--base", req.Base)
@@ -59,6 +82,55 @@ func CreatePR(ctx context.Context, workTree string, req PRRequest) (string, erro
 		return "", fmt.Errorf("gh: pr create produced no URL:\n%s", out)
 	}
 	return url, nil
+}
+
+// pushRemote returns the remote CreatePR should push branch to: the branch's
+// configured upstream remote (`branch.<name>.remote`) when set, else "origin"
+// (review M7). Checking the branch's own local config, not merely origin,
+// means a branch someone already set up to track a fork keeps pushing there
+// on every subsequent `idea pr` call.
+func pushRemote(ctx context.Context, workTree, branch string) (string, error) {
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "config", "--get", "branch."+branch+".remote")
+	if err == nil {
+		if remote := strings.TrimSpace(out); remote != "" {
+			return remote, nil
+		}
+	} else if !isExitCode(err, 1) {
+		return "", fmt.Errorf("git: config branch.%s.remote: %w: %s", branch, err, strings.TrimSpace(out))
+	}
+	return "origin", nil
+}
+
+// remoteOwner extracts the "owner" segment from a GitHub remote URL (any of
+// git@github.com:owner/repo.git, https://github.com/owner/repo(.git), or
+// ssh://git@github.com/owner/repo.git). Returns "" for a non-GitHub remote or
+// one remoteOwner cannot parse, rather than an error: an unresolvable owner
+// just means CreatePR falls back to a plain branch name for --head.
+func remoteOwner(ctx context.Context, workTree, remote string) (string, error) {
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "remote", "get-url", remote)
+	if err != nil {
+		return "", fmt.Errorf("git: remote get-url %s: %w: %s", remote, err, strings.TrimSpace(out))
+	}
+	return parseGitHubOwner(strings.TrimSpace(out)), nil
+}
+
+// parseGitHubOwner parses the owner segment out of a github.com remote URL,
+// or "" if url does not look like one.
+func parseGitHubOwner(url string) string {
+	url = strings.TrimSuffix(url, ".git")
+	i := strings.Index(url, "github.com")
+	if i < 0 {
+		return ""
+	}
+	rest := url[i+len("github.com"):]
+	rest = strings.TrimPrefix(rest, ":")
+	rest = strings.TrimPrefix(rest, "/")
+	rest = strings.TrimPrefix(rest, "/") // ssh://git@github.com//owner/repo, belt and suspenders
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0]
 }
 
 // CheckStatus is one CI check's state, from `gh pr checks --json`.
@@ -126,17 +198,44 @@ func runGH(ctx context.Context, workTree string, args ...string) (string, error)
 	return string(out), err
 }
 
-// sanitizedGHEnv is sanitizedEnv's allowlist (PATH/HOME/LANG,
-// GIT_TERMINAL_PROMPT=0) plus GH_TOKEN/GITHUB_TOKEN passed through when set.
-// Those two are `gh`'s own explicit authentication mechanism -- not a
-// provider secret riding along by accident, which is the leak sanitizedEnv
-// exists to prevent -- so passing them through is not the same hazard.
-func sanitizedGHEnv() []string {
-	env := sanitizedEnv()
-	for _, k := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+// authPassthroughVars are the caller's own authentication-related environment
+// variables that `git push` and `gh` need to work non-interactively (review
+// M7): SSH_AUTH_SOCK and GIT_SSH_COMMAND for an SSH-based push,
+// XDG_CONFIG_HOME for gh's own config/credential file location, GH_HOST for
+// which host GH_TOKEN authenticates against, and GH_TOKEN itself. None of
+// these is a provider secret riding along by accident, which is the leak
+// sanitizedEnv exists to prevent -- they are how the operator's own git/gh
+// already authenticate outside the daemon, so passing them through is not
+// the same hazard.
+var authPassthroughVars = []string{"SSH_AUTH_SOCK", "GIT_SSH_COMMAND", "XDG_CONFIG_HOME", "GH_HOST", "GH_TOKEN"}
+
+// withAuthPassthrough extends base with authPassthroughVars, each only when
+// actually set in the daemon's own environment.
+func withAuthPassthrough(base []string) []string {
+	env := base
+	for _, k := range authPassthroughVars {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
 		}
+	}
+	return env
+}
+
+// sanitizedPushEnv is sanitizedEnv plus authPassthroughVars, for the one git
+// invocation (push) that needs to authenticate against a remote (review M7).
+// Every other git call in this package keeps the plain sanitizedEnv, since
+// none of them talk to a remote.
+func sanitizedPushEnv() []string {
+	return withAuthPassthrough(sanitizedEnv())
+}
+
+// sanitizedGHEnv is sanitizedEnv's allowlist (PATH/HOME/LANG,
+// GIT_TERMINAL_PROMPT=0) plus authPassthroughVars and GITHUB_TOKEN (gh's
+// older/alternate token variable name) passed through when set.
+func sanitizedGHEnv() []string {
+	env := withAuthPassthrough(sanitizedEnv())
+	if v := os.Getenv("GITHUB_TOKEN"); v != "" {
+		env = append(env, "GITHUB_TOKEN="+v)
 	}
 	return env
 }

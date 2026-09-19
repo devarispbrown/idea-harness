@@ -188,13 +188,30 @@ type Finding struct {
 	DispositionActor string      `json:"disposition_actor,omitempty"`
 	Note             string      `json:"note,omitempty"`
 	// SecretFingerprint, SecretKind and SecretPath are set only on a
-	// secret_sweep finding raised from a per-file credential pattern match
-	// (§ D2, review changes #1). SecretFingerprint is the sha256 of the
-	// matched value's capture group, never the value itself; disposing the
-	// finding not_a_secret allowlists it by this fingerprint.
-	SecretFingerprint string    `json:"secret_fingerprint,omitempty"`
-	SecretKind        string    `json:"secret_kind,omitempty"`
-	SecretPath        string    `json:"secret_path,omitempty"`
+	// secret_sweep finding raised from a per-file credential match (§ D2,
+	// review changes #1, review H3). SecretFingerprint is a per-project HMAC
+	// of the matched value's capture group, never the value itself, and never
+	// a bare sha256 (which anyone could precompute and correlate across
+	// installations); disposing the finding not_a_secret allowlists it by
+	// this fingerprint scoped to SecretPath.
+	SecretFingerprint string `json:"secret_fingerprint,omitempty"`
+	SecretKind        string `json:"secret_kind,omitempty"`
+	SecretPath        string `json:"secret_path,omitempty"`
+	// SecretOverridable reports whether a human may disposition this finding
+	// not_a_secret at all (review H3): true for an ordinary pattern-shaped
+	// match (might be a false positive), false for a match drawn from the
+	// project's own configured secret values -- a real credential by
+	// construction, never eligible for the override regardless of who asks.
+	// Defaults to true (the zero value of the underlying column) so older
+	// rows written before this field existed are not retroactively treated
+	// as configured-secret matches.
+	SecretOverridable bool `json:"secret_overridable"`
+	// SecretPreview is a masked preview of the matched value -- first 4 and
+	// last 4 characters, the rest replaced by an ellipsis (e.g. "sk-p…Xy9z"),
+	// short values masked entirely -- shown so a human dispositioning this
+	// finding can see enough to recognize what they are allowlisting without
+	// the raw value ever being persisted or returned in full.
+	SecretPreview string `json:"secret_preview,omitempty"`
 	// Path is the file the finding is about, self-reported by the reviewer
 	// (change-set review only, review B2, adopted #5). Optional: a finding
 	// with no specific file leaves it empty.

@@ -10,29 +10,30 @@ import (
 	"strings"
 )
 
-// CommitGuardReason reports why the opt-in commit-on-apply path must not
-// create a commit in workTree right now, or "" when it may proceed (review
-// C4, adopted change #2). allowDefaultBranch mirrors the config toggle
-// `git.allow_default_branch`.
+// PreCommitGuardReason reports why the opt-in commit-on-apply path must not
+// touch workTree at all right now -- including the branch switch/creation
+// that may happen before the commit itself -- or "" when it may proceed
+// (review C4, adopted change #2; review H2 split this out of the combined
+// CommitGuardReason so a caller can run it BEFORE any checkout).
 //
 // A refusal here must never half-apply a change set: the caller still writes
-// the files and marks the change set applied, and only skips the commit,
-// reporting this reason as a warning on the change set instead of failing the
-// apply. Hooks stay disabled for whatever commit does land, exactly as before
-// (docs/configuration.md).
+// the files and marks the change set applied, and only skips the commit (and
+// any branch switch), reporting this reason as a warning on the change set
+// instead of failing the apply.
 //
 // The guard checks, in order:
-//   - a merge or cherry-pick in progress (a commit here would either finish
-//     someone else's merge with the agent's message, or abandon it);
+//   - a merge or cherry-pick in progress (a checkout/commit here would either
+//     finish someone else's merge with the agent's message, abandon it, or
+//     fail outright because git refuses to switch branches mid-conflict);
 //   - a rebase in progress (same hazard, different mechanism);
-//   - a detached HEAD (a commit here is an orphan the next checkout loses);
-//   - the repository's default branch, unless overridden (an agent commit
-//     landing directly on it, with no human commit of their own in between,
-//     is a stronger claim than opting into git_commit alone should make).
+//   - a detached HEAD (committing here is an orphan the next checkout loses,
+//     and -- since this now runs before any checkout -- a branch-per-initiative
+//     switch is refused too rather than silently leaving the detached state
+//     for the checkout to (maybe) fix).
 //
 // Not a repository at all is not refused here -- Commit's own isRepo check
 // already makes that a silent no-op, and this function has nothing to add.
-func CommitGuardReason(ctx context.Context, workTree string, allowDefaultBranch bool) (string, error) {
+func PreCommitGuardReason(ctx context.Context, workTree string) (string, error) {
 	if !isRepo(workTree) {
 		return "", nil
 	}
@@ -41,21 +42,46 @@ func CommitGuardReason(ctx context.Context, workTree string, allowDefaultBranch 
 	} else if reason != "" {
 		return reason, nil
 	}
-	branch, detached, err := currentBranch(ctx, workTree)
+	_, detached, err := currentBranch(ctx, workTree)
 	if err != nil {
 		return "", err
 	}
 	if detached {
 		return "HEAD is detached", nil
 	}
-	if !allowDefaultBranch {
-		isDefault, err := onDefaultBranch(ctx, workTree, branch)
-		if err != nil {
-			return "", err
-		}
-		if isDefault {
-			return fmt.Sprintf("%q is the repository's default branch (set git.allow_default_branch to override)", branch), nil
-		}
+	return "", nil
+}
+
+// DefaultBranchGuardReason reports whether workTree's CURRENT branch (after
+// any branch-per-initiative switch has already happened) is the repository's
+// default branch, unless allowDefaultBranch overrides it (the
+// `git.allow_default_branch` config toggle). This is deliberately the only
+// check still run AFTER a checkout (review H2): an agent commit landing
+// directly on the default branch, with no human commit of their own in
+// between, is a stronger claim than opting into git_commit alone should make,
+// and that judgment has to be made against whatever branch is checked out by
+// the time a commit is about to happen -- the initiative's own branch, not
+// whatever HEAD was before branch-per-initiative switched it.
+func DefaultBranchGuardReason(ctx context.Context, workTree string, allowDefaultBranch bool) (string, error) {
+	if !isRepo(workTree) || allowDefaultBranch {
+		return "", nil
+	}
+	branch, detached, err := currentBranch(ctx, workTree)
+	if err != nil {
+		return "", err
+	}
+	if detached {
+		// Should not happen (PreCommitGuardReason already refused a detached
+		// HEAD before any checkout), but a defensive report beats a panic on
+		// an empty branch name below.
+		return "HEAD is detached", nil
+	}
+	isDefault, err := onDefaultBranch(ctx, workTree, branch)
+	if err != nil {
+		return "", err
+	}
+	if isDefault {
+		return fmt.Sprintf("%q is the repository's default branch (set git.allow_default_branch to override)", branch), nil
 	}
 	return "", nil
 }
@@ -120,24 +146,91 @@ func currentBranch(ctx context.Context, workTree string) (branch string, detache
 	return strings.TrimSpace(out), false, nil
 }
 
+// defaultBranchNames are the conventional default-branch names assumed when
+// `origin/HEAD` cannot be resolved and `init.defaultBranch` is unset (review
+// low-priority item: guard.go originally only guessed main/master). Checked
+// in this order.
+var defaultBranchNames = []string{"main", "master", "trunk", "develop"}
+
 // onDefaultBranch reports whether branch is the repository's default. A
 // remote-tracking `origin/HEAD` (set by a clone, or `git remote set-head`) is
-// authoritative when present; otherwise "main" or "master" is assumed to be
-// the default, the same convention `gh` and GitHub itself use for a
-// repository with no remote configured yet.
+// authoritative when present; otherwise the repository's own configured
+// `init.defaultBranch` (if set) is authoritative; otherwise branch is checked
+// against defaultBranchNames, the same convention `gh` and GitHub itself use
+// for a repository with no remote configured yet.
 func onDefaultBranch(ctx context.Context, workTree, branch string) (bool, error) {
 	if branch == "" {
 		return false, nil
 	}
-	out, err := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
-	if err == nil {
-		name := strings.TrimPrefix(strings.TrimSpace(out), "origin/")
+	name, err := resolvedDefaultBranchName(ctx, workTree)
+	if err != nil {
+		return false, err
+	}
+	if name != "" {
 		return name == branch, nil
 	}
-	if !isExitCode(err, 1) {
-		return false, fmt.Errorf("git: resolve origin/HEAD: %w: %s", err, strings.TrimSpace(out))
+	for _, cand := range defaultBranchNames {
+		if branch == cand {
+			return true, nil
+		}
 	}
-	return branch == "main" || branch == "master", nil
+	return false, nil
+}
+
+// resolvedDefaultBranchName returns the repository's declared default branch
+// name: `origin/HEAD`'s target when the remote-tracking ref exists, else
+// `init.defaultBranch` when git has that configured, else "" (meaning: fall
+// back to guessing from defaultBranchNames).
+func resolvedDefaultBranchName(ctx context.Context, workTree string) (string, error) {
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+	if err == nil {
+		return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
+	}
+	if !isExitCode(err, 1) {
+		return "", fmt.Errorf("git: resolve origin/HEAD: %w: %s", err, strings.TrimSpace(out))
+	}
+	cfgOut, cfgErr := runGit(ctx, workTree, sanitizedEnv(), "config", "--local", "--get", "init.defaultBranch")
+	if cfgErr == nil {
+		if name := strings.TrimSpace(cfgOut); name != "" {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// defaultBranchRef resolves both the name and the ref to branch a brand-new
+// initiative branch from (review H2): `origin/HEAD` when present, else the
+// first local branch matching `init.defaultBranch` or defaultBranchNames.
+// Returns ("", "", nil) when nothing resolves (e.g. a fresh repo with no
+// commit yet on any conventional name) -- the caller falls back to branching
+// from current HEAD rather than failing outright.
+func defaultBranchRef(ctx context.Context, workTree string) (name, ref string, err error) {
+	out, symErr := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+	if symErr == nil {
+		name = strings.TrimPrefix(strings.TrimSpace(out), "origin/")
+		return name, "refs/remotes/origin/HEAD", nil
+	}
+	if !isExitCode(symErr, 1) {
+		return "", "", fmt.Errorf("git: resolve origin/HEAD: %w: %s", symErr, strings.TrimSpace(out))
+	}
+	candidates := defaultBranchNames
+	if cfgOut, cfgErr := runGit(ctx, workTree, sanitizedEnv(), "config", "--local", "--get", "init.defaultBranch"); cfgErr == nil {
+		if cfg := strings.TrimSpace(cfgOut); cfg != "" {
+			candidates = append([]string{cfg}, defaultBranchNames...)
+		}
+	}
+	for _, cand := range candidates {
+		if localBranchExists(ctx, workTree, cand) {
+			return cand, "refs/heads/" + cand, nil
+		}
+	}
+	return "", "", nil
+}
+
+// localBranchExists reports whether a local branch named name exists.
+func localBranchExists(ctx context.Context, workTree, name string) bool {
+	_, err := runGit(ctx, workTree, sanitizedEnv(), "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+	return err == nil
 }
 
 // isExitCode reports whether err is an *exec.ExitError with exactly this exit

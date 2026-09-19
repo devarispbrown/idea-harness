@@ -112,10 +112,21 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 			if n[0] == "task" {
 				if cses, err := e.db.ListChangeSetsByTask(ctx, n[1]); err == nil {
 					for _, cs := range cses {
+						// A rejected or superseded change set does not "block"
+						// anything -- it is dead, not a live dependent -- and
+						// review (low-priority item) excludes both from
+						// impactNodeCount's "blocks N"; excluded here too so
+						// the itemized list and that count agree.
+						if !cs.Status.HoldsWork() {
+							continue
+						}
 						out = append(out, ImpactItem{
 							TraceItem: TraceItem{
+								// cs.HumanID is already "CHG-3" (review
+								// low-priority item: this used to read
+								// "CHG " + cs.HumanID, printing "CHG CHG-3").
 								EdgeType: "change_set", FromType: "change_set", FromID: cs.ID,
-								FromLabel: "CHG " + cs.HumanID, ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
+								FromLabel: cs.HumanID, ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
 							},
 							Staleness: stalenessForNode(stale, "change_set", cs.ID, ""),
 						})
@@ -190,10 +201,14 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 			}
 			// Change sets are query-linked to their task, not edge-linked (see
 			// the identical comment on Impact); a "blocks N" count must include
-			// them too.
+			// them too -- except a rejected or superseded one (review
+			// low-priority item), which is dead and blocks nothing.
 			if n[0] == "task" {
 				if cses, err := e.db.ListChangeSetsByTask(ctx, n[1]); err == nil {
 					for _, cs := range cses {
+						if !cs.Status.HoldsWork() {
+							continue
+						}
 						dependents["change_set:"+cs.ID] = true
 					}
 				}

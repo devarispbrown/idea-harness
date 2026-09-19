@@ -783,7 +783,15 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 	if err != nil {
 		return err
 	}
-	if err := db.Apply(ctx, Event{
+	// Discovery reads BEFORE the transaction starts (see decisionDependents'
+	// doc comment: db.sql is a single-connection handle, so a pool read from
+	// inside an open transaction deadlocks against the transaction's own
+	// connection).
+	reqIDs, taskIDs, csIDs, err := db.decisionDependents(ctx, dec.InitiativeID, dec.ID)
+	if err != nil {
+		return err
+	}
+	return db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
 		Actor:         actor,
@@ -798,11 +806,11 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 			return notFoundOrState(tx, "decisions", decisionID, "decision",
 				fmt.Errorf("decision %s is not decided", decisionID))
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return db.markDecisionDependentsStale(ctx, dec.InitiativeID, dec.ID, dec.Code)
+		// review M5: marked in the SAME transaction as the reopen above, so a
+		// crash between the two can never leave the decision reopened with
+		// nothing marked stale.
+		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
+	})
 }
 
 // SetDecisionRecommendation overwrites a decision's recommendation with a
@@ -1064,11 +1072,11 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 			disp = sql.NullString{String: string(f.Disposition), Valid: true}
 		}
 		_, err := tx.Exec(`
-			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			f.ID, f.InitiativeID, f.ReviewRunID, f.TargetType, f.TargetID, f.Severity, f.Confidence, f.Category, f.Code,
 			f.Finding, f.Evidence, f.Impact, f.Recommendation, disp, f.DispositionActor, f.Note,
-			f.SecretFingerprint, f.SecretKind, f.SecretPath, f.Path, f.InDiff, f.Advisory, f.CreatedAt.UnixMilli())
+			f.SecretFingerprint, f.SecretKind, f.SecretPath, f.SecretOverridable, f.SecretPreview, f.Path, f.InDiff, f.Advisory, f.CreatedAt.UnixMilli())
 		return err
 	})
 }
@@ -1076,7 +1084,7 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 // ListFindings returns findings for a review run.
 func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE review_run_id = ? ORDER BY created_at ASC`, reviewRunID)
 	if err != nil {
 		return nil, err
@@ -1089,7 +1097,7 @@ func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Fi
 // change set), used by the review_open_blocking deny gate at approve time.
 func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE target_type = ? AND target_id = ? ORDER BY created_at ASC`, targetType, targetID)
 	if err != nil {
 		return nil, err
@@ -1101,7 +1109,7 @@ func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID str
 // ListFindingsByInitiative returns all findings for an initiative.
 func (db *DB) ListFindingsByInitiative(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, path, in_diff, advisory, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -1119,7 +1127,7 @@ func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
 		if err := rows.Scan(&f.ID, &f.InitiativeID, &f.ReviewRunID, &f.TargetType, &f.TargetID, &f.Severity, &f.Confidence,
 			&f.Category, &f.Code, &f.Finding, &f.Evidence, &f.Impact, &f.Recommendation, &disp,
 			&f.DispositionActor, &f.Note, &f.SecretFingerprint, &f.SecretKind, &f.SecretPath,
-			&f.Path, &f.InDiff, &f.Advisory, &created); err != nil {
+			&f.SecretOverridable, &f.SecretPreview, &f.Path, &f.InDiff, &f.Advisory, &created); err != nil {
 			return nil, err
 		}
 		f.CreatedAt = time.UnixMilli(created)
@@ -1196,12 +1204,22 @@ func (db *DB) DispositionUnclaimedFindingsByTarget(ctx context.Context, initiati
 
 // SetFindingDisposition records a disposition from a distinct actor.
 //
-// not_a_secret (review changes #1) is scoped to secret_sweep findings only:
-// every other category refuses it, so the one disposition that also writes a
-// project-wide allowlist entry cannot be forged onto an unrelated finding. The
-// scoping check and the allowlist write happen in the same transaction as the
-// disposition update, so a crash between them cannot leave one without the
-// other.
+// not_a_secret (review changes #1, review H3) is scoped to secret_sweep
+// findings only: every other category refuses it, so the one disposition
+// that also writes a project-scoped allowlist entry cannot be forged onto an
+// unrelated finding. A configured secret value's own finding
+// (secret_overridable = false) refuses it too, unconditionally: that match
+// is a real credential by construction, not a shape that might be a false
+// positive, and no human override makes it eligible. The scoping checks and
+// the allowlist write happen in the same transaction as the disposition
+// update, so a crash between them cannot leave one without the other.
+//
+// The allowlist entry is scoped to (fingerprint, path) -- not fingerprint
+// alone -- via upsert (ON CONFLICT), so the same value allowlisted in one
+// file (e.g. a test fixture) still blocks in another. Changing a finding's
+// disposition AWAY FROM not_a_secret removes the matching allowlist entry,
+// so an allowlist decision can be reversed by re-dispositioning the finding
+// that created it.
 func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp domain.Disposition, actor string) error {
 	if !disp.Valid() {
 		return fmt.Errorf("store: invalid disposition %q", disp)
@@ -1220,8 +1238,10 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		Operation:     string(disp),
 	}, func(tx *sql.Tx) error {
 		var category, secretFingerprint, secretKind, secretPath string
-		if err := tx.QueryRow(`SELECT category, secret_fingerprint, secret_kind, secret_path FROM findings WHERE id = ?`, findingID).
-			Scan(&category, &secretFingerprint, &secretKind, &secretPath); err != nil {
+		var secretOverridable bool
+		var priorDisp sql.NullString
+		if err := tx.QueryRow(`SELECT category, secret_fingerprint, secret_kind, secret_path, secret_overridable, disposition FROM findings WHERE id = ?`, findingID).
+			Scan(&category, &secretFingerprint, &secretKind, &secretPath, &secretOverridable, &priorDisp); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return &NotFoundError{Kind: "finding", Ref: findingID}
 			}
@@ -1233,6 +1253,9 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 			}
 			if secretFingerprint == "" {
 				return fmt.Errorf("store: this finding has no recorded secret fingerprint to allowlist")
+			}
+			if !secretOverridable {
+				return fmt.Errorf("store: not_a_secret is refused for %q: this value was drawn from the project's own configured secrets, not a pattern match, and is never eligible for the not_a_secret override", secretKind)
 			}
 		}
 		// RowsAffected, because db.Apply commits the finding.dispositioned event
@@ -1252,9 +1275,20 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		if n == 0 {
 			return &NotFoundError{Kind: "finding", Ref: findingID}
 		}
-		if disp == domain.DispositionNotASecret {
-			if _, err := tx.Exec(`INSERT INTO secret_allowlist (id, fingerprint, kind, path, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		wasNotASecret := priorDisp.Valid && domain.Disposition(priorDisp.String) == domain.DispositionNotASecret
+		switch {
+		case disp == domain.DispositionNotASecret:
+			if _, err := tx.Exec(`
+				INSERT INTO secret_allowlist (id, fingerprint, kind, path, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(fingerprint, path) DO UPDATE SET kind = excluded.kind, actor = excluded.actor, created_at = excluded.created_at`,
 				id.New(), secretFingerprint, secretKind, secretPath, actor, nowMS()); err != nil {
+				return err
+			}
+		case wasNotASecret && secretFingerprint != "":
+			// The disposition moved away from not_a_secret: the allowlist
+			// entry it created must go with it, or the sweep would keep
+			// silently passing a value the human just un-allowlisted.
+			if _, err := tx.Exec(`DELETE FROM secret_allowlist WHERE fingerprint = ? AND path = ?`, secretFingerprint, secretPath); err != nil {
 				return err
 			}
 		}

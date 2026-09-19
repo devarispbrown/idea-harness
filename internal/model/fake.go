@@ -336,9 +336,27 @@ func shortTitle(idea string) string {
 
 var requirementCodeRe = regexp.MustCompile(`\bREQ-\d+\b`)
 
-// firstRequirementCode is the first requirement code in the request's input,
-// or "" when it names none.
+// requirementsSectionRe locates the "--- requirements (trust: ...) ---" block
+// the deterministic context compiler emits (internal/context.Compile) inside
+// System, up to the next "--- " section header or the end of the string.
+var requirementsSectionRe = regexp.MustCompile(`(?s)--- requirements \(trust: [^)]*\) ---\n(.*?)(?:\n--- |\z)`)
+
+// firstRequirementCode is the first requirement code the request actually
+// lists, or "" when it names none.
+//
+// It prefers a code found in the "requirements" context section over one
+// merely mentioned elsewhere (review low-priority item): the history,
+// decisions, or original idea-description sections can still name a
+// requirement that has since been superseded (e.g. "REQ-1 was superseded
+// because..."), and a naive whole-prompt scan would grab that dead code
+// before ever reaching the live requirements section further down --
+// producing demo output that cites a requirement design/plan no longer sees.
 func firstRequirementCode(req Request) string {
+	if m := requirementsSectionRe.FindStringSubmatch(req.System); m != nil {
+		if c := requirementCodeRe.FindString(m[1]); c != "" {
+			return c
+		}
+	}
 	for _, m := range req.Messages {
 		if c := requirementCodeRe.FindString(m.Content); c != "" {
 			return c

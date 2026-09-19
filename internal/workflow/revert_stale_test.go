@@ -57,8 +57,14 @@ func TestRevertRefusesAStalePost(t *testing.T) {
 	if !strings.Contains(err.Error(), "server.js") {
 		t.Errorf("the refusal does not name the changed file: %v", err)
 	}
-	if !strings.Contains(err.Error(), "commit or discard") {
+	// review M4: committing does not change the file's bytes, so it cannot
+	// make the stale-workspace check pass -- the advice must say discard (or
+	// stash), never "commit".
+	if !strings.Contains(err.Error(), "discard") {
 		t.Errorf("the refusal does not say what to do next: %v", err)
+	}
+	if strings.Contains(err.Error(), "commit") {
+		t.Errorf("the refusal suggests committing, which cannot help (bytes are unchanged): %v", err)
 	}
 
 	// Nothing was written: the human's edit survives byte-for-byte.
@@ -93,10 +99,42 @@ func TestRevertRefusesAStalePost(t *testing.T) {
 			if !strings.Contains(f.Evidence, "server.js") {
 				t.Errorf("stale_post finding does not name the file: %q", f.Evidence)
 			}
+			// review M4: stale_post must not block `complete` -- only
+			// Severity.Blocking() (critical/high) findings do.
+			if f.Severity.Blocking() {
+				t.Errorf("stale_post Severity = %q, want an observation-level (non-blocking) severity", f.Severity)
+			}
 		}
 	}
 	if !found {
 		t.Error("no stale_post finding was recorded")
+	}
+}
+
+// TestRevertRefusalNamesALaterChangeSetInstead is review M4: when a LATER
+// applied change set is the one that actually touched the stale file, the
+// advice must name it ("revert CHG-n first"), not tell the human to discard
+// what is really a legitimate later change.
+func TestRevertRefusalNamesALaterChangeSetInstead(t *testing.T) {
+	eng, db, iniID, _ := newWorkspaceFixture(t)
+	addTask(t, db, iniID, "add /health")
+	cs1 := applyOneTask(t, eng, db, iniID)
+
+	// A second task/change set, applied after cs1, that (via the internal
+	// executor's placeholder) also touches server.js -- exactly the
+	// "something later changed this file" scenario.
+	addTask(t, db, iniID, "add /metrics")
+	cs2 := applyOneTask(t, eng, db, iniID)
+
+	err := eng.RevertChangeSet(context.Background(), iniID, cs1.ID)
+	if err == nil {
+		t.Fatal("want a refusal: cs2 touched the same file after cs1 was applied")
+	}
+	if !strings.Contains(err.Error(), "revert "+cs2.HumanID+" first") {
+		t.Errorf("refusal does not name %s to revert first: %v", cs2.HumanID, err)
+	}
+	if strings.Contains(err.Error(), "discard") {
+		t.Errorf("refusal should not tell the human to discard %s's own change: %v", cs2.HumanID, err)
 	}
 }
 
