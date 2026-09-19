@@ -38,6 +38,14 @@ describe("parseRoute", () => {
     expect(parseRoute("#/i/abc/diff/v1/v2")).toEqual({ name: "diff", id: "abc", from: "v1", to: "v2" });
   });
 
+  it("resolves the queue route (D-b, wave 3)", () => {
+    expect(parseRoute("#/queue")).toEqual({ name: "queue" });
+  });
+
+  it("resolves the per-initiative changed route (C1, wave 3)", () => {
+    expect(parseRoute("#/i/abc/changed")).toEqual({ name: "changed", id: "abc" });
+  });
+
   it("does not silently fall back to home for a bogus top-level path", () => {
     expect(parseRoute("#/nope").name).toBe("not-found");
   });
