@@ -114,9 +114,28 @@ type HarnessConfig struct {
 	// each applied change set (§M7). Off by default: a hook runs arbitrary code
 	// under the daemon's privileged environment, so this must never be implied.
 	GitCommit bool `json:"git_commit" yaml:"git_commit"`
+	// Git configures git-native behavior beyond the commit-on-apply toggle
+	// above (review #2, C4).
+	Git GitConfig `json:"git,omitempty" yaml:"git,omitempty"`
 	// Demo configures the built-in deterministic provider. It does nothing when
 	// a real provider is configured.
 	Demo DemoConfig `json:"demo,omitempty" yaml:"demo,omitempty"`
+}
+
+// GitConfig configures git-native behavior beyond git_commit (review C4,
+// adopted change #2). Both fields are opt-in and off by default.
+type GitConfig struct {
+	// AllowDefaultBranch permits the commit-on-apply path to commit while HEAD
+	// is checked out on the repository's default branch. Off by default: an
+	// agent commit landing directly on the default branch, with no human
+	// commit of their own in between, is a stronger claim than opting into
+	// git_commit alone should make. Irrelevant when BranchPerInitiative is on,
+	// since apply then commits on the initiative's own branch.
+	AllowDefaultBranch bool `json:"allow_default_branch,omitempty" yaml:"allow_default_branch,omitempty"`
+	// BranchPerInitiative opts into creating and checking out idea/<slug> on an
+	// initiative's first apply, then committing each of its change sets there
+	// instead of on whatever branch the workspace was already on.
+	BranchPerInitiative bool `json:"branch_per_initiative,omitempty" yaml:"branch_per_initiative,omitempty"`
 }
 
 // DemoConfig steers the built-in demo provider.

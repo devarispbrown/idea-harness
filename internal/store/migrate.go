@@ -591,6 +591,14 @@ CREATE TABLE IF NOT EXISTS stale_marks (
 CREATE INDEX IF NOT EXISTS idx_stale_marks_initiative ON stale_marks(initiative_id, cleared_at);
 CREATE INDEX IF NOT EXISTS idx_stale_marks_target ON stale_marks(initiative_id, target_type, target_id, cleared_at);
 `,
+	// 26: record why an applied change set was NOT committed even though
+	// git_commit is on (detached HEAD, a rebase/merge/cherry-pick in progress,
+	// or the repository's default branch without git.allow_default_branch --
+	// review C4, adopted #2). A guard refusal must never fail the apply itself,
+	// so the reason is recorded here instead, alongside git_commit_sha.
+	`
+ALTER TABLE change_sets ADD COLUMN git_commit_warning TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

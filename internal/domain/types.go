@@ -369,6 +369,13 @@ type ChangeSet struct {
 	PatchDigest    string          `json:"patch_digest"`
 	ReviewID       string          `json:"review_id,omitempty"`
 	GitCommitSHA   string          `json:"git_commit_sha,omitempty"`
+	// GitCommitWarning explains why an applied change set was NOT committed
+	// even though git_commit is on: a detached HEAD, a rebase/merge/
+	// cherry-pick in progress, or the repository's default branch without
+	// git.allow_default_branch (review C4, adopted #2). Empty whenever
+	// git_commit is off, the change set was committed (GitCommitSHA is set),
+	// or the workspace is not a git repository.
+	GitCommitWarning string `json:"git_commit_warning,omitempty"`
 	CreatedByRunID string          `json:"created_by_run_id,omitempty"`
 	// Model is the actual model spec that produced this change set (e.g.
 	// "openai/gpt-5"), or "demo" when no real provider was configured. The UI

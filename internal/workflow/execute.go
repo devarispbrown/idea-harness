@@ -1476,15 +1476,22 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	// failure is non-fatal at the apply level — restore the pre-image and mark
 	// conflicted, mirroring the fsdiff.Commit failure path. The byte-for-byte
 	// workspace revert is orthogonal: no revert commit is created here.
-	var commitSHA string
+	//
+	// A guard refusal (detached HEAD, a rebase/merge/cherry-pick in progress,
+	// or the default branch without git.allow_default_branch — review C4,
+	// adopted #2) is NOT a commit failure: the change set still applies, and
+	// the reason is recorded as a warning instead (below), never a half-applied
+	// change set.
+	var commitSHA, commitWarning string
 	if e.cfg.GitCommit {
-		sha, err := e.commitChangeSet(ctx, cs, patch)
+		sha, warning, err := e.commitChangeSet(ctx, cs, patch)
 		if err != nil {
 			_ = fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get)
 			_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
 			return fmt.Errorf("workflow: git commit: %w", err)
 		}
 		commitSHA = sha
+		commitWarning = warning
 	}
 
 	// applying→applied + committed journal (carrying the pre-image digest) happen
@@ -1501,6 +1508,11 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 			return err
 		}
 	}
+	if commitWarning != "" {
+		if err := e.db.SetChangeSetGitWarning(ctx, changeSetID, commitWarning, store.ActorOrchestrator); err != nil {
+			return err
+		}
+	}
 	// Track B: the verification_engineer records deterministic evidence. The
 	// checks passed (otherwise the change set would have been rejected), but the
 	// acceptance criterion itself needs a human/real measurement (§70).
@@ -1511,13 +1523,26 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 }
 
 // commitChangeSet creates the opt-in git commit for an applied change set and
-// returns the commit SHA ("" when the workspace is not a git repository or the
-// diff was empty). The subject is "<HumanID>: <task title>" (HumanID is already
-// CHG-N), with the task title sanitized so it can never inject extra commit
-// lines or a forged header.
+// returns the commit SHA ("" when the workspace is not a git repository, the
+// diff was empty, or the commit guard refused). The subject is "<HumanID>:
+// <task title>" (HumanID is already CHG-N), with the task title sanitized so
+// it can never inject extra commit lines or a forged header.
+//
+// Before ever calling git.Commit, git.CommitGuardReason checks for a detached
+// HEAD, a rebase/merge/cherry-pick in progress, and (unless
+// git.allow_default_branch) the repository's default branch (review C4,
+// adopted #2). A refusal is reported back as warning, not error: the change
+// set still applies, only uncommitted, and ApplyChangeSet records the reason
+// on it rather than failing.
+//
 // A title-lookup failure is non-fatal: the commit still proceeds with an empty
 // title rather than failing the whole apply.
-func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patch *fsdiff.Patch) (string, error) {
+func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patch *fsdiff.Patch) (sha, warning string, err error) {
+	if reason, err := git.CommitGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
+		return "", "", err
+	} else if reason != "" {
+		return "", "not committed because " + reason, nil
+	}
 	title := ""
 	if cs.TaskID != "" {
 		if tasks, err := e.db.ListTasks(ctx, cs.InitiativeID); err == nil {
@@ -1534,7 +1559,8 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		paths = append(paths, f.Path)
 	}
 	message := fmt.Sprintf("%s: %s", cs.HumanID, sanitizeCommitTitle(title))
-	return git.Commit(ctx, e.workspaceRoot, paths, message)
+	sha, err = git.Commit(ctx, e.workspaceRoot, paths, message)
+	return sha, "", err
 }
 
 // sanitizeCommitTitle collapses newlines and strips leading dashes from a task

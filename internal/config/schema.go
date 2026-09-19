@@ -47,6 +47,14 @@ const harnessSchema = `{
     "test_cmd": { "type": "string" },
     "check_timeout_seconds": { "type": "integer", "minimum": 0 },
     "git_commit": { "type": "boolean" },
+    "git": {
+      "type": "object",
+      "properties": {
+        "allow_default_branch":  { "type": "boolean" },
+        "branch_per_initiative": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "demo": {
       "type": "object",
       "properties": {
