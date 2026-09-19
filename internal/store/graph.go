@@ -131,6 +131,28 @@ func (db *DB) CreateVerificationTask(ctx context.Context, t *domain.Task, requir
 // non-empty, wires that edge from the task to each non-empty, de-duplicated
 // id in targetIDs.
 func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetIDs []string, dependsOn []string) error {
+	// The id must be assigned before Event is built below (its AggregateID),
+	// not inside createTaskTx -- that used to happen in this function's own
+	// body, and the refactor that split createTaskTx out (review M4, to
+	// share it with SplitTask) must not silently start recording every
+	// task-creation event with an empty aggregate_id.
+	if t.ID == "" {
+		t.ID = id.New()
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   t.ID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.created",
+	}, func(tx *sql.Tx) error {
+		return db.createTaskTx(tx, t, edgeType, targetIDs, dependsOn)
+	})
+}
+
+// createTaskTx is createTask's body, tx-scoped, so a caller that needs
+// several task creations to share ONE transaction (SplitTask, review M4) can
+// call it directly instead of nesting separate Apply calls.
+func (db *DB) createTaskTx(tx *sql.Tx, t *domain.Task, edgeType domain.EdgeType, targetIDs []string, dependsOn []string) error {
 	if t.ID == "" {
 		t.ID = id.New()
 	}
@@ -143,45 +165,38 @@ func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.Ed
 	if !t.Priority.Valid() {
 		t.Priority = domain.PriorityShould
 	}
-	return db.Apply(ctx, Event{
-		AggregateType: "task",
-		AggregateID:   t.ID,
-		Actor:         ActorOrchestrator,
-		EventType:     "task.created",
-	}, func(tx *sql.Tx) error {
-		if t.Code == "" {
-			code, err := nextTaskCode(tx, t.InitiativeID)
-			if err != nil {
-				return err
-			}
-			t.Code = code
-		}
-		pos, err := nextTaskPosition(tx, t.InitiativeID)
+	if t.Code == "" {
+		code, err := nextTaskCode(tx, t.InitiativeID)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`
-			INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
-			return err
-		}
-		var edges []EdgeToWrite
-		if edgeType != "" {
-			seen := map[string]bool{}
-			for _, targetID := range targetIDs {
-				if targetID == "" || seen[targetID] {
-					continue
-				}
-				seen[targetID] = true
-				edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
+		t.Code = code
+	}
+	pos, err := nextTaskPosition(tx, t.InitiativeID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
+		return err
+	}
+	var edges []EdgeToWrite
+	if edgeType != "" {
+		seen := map[string]bool{}
+		for _, targetID := range targetIDs {
+			if targetID == "" || seen[targetID] {
+				continue
 			}
+			seen[targetID] = true
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
 		}
-		for _, dep := range dependsOn {
-			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
-		}
-		return db.wireEdges(tx, t.InitiativeID, edges)
-	})
+	}
+	for _, dep := range dependsOn {
+		edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
+	}
+	return db.wireEdges(tx, t.InitiativeID, edges)
 }
 
 // AddTaskDependencies wires depends_on edges from taskID to each depTaskID in
