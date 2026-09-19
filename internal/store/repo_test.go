@@ -115,7 +115,7 @@ func TestDecisionResolveAndImmutability(t *testing.T) {
 func TestFindingDispositionAndAcceptedRisk(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	runID, err := db.CreateRun(ctx, domain.RunReview, "", "adversarial_reviewer")
+	runID, err := db.CreateRun(ctx, domain.RunReview, "", "adversarial_reviewer", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

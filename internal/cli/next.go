@@ -150,6 +150,10 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 		var op struct {
 			Status string `json:"status"`
 			Type   string `json:"type"`
+			// Stage (C3, wave 3 contract) is the engine's current step, e.g.
+			// "Writing the PRD", "Agent running TASK-2". Printed in place of a
+			// bare "still working…" below, when the daemon has one to report.
+			Stage string `json:"stage"`
 		}
 		if err := c.do("GET", operationResource(opID, ""), nil, &op); err != nil {
 			return err
@@ -181,9 +185,13 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 		// black-holing endpoint produces ~15 minutes of total silence before
 		// anything is written anywhere the user looks.
 		if now := time.Now(); now.After(nextNote) {
+			label := "still working…"
+			if op.Stage != "" {
+				label = op.Stage + "…"
+			}
 			fmt.Fprintf(stdout, "%s\n", muted(fmt.Sprintf(
-				"  still working… %s elapsed (gives up at %s; `idea cancel %s` stops it)",
-				now.Sub(started).Round(time.Second), operationTimeout, opID)))
+				"  %s %s elapsed (gives up at %s; `idea cancel %s` stops it)",
+				label, now.Sub(started).Round(time.Second), operationTimeout, opID)))
 			nextNote = now.Add(progressNoteEvery)
 		}
 		if time.Now().After(deadline) {

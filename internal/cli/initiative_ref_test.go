@@ -99,12 +99,14 @@ func TestChangedActsOnTheNewestInitiative(t *testing.T) {
 	if _, _, err := run(t, "changed"); err != nil {
 		t.Fatalf("idea changed: %v", err)
 	}
+	// C1, wave 3 contract: `idea changed` calls .../timeline, not .../changed
+	// (which stays byte-compatible for the web What Changed widget).
 	for _, r := range f.requests {
-		if strings.Contains(r, "/initiatives/ini-1/changed") {
+		if strings.Contains(r, "/initiatives/ini-1/timeline") {
 			t.Fatalf("idea changed acted on the oldest initiative: %v", f.requests)
 		}
 	}
-	if !anyRequest(f, "/initiatives/ini-2/changed") {
+	if !anyRequest(f, "/initiatives/ini-2/timeline") {
 		t.Fatalf("idea changed did not act on the newest initiative: %v", f.requests)
 	}
 }

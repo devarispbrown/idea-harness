@@ -2,6 +2,7 @@ package domain
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -30,18 +31,18 @@ type ProvenanceRef struct {
 
 // Assertion is a structured Fact/Assumption/Hypothesis (§18).
 type Assertion struct {
-	ID             string           `json:"id"`
-	InitiativeID   string           `json:"initiative_id"`
-	Type           AssertionType    `json:"type"`
-	Status         AssertionStatus  `json:"status"`
-	Statement      string           `json:"statement"`
-	EvidenceDigest string           `json:"evidence_digest,omitempty"`
-	Confidence     Confidence       `json:"confidence"`
-	Source         string           `json:"source"`
-	Provenance     []ProvenanceRef  `json:"provenance"`
-	ProducedByRun  string           `json:"produced_by_run,omitempty"`
-	SupersededBy   string           `json:"superseded_by,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
+	ID             string          `json:"id"`
+	InitiativeID   string          `json:"initiative_id"`
+	Type           AssertionType   `json:"type"`
+	Status         AssertionStatus `json:"status"`
+	Statement      string          `json:"statement"`
+	EvidenceDigest string          `json:"evidence_digest,omitempty"`
+	Confidence     Confidence      `json:"confidence"`
+	Source         string          `json:"source"`
+	Provenance     []ProvenanceRef `json:"provenance"`
+	ProducedByRun  string          `json:"produced_by_run,omitempty"`
+	SupersededBy   string          `json:"superseded_by,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // Requirement is a first-class structured requirement (§17).
@@ -58,7 +59,25 @@ type Requirement struct {
 	ProducedByRun      string                `json:"produced_by_run,omitempty"`
 	SupersededBy       string                `json:"superseded_by,omitempty"`
 	VerifiedAt         *time.Time            `json:"verified_at,omitempty"`
-	CreatedAt          time.Time             `json:"created_at"`
+	// EvidenceTests is the test-run evidence mapped to this requirement (C2,
+	// wave 3 contract): every test the verification plan (or a name match on
+	// this requirement's code) associates with it, and whether it last passed
+	// or failed. Computed at read time by internal/projection from the most
+	// recent "tests" check output per change set -- never persisted, so it is
+	// always as fresh as the last check run. Nil/empty means no test is known
+	// to cover this requirement yet, not that it failed.
+	EvidenceTests []EvidenceTest `json:"evidence_tests,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
+// EvidenceTest is one test-run result mapped to a requirement (C2, wave 3
+// contract). Status is the test's own outcome ("passed"|"failed"), not a
+// domain.VerificationStatus -- it is evidence a human still has to confirm,
+// not a verification judgment.
+type EvidenceTest struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	ChangeSet string `json:"change_set"`
 }
 
 // Decision is a structured decision with a recommendation (§8, §19).
@@ -249,10 +268,17 @@ type SecretAllowlistEntry struct {
 
 // Initiative is the user-facing idea under development.
 type Initiative struct {
-	ID            string           `json:"id"`
-	ProjectID     string           `json:"project_id,omitempty"`
-	Title         string           `json:"title"`
-	Description   string           `json:"description"`
+	ID          string `json:"id"`
+	ProjectID   string `json:"project_id,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// ShortTitle is a deterministically generated short label (<=60 chars,
+	// C1 wave 3 contract): the idea's first sentence or clause, trimmed at a
+	// word boundary, with a common lead-in ("I want to", "Build") dropped.
+	// Title/Description keep the full prompt; the UI shows ShortTitle||Title.
+	// Generated on create, and backfilled lazily for older initiatives by
+	// GetInitiative/ListInitiatives when empty.
+	ShortTitle    string           `json:"short_title,omitempty"`
 	Status        InitiativeStatus `json:"status"`
 	FailureReason string           `json:"failure_reason,omitempty"`
 	// JudgmentReason is set only while Status is needs_human_judgment. It is
@@ -301,7 +327,15 @@ type Operation struct {
 	// field existed, a failed execute left the initiative at plan_approved,
 	// the Build page's running card simply vanished, and the only record of
 	// why was a line in daemon.log — invisible to anyone not tailing it.
-	Error      string     `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Stage is the current step the engine reports while this operation runs
+	// (C3, wave 3 contract), e.g. "Writing the PRD", "Reviewing the plan
+	// (cycle 2)", "Agent running TASK-2", "Running checks". Set by a small
+	// callback the engine calls as it moves between steps and cleared by
+	// nothing -- it simply stops changing once the operation reaches a
+	// terminal status. The CLI's wait loop prints it in place of a bare
+	// "still working…".
+	Stage      string     `json:"stage,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
@@ -360,17 +394,24 @@ type GraphEdge struct {
 
 // Task is one unit of the execution plan (§12, M2).
 type Task struct {
-	ID             string              `json:"id"`
-	InitiativeID   string              `json:"initiative_id"`
-	Code           string              `json:"code"`
-	Title          string              `json:"title"`
-	Statement      string              `json:"statement"`
-	Status         TaskStatus          `json:"status"`
-	Priority       RequirementPriority `json:"priority"`
-	Estimate       string              `json:"estimate,omitempty"`
-	ProducedByRun  string              `json:"produced_by_run,omitempty"`
-	SupersededBy   string              `json:"superseded_by,omitempty"`
-	CreatedAt      time.Time           `json:"created_at"`
+	ID            string              `json:"id"`
+	InitiativeID  string              `json:"initiative_id"`
+	Code          string              `json:"code"`
+	Title         string              `json:"title"`
+	Statement     string              `json:"statement"`
+	Status        TaskStatus          `json:"status"`
+	Priority      RequirementPriority `json:"priority"`
+	Estimate      string              `json:"estimate,omitempty"`
+	ProducedByRun string              `json:"produced_by_run,omitempty"`
+	SupersededBy  string              `json:"superseded_by,omitempty"`
+	// RequirementIDs is the requirement graph edges this task implements
+	// (N:M, review A4 #3/#4) and DependsOn the task ids it depends on.
+	// Computed at read time from graph_edges, not a stored column -- always
+	// populated by the handler before the response is written, never nil
+	// (an empty task has both as `[]`, not `null`).
+	RequirementIDs []string  `json:"requirement_ids"`
+	DependsOn      []string  `json:"depends_on"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // FileChangeKind classifies a single FileChange for display (add/modify/delete).
@@ -421,19 +462,19 @@ type ChangeSet struct {
 	// git_commit is off, the change set was committed (GitCommitSHA is set),
 	// or the workspace is not a git repository.
 	GitCommitWarning string `json:"git_commit_warning,omitempty"`
-	CreatedByRunID string          `json:"created_by_run_id,omitempty"`
+	CreatedByRunID   string `json:"created_by_run_id,omitempty"`
 	// Model is the actual model spec that produced this change set (e.g.
 	// "openai/gpt-5"), or "demo" when no real provider was configured. The UI
 	// keys model=="demo" to label the change "Shipped (demo)" / "Placeholder
 	// change" rather than real agent output.
-	Model     string    `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
 	// Executor is the executor kind that produced the change set ("internal"
 	// output is a placeholder whatever the model).
 	Executor string `json:"executor,omitempty"`
 	// AgentOutput is the end of the coding agent's own output for the run
 	// that produced this change set: redacted, sanitized, at most 100 lines.
-	AgentOutput string `json:"agent_output,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	AgentOutput string    `json:"agent_output,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // ApplyJournalEntry is one durable apply-journal record (§39).
@@ -504,4 +545,142 @@ type StaleItem struct {
 // evidence by requirement + index (§70, review B4).
 func CriterionKey(requirementID string, i int) string {
 	return requirementID + ":" + strconv.Itoa(i)
+}
+
+// TimelineRef points a TimelineEntry at the entity it is about, so a client
+// can link to it without parsing the human title.
+type TimelineRef struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// TimelineEntry is one human-language line of an initiative's "what changed"
+// timeline (C1, wave 3 contract), newest first. Kind is one of
+// change_set_applied, change_set_rejected, change_set_denied,
+// change_set_reverted, run_failed, run_stopped, decision_changed, stale,
+// phase_completed.
+type TimelineEntry struct {
+	At     time.Time   `json:"at"`
+	Kind   string      `json:"kind"`
+	Title  string      `json:"title"`
+	Detail string      `json:"detail,omitempty"`
+	Ref    TimelineRef `json:"ref"`
+}
+
+// PhaseCost is one phase's spend and time (C3, wave 3 contract): a "phase" is
+// a workflow stage that made a model call (PRD, review, design, plan, ...).
+// Agent (coding) runs are reported separately under InitiativeCosts.Agent,
+// since their spend is not always measurable the same way.
+type PhaseCost struct {
+	Phase   string  `json:"phase"`
+	USD     float64 `json:"usd"`
+	Seconds float64 `json:"seconds"`
+	Calls   int     `json:"calls"`
+}
+
+// AgentCost is the coding-agent run summary (C3, wave 3 contract). USD is nil
+// ("agent spend not measured") unless every counted run's cost could be parsed
+// from the agent's own output.
+type AgentCost struct {
+	Runs    int      `json:"runs"`
+	Seconds float64  `json:"seconds"`
+	USD     *float64 `json:"usd"`
+	Note    string   `json:"note,omitempty"`
+}
+
+// InitiativeCosts is the GET .../costs response body (C3, wave 3 contract).
+type InitiativeCosts struct {
+	TotalUSD float64     `json:"total_usd"`
+	ByPhase  []PhaseCost `json:"by_phase"`
+	Agent    AgentCost   `json:"agent"`
+}
+
+// QueueItem is one cross-initiative "needs you" row (D-b, wave 3 contract).
+// Rank is a sort key, ascending: lower ranks more urgent, blocking items first
+// and then by age within a category.
+type QueueItem struct {
+	InitiativeID string `json:"initiative_id"`
+	ShortTitle   string `json:"short_title"`
+	Kind         string `json:"kind"`
+	Label        string `json:"label"`
+	Rank         int64  `json:"rank"`
+	Href         string `json:"href"`
+}
+
+// leadIns are common prefixes GenerateShortTitle drops before taking the
+// idea's first clause (C1, wave 3 contract): "build a rate limiter" and "a
+// rate limiter" should produce the same short title.
+var leadIns = []string{
+	"i would like to ", "i'd like to ", "i want to ", "i need to ",
+	"we would like to ", "we want to ", "we need to ",
+	"please build ", "please add ", "please create ", "please implement ",
+	"let's build ", "lets build ",
+	"build ", "add ", "create ", "implement ", "make ",
+}
+
+// GenerateShortTitle deterministically derives a short, human title (<=60
+// characters) from an idea's full text (C1, wave 3 contract): the first
+// sentence or clause, with a common lead-in phrase dropped, trimmed at a word
+// boundary. Title/Description keep the full text; this is only ever a display
+// label. Same input always produces the same output, so it can be generated
+// once on create and backfilled identically for older initiatives.
+func GenerateShortTitle(idea string) string {
+	s := strings.TrimSpace(idea)
+	if s == "" {
+		return ""
+	}
+	withoutLeadIn := dropLeadIn(s)
+	clause := firstClause(withoutLeadIn)
+	if clause == "" {
+		clause = firstClause(s)
+	}
+	if clause == "" {
+		clause = s
+	}
+	return trimToWordBoundary(clause, 60)
+}
+
+// dropLeadIn removes one leading phrase from leadIns, case-insensitively, if s
+// starts with one.
+func dropLeadIn(s string) string {
+	lower := strings.ToLower(s)
+	for _, lead := range leadIns {
+		if strings.HasPrefix(lower, lead) {
+			return strings.TrimSpace(s[len(lead):])
+		}
+	}
+	return s
+}
+
+// firstClauseSeparators are checked in the order given; the earliest match in
+// s wins regardless of which separator it is.
+var firstClauseSeparators = []string{".", "!", "?", ";", ","}
+
+// firstClause returns the text up to (excluding) the first sentence or clause
+// boundary, or the whole string when none is found.
+func firstClause(s string) string {
+	cut := len(s)
+	for _, sep := range firstClauseSeparators {
+		if i := strings.Index(s, sep); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return strings.TrimSpace(s[:cut])
+}
+
+// trimToWordBoundary trims s to at most n runes without splitting a word,
+// falling back to a hard cut only when no earlier space exists.
+func trimToWordBoundary(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return strings.TrimSpace(s)
+	}
+	cut := n
+	for cut > 0 && r[cut] != ' ' {
+		cut--
+	}
+	if cut == 0 {
+		cut = n
+	}
+	return strings.TrimSpace(string(r[:cut]))
 }

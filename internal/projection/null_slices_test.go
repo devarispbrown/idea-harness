@@ -122,7 +122,7 @@ func TestProjectionsNeverEmitNullArrays(t *testing.T) {
 		}
 	}
 
-	c, err := BuildChanged(ctx, db, 0, 50)
+	c, err := BuildChanged(ctx, db, ini.ID, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

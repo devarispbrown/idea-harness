@@ -203,6 +203,9 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.ChangeSet, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// D-a: a rerun note applies to this one Execute only (see currentNoteOverride
+	// below), the same lifetime as SetModelOverride/clearModelOverride for retry.
+	defer e.clearNoteOverride(initiativeID)
 
 	task, err := e.nextReadyTask(ctx, initiativeID)
 	if err != nil {
@@ -251,9 +254,19 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 
 	// Planner: engineering_lead produces an implementation brief the implementer
 	// follows. The brief is a durable Run (role engineering_lead).
+	e.setStage(ctx, initiativeID, "Planning "+task.Code)
 	brief, err := e.runPlanner(ctx, initiativeID, task)
 	if err != nil {
 		return domain.ChangeSet{}, err
+	}
+	// D-a: an optional human note on `idea execute`/`POST .../execute`, steering
+	// this one retry of the task (ICP finding "Retries. There was no way to
+	// steer a retry."). Appended to the implementer's brief, exactly as the
+	// wave 3 contract specifies, and cleared once Execute returns so it never
+	// bleeds into a later, unrelated run of this initiative.
+	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	if note != "" {
+		brief += "\n\nNote from the human, for this run only:\n" + note
 	}
 
 	root := e.workRoot
@@ -272,9 +285,17 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// Record a durable run for the implementer step (review B7). The run is
 	// marked failed on any error path and succeeded once the change set is
 	// produced, so the execution is traceable end to end.
-	agentRunID, err := e.db.CreateRun(ctx, domain.RunAgent, "", "implementer")
+	e.setStage(ctx, initiativeID, "Agent running "+task.Code)
+	agentRunID, err := e.db.CreateRun(ctx, domain.RunAgent, "", "implementer", initiativeID, "agent:"+task.Code)
 	if err != nil {
 		return domain.ChangeSet{}, err
+	}
+	if note != "" {
+		// D-a: "recorded on the run" (wave 3 contract) -- best-effort; a failure
+		// here must never fail the execute itself.
+		if err := e.db.SetRunNote(ctx, agentRunID, note); err != nil {
+			e.log.Warn("could not record the rerun note on the run", "initiative", initiativeID, "run", agentRunID, "error", err)
+		}
 	}
 	agentStart := time.Now()
 	agentSucceeded := false
@@ -415,6 +436,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// rejected on the secret sweep regardless).
 	checksBlocked := false
 	if !sweepBlocked {
+		e.setStage(ctx, initiativeID, "Running checks")
 		checks, blocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
 		checksBlocked = blocked
 		for _, f := range checks {

@@ -328,6 +328,44 @@ func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) 
 	return &t, nil
 }
 
+// TaskEdges returns one task's requirement_ids (the requirements it
+// implements, via `task --implements--> requirement` edges) and depends_on
+// (via `task --depends_on--> task` edges), for serializing them onto the Task
+// response (GET .../tasks and the merge/split/depends-on responses).
+func (db *DB) TaskEdges(ctx context.Context, initiativeID, taskID string) (requirementIDs, dependsOn []string, err error) {
+	edges, err := db.ListGraphEdgesFrom(ctx, initiativeID, "task", taskID)
+	if err != nil {
+		return nil, nil, err
+	}
+	requirementIDs = make([]string, 0)
+	dependsOn = make([]string, 0)
+	for _, e := range edges {
+		switch e.EdgeType {
+		case domain.EdgeImplements:
+			requirementIDs = append(requirementIDs, e.ToID)
+		case domain.EdgeDependsOn:
+			dependsOn = append(dependsOn, e.ToID)
+		}
+	}
+	return requirementIDs, dependsOn, nil
+}
+
+// AttachTaskEdges populates RequirementIDs/DependsOn on each of tasks in
+// place, from graph_edges (see TaskEdges). One query per task -- Plan pages
+// list at most a handful of tasks, so this trades a little redundancy for
+// reusing the same per-task helper the single-task handlers use.
+func (db *DB) AttachTaskEdges(ctx context.Context, initiativeID string, tasks []domain.Task) error {
+	for i := range tasks {
+		reqIDs, deps, err := db.TaskEdges(ctx, initiativeID, tasks[i].ID)
+		if err != nil {
+			return err
+		}
+		tasks[i].RequirementIDs = reqIDs
+		tasks[i].DependsOn = deps
+	}
+	return nil
+}
+
 // nextTaskPosition returns the ordinal for a new task within an initiative
 // (one past the current maximum, 0 for the first).
 func nextTaskPosition(tx *sql.Tx, initiativeID string) (int, error) {

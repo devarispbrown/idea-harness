@@ -39,9 +39,9 @@ if this file has drifted.
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
-| `idea execute` | run the next ready task → change set | none | takes no flags |
+| `idea execute [--note <text>]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief) | `--note` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
-| `idea retry [<initiative>] [--model <provider/model>] [--no-wait]` | re-run a failed initiative | `--model`, `--no-wait` | no |
+| `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative; --note steers this retry (joins the framing prompt) | `--model`, `--no-wait`, `--note` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
 | `idea apply <id>` | apply an approved change set | none | takes no flags |
@@ -49,7 +49,7 @@ if this file has drifted.
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
 | `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
-| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
+| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
 | `idea executors` | list executors + capabilities | `--json`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |

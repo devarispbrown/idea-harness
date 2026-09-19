@@ -36,14 +36,20 @@ var asyncEntryPoints = map[string]entryPoint{
 			"but that is not a release of a claim it never took"},
 	"AdvanceInitiative": {true,
 		"workflow/advance.go sets a terminal status on success; failOperation on error"},
-	"ExecuteInitiativeFresh": {true,
-		"explicit release on both exits — the engine sets nothing (audit 4 P0)"},
+	"ExecuteInitiativeFreshWithNote": {true,
+		"explicit release on both exits — the engine sets nothing (audit 4 P0). " +
+			"ExecuteInitiativeFresh/ExecuteInitiative are thin wrappers around this " +
+			"one (D-a, wave 3 contract: the optional rerun note), so this is the " +
+			"row the AST scan finds"},
 	"ApplyChangeSetInitiative": {true,
 		"claims from every non-running state; explicit release on both exits"},
 	"RevertChangeSetInitiative": {true,
 		"claims from every non-running state; releases to plan_approved on success (the engine's own transition, since the revert unverifies a requirement) and to the prior status on error"},
-	"ReviseInitiative":      {true, "the engine reaches a terminal status; failOperation on error"},
-	"RetryInitiative":       {true, "the engine reaches a terminal status; failOperation on error"},
+	"ReviseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"RetryInitiativeWithNote": {true,
+		"the engine reaches a terminal status; failOperation on error. " +
+			"RetryInitiative is a thin wrapper around this one (D-a, wave 3 " +
+			"contract: the optional rerun note), so this is the row the AST scan finds"},
 	"ReopenPhaseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
 	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
 	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},

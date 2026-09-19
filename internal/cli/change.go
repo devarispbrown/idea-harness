@@ -67,8 +67,17 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// D-a, wave 3 contract: an optional note steering this one run, appended to
+	// the implementer's brief and recorded on the agent run. body stays an
+	// untyped nil (not a nil map[string]any) when there is no note: `do`
+	// checks `body != nil`, and a nil map boxed into `any` is a non-nil
+	// interface — that would send a literal JSON `null` body instead of none.
+	var body any
+	if note := a.value("--note"); note != "" {
+		body = map[string]any{"note": note}
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), body, &out); err != nil {
 		return err
 	}
 	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
@@ -509,6 +518,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	req := a.arg(0)
 	pass, fail, waive := a.has("--pass"), a.has("--fail"), a.has("--waive")
 	note := a.value("--note")
+	confirmPassingTests := a.has("--confirm-passing-tests")
 
 	// Validated before connect(), because the failure here is silence rather
 	// than an error: `idea verify --pass --note "checked manually"` with no
@@ -557,6 +567,13 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		// case from the one that was reported. Sending the name is what lets the
 		// daemon resolve it and answer about the requirement that was asked for.
 		body = map[string]any{"requirement": req}
+	}
+	if confirmPassingTests {
+		// C2, wire contract: confirms every requirement whose mapped tests all
+		// passed, through the same human-evidence path, actor human. Combines
+		// cleanly with a single --pass/--fail/--waive above -- both run in the
+		// same gate call.
+		body["confirm_passing_tests"] = true
 	}
 	var out struct {
 		Status   string        `json:"status"`
@@ -654,8 +671,14 @@ func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("no model configured; set one with `idea model set <provider>/<model>` or pass --model")
 	}
 
+	// D-a, wave 3 contract: an optional note steering this retry, joining the
+	// framing prompt that restarts the pipeline and recorded on that run.
+	body := map[string]string{"model": model}
+	if note := a.value("--note"); note != "" {
+		body["note"] = note
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, "retry"), map[string]string{"model": model}, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "retry"), body, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ retry started")+" "+code(iniID)+" "+muted("on")+" "+accent(model))

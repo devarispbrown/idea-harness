@@ -326,6 +326,7 @@ func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	e.setStage(ctx, initiativeID, "Designing the architecture")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageArchitecture, RoleArchitect, "architecture", schema.Architecture, inputs, "Produce the architecture.")
 	if err != nil {
 		return err
@@ -356,6 +357,7 @@ func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) erro
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	e.setStage(ctx, initiativeID, "Designing the product")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageProductDesign, RoleProductDesigner, "product_design", schema.ProductDesign, inputs, "Produce the product design.")
 	if err != nil {
 		return err
@@ -381,6 +383,7 @@ func (e *Engine) runVerificationDesign(ctx context.Context, initiativeID string)
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	e.setStage(ctx, initiativeID, "Designing verification")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageVerificationDesign, RoleVerificationEngineer, "verification_plan", schema.VerificationPlan, inputs, "Produce the verification plan.")
 	if err != nil {
 		return err
@@ -416,6 +419,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	e.setStage(ctx, initiativeID, "Planning the execution")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlan, RoleEngineeringLead, "execution_plan", schema.ExecutionPlan, inputs, "Produce the execution plan.")
 	if err != nil {
 		return err
@@ -802,6 +806,7 @@ func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID stri
 	// meant a queued demo response could outlive the review it was meant for and
 	// land on the change-set review, where a blocking finding cannot be cleared
 	// by anything the CLI can do. Separate keys make a surplus harmless.
+	e.setStage(ctx, initiativeID, "Reviewing the plan")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
