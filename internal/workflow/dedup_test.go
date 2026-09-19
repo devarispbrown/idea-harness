@@ -91,7 +91,7 @@ func TestCreateDecisionIfNewDedups(t *testing.T) {
 		InitiativeID: ini.ID, Type: domain.DecisionProduct,
 		Question: "Which DNS provider?", Recommendation: "Use eNom",
 	}
-	if err := eng.createDecisionIfNew(ctx, ini.ID, first); err != nil {
+	if _, err := eng.createDecisionIfNew(ctx, ini.ID, first); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestCreateDecisionIfNewDedups(t *testing.T) {
 		InitiativeID: ini.ID, Type: domain.DecisionProduct,
 		Question: "[Source: external_untrusted DEC-1] Which DNS provider?", Recommendation: "Use eNom",
 	}
-	if err := eng.createDecisionIfNew(ctx, ini.ID, relisted); err != nil {
+	if _, err := eng.createDecisionIfNew(ctx, ini.ID, relisted); err != nil {
 		t.Fatal(err)
 	}
 
@@ -127,11 +127,11 @@ func TestCreateDecisionIfNewRequiresSameType(t *testing.T) {
 	}
 
 	product := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "Encrypt at rest?", Recommendation: "yes"}
-	if err := eng.createDecisionIfNew(ctx, ini.ID, product); err != nil {
+	if _, err := eng.createDecisionIfNew(ctx, ini.ID, product); err != nil {
 		t.Fatal(err)
 	}
 	ops := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionOperations, Question: "Encrypt at rest?", Recommendation: "yes"}
-	if err := eng.createDecisionIfNew(ctx, ini.ID, ops); err != nil {
+	if _, err := eng.createDecisionIfNew(ctx, ini.ID, ops); err != nil {
 		t.Fatal(err)
 	}
 
@@ -218,7 +218,7 @@ func TestCreateDecisionResolvesEquivalentQuestion(t *testing.T) {
 		InitiativeID: ini.ID, Type: domain.DecisionProduct,
 		Question: "How is billing structured?", Recommendation: "Flat bundle",
 	}
-	if err := eng.createDecisionIfNew(ctx, ini.ID, d); err != nil {
+	if _, err := eng.createDecisionIfNew(ctx, ini.ID, d); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,5 +228,143 @@ func TestCreateDecisionResolvesEquivalentQuestion(t *testing.T) {
 	}
 	if len(qs) != 1 || qs[0].Status != domain.QuestionResolved {
 		t.Fatalf("expected the overlapping question to be resolved, got %+v", qs)
+	}
+}
+
+// TestCreateDecisionIfNewReturnsTheMatchedExistingID is review M1: on a
+// near-duplicate merge, the return value must be the EXISTING decision's id
+// (the one the near-duplicate merged into), not empty and not a new one --
+// callers rely on this to wire something to "the decision this call just
+// represents" without re-querying by (possibly now-mismatched) text.
+func TestCreateDecisionIfNewReturnsTheMatchedExistingID(t *testing.T) {
+	fp := scriptedProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	first := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "Which DNS provider?", Recommendation: "Use eNom"}
+	firstID, err := eng.createDecisionIfNew(ctx, ini.ID, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == "" || firstID != first.ID {
+		t.Fatalf("expected the first call to return the newly-created id %q, got %q", first.ID, firstID)
+	}
+
+	relisted := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "[Source: external_untrusted DEC-1] Which DNS provider?", Recommendation: "Use eNom"}
+	relistedID, err := eng.createDecisionIfNew(ctx, ini.ID, relisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relistedID != firstID {
+		t.Fatalf("expected the merge to return the EXISTING decision's id %q, got %q", firstID, relistedID)
+	}
+}
+
+// TestRequirementWiresToMergedDecisionByThisCyclesWording is review M1's
+// end-to-end case. A decision already exists from an earlier cycle. This
+// cycle's PRD re-lists a near-duplicate (not exact-text-identical) decision
+// and a requirement that cites THIS CYCLE's exact wording via its `decision`
+// field. The near-duplicate merges into the existing decision (by
+// createDecisionIfNew's own rule), and the requirement must still be wired
+// to it via derived_from -- re-fetching decisions and matching the ref
+// against their STORED (earlier-cycle) wording would miss this, since the
+// ref names wording that was never persisted.
+func TestRequirementWiresToMergedDecisionByThisCyclesWording(t *testing.T) {
+	fp := scriptedProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := &domain.Decision{
+		InitiativeID: ini.ID, Type: domain.DecisionProduct,
+		Question: "Which DNS provider should we use for hosting?", Recommendation: "eNom",
+	}
+	if err := db.CreateDecision(ctx, existing); err != nil {
+		t.Fatal(err)
+	}
+
+	// "will" replaces "should" -- a different exact/normalized string, but
+	// both are stop words, so the token sets ({dns, provider, use, hosting})
+	// are identical and this cycle's wording is a Jaccard-1.0 near-duplicate
+	// that merges into `existing`.
+	fp.SetResponse("prd", `{"summary":"PRD","requirements":[{"statement":"Register the domain","priority":"must",`+
+		`"acceptance_criteria":[{"metric":"m","target":"t","condition":"c"}],`+
+		`"decision":"Which DNS provider will we use for hosting?"}],`+
+		`"decisions":[{"question":"Which DNS provider will we use for hosting?","options":["eNom"],"recommendation":"eNom"}],`+
+		`"open_questions":[],"risks":[]}`)
+
+	if err := eng.runProductDefinition(ctx, ini.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 1 {
+		t.Fatalf("expected the re-listed decision to merge into the existing one, got %d: %+v", len(decs), decs)
+	}
+
+	reqs, err := db.ListRequirements(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 requirement, got %d", len(reqs))
+	}
+
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "requirement", reqs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDerivedFrom && e.ToID == existing.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the requirement to be wired (derived_from) to the merged-into decision %s, got edges %+v", existing.ID, edges)
+	}
+}
+
+// TestTokenizeKeepsNumericTokensRegardlessOfLength is review M2: a version
+// number or a quantity must not be dropped just for being under the
+// 3-character floor -- doing so collapsed "Support Python 3.11?" and
+// "Support Python 3.12?" to the identical token set, and likewise "Max 10 or
+// 50 items per page?" and "Max 20 or 25 items per page?", merging genuinely
+// distinct questions.
+func TestTokenizeKeepsNumericTokensRegardlessOfLength(t *testing.T) {
+	cases := []struct {
+		a, b string
+	}{
+		{"Support Python 3.11?", "Support Python 3.12?"},
+		{"Max 10 or 50 items per page?", "Max 20 or 25 items per page?"},
+	}
+	for _, c := range cases {
+		if similarJudgment(normalizeJudgment(c.a), normalizeJudgment(c.b)) {
+			t.Errorf("similarJudgment(%q, %q) = true, want false: the numbers differ", c.a, c.b)
+		}
+	}
+
+	// A short numeric token is kept even alone.
+	got := tokenize("3.11")
+	want := []string{"3", "11"}
+	if len(got) != len(want) {
+		t.Fatalf("tokenize(%q) = %v, want %v", "3.11", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tokenize(%q) = %v, want %v", "3.11", got, want)
+		}
 	}
 }

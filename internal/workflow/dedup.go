@@ -31,20 +31,50 @@ var stopWords = map[string]bool{
 	"vs": true, "it": true, "this": true, "that": true, "there": true,
 }
 
-// tokenize splits a judgment into significant lowercase tokens (stop words and
-// sub-3-character tokens dropped).
+// tokenize splits a judgment into significant lowercase tokens: stop words
+// and sub-3-character NON-numeric tokens are dropped, but a purely numeric
+// token is always kept, whatever its length (review M2).
+//
+// Dropping short tokens indiscriminately merged "Support Python 3.11?" with
+// "Support Python 3.12?" (each number splits on '.' into "3" and "11"/"12",
+// both under the 3-character floor and so dropped entirely -- the two
+// questions then tokenize to the identical {support, python}, Jaccard 1.0)
+// and "Max 10 or 50 items per page?" with "Max 20 or 25 items per page?"
+// (same reasoning: every number dropped, both left as {max, items, page}).
+// A version number or a quantity is exactly the kind of short token whose
+// value distinguishes two otherwise-similar judgments -- the digits are
+// significant regardless of how few of them there are.
 func tokenize(s string) []string {
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 	})
 	out := make([]string, 0, len(fields))
 	for _, f := range fields {
+		if isNumericToken(f) {
+			out = append(out, f)
+			continue
+		}
 		if len(f) < 3 || stopWords[f] {
 			continue
 		}
 		out = append(out, f)
 	}
 	return out
+}
+
+// isNumericToken reports whether s consists entirely of digits (a version
+// component, a quantity) -- tokenize's exception to the 3-character floor
+// (review M2).
+func isNumericToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // jaccardSimilarity returns the Jaccard similarity of a and b's significant

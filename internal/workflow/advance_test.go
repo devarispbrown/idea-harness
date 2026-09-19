@@ -949,3 +949,64 @@ func TestClearStaleItemsForInitiativeOnRevisePlan(t *testing.T) {
 		t.Fatalf("expected only the requirement's stale mark to survive revise-plan, got %+v", items)
 	}
 }
+
+// TestQuickRigorPlanReviewCycleAlwaysNeedsHumanJudgment is review C2's
+// headline case: rigor only ever relaxes the ADVERSARIAL reviewer's
+// findings. A dependency cycle -- a deterministic plan check -- must always
+// go through EvaluateApproval/needs_human_judgment, at every rigor. Before
+// the fix, `blocked && rigor != RigorQuick` skipped straight to
+// PlanApproved at quick, which is exactly the "vertical slice asks for 2-4
+// tasks, calibrates to quick, cycle goes through with no human step" failure
+// the review describes.
+func TestQuickRigorPlanReviewCycleAlwaysNeedsHumanJudgment(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3, Rigor: "quick"},
+	})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "req", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// A depends on B and B depends on A: a 2-node cycle.
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[`+
+		`{"title":"A","statement":"a","requirement":"`+req.Code+`","priority":"must","depends_on":["B"]},`+
+		`{"title":"B","statement":"b","requirement":"`+req.Code+`","priority":"must","depends_on":["A"]}`+
+		`]}`)
+	if err := eng.runExecutionPlan(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := eng.runExecutionPlanReview(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.InitiativeNeedsHumanJudgment {
+		t.Fatalf("a dependency cycle must always require human judgment, even at quick rigor, got %q", status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawCycle := false
+	for _, f := range findings {
+		if strings.Contains(f.Finding, "cycle") {
+			sawCycle = true
+			if f.Advisory {
+				t.Errorf("a deterministic cycle finding must never be marked Advisory by rigor: %+v", f)
+			}
+		}
+	}
+	if !sawCycle {
+		t.Fatal("expected a dependency-cycle finding to be recorded")
+	}
+}

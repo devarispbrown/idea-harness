@@ -370,12 +370,17 @@ func BuildTriage(decisions []domain.Decision, questions []domain.Question, findi
 		items = append(items, TriageItem{Type: "question", ID: q.ID, Label: q.Question, Dependents: dependents[q.ID]})
 	}
 	for _, f := range findings {
-		if f.Advisory || f.Disposition != "" {
+		if f.Disposition != "" {
 			continue
 		}
+		// C1: an advisory finding never blocks completion (see
+		// hasOpenBlockingFindings), but it must still be shown here so the
+		// user can see it and disposition it -- otherwise a quick-accepted
+		// critical/high finding is saved and then never surfaced anywhere.
+		// It ranks as non-blocking regardless of its severity.
 		items = append(items, TriageItem{
 			Type: "finding", ID: f.ID, Label: f.Finding,
-			Blocking: f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
+			Blocking: !f.Advisory && f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -506,27 +511,72 @@ func judgmentItems(u *Understanding) []string {
 	return out
 }
 
-// latestChangeSetOutcome returns the most recently created change set among
-// recentChangeSets (oldest-first, ListChangeSets' own ordering) whose status
-// means the last thing that happened here was NOT success, plus true -- or
-// (zero value, false) when recentChangeSets is empty or its latest entry is
-// still in flight or already approved/applied.
+// latestChangeSetOutcome returns the most recently created (by CreatedAt)
+// change set among recentChangeSets whose status means the last thing that
+// happened here was NOT success, plus true -- or (zero value, false) when
+// none of them qualify.
 //
 // rejected covers a failed deterministic check (a build/test failure, a
 // secret-sweep credential match) as well as a human/system rejection: this
 // codebase funnels all three into ChangeSetRejected (see execute.go's
 // checks-running -> rejected transitions), so there is one status to ask
 // about, not three (review C6: "denied, rejected or failed").
+//
+// review M7: this scans every entry (by CreatedAt, not "just the last
+// element of the slice"), because the caller (LatestChangeSetsPerActiveTask)
+// is expected to have already reduced recentChangeSets to at most one entry
+// per ACTIVE task -- that task's own latest. Checking only the slice's last
+// element used to hide an earlier task's still-unresolved rejection the
+// moment ANY other task's change set was created afterward, and kept
+// guidance stuck on "Resolve CHG-n" forever once that task was cancelled or
+// deleted (its rejected change set was the global "last" and never aged
+// out). Scanning the pre-reduced, active-tasks-only set fixes both: a later
+// change set on a DIFFERENT task can no longer hide this one, and a
+// cancelled/deleted task's change set is excluded before this function ever
+// sees it.
 func latestChangeSetOutcome(recentChangeSets []domain.ChangeSet) (domain.ChangeSet, bool) {
-	if len(recentChangeSets) == 0 {
-		return domain.ChangeSet{}, false
+	var latest domain.ChangeSet
+	found := false
+	for _, cs := range recentChangeSets {
+		switch cs.Status {
+		case domain.ChangeSetRejected, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
+			if !found || cs.CreatedAt.After(latest.CreatedAt) {
+				latest = cs
+				found = true
+			}
+		}
 	}
-	latest := recentChangeSets[len(recentChangeSets)-1]
-	switch latest.Status {
-	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
-		return latest, true
+	return latest, found
+}
+
+// LatestChangeSetsPerActiveTask reduces changeSets to at most one entry per
+// task -- that task's own most recently created (by CreatedAt) change set --
+// keeping only tasks whose CURRENT status is neither done nor cancelled
+// (review M7). Callers building BuildGuidance's recentChangeSets argument
+// should pass its result, not the initiative's raw change-set list: see
+// latestChangeSetOutcome's doc comment for why.
+func LatestChangeSetsPerActiveTask(changeSets []domain.ChangeSet, tasks []domain.Task) []domain.ChangeSet {
+	active := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.Status != domain.TaskDone && t.Status != domain.TaskCancelled {
+			active[t.ID] = true
+		}
 	}
-	return domain.ChangeSet{}, false
+	latestByTask := make(map[string]domain.ChangeSet, len(changeSets))
+	for _, cs := range changeSets {
+		if !active[cs.TaskID] {
+			continue
+		}
+		cur, ok := latestByTask[cs.TaskID]
+		if !ok || cs.CreatedAt.After(cur.CreatedAt) {
+			latestByTask[cs.TaskID] = cs
+		}
+	}
+	out := make([]domain.ChangeSet, 0, len(latestByTask))
+	for _, cs := range latestByTask {
+		out = append(out, cs)
+	}
+	return out
 }
 
 // changeSetFailureWhy renders the honest-status sentence for a change set
@@ -556,12 +606,16 @@ func changeSetFailureWhy(cs domain.ChangeSet) (action, why string) {
 // BuildGuidance computes the Recommended Next Move with deterministic
 // precedence: judgment items outrank stage advancement (§6, §9).
 //
-// recentChangeSets is the initiative's change sets, oldest first (review C6,
-// a signature change from the earlier BuildGuidance(ini, understanding)):
+// recentChangeSets should be LatestChangeSetsPerActiveTask's result, not the
+// initiative's raw change-set list (review C6, M7; C6 was the original
+// signature change from the earlier BuildGuidance(ini, understanding)):
 // guidance must not say "ready to build" over a change set that was just
 // denied, rejected, or failed -- it says what happened and the next step
-// instead. Callers with no change sets to report (a fresh initiative, or one
-// with none yet) pass nil, which behaves exactly as before.
+// instead, and it must not miss one just because a DIFFERENT task's change
+// set was created more recently, or keep reporting one whose task was
+// since cancelled or deleted (review M7). Callers with no change sets to
+// report (a fresh initiative, or one with none yet) pass nil, which behaves
+// exactly as before.
 func BuildGuidance(ini domain.Initiative, understanding Understanding, recentChangeSets []domain.ChangeSet) Guidance {
 	openQuestions := 0
 	for _, q := range understanding.Questions {

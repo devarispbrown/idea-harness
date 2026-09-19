@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -200,6 +201,57 @@ func TestSplitTaskCreatesReplacementsAndDeletesOriginal(t *testing.T) {
 	}
 }
 
+// TestSplitTaskPartialFailureLeavesOriginalIntact is review M4: an invalid
+// second (or later) replacement spec must refuse the WHOLE split before any
+// write, not create the earlier replacements and leave the original
+// undeleted -- the half-applied-write bug this branch had already fixed for
+// PATCH.
+func TestSplitTaskPartialFailureLeavesOriginalIntact(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	original := mustCreateTask(t, pr, iniID, "Big task", req.ID, nil)
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + original.ID + "/split"
+	// The second replacement names a requirement that does not exist.
+	body := `{"tasks":[{"title":"Part A","statement":"a"},{"title":"Part B","statement":"b","requirement_ids":["REQ-999-does-not-exist"]}]}`
+	resp := doReq(t, http.MethodPost, url, token, "", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unresolvable requirement reference, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+
+	// Nothing was applied: the original still exists, and "Part A" was never
+	// created.
+	if _, err := pr.db.GetTask(t.Context(), original.ID); err != nil {
+		t.Fatalf("original task must survive a refused split: %v", err)
+	}
+	tasks, err := pr.db.ListTasks(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected only the original task to exist, got %d: %+v", len(tasks), tasks)
+	}
+}
+
+// TestSplitTaskRejectsEmptyRequirementIDs is review M4: requirement_ids: []
+// (explicitly empty, not omitted) used to produce a replacement task with no
+// requirement at all, violating "Added tasks take a requirement".
+func TestSplitTaskRejectsEmptyRequirementIDs(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	original := mustCreateTask(t, pr, iniID, "Big task", req.ID, nil)
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + original.ID + "/split"
+	body := `{"tasks":[{"title":"Part A","statement":"a","requirement_ids":[]},{"title":"Part B","statement":"b"}]}`
+	resp := doReq(t, http.MethodPost, url, token, "", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an empty requirement_ids, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	if _, err := pr.db.GetTask(t.Context(), original.ID); err != nil {
+		t.Fatalf("original task must survive a refused split: %v", err)
+	}
+}
+
 // TestSetTaskDependsOnRejectsCycle proves review B3's "set a task's
 // depends_on (validate for cycles)".
 func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
@@ -222,5 +274,264 @@ func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
 	resp2 := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+c.Code+`"]}`)
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected a valid depends_on to succeed, got %d: %s", resp2.StatusCode, errorBody(t, resp2))
+	}
+}
+
+// TestMergeTasksRefusesSelfMerge is review H4: task_ids: [A, A] used to pass
+// both existence guards, then DeleteTask(A) deleted the survivor and the
+// response was null. It must be refused, and A must still exist.
+func TestMergeTasksRefusesSelfMerge(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/merge"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"task_ids":["`+a.ID+`","`+a.ID+`"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a self-merge, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	if _, err := pr.db.GetTask(t.Context(), a.ID); err != nil {
+		t.Fatalf("task must survive a refused self-merge: %v", err)
+	}
+}
+
+// TestMergeTasksRejectsCycle is review H4's own example: A depends on B, B
+// depends on C. Merging (A, C) would give A->B from the union of A's own
+// outgoing dependency, and B->A from rewiring B (a dependent of C) onto the
+// survivor -- a cycle. It must be refused, and NOTHING about the merge may
+// be applied (one transaction): C must still exist, and A/B's edges must be
+// exactly what they were before the attempt.
+func TestMergeTasksRejectsCycle(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	c := mustCreateTask(t, pr, iniID, "C", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, []string{c.ID}) // B depends on C
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, []string{b.ID}) // A depends on B
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/merge"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"task_ids":["`+a.ID+`","`+c.ID+`"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a merge that creates a cycle, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+
+	// Nothing was applied: C still exists, unchanged.
+	if _, err := pr.db.GetTask(t.Context(), c.ID); err != nil {
+		t.Fatalf("C must still exist after a refused merge: %v", err)
+	}
+	bEdges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bDepsOnC := false
+	for _, e := range bEdges {
+		if e.EdgeType == domain.EdgeDependsOn {
+			if e.ToID != c.ID {
+				t.Fatalf("B's depends_on must be unchanged (still only C), got edge to %s", e.ToID)
+			}
+			bDepsOnC = true
+		}
+	}
+	if !bDepsOnC {
+		t.Fatal("B must still depend on C after a refused merge")
+	}
+	aEdges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range aEdges {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID != b.ID {
+			t.Fatalf("A's depends_on must be unchanged (still only B), got edge to %s", e.ToID)
+		}
+	}
+}
+
+// TestMergeTasksDedupesDependentEdges is review H4: graph_edges has no
+// unique constraint, so a task that depended on BOTH merged tasks used to
+// get two identical depends_on edges to the survivor after a merge. It must
+// get exactly one.
+func TestMergeTasksDedupesDependentEdges(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	keep := mustCreateTask(t, pr, iniID, "Keep", req.ID, nil)
+	merge := mustCreateTask(t, pr, iniID, "Merge", req.ID, nil)
+	both := mustCreateTask(t, pr, iniID, "Both", req.ID, []string{keep.ID, merge.ID})
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/merge"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"task_ids":["`+keep.ID+`","`+merge.ID+`"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("merge: %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	resp.Body.Close()
+
+	edges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", both.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == keep.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 depends_on edge to the survivor, got %d", count)
+	}
+}
+
+// concurrentGetOrPost fires an HTTP request and reports its status code and
+// any transport error, WITHOUT calling t.Fatal -- safe to call from a
+// goroutine other than the test's own (the testing package forbids FailNow
+// there).
+func concurrentGetOrPost(method, url, token, body string) (status int, err error) {
+	var r *http.Request
+	if body != "" {
+		r, err = http.NewRequest(method, url, strings.NewReader(body))
+	} else {
+		r, err = http.NewRequest(method, url, nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if token != "" {
+		r.Header.Set("X-Idea-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// TestSetTaskDependsOnConcurrentRequestsNeverCreateACycle is review M5's
+// end-to-end guarantee: two real concurrent set-depends_on requests (A->B
+// and B->A) must never both succeed. lockPlanEdit serializes plan edits per
+// initiative, and SetTaskDependencies (store.TestSetTaskDependenciesRejectsCycleAgainstCurrentGraph
+// covers that one deterministically -- goroutine timing alone cannot
+// reliably force the narrow interleaving the original bug needed) re-checks
+// for a cycle inside the write transaction. This test fires both requests
+// with real goroutines as a best-effort end-to-end check that the observable
+// outcome is always "exactly one wins, and the graph has no cycle either
+// way", on top of that deterministic coverage.
+func TestSetTaskDependsOnConcurrentRequestsNeverCreateACycle(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, nil)
+
+	urlA := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + a.ID + "/depends-on"
+	urlB := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + b.ID + "/depends-on"
+
+	var wg sync.WaitGroup
+	statuses := make([]int, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		statuses[0], errs[0] = concurrentGetOrPost(http.MethodPost, urlA, token, `{"depends_on":["`+b.Code+`"]}`)
+	}()
+	go func() {
+		defer wg.Done()
+		statuses[1], errs[1] = concurrentGetOrPost(http.MethodPost, urlB, token, `{"depends_on":["`+a.Code+`"]}`)
+	}()
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	oks, bads := 0, 0
+	for _, status := range statuses {
+		switch status {
+		case http.StatusOK:
+			oks++
+		case http.StatusBadRequest:
+			bads++
+		default:
+			t.Fatalf("unexpected status %d (want 200 or 400)", status)
+		}
+	}
+	if oks != 1 || bads != 1 {
+		t.Fatalf("expected exactly one request to succeed and one to be refused as a cycle, got statuses %v", statuses)
+	}
+
+	// Whatever the outcome, the final graph must have no cycle: exactly one
+	// of the two dependency edges was written, never both.
+	edgesA, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edgesB, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aDependsOnB, bDependsOnA := false, false
+	for _, e := range edgesA {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == b.ID {
+			aDependsOnB = true
+		}
+	}
+	for _, e := range edgesB {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == a.ID {
+			bDependsOnA = true
+		}
+	}
+	if aDependsOnB && bDependsOnA {
+		t.Fatal("both edges were written -- A depends on B AND B depends on A, a cycle")
+	}
+	if !aDependsOnB && !bDependsOnA {
+		t.Fatal("expected exactly one of the two dependency edges to have been written")
+	}
+}
+
+// TestSetTaskDependsOnRejectsMissingField is the review low-priority item: a
+// body with no depends_on field at all (or a misspelled key) used to decode
+// to a nil/zero slice and silently clear every existing dependency. It must
+// be refused with 400 instead, and existing dependencies must survive.
+func TestSetTaskDependsOnRejectsMissingField(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, []string{a.ID}) // B depends on A
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + b.ID + "/depends-on"
+
+	for _, body := range []string{`{}`, `{"deppends_on":["` + a.Code + `"]}`} {
+		resp := doReq(t, http.MethodPost, url, token, "", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("body %s: expected 400 for a missing depends_on field, got %d: %s", body, resp.StatusCode, errorBody(t, resp))
+		}
+	}
+
+	// B's existing dependency on A must survive untouched.
+	edges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == a.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("B's existing dependency on A was silently cleared by a request with no depends_on field")
+	}
+
+	// An EXPLICIT empty array is still the legitimate "clear all
+	// dependencies" request.
+	resp := doReq(t, http.MethodPost, url, token, "", `{"depends_on":[]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an explicit empty depends_on, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	edges2, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range edges2 {
+		if e.EdgeType == domain.EdgeDependsOn {
+			t.Fatalf("expected all dependencies cleared by an explicit empty depends_on, got %+v", e)
+		}
 	}
 }

@@ -203,17 +203,73 @@ func TestMaskedPreviewNeverCarriesTheRawValue(t *testing.T) {
 	}
 }
 
-// TestMaskValueMasksShortValuesEntirely: an 8-character-or-shorter value has
-// no safe 4+4 split (it would reveal the whole thing, or nearly), so it is
-// masked entirely instead.
+// TestMaskValueMasksShortValuesEntirely is review H1: a value under 16
+// characters reveals nothing at all -- the old floor of 8 revealed 4+4 of a
+// 9-character value (`abcdefghi` -> `abcd…fghi`, 8 of 9 characters back in
+// the clear, and short passwords are exactly the common case). This covers
+// the whole boundary up to and including 15 characters, not just up to the
+// old (broken) floor of 8.
 func TestMaskValueMasksShortValuesEntirely(t *testing.T) {
-	for _, v := range []string{"a", "abcdefgh"} {
+	for _, v := range []string{
+		"a",
+		"abcdefgh",         // 8: the old floor
+		"hunter2345",       // 10: review's own example (`hunt…2345` used to leak)
+		"abcdefghi",        // 9: the boundary where the old leak started
+		"abcdefghijklmno",  // 15: one under the new floor
+	} {
 		got := maskValue(v)
-		if strings.ContainsAny(got, "abcdefgh") {
-			t.Errorf("maskValue(%q) = %q, leaks characters of a short value", v, got)
+		if got != strings.Repeat("*", len(v)) {
+			t.Errorf("maskValue(%q) = %q, want fully masked (len %d < 16)", v, got, len(v))
 		}
-		if len(got) != len(v) {
-			t.Errorf("maskValue(%q) = %q, want same length %d", v, got, len(v))
+	}
+}
+
+// TestMaskValueRevealsAtMostQuarterPerSide is review H1's fix itself: for a
+// value of 16+ characters, at most min(4, len/4) characters are revealed on
+// each side -- never more, however long the value.
+func TestMaskValueRevealsAtMostQuarterPerSide(t *testing.T) {
+	cases := []struct {
+		value      string
+		wantReveal int
+	}{
+		{strings.Repeat("a", 16), 4}, // 16/4 == 4, capped at 4
+		{strings.Repeat("a", 20), 4}, // 20/4 == 5, capped at 4
+		{strings.Repeat("a", 100), 4},
+	}
+	for _, tc := range cases {
+		got := maskValue(tc.value)
+		wantPrefix := tc.value[:tc.wantReveal]
+		wantSuffix := tc.value[len(tc.value)-tc.wantReveal:]
+		if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, wantSuffix) {
+			t.Fatalf("maskValue(%d chars) = %q, want exactly %d revealed per side", len(tc.value), got, tc.wantReveal)
+		}
+		// Exactly wantReveal on each side plus the ellipsis: no more of the
+		// value's own characters are exposed than that (e.g. never the whole
+		// value, however long).
+		middle := strings.TrimPrefix(strings.TrimSuffix(got, wantSuffix), wantPrefix)
+		if strings.ContainsAny(middle, tc.value) {
+			t.Fatalf("maskValue(%d chars) = %q, revealed more than %d characters per side", len(tc.value), got, tc.wantReveal)
+		}
+	}
+}
+
+// TestMaskedLineMasksEveryMatchOnTheLine is review H1: MaskedLine used to
+// mask only the finding's own value, leaving a second secret on the same
+// line in the clear. Probing with
+// `DB_PASSWORD=hunter2345 API_TOKEN=zzzzzzzzqqqq` used to give
+// `DB_PASSWORD=hunter2345 API_TOKEN=zzzz…qqqq` -- the first secret intact.
+func TestMaskedLineMasksEveryMatchOnTheLine(t *testing.T) {
+	content := "DB_PASSWORD=hunter2345 API_TOKEN=zzzzzzzzqqqq\n"
+	matches := FindCredentialsInFile("a.env", content)
+	if len(matches) < 2 {
+		t.Fatalf("expected at least 2 matches on the line, got %d: %+v", len(matches), matches)
+	}
+	for _, m := range matches {
+		if strings.Contains(m.MaskedLine, "hunter2345") {
+			t.Fatalf("MaskedLine still leaks the first secret: %q", m.MaskedLine)
+		}
+		if strings.Contains(m.MaskedLine, "zzzzzzzzqqqq") {
+			t.Fatalf("MaskedLine still leaks the second secret: %q", m.MaskedLine)
 		}
 	}
 }
