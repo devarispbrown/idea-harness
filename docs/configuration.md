@@ -58,6 +58,14 @@ providers:
 # Create a git commit (with repository hooks disabled) for every applied change
 # set, on top of the byte-for-byte snapshot revert. Off by default (§M7).
 git_commit: false
+git:
+  # Allow commit-on-apply to land directly on the repository's default branch.
+  # Off by default; see "git_commit guards" below.
+  allow_default_branch: false
+  # Create and check out idea/<slug> on an initiative's first apply, and
+  # commit each of its change sets there instead of whatever branch was
+  # already checked out. Opt-in.
+  branch_per_initiative: false
 ```
 
 Top-level fields:
@@ -79,6 +87,8 @@ Top-level fields:
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — the check is recorded `not_applicable` |
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
+| `git.allow_default_branch` | let commit-on-apply commit while the repository's default branch is checked out | `false` |
+| `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there | `false` |
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: re-approving re-runs the reviewer, and after the first block the deny gate refuses outright | `0` |
@@ -127,6 +137,39 @@ if you set this by hand and wonder why the second `idea new` behaved differently
 daemon's environment, so committing is never implied. Applied change sets are always revertible from
 the snapshot regardless of this setting — the commit is an extra, not the mechanism. The web UI
 exposes the same switch under **Settings**.
+
+**Hooks stay disabled for every agent commit** (`-c core.hooksPath=<empty temp dir>`), whether it
+lands via `git_commit` or `git.branch_per_initiative`: a pre-commit or commit-msg hook is arbitrary
+code, and the daemon's commits never run it. This is not configurable.
+
+**`git_commit` guards (review C4).** Even with `git_commit: true`, the commit-on-apply path refuses
+to create a commit — and instead records why on the change set as `git_commit_warning`, leaving the
+apply itself to succeed exactly as it would with `git_commit` off — when:
+
+- HEAD is detached;
+- a rebase, merge or cherry-pick is in progress (`.git/rebase-merge`, `.git/rebase-apply`,
+  `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD` — resolved per-worktree via `git rev-parse
+  --git-path`, so this is correct even inside a linked worktree);
+- the current branch is the repository's default branch (a remote's `origin/HEAD` when configured,
+  otherwise `main`/`master`), unless `git.allow_default_branch` is set.
+
+A refused commit never half-applies a change set: the files are written and the change set is marked
+`applied` exactly as it would be with the commit switched off. Only the commit itself is skipped.
+`git.allow_default_branch` is irrelevant once `git.branch_per_initiative` is on, since apply then
+always commits on the initiative's own branch, never the default one.
+
+**`git.branch_per_initiative`** creates and checks out `idea/<short-slug-of-the-initiative-title>` on
+an initiative's first apply (refusing if the workspace has uncommitted changes outside the change
+set's own files, so a branch switch never carries someone else's in-progress edit along with it),
+and commits every later change set for that initiative there.
+
+**`idea pr`** pushes that branch and runs `gh pr create`, with a body built from the initiative (PRD
+summary, change sets, verification progress). It requires the GitHub CLI (`gh`) on `PATH` and a `git`
+remote named `origin`; a missing `gh` answers a clear message rather than an opaque exec error.
+It is idempotent — a repeat call answers the pull request already recorded on the initiative
+(`initiative.pr_url`) rather than opening a second one. `idea pr checks <change-set-id>` shows the
+latest CI status via `gh pr checks`, which every change set of the initiative shares. See
+[`cli.md`](cli.md) and [`api.md`](api.md) for the exact commands and routes.
 
 ### The three review budgets
 

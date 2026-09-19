@@ -38,6 +38,40 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   Execute and Apply. `GET /api/v1/projects/{projectId}/secret-allowlist` lists
   entries (fingerprint prefix, kind, path at the time, actor, created_at);
   `DELETE …/secret-allowlist/{id}` revokes one.
+- **Revert refuses to erase an edit made after apply** (review A3). An ICP
+  user's comment added to a file after apply was silently erased by a revert
+  that never checked the workspace. `RevertChangeSet` now compares every
+  touched file against the change set's post-image before writing anything —
+  the mirror of apply's own pre-image check (`fsdiff.StaleBase`) — and refuses,
+  naming the files, if any changed: `revert refused: the workspace changed
+  since CHG-3 was applied: src/app.js: it was edited in the workspace after
+  apply; commit or discard your edits to src/app.js, then revert`. No `--force`
+  option. `POST …/change-sets/{id}/revert` answers a synchronous `409`
+  (`fsdiff.StalePost`, `Engine.RevertBlockedReason`) instead of starting an
+  operation that can only fail in the background.
+- **`git_commit` guards** (review C4, adopted #2). The commit-on-apply path now refuses — and
+  records why as `git_commit_warning` on the change set, leaving the apply itself to succeed exactly
+  as it would with `git_commit` off — when HEAD is detached, a rebase/merge/cherry-pick is in
+  progress, or the current branch is the repository's default branch and `git.allow_default_branch`
+  is not set. Hooks stay disabled for every agent commit either way (unchanged, now documented in
+  `docs/configuration.md`). `git.allow_default_branch` (new config field).
+- **`git.branch_per_initiative`** (opt-in, C4 piece 2). An initiative's first apply creates and
+  checks out `idea/<slug-of-its-title>`; every later change set for that initiative commits to the
+  same branch (`initiative.git_branch`, new API field), never whatever was checked out before. If
+  the workspace has uncommitted changes outside the change set's own files, the branch switch — and
+  so the commit — is skipped, with a warning, rather than carrying an unrelated edit onto a new
+  branch.
+- **`idea pr`** (C4 piece 3). Pushes an initiative's dedicated branch and opens a pull request via
+  `gh pr create`, with a body built from the initiative (PRD summary, change sets, verification
+  progress); idempotent (`initiative.pr_url`, new API field). `idea pr checks <change-set-id>` shows
+  the latest CI status via `gh pr checks` (`GET …/change-sets/{id}/pr-checks`). A missing `gh`
+  answers a clear 409 rather than an opaque exec error.
+- **The check sandbox image is derived from the project's toolchain** when `check.image` is not
+  configured (review C5): `.nvmrc`/`package.json` `engines.node` → `node:<major>`, `go.mod`'s `go`
+  directive → `golang:<ver>`, `.python-version` → `python:<ver>`. Only when detection is
+  unambiguous — a version range, a non-numeric tag, or more than one recognized toolchain still
+  fails closed exactly as an unconfigured image always has. The image (derived or configured) is
+  shown on every build/test check finding.
 
 ### Changed
 

@@ -117,6 +117,17 @@ gone stale once:
   was consulted before the row was looked up.
 - **A mutation blocked by something that depends on it**, such as deleting a task another task
   depends on.
+- **`revert` on a workspace that moved since apply** (review A3). Revert compares every file the
+  change set touched against the *post*-image apply wrote — the mirror of apply's own pre-image
+  check (`fsdiff.StaleBase`) at the opposite end of the change set's life. If a touched file no
+  longer matches (edited, deleted, or an "added" file now missing), revert refuses before writing
+  anything: `revert refused: the workspace changed since CHG-3 was applied: src/app.js: it was
+  edited in the workspace after apply; commit or discard your edits to src/app.js, then revert`.
+  There is no force option — the change set stays `applied`, and the recovery is for the human to
+  commit or discard their own edit first, then revert again. This is checked synchronously (before
+  the revert operation starts), the same way an already-reverted change set is: launching the
+  operation and failing in the background would answer `202` for a revert that erased nothing but
+  also changed nothing.
 - **Configuration written but not applied**, when the daemon could not reload the project. The
   config file *was* written; the running daemon kept the previous one.
 
@@ -235,6 +246,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. **202** |
 | GET | `/projects/{projectId}/initiatives/{id}/agent-output` | The running coding agent's last 100 output lines (redacted), and whether it is still running. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/partial-work` | Discard a stopped run's kept files, so the next run starts from the workspace ("Start over"). |
+| POST | `/projects/{projectId}/initiatives/{id}/pr` | Push the initiative's dedicated branch (`git.branch_per_initiative`) and open a pull request via `gh pr create`, with a body built from the initiative (PRD summary, change sets, verification progress). Synchronous — no workspace mutation, so no background operation. Idempotent: a repeat call answers the same `pr_url` rather than opening a second PR. **409** if the initiative has no dedicated branch yet, or `gh` is not installed. |
 | POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
 
 ### Understanding, guidance and analysis
@@ -324,7 +336,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The patch in two forms: `patch`, the whole rendered diff as one string, and `files`, a per-file list (`path`, `change_type`, `size`, `content`). Content is redacted **at this display surface, not at write time** — the raw blob store is deliberately redaction-free so apply and revert round-trip byte-for-byte ([`security-model.md`](security-model.md#what-this-does-not-protect-against)). |
 | POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approved"\|"rejected"\|"changes_requested", "accept_findings": bool}`. The wire vocabulary is not the CLI's — `idea review CHG-1 approve` sends `approved`; a client that posts `approve` or `reject` gets a 400. `accept_findings` (`--accept-findings`) signs off the reviewer's own blocking findings, without which an approval over one is refused; a finding carrying a deny code is refused either way. The body is closed: an undeclared field is a 400. |
 | POST | `/projects/{projectId}/change-sets/{id}/apply` | Apply an approved change set to the workspace. **202** |
-| POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202** |
+| POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202**. **409** if the change set is not `applied`, or if any file it touched no longer matches what apply wrote there (see the 409 notes above) — nothing is written either way, and there is no force option. |
+| GET | `/projects/{projectId}/change-sets/{id}/pr-checks` | The latest CI status of the change set's initiative's pull request, via `gh pr checks`. Every change set of one initiative shares the same PR and so the same result. **409** if there is no PR yet (`idea pr` first) or `gh` is not installed. |
 | POST | `/projects/{projectId}/change-sets/{id}/resolve-conflict` | Resolve a conflicted change set: `{"resolution": "retry"}` (**202**) or `"reject"` (synchronous). |
 
 ### Operations
