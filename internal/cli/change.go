@@ -191,6 +191,74 @@ func cmdRevert(a cmdArgs, stdout, stderr io.Writer) error {
 	return runChangeSetAction("revert", a, stdout)
 }
 
+// cliPRChecks mirrors the pr-checks API response (git.PRChecksResult).
+type cliPRChecks struct {
+	Overall string           `json:"overall"`
+	Checks  []cliCheckStatus `json:"checks"`
+}
+
+// cliCheckStatus mirrors one entry of git.PRChecksResult.Checks.
+type cliCheckStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Link  string `json:"link,omitempty"`
+}
+
+// cmdPR opens (idempotently) a pull request for an initiative's dedicated
+// branch, or with the "checks" subcommand, reports the latest CI status of a
+// change set's pull request (review C4 piece 3).
+func cmdPR(a cmdArgs, stdout, stderr io.Writer) error {
+	if a.sub == "checks" {
+		return cmdPRChecks(a, stdout)
+	}
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	var out map[string]string
+	if err := c.do("POST", initiativeResource(projectID, iniID, "pr"), nil, &out); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, out)
+	}
+	fmt.Fprintln(stdout, ok("✓ pull request")+" "+code(out["pr_url"]))
+	return nil
+}
+
+// cmdPRChecks shows the latest CI status of a change set's initiative's pull
+// request, via `idea pr checks <change-set-id>`.
+func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
+	positional := a.positional
+	if len(positional) < 1 {
+		return fmt.Errorf("usage: idea pr checks <change-set-id>")
+	}
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	var res cliPRChecks
+	if err := c.do("GET", changeSetResource(projectID, positional[0], "pr-checks"), nil, &res); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, res)
+	}
+	if res.Overall == "none" {
+		fmt.Fprintln(stdout, muted("no CI checks reported yet"))
+		return nil
+	}
+	fmt.Fprintln(stdout, heading("CI status: ")+res.Overall)
+	for _, chk := range res.Checks {
+		fmt.Fprintf(stdout, "  %s  %s\n", chk.Name, chk.State)
+	}
+	return nil
+}
+
 // cmdReview applies a review verdict to a change set.
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional

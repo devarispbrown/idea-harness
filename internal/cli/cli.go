@@ -130,6 +130,10 @@ func commands() []command {
 		{names: []string{"change"}, usage: "change <id>", summary: "show a change set", flags: jsonFlag, maxPositional: 1, run: cmdChange, inHelp: true},
 		{names: []string{"apply"}, usage: "apply <id>", summary: "apply an approved change set", flags: flagSpec{}, maxPositional: 1, run: cmdApply, inHelp: true},
 		{names: []string{"revert"}, usage: "revert <id>", summary: "roll back a change set", flags: flagSpec{}, maxPositional: 1, run: cmdRevert, inHelp: true},
+		{names: []string{"pr"}, usage: "pr [<initiative>]", summary: "open a pull request for the initiative's branch (git.branch_per_initiative)", flags: jsonFlag, subs: map[string]flagSpec{
+			"checks": {"--json": flagBool},
+		}, maxPositional: 1, run: cmdPR, inHelp: true},
+		{usage: "pr checks <change-set-id>", summary: "show the latest CI status via `gh pr checks`", inHelp: true},
 		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested", flags: flagSpec{"--accept-findings": flagBool}, maxPositional: 2, run: cmdReview, inHelp: true},
 		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--json": flagBool}, maxPositional: 1, run: cmdVerify, inHelp: true},
 		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},

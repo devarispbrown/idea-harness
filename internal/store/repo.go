@@ -60,9 +60,9 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 	var ini domain.Initiative
 	var created, updated int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, created_at, updated_at
 		FROM initiatives WHERE id = ?`, initiativeID).
-		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &created, &updated)
+		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &created, &updated)
 	if err != nil {
 		return ini, notFoundIfNoRows(err, "initiative", initiativeID)
 	}
@@ -74,7 +74,7 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 // ListInitiatives returns all initiatives ordered by creation.
 func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, created_at, updated_at
 		FROM initiatives ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) 
 	for rows.Next() {
 		var ini domain.Initiative
 		var created, updated int64
-		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &created, &updated); err != nil {
+		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &created, &updated); err != nil {
 			return nil, err
 		}
 		ini.CreatedAt = time.UnixMilli(created)
@@ -109,6 +109,26 @@ func (db *DB) SetInitiativeGitBranch(ctx context.Context, initiativeID, branch, 
 		EventType:     "initiative.git_branch_set",
 	}, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE initiatives SET git_branch = ? WHERE id = ?`, branch, initiativeID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "initiative %q not found", initiativeID)
+	})
+}
+
+// SetInitiativePRURL records the pull request `idea pr` opened for the
+// initiative's dedicated branch (review C4 piece 3).
+func (db *DB) SetInitiativePRURL(ctx context.Context, initiativeID, prURL, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.pr_opened",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE initiatives SET pr_url = ? WHERE id = ?`, prURL, initiativeID)
 		if err != nil {
 			return err
 		}

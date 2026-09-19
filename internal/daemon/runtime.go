@@ -19,6 +19,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/git"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/project"
 	"github.com/devarispbrown/idea-harness/internal/security"
@@ -1049,6 +1050,54 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 		r.log.Info("revert complete", "change_set", changeSetID)
 	})
 	return opID, nil
+}
+
+// CreatePRForInitiative pushes the initiative's dedicated branch and opens a
+// pull request via `gh pr create` (review C4 piece 3), synchronously: unlike
+// apply/execute/revert it neither claims the initiative nor mutates the
+// workspace tree, only git/GitHub state, so there is no long-running pipeline
+// to run as a background operation. The three ways this can be refused --
+// no dedicated branch yet, `gh` not installed, or (PRChecksForChangeSet only)
+// no PR yet -- are classified here as preconditions, never inside
+// internal/workflow (see PreconditionError's doc comment), so a caller
+// answers 409 with a message naming exactly which of the three it hit.
+func (r *Runtime) CreatePRForInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	url, err := pr.engine.CreatePR(ctx, initiativeID)
+	if err != nil {
+		switch {
+		case errors.Is(err, workflow.ErrNoInitiativeBranch):
+			return "", preconditionf("%s", err.Error())
+		case errors.Is(err, git.ErrGHNotFound):
+			return "", preconditionf("%s", err.Error())
+		}
+		return "", err
+	}
+	return url, nil
+}
+
+// PRChecksForChangeSet reports the latest CI status of changeSetID's
+// initiative's pull request via `gh pr checks`. See CreatePRForInitiative's
+// doc comment for why "no PR yet" and "no gh" are classified here.
+func (r *Runtime) PRChecksForChangeSet(ctx context.Context, projectID, changeSetID string) (git.PRChecksResult, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return git.PRChecksResult{}, err
+	}
+	res, err := pr.engine.PRChecks(ctx, changeSetID)
+	if err != nil {
+		switch {
+		case errors.Is(err, workflow.ErrNoPR):
+			return git.PRChecksResult{}, preconditionf("%s", err.Error())
+		case errors.Is(err, git.ErrGHNotFound):
+			return git.PRChecksResult{}, preconditionf("%s", err.Error())
+		}
+		return git.PRChecksResult{}, err
+	}
+	return res, nil
 }
 
 // ReviseInitiative applies the human's decisions by re-running product

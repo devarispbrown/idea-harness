@@ -230,7 +230,11 @@ type Initiative struct {
 	// initiative's first apply and reused by every later one, so all of its
 	// change sets land on the same branch. Empty when the setting is off, or
 	// before a first apply has created it.
-	GitBranch string    `json:"git_branch,omitempty"`
+	GitBranch string `json:"git_branch,omitempty"`
+	// PRURL is the pull request `idea pr` opened for GitBranch (review C4
+	// piece 3). Empty until a PR exists; a repeat `idea pr` is idempotent and
+	// returns this URL rather than opening a second PR.
+	PRURL     string    `json:"pr_url,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
