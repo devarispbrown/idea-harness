@@ -1175,28 +1175,63 @@ func (s *Server) resolveRequirementRefs(ctx context.Context, pr *projectRuntime,
 	if err != nil {
 		return nil, err
 	}
-	byCode := make(map[string]string, len(reqs))
-	byID := make(map[string]string, len(reqs))
+	byCode := make(map[string]domain.Requirement, len(reqs))
+	byID := make(map[string]domain.Requirement, len(reqs))
 	for _, req := range reqs {
-		byCode[workflow.NormalizeRequirementRef(req.Code)] = req.ID
-		byID[req.ID] = req.ID
+		byCode[workflow.NormalizeRequirementRef(req.Code)] = req
+		byID[req.ID] = req
 	}
 	var out []string
 	seen := map[string]bool{}
 	for _, ref := range refs {
-		id, ok := byID[ref]
+		req, ok := byID[ref]
 		if !ok {
-			id, ok = byCode[workflow.NormalizeRequirementRef(ref)]
+			req, ok = byCode[workflow.NormalizeRequirementRef(ref)]
 		}
 		if !ok {
 			return nil, fmt.Errorf("requirement_ids references an unknown requirement %q", ref)
 		}
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
+		// review low-priority item: a superseded requirement is refused, not
+		// silently wired to a task as if it were still live.
+		//
+		// Requirement.SupersededBy is provenance (a run label like
+		// "human-revise" or "retry" -- see store.SupersedeRequirements), not a
+		// pointer to whatever requirement replaced it: there is no tracked 1:1
+		// successor link. The closest available signal is an active
+		// requirement with the IDENTICAL statement text, which is what a
+		// revise that regenerates the same requirement produces in practice;
+		// named when found, so the caller is not left to search for it by
+		// hand, but this is a heuristic, not a guarantee -- reworded
+		// requirements have no traceable successor at all.
+		if req.SupersededBy != "" {
+			if live := liveRequirementWithSameStatement(reqs, req); live != "" {
+				return nil, fmt.Errorf("requirement_ids references %q, which is superseded; %s appears to be its live continuation (same statement); use that instead", ref, live)
+			}
+			return nil, fmt.Errorf("requirement_ids references %q, which is superseded and has no active continuation", ref)
+		}
+		if !seen[req.ID] {
+			seen[req.ID] = true
+			out = append(out, req.ID)
 		}
 	}
 	return out, nil
+}
+
+// liveRequirementWithSameStatement returns the Code of an active requirement
+// (not removed, not itself superseded) among all whose Statement exactly
+// matches superseded's -- the closest available signal to "what replaced
+// this", given SupersededBy carries no successor id (see the caller). Returns
+// "" when no such requirement exists.
+func liveRequirementWithSameStatement(all []domain.Requirement, superseded domain.Requirement) string {
+	for _, r := range all {
+		if r.ID == superseded.ID || r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+			continue
+		}
+		if r.Statement == superseded.Statement {
+			return r.Code
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
@@ -1225,22 +1260,27 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// Everything here is validated (and, for requirement_ids, resolved to real
+	// ids) BEFORE either write below runs (review low-priority item): this
+	// handler used to replace the task's requirement edges FIRST and only
+	// validate priority afterward, so a bad `priority` value in the same
+	// request returned 400 after the edges were already replaced -- a
+	// half-applied PATCH the client's 400 gave no reason to suspect.
+	//
 	// requirement_ids is optional on PATCH: omitted (nil) leaves the task's
 	// existing requirement links untouched. Present, it replaces them
 	// entirely, and (review A4 #3) must name at least one -- clearing a task's
 	// last requirement is refused the same way adding one with none is.
-	if body.RequirementIDs != nil {
+	var implementsIDs []string
+	replaceRequirements := body.RequirementIDs != nil
+	if replaceRequirements {
 		if len(body.RequirementIDs) == 0 {
 			writeError(w, http.StatusBadRequest, "requirement_ids is required (at least one)")
 			return
 		}
-		implementsIDs, err := s.resolveRequirementRefs(r.Context(), pr, ini.ID, body.RequirementIDs)
+		implementsIDs, err = s.resolveRequirementRefs(r.Context(), pr, ini.ID, body.RequirementIDs)
 		if err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		if err := pr.db.ReplaceTaskRequirements(r.Context(), ini.ID, task.ID, implementsIDs); err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
@@ -1260,6 +1300,14 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	statement := task.Statement
 	if body.Statement != "" {
 		statement = pr.redactor.RedactString(body.Statement)
+	}
+
+	// Writes: only now, after every field above validated cleanly.
+	if replaceRequirements {
+		if err := pr.db.ReplaceTaskRequirements(r.Context(), ini.ID, task.ID, implementsIDs); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	if err := pr.db.UpdateTask(r.Context(), ini.ID, task.ID, title, statement, priority, body.Estimate); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
