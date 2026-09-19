@@ -75,6 +75,51 @@ func TestVerifyInitiativeGate(t *testing.T) {
 	}
 }
 
+// TestHasOpenBlockingFindingsSkipsAdvisory is review C1: an Advisory finding
+// must never block completion, however severe and however undisposed --
+// that's the whole point of marking a quick-accepted finding Advisory rather
+// than leaving it a plain open blocker. Before the fix, a quick-accepted
+// critical/high finding wedged the initiative: approval succeeded, and
+// verify/complete then refused forever with no way to un-stick it.
+func TestHasOpenBlockingFindingsSkipsAdvisory(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID, TargetType: "prd", TargetID: iniID,
+		Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "c", Finding: "quick-accepted", Recommendation: "r",
+		Advisory: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocking {
+		t.Fatal("an Advisory finding must never be blocking, regardless of severity or disposition")
+	}
+
+	// A non-advisory finding of the same severity still blocks, proving the
+	// skip is keyed on Advisory and not accidentally on something else.
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID, TargetType: "prd", TargetID: iniID,
+		Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "c", Finding: "real blocker", Recommendation: "r",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocking2, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocking2 {
+		t.Fatal("a non-advisory undisposed critical finding must still block")
+	}
+}
+
 func TestPartialCoverageNotVerified(t *testing.T) {
 	eng, db, iniID := newVerifyFixture(t)
 	ctx := context.Background()

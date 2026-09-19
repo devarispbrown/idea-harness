@@ -285,12 +285,23 @@ func (e *Engine) requirementCovered(ctx context.Context, r domain.Requirement) (
 
 // hasOpenBlockingFindings reports whether the initiative has any undisposed
 // critical/high finding.
+//
+// C1: a finding saved with Advisory=true is never blocking here, regardless
+// of severity or disposition. Advisory is how quick rigor (and the
+// deterministic PRD/plan paths that accept a quick-calibrated review)
+// records "the reviewer raised this, but it did not gate approval" -- if
+// this check still counted it, approval would succeed and then `idea
+// verify`/complete would refuse forever with no way to un-stick the
+// initiative (see review C1).
 func (e *Engine) hasOpenBlockingFindings(ctx context.Context, initiativeID string) (bool, error) {
 	findings, err := e.db.ListFindingsByInitiative(ctx, initiativeID)
 	if err != nil {
 		return false, err
 	}
 	for _, f := range findings {
+		if f.Advisory {
+			continue
+		}
 		if f.Disposition == "" && f.Severity.Blocking() {
 			return true, nil
 		}

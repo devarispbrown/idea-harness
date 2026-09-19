@@ -146,18 +146,32 @@ func currentBranch(ctx context.Context, workTree string) (branch string, detache
 	return strings.TrimSpace(out), false, nil
 }
 
-// defaultBranchNames are the conventional default-branch names assumed when
-// `origin/HEAD` cannot be resolved and `init.defaultBranch` is unset (review
-// low-priority item: guard.go originally only guessed main/master). Checked
-// in this order.
-var defaultBranchNames = []string{"main", "master", "trunk", "develop"}
+// defaultBranchNames are the conventional default-branch names guessed when
+// `origin/HEAD` cannot be resolved (review low-priority item). Two things
+// this list, and the detection order below, deliberately no longer do:
+//
+//   - consult `init.defaultBranch`: that git config is normally set GLOBALLY
+//     and describes what a future `git init` should name a brand-new
+//     repository's branch, not what THIS repository's default branch
+//     actually is;
+//   - guess "develop": a git-flow repository with no `origin/HEAD`
+//     configured (common for a purely local clone) would have its own
+//     "develop" branch silently treated as the default and blocked by the
+//     default-branch guard, with no way around it short of
+//     `git.allow_default_branch`.
+//
+// The order is now exactly: `origin/HEAD` (resolvedDefaultBranchName), then
+// this list. It is the same order the guard (onDefaultBranch) and branch
+// creation (defaultBranchRef) both use.
+var defaultBranchNames = []string{"main", "master"}
 
 // onDefaultBranch reports whether branch is the repository's default. A
 // remote-tracking `origin/HEAD` (set by a clone, or `git remote set-head`) is
-// authoritative when present; otherwise the repository's own configured
-// `init.defaultBranch` (if set) is authoritative; otherwise branch is checked
-// against defaultBranchNames, the same convention `gh` and GitHub itself use
-// for a repository with no remote configured yet.
+// authoritative when present; otherwise branch is checked against
+// defaultBranchNames, the same convention `gh` and GitHub itself use for a
+// repository with no remote configured yet (review low-priority item:
+// `init.defaultBranch` is no longer consulted -- see defaultBranchNames's
+// doc comment).
 func onDefaultBranch(ctx context.Context, workTree, branch string) (bool, error) {
 	if branch == "" {
 		return false, nil
@@ -178,9 +192,10 @@ func onDefaultBranch(ctx context.Context, workTree, branch string) (bool, error)
 }
 
 // resolvedDefaultBranchName returns the repository's declared default branch
-// name: `origin/HEAD`'s target when the remote-tracking ref exists, else
-// `init.defaultBranch` when git has that configured, else "" (meaning: fall
-// back to guessing from defaultBranchNames).
+// name: `origin/HEAD`'s target when the remote-tracking ref exists, else ""
+// (meaning: fall back to guessing from defaultBranchNames). It no longer
+// consults `init.defaultBranch` (review low-priority item; see
+// defaultBranchNames's doc comment).
 func resolvedDefaultBranchName(ctx context.Context, workTree string) (string, error) {
 	out, err := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
 	if err == nil {
@@ -189,42 +204,44 @@ func resolvedDefaultBranchName(ctx context.Context, workTree string) (string, er
 	if !isExitCode(err, 1) {
 		return "", fmt.Errorf("git: resolve origin/HEAD: %w: %s", err, strings.TrimSpace(out))
 	}
-	cfgOut, cfgErr := runGit(ctx, workTree, sanitizedEnv(), "config", "--local", "--get", "init.defaultBranch")
-	if cfgErr == nil {
-		if name := strings.TrimSpace(cfgOut); name != "" {
-			return name, nil
-		}
-	}
 	return "", nil
 }
 
-// defaultBranchRef resolves both the name and the ref to branch a brand-new
-// initiative branch from (review H2): `origin/HEAD` when present, else the
-// first local branch matching `init.defaultBranch` or defaultBranchNames.
-// Returns ("", "", nil) when nothing resolves (e.g. a fresh repo with no
-// commit yet on any conventional name) -- the caller falls back to branching
-// from current HEAD rather than failing outright.
+// defaultBranchRef resolves the name and the LOCAL ref to branch a brand-new
+// initiative branch from (review H2, H6): the name comes from `origin/HEAD`
+// when present, else the first local branch matching defaultBranchNames.
+//
+// The ref returned is always a LOCAL `refs/heads/<name>`, never the
+// remote-tracking `refs/remotes/origin/HEAD` itself (review H6): branching
+// straight from origin/HEAD moves the new branch onto whatever origin last
+// advertised, which can silently be BEHIND the local default branch (a
+// normal state for a local tool with unpushed commits) -- exactly the
+// scenario that let branch-per-initiative revert the user's own local
+// commits on the default branch to origin's version. When origin/HEAD names
+// a branch with no local copy at all, ref is "" (name is still returned) --
+// the caller falls back to branching from current HEAD rather than a name
+// that exists only on the remote.
+//
+// Returns ("", "", nil) when nothing resolves at all (e.g. a fresh repo with
+// no commit yet on any conventional name) -- the caller falls back to
+// branching from current HEAD.
 func defaultBranchRef(ctx context.Context, workTree string) (name, ref string, err error) {
-	out, symErr := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
-	if symErr == nil {
-		name = strings.TrimPrefix(strings.TrimSpace(out), "origin/")
-		return name, "refs/remotes/origin/HEAD", nil
+	name, err = resolvedDefaultBranchName(ctx, workTree)
+	if err != nil {
+		return "", "", err
 	}
-	if !isExitCode(symErr, 1) {
-		return "", "", fmt.Errorf("git: resolve origin/HEAD: %w: %s", symErr, strings.TrimSpace(out))
-	}
-	candidates := defaultBranchNames
-	if cfgOut, cfgErr := runGit(ctx, workTree, sanitizedEnv(), "config", "--local", "--get", "init.defaultBranch"); cfgErr == nil {
-		if cfg := strings.TrimSpace(cfgOut); cfg != "" {
-			candidates = append([]string{cfg}, defaultBranchNames...)
+	if name == "" {
+		for _, cand := range defaultBranchNames {
+			if localBranchExists(ctx, workTree, cand) {
+				return cand, "refs/heads/" + cand, nil
+			}
 		}
+		return "", "", nil
 	}
-	for _, cand := range candidates {
-		if localBranchExists(ctx, workTree, cand) {
-			return cand, "refs/heads/" + cand, nil
-		}
+	if localBranchExists(ctx, workTree, name) {
+		return name, "refs/heads/" + name, nil
 	}
-	return "", "", nil
+	return name, "", nil
 }
 
 // localBranchExists reports whether a local branch named name exists.

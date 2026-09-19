@@ -247,25 +247,49 @@ enterprise system, regardless of its actual size.
 
 Effects, at every level:
 
-- **Only critical/high findings ever block approval** (this was already true — `Severity.Blocking()`
-  — and rigor does not change it). Medium and below are always advisory.
-- **A per-cycle findings cap** keeps the highest-severity findings and drops the rest: `quick` 5,
-  `standard` 10, `thorough` 20. A dropped finding is not silent — an extra observation-severity,
-  advisory finding records how many were dropped ("N lower-severity finding(s) not shown").
-- **`quick` converges in one pass.** The PRD and plan review loops run exactly one cycle at `quick`
-  and then accept, whatever the adversarial reviewer found — the findings stay on record as
-  advisories (never falsely dispositioned "fixed"), but they do not gate approval and there is no
-  revise cycle. The change-set review's own blocking check is bypassed the same way, but a
-  **system-deny** check (the secret sweep, host-exec, a blob-digest mismatch) is a security
-  invariant, not a rigor knob, and is never affected.
-- **The reviewer, PRD-author and planner prompts all receive the project's measured scale, the
-  detected stack (from root-level marker files: `go.mod`, `package.json`, `Cargo.toml`, …), the
-  effective rigor level, and — capped at 4000 bytes — the project's own conventions doc (a
-  CONVENTIONS.md or CONTRIBUTING.md file, first one found, when one exists)**, with an explicit
-  instruction to judge proportionately and not demand infrastructure or formal schemas a small
-  project doesn't have (this is also review B5's proportionate-PRD behavior — the PRD and framing
-  prompts get the same section, plus an explicit "do not add infrastructure the project does not
-  have unless the idea asks for it").
+- **Only critical/high findings ever block approval** (`Severity.Blocking()`) — but whether a
+  *particular* rigor level can relax that depends on where the finding came from:
+  - A finding from a **deterministic check** (a task-dependency cycle, an untraced task, a
+    superseded-requirement citation, a duplicate REQ code, a missing/vague acceptance criterion) is
+    **never** relaxed by rigor, at any level. It always goes through the ordinary approval gate —
+    quick does not auto-approve a plan with a cycle, or a PRD that fails a deterministic check, just
+    because it calibrated to `quick`.
+  - A finding from the **adversarial reviewer**, on the PRD or the execution plan, is what `quick`'s
+    one-pass convergence (below) relaxes: it is marked `advisory` and does not gate approval, but it
+    is never silently dropped either — see the verify gate note below.
+  - For the **change-set review**, critical/high findings block at every rigor level, `quick`
+    included. `quick` there means one review pass and a smaller findings cap (5, see below), not "no
+    gate" — a system-deny check (the secret sweep, host-exec, a blob-digest mismatch) was always a
+    security invariant regardless of rigor, and a genuine in-diff critical/high finding is treated
+    the same way.
+  - A finding marked `advisory` never blocks *completion* either (`idea verify`): the verify gate
+    skips every advisory finding regardless of severity or disposition. It is still shown in triage
+    so a human can look at it, just not as something completion is waiting on.
+- **A per-cycle findings cap** keeps the findings, non-advisory blocking ones first: `quick` 5,
+  `standard` 10, `thorough` 20. A critical/high finding that is not marked advisory is **never**
+  dropped by the cap, however many of them there are relative to the limit — only the rest (advisory
+  findings, and non-blocking severities) are capped, preferring non-advisory and higher severity. A
+  dropped finding is not silent — an extra observation-severity, advisory finding records how many
+  were dropped, without claiming they were all "lower-severity" (some may be advisory findings of any
+  severity).
+- **`quick` converges in one pass.** The PRD and plan review loops run exactly one cycle at `quick`.
+  The adversarial reviewer's own findings are accepted as advisories (never falsely dispositioned
+  "fixed"), but a deterministic finding still routes to `needs_human_judgment` exactly as it would at
+  any other rigor. The change-set review is always effectively "one pass" (there is no automated
+  revise loop for it); at `quick` its cap is simply smaller, not its gate weaker.
+- **Line count also feeds change-size calibration** for the change-set review, alongside file count:
+  a diff estimated at more than roughly 500 changed lines counts as a "big" change (pushing toward
+  `thorough`) even when it touches only a handful of files.
+- **The adversarial reviewer, PRD-author and planner prompts all receive the project's measured
+  scale, the effective rigor level, and — capped at 4000 bytes, on a UTF-8 rune boundary, and
+  labeled as untrusted data (it is read from the live workspace, which a prior agent-applied change
+  set could have edited) — the project's own conventions doc** (a CONVENTIONS.md or CONTRIBUTING.md
+  file, first one found, when one exists), with an explicit instruction to judge proportionately and
+  not demand infrastructure or formal schemas a small project doesn't have. The **detected stack**
+  (from root-level marker files: `go.mod`, `package.json`, `Cargo.toml`, …) is given only to the
+  **PRD-authoring and framing ("explore") prompts**, not the reviewer or planner — this is review
+  B5's proportionate-PRD behavior, which also adds an explicit "do not add infrastructure the
+  project does not have unless the idea asks for it" instruction on those two prompts specifically.
 
 `idea config validate` rejects any `review.rigor` value other than `auto`, `quick`, `standard`, or
 `thorough`.
