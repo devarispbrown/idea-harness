@@ -241,6 +241,71 @@ func TestApplyGitCommitAllowedOnDefaultBranchWhenConfigured(t *testing.T) {
 		t.Errorf("GitCommitWarning = %q, want empty", got.GitCommitWarning)
 	}
 }
+
+// TestApplyGitCommitBranchPerInitiativeCreatesAndReuses is review C4 piece 2:
+// the first apply of an initiative creates and checks out idea/<slug>, later
+// applies reuse it, and the initiative's own branch is what gets committed to
+// -- even though the default-branch guard would otherwise refuse a commit
+// while `main` is checked out.
+func TestApplyGitCommitBranchPerInitiativeCreatesAndReuses(t *testing.T) {
+	eng, db, iniID, workspace := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
+
+	first := applyApproved(t, eng, db, iniID)
+	if first.GitCommitWarning != "" {
+		t.Fatalf("GitCommitWarning = %q, want none: the initiative's own branch, not main, should have been committed to", first.GitCommitWarning)
+	}
+	if first.GitCommitSHA == "" {
+		t.Fatal("GitCommitSHA is empty, want a commit on the initiative's branch")
+	}
+	ini, err := db.GetInitiative(context.Background(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.GitBranch == "" || !strings.HasPrefix(ini.GitBranch, "idea/") {
+		t.Fatalf("initiative.GitBranch = %q, want an idea/<slug> branch", ini.GitBranch)
+	}
+	if got := gitOutTest(t, workspace, "symbolic-ref", "--short", "HEAD"); got != ini.GitBranch {
+		t.Fatalf("checked out branch = %q, want %q", got, ini.GitBranch)
+	}
+
+	// A second task (a distinct title, so the internal executor's placeholder
+	// actually differs and there is something new to commit) on the same
+	// initiative reuses the same branch.
+	second := applyApprovedTitled(t, eng, db, iniID, "add /metrics")
+	if second.GitCommitSHA == "" {
+		t.Fatal("second apply did not commit")
+	}
+	ini2, err := db.GetInitiative(context.Background(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini2.GitBranch != ini.GitBranch {
+		t.Fatalf("second apply's branch = %q, want the same branch %q", ini2.GitBranch, ini.GitBranch)
+	}
+}
+
+// TestApplyGitCommitBranchPerInitiativeRefusesUnrelatedDirtyFiles: an
+// unrelated uncommitted edit in the workspace must not ride onto the
+// initiative's freshly created branch -- the commit is skipped instead, with
+// a warning, and the apply itself still succeeds.
+func TestApplyGitCommitBranchPerInitiativeRefusesUnrelatedDirtyFiles(t *testing.T) {
+	eng, db, iniID, workspace := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
+	if err := os.WriteFile(filepath.Join(workspace, "unrelated.txt"), []byte("mid-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := applyApproved(t, eng, db, iniID)
+	if got.Status != domain.ChangeSetApplied {
+		t.Fatalf("status = %q, want applied", got.Status)
+	}
+	if got.GitCommitSHA != "" {
+		t.Errorf("GitCommitSHA = %q, want empty: the branch switch should have refused", got.GitCommitSHA)
+	}
+	if !strings.Contains(got.GitCommitWarning, "unrelated.txt") {
+		t.Errorf("GitCommitWarning = %q, want it to name the unrelated dirty file", got.GitCommitWarning)
+	}
+}
+
 // gitOutTest runs a git command in dir and returns its trimmed combined output.
 func gitOutTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()

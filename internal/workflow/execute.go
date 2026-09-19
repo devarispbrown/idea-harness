@@ -1524,20 +1524,53 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 
 // commitChangeSet creates the opt-in git commit for an applied change set and
 // returns the commit SHA ("" when the workspace is not a git repository, the
-// diff was empty, or the commit guard refused). The subject is "<HumanID>:
-// <task title>" (HumanID is already CHG-N), with the task title sanitized so
-// it can never inject extra commit lines or a forged header.
+// diff was empty, or a guard refused). The subject is "<HumanID>: <task
+// title>" (HumanID is already CHG-N), with the task title sanitized so it can
+// never inject extra commit lines or a forged header.
 //
-// Before ever calling git.Commit, git.CommitGuardReason checks for a detached
-// HEAD, a rebase/merge/cherry-pick in progress, and (unless
-// git.allow_default_branch) the repository's default branch (review C4,
-// adopted #2). A refusal is reported back as warning, not error: the change
-// set still applies, only uncommitted, and ApplyChangeSet records the reason
-// on it rather than failing.
+// Two things can skip the commit outright, each reported back as a warning
+// rather than an error: the change set still applies, only uncommitted, and
+// ApplyChangeSet records the reason on it instead of failing.
+//
+//   - git.branch_per_initiative (review C4 piece 2): every change set for one
+//     initiative must land on that initiative's own branch. If the branch
+//     cannot be ensured (a name collision aside, chiefly an unrelated dirty
+//     file that would ride along onto a freshly created branch), the commit
+//     is skipped rather than landing on whatever branch happened to be
+//     checked out.
+//   - git.CommitGuardReason (review C4 piece 1): a detached HEAD, a
+//     rebase/merge/cherry-pick in progress, or (unless
+//     git.allow_default_branch) the repository's default branch. Checked
+//     after the branch switch above, so it is the *initiative's* branch being
+//     judged, not whatever was checked out before.
 //
 // A title-lookup failure is non-fatal: the commit still proceeds with an empty
 // title rather than failing the whole apply.
 func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patch *fsdiff.Patch) (sha, warning string, err error) {
+	paths := make([]string, 0, len(patch.Files))
+	for _, f := range patch.Files {
+		paths = append(paths, f.Path)
+	}
+
+	if e.cfg.Git.BranchPerInitiative {
+		ini, iniErr := e.db.GetInitiative(ctx, cs.InitiativeID)
+		if iniErr != nil {
+			return "", "not committed: could not look up the initiative's branch: " + iniErr.Error(), nil
+		}
+		branch, reason, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths)
+		if brErr != nil {
+			return "", "not committed: could not switch to the initiative's branch: " + brErr.Error(), nil
+		}
+		if reason != "" {
+			return "", "not committed: " + reason, nil
+		}
+		if branch != "" && branch != ini.GitBranch {
+			if setErr := e.db.SetInitiativeGitBranch(ctx, cs.InitiativeID, branch, store.ActorOrchestrator); setErr != nil {
+				return "", "checked out " + branch + " but could not record it on the initiative: " + setErr.Error(), nil
+			}
+		}
+	}
+
 	if reason, err := git.CommitGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
 		return "", "", err
 	} else if reason != "" {
@@ -1553,10 +1586,6 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 				}
 			}
 		}
-	}
-	paths := make([]string, 0, len(patch.Files))
-	for _, f := range patch.Files {
-		paths = append(paths, f.Path)
 	}
 	message := fmt.Sprintf("%s: %s", cs.HumanID, sanitizeCommitTitle(title))
 	sha, err = git.Commit(ctx, e.workspaceRoot, paths, message)
