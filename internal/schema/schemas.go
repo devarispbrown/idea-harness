@@ -212,7 +212,8 @@ const VerificationPlan = `{
         "properties": {
           "requirement": {"type": "string"},
           "evidence": {"type": "string"},
-          "check": {"type": "string"}
+          "check": {"type": "string"},
+          "tests": {"type": "array", "items": {"type": "string"}, "description": "Executable test names that cover this requirement's acceptance, if named (C2, wave 3 contract)."}
         },
         "required": ["requirement", "evidence", "check"]
       }

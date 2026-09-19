@@ -307,6 +307,59 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   prefers a code found in the compiled "requirements" context section over one merely mentioned
   elsewhere (e.g. decision history naming a code since superseded).
 
+### Added — surfaces, wave 3 (C1, C2, C3, D-a, D-b; ICP round)
+
+- **A per-initiative "what changed" timeline in human language** (C1, JTBD 6). `GET
+  …/initiatives/{id}/timeline?since=` returns `[{at, kind, title, detail, ref}]`, newest first,
+  scoped to the initiative throughout — the old `idea changed` read the whole project's event log
+  with no initiative filter at all and could report another initiative's counts, and narrated only
+  raw event type names ("`change_set.status_changed`") for anything it did not special-case. Entries
+  read like "CHG-4 applied: rate limiting (2 files)", "CHG-3 denied: a credential at
+  src/keys.js:14", "DEC-2 reopened: which database?", "2 requirements may be invalid", "execute
+  initiative failed". `idea changed` now calls this endpoint; `GET …/initiatives/{id}/changed` (and
+  the web What Changed widget built on it) is unchanged except that it, too, is now correctly scoped
+  to the initiative it is asked about.
+- **Short initiative titles** (C1). `Initiative.short_title` (≤ 60 chars) is generated
+  deterministically on create from the idea's full text: its first sentence or clause, a common
+  lead-in ("I want to", "Build", "Add", …) dropped, trimmed at a word boundary. `title`/`description`
+  keep the full prompt; clients show `short_title || title`. An initiative created before this field
+  existed gets one generated and persisted the first time it is read (`GET …/initiatives`/`GET
+  …/initiatives/{id}`), identically every time (migration 31).
+- **Evidence from tests** (C2). Each requirement in `GET …/initiatives/{id}/requirements` gains
+  `evidence_tests: [{name, status, change_set}]`: tests the verification plan names for it, or
+  whose name contains its code, resolved against the most recently parsed "tests" check output
+  across the initiative's change sets. The verification-design schema's `hooks` items may now name
+  `tests: [names]`, recovered from the rendered verification-plan artifact. Parsing covers `node
+  --test` (TAP `ok`/`not ok`), `go test -v` (`--- PASS`/`--- FAIL`), `pytest -v`, and jest-style
+  `✓`/`✗` lines, best effort. `POST …/initiatives/{id}/verify {"confirm_passing_tests": true}`
+  confirms every requirement whose mapped tests all passed, through the existing human-evidence
+  path with the actor set to `human` — nothing is ever auto-verified without this explicit request.
+  `idea verify --confirm-passing-tests` calls it.
+- **Cost and time** (C3). `GET …/initiatives/{id}/costs` returns `{total_usd, by_phase: [{phase,
+  usd, seconds, calls}], agent: {runs, seconds, usd, note}}` from the run records: model calls are
+  now attributed to their initiative and workflow stage (`runs.initiative_id`/`runs.stage`,
+  migration 31), so spend/time can be grouped by phase. Agent (coding) run spend is parsed
+  best-effort from the agent's own console output when every counted run's cost could be recovered;
+  otherwise `usd: null` with `note: "agent spend not measured"` — never a partial or guessed total.
+  `idea status` prints the initiative's total spend and time. Operations gain `stage` (e.g. "Writing
+  the PRD", "Reviewing the PRD (cycle 2)", "Agent running TASK-2", "Running checks"), set by a
+  callback as the engine moves between steps; the CLI's wait loop prints it in place of a bare
+  "still working…".
+- **"Rerun with a note to the agent"** (D-a). `POST …/initiatives/{id}/execute` and `POST
+  …/initiatives/{id}/retry` accept an optional `note`, decoded as leniently as `fresh`. On execute
+  it is appended to the implementer's brief and recorded on the agent run. Retry re-runs
+  framing→research→PRD→review rather than the implementer, so there is no implementer brief for it
+  to join at that stage; there, the note joins the framing prompt that restarts the pipeline and is
+  recorded on that run instead. `idea execute --note <text>` / `idea retry --note <text>`.
+- **A cross-initiative "needs you" queue** (D-b). `GET /api/v1/projects/{projectId}/queue` returns
+  `[{initiative_id, short_title, kind, label, rank, href}]` covering every initiative in the
+  project: open blocking decisions, change sets awaiting review, conflicts, denials, stale items,
+  and verifications ready to confirm — ranked blocking first, then by age.
+- **`git_allow_default_branch`, `git_branch_per_initiative` and `review_rigor` round-trip through
+  `GET`/`PUT …/providers`** alongside `git_commit` (these were already the config fields underneath;
+  the endpoint had no way to read or write them). `review_rigor` is validated against
+  `auto|quick|standard|thorough`.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

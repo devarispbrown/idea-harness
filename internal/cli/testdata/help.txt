@@ -23,9 +23,9 @@ Commands:
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents
   diff                 structured requirement/decision diff
-  execute              run the next ready task → change set
+  execute [--note <text>] run the next ready task → change set; --note steers this run (appended to the implementer's brief)
   reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
-  retry [<initiative>] [--model <provider/model>] [--no-wait] re-run a failed initiative
+  retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait] re-run a failed initiative; --note steers this retry (joins the framing prompt)
   changes              list change sets
   change <id>          show a change set
   apply <id>           apply an approved change set
@@ -33,7 +33,7 @@ Commands:
   pr [<initiative>]    open a pull request for the initiative's branch (git.branch_per_initiative)
   pr checks <change-set-id> show the latest CI status via `gh pr checks`
   review <id> <verdict> approve|reject|changes_requested
-  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence
+  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities

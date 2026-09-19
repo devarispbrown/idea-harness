@@ -13,6 +13,7 @@ import (
 // de-duplicated. The override is cleared when the run finishes.
 func (e *Engine) Retry(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	defer e.clearModelOverride(initiativeID)
+	defer e.clearNoteOverride(initiativeID)
 	e.log.Info("retrying workflow with model override", "initiative", initiativeID, "model", e.currentModelOverride(initiativeID))
 
 	ini, err := e.db.GetInitiative(ctx, initiativeID)

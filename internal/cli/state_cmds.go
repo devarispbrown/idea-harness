@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // ---------- shared API response types ----------
@@ -65,11 +66,13 @@ type cliGuidance struct {
 	Affected []string `json:"affected"`
 }
 
-type cliChanged struct {
-	Groups []struct {
-		Category string   `json:"category"`
-		Items    []string `json:"items"`
-	} `json:"groups"`
+// cliTimelineEntry mirrors one entry of GET .../timeline (C1, wave 3
+// contract).
+type cliTimelineEntry struct {
+	At     string `json:"at"`
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
 }
 
 type cliFinding struct {
@@ -157,6 +160,12 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 				muted("decisions:"), len(u.Decisions),
 				muted("questions:"), len(u.Questions))
 		}
+		// Total spend and time (C3, wave 3 contract). Best-effort: a costs read
+		// failure (e.g. an older daemon with no such route) never blocks status.
+		var costs cliCosts
+		if err := c.do("GET", initiativeResource(projectID, ini.ID, "costs"), nil, &costs); err == nil {
+			fmt.Fprintln(stdout, "  "+muted(costs.summary()))
+		}
 		var nm cliGuidance
 		if err := c.do("GET", initiativeResource(projectID, ini.ID, "guidance"), nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
@@ -167,6 +176,32 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout)
 	}
 	return failedInitiativeExit(inis)
+}
+
+// cliCosts mirrors GET .../costs (C3, wave 3 contract).
+type cliCosts struct {
+	TotalUSD float64 `json:"total_usd"`
+	Agent    struct {
+		Runs    int      `json:"runs"`
+		Seconds float64  `json:"seconds"`
+		USD     *float64 `json:"usd"`
+	} `json:"agent"`
+	ByPhase []struct {
+		Seconds float64 `json:"seconds"`
+	} `json:"by_phase"`
+}
+
+// summary renders "spend: $0.1234 · time: 2m" for `idea status`. Time sums
+// every phase's seconds plus the agent's; spend is the total, which is null-
+// safe by construction (InitiativeCosts.TotalUSD only ever adds a measured
+// agent USD, never a null one).
+func (c cliCosts) summary() string {
+	seconds := c.Agent.Seconds
+	for _, p := range c.ByPhase {
+		seconds += p.Seconds
+	}
+	d := time.Duration(seconds * float64(time.Second)).Round(time.Second)
+	return fmt.Sprintf("spend: $%.4f · time: %s", c.TotalUSD, d)
 }
 
 // failedInitiativeExit makes `idea status` exit non-zero when it has just
@@ -206,7 +241,12 @@ func failedInitiativeExit(inis []cliInitiative) error {
 	return fmt.Errorf("%s failed; `idea logs` has the full text", ini.Title)
 }
 
-// cmdChanged shows What Changed since last look.
+// cmdChanged shows What Changed since last look, per initiative, in human
+// language (C1, wave 3 contract). Rewritten onto GET .../timeline: the old
+// GET .../changed it used read the whole project's events with no initiative
+// filter, so one initiative's "changed" could report another's counts, and
+// narrated only raw event type names for anything it did not special-case
+// (JTBD 6).
 func cmdChanged(a cmdArgs, stdout, stderr io.Writer) error {
 	c, projectID, err := connect()
 	if err != nil {
@@ -220,7 +260,6 @@ func cmdChanged(a cmdArgs, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, muted("No changes yet."))
 		return nil
 	}
-	var changed cliChanged
 	// inis[0] was the OLDEST -- ListInitiatives is ORDER BY created_at ASC --
 	// which is the direct opposite of the "most recently created" default
 	// docs/cli.md promises. And like cmdStatus it is declared maxPositional: 1
@@ -229,22 +268,24 @@ func cmdChanged(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := c.do("GET", initiativeResource(projectID, iniID, "changed"), nil, &changed); err != nil {
+	var entries []cliTimelineEntry
+	if err := c.do("GET", initiativeResource(projectID, iniID, "timeline"), nil, &entries); err != nil {
 		return err
 	}
 	if a.has("--json") {
-		return dumpJSON(stdout, changed)
+		return dumpJSON(stdout, entries)
 	}
-	if len(changed.Groups) == 0 {
+	if len(entries) == 0 {
 		fmt.Fprintln(stdout, muted("No changes yet."))
 		return nil
 	}
 	fmt.Fprintln(stdout, heading("Since you last looked"))
-	for _, g := range changed.Groups {
-		fmt.Fprintln(stdout, "  "+bold(g.Category))
-		for _, item := range g.Items {
-			fmt.Fprintln(stdout, "    · "+item)
+	for _, e := range entries {
+		line := "  · " + e.Title
+		if e.Detail != "" {
+			line += " — " + e.Detail
 		}
+		fmt.Fprintln(stdout, line)
 	}
 	return nil
 }
