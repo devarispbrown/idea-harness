@@ -213,3 +213,53 @@ Adversarial review of each wave, then a final ICP re-run on the same journey.
 A requirement's verification gains `evidence_tests: [{name, status,
 change_set}]`. `POST …/verify` accepts `{"confirm_passing_tests": true}`,
 which confirms every criterion whose evidence tests all passed.
+
+## Wave 3 contracts (fixed before the workers start)
+
+Backend (surfaces worker):
+- **Timeline (C1).** `GET …/initiatives/{id}/timeline` returns
+  `[{at, kind, title, detail, ref:{type,id}}]`, newest first.
+  - `kind` is one of `change_set_applied`, `change_set_rejected`,
+    `change_set_denied`, `change_set_reverted`, `run_failed`, `run_stopped`,
+    `decision_changed`, `stale`, `phase_completed`.
+  - Optional `?since=<RFC3339>`.
+  - `idea changed` uses it.
+- **Short titles.** Initiatives gain `short_title` (≤ 60 chars), generated on
+  create from the idea. The full text stays in `title`/`description` as
+  today. The UI shows `short_title || title`.
+- **Evidence from tests (C2).** Each requirement in `GET …/requirements`
+  gains `evidence_tests: [{name, status: "passed"|"failed", change_set}]`.
+  `POST …/verify` accepts `{"confirm_passing_tests": true}`, which confirms
+  every criterion whose evidence tests all passed; the actor is human.
+- **Cost and time (C3).**
+  - `GET …/initiatives/{id}/costs` returns
+    `{total_usd, by_phase: [{phase, usd, seconds, calls}], agent: {runs, seconds, usd: number|null, note}}`.
+  - Operations gain `stage` (the step running now, e.g. "Writing the PRD",
+    "Reviewing the plan", "Agent running TASK-2").
+  - The CLI prints it while waiting.
+- **Rerun with a note (D-a).** `POST …/execute` and `POST …/retry` accept an
+  optional `note`, appended to the implementer's brief. It is decoded
+  leniently, like `fresh`.
+- **Queue (D-b).** `GET /api/v1/projects/{projectId}/queue` returns
+  `[{initiative_id, short_title, kind, label, rank, href}]` across
+  initiatives, highest impact first.
+- **Git settings.** `PUT …/providers` accepts `git_allow_default_branch` and
+  `git_branch_per_initiative` alongside `git_commit`. `GET …/providers`
+  returns all three.
+
+Already shipped (waves 1–2), for the web workers:
+- Findings: `secret_overridable`, `secret_preview`, `secret_kind`,
+  `secret_path`, `advisory`, `path`, `in_diff`.
+- `POST …/findings/{id}/disposition` `{"disposition":"not_a_secret"}`.
+- `GET`/`DELETE …/secret-allowlist[/{id}]`.
+- Plan: `POST …/tasks/merge`, `…/tasks/{taskId}/split`,
+  `…/tasks/{taskId}/depends-on`.
+- `POST …/decisions/accept-recommendations`.
+- `GET …/triage`.
+- Guidance: `stale_items`; `POST …/stale/{staleId}/ack`.
+- `ChangeSet.git_commit_warning`.
+- `Initiative.git_branch` / `pr_url`; `POST …/initiatives/{id}/pr`;
+  `GET …/change-sets/{id}/pr-checks`.
+- A revert refusal is a 409 whose message names the files and the advice.
+- `harness.yaml` `review.rigor`, via `PUT …/providers` `review_rigor`. The
+  surfaces worker adds this if absent.
