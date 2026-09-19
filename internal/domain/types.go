@@ -242,14 +242,48 @@ type Finding struct {
 	// deterministically instead of trusting this self-report.
 	InDiff bool `json:"in_diff,omitempty"`
 	// Advisory marks a finding that does not block approval regardless of
-	// severity: today, only "about code this change set did not touch"
-	// (review B2) and a rigor cap's own dropped-count note (review B1) set
-	// it. Kept as its own bool rather than folded into Severity or
-	// Disposition -- review.EvaluateApproval and denyReviewOpenBlocking both
-	// skip an advisory finding outright, and a UI backlog view is exactly the
-	// findings with this set and no disposition yet.
+	// severity: "about code this change set did not touch" (review B2), a
+	// rigor cap's own dropped-count note (review B1), and a generic
+	// "credential assignment" secret-sweep match found in a test/fixture path
+	// (ICP re-run defect #1) all set it. Kept as its own bool rather than
+	// folded into Severity or Disposition -- review.EvaluateApproval and
+	// denyReviewOpenBlocking both skip an advisory finding outright, and a UI
+	// backlog view is exactly the findings with this set and no disposition
+	// yet.
 	Advisory  bool      `json:"advisory,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ResolvesBlocking reports whether f's current disposition clears it from the
+// approval bar (§11, §15) -- review.EvaluateApproval and
+// denyReviewOpenBlocking both call this instead of comparing Disposition
+// directly, so the two stay in lockstep (ICP re-run defect #2).
+//
+// fixed and accepted_risk always resolve a blocking finding. rejected also
+// does, but ONLY when a HUMAN set it (DispositionActor == "human" --
+// store.HumanActor's value; domain cannot import store, which imports
+// domain) on a finding that carries NO system deny code (Code == ""): a
+// human dispositioning the adversarial reviewer's own judgment call
+// "rejected" is "the human judged this finding wrong," semantically no
+// different from overruling it with accepted_risk, and the ICP re-run found
+// this permanently deadlocked approval instead (rejected recorded 200,
+// AllDispositioned true, but nothing ever cleared the block; the error even
+// recommended --accept-findings, which had no effect on an ALREADY
+// dispositioned finding).
+//
+// A SYSTEM-set rejected must keep blocking regardless of who looks at it
+// afterward ("system deny beats human approve"): a failing build/test check
+// (Code == "", Disposition == rejected, set by the check runner itself, never
+// a human), a secret_sweep/host_exec/etc. finding (Code != "", self-rejected
+// at creation), and a rejected change set's own findings closed via
+// Disposition = rejected (review M5) all fail the Code == "" and/or
+// DispositionActor == "human" tests above and so are excluded here exactly
+// as before this method existed.
+func (f Finding) ResolvesBlocking() bool {
+	if f.Disposition == DispositionFixed || f.Disposition == DispositionAcceptedRisk {
+		return true
+	}
+	return f.Disposition == DispositionRejected && f.Code == "" && f.DispositionActor == "human"
 }
 
 // SecretAllowlistEntry is a human "not a secret" disposition on a detected

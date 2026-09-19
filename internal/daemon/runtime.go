@@ -1760,7 +1760,24 @@ func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, i
 			result.Skipped = append(result.Skipped, ConfirmSkipped{Requirement: req.Code, Reason: "no acceptance criteria"})
 			continue
 		}
-		if !projection.AllTestsPassed(evidence[req.ID]) {
+		reqEvidence := evidence[req.ID]
+		if len(reqEvidence) == 0 {
+			// ICP re-run defect #3: "not every mapped test passed" is wrong
+			// when NOTHING is mapped at all -- it reads as "some tests failed"
+			// when the real problem is nothing was ever linked to this
+			// requirement, and it gives no hint how to fix that.
+			result.Skipped = append(result.Skipped, ConfirmSkipped{
+				Requirement: req.Code,
+				Reason: fmt.Sprintf(
+					"no tests are mapped to %s; name it in the verification plan's hooks, "+
+						"name a test's function so it contains %q, or implement it from a task "+
+						"that `implements` this requirement (its change set's own test files are "+
+						"mapped automatically once applied and passing)",
+					req.Code, req.Code),
+			})
+			continue
+		}
+		if !projection.AllTestsPassed(reqEvidence) {
 			result.Skipped = append(result.Skipped, ConfirmSkipped{Requirement: req.Code, Reason: "not every mapped test passed"})
 			continue
 		}

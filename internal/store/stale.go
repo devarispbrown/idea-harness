@@ -10,11 +10,14 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
-// decisionDependents discovers (read-only) the requirements that cite
+// decisionDependents discovers (read-only) the LIVE requirements that cite
 // decisionID (via `requirement --derived_from--> decision` edges, wired by
-// WireRequirementDerivedFromDecision), the tasks that implement or verify
-// those requirements, and the applied change sets built from those tasks
-// (review A4 #5).
+// WireRequirementDerivedFromDecision) -- never a removed or superseded one
+// (ICP re-run defect #4: a requirement a PRD revision replaced keeps its old
+// edge forever, so without this filter a decision's reopen surfaced only
+// long-dead requirements instead of whatever live requirement now covers its
+// subject), the tasks that implement or verify those requirements, and the
+// applied change sets built from those tasks (review A4 #5).
 //
 // Deliberately separate from markDependentsStaleTx and called BEFORE any
 // transaction starts: db.sql has MaxOpenConns(1) (a single connection,
@@ -30,8 +33,29 @@ func (db *DB) decisionDependents(ctx context.Context, initiativeID, decisionID s
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// liveReq mirrors workflow.activeRequirements/labelCache.isActiveRequirement's
+	// definition of "live" (Status != removed && SupersededBy == "") -- the
+	// same predicate workflow.Impact already applies when tracing edges FROM a
+	// requirement. This function did not apply it (ICP re-run defect #4): a
+	// requirement superseded by a PRD revision keeps its OLD derived_from
+	// edge forever (SupersedeRequirements marks the row removed, it does not
+	// delete it or its edges), so a decision reopened after several revise
+	// cycles surfaced only the LONG-DEAD requirements that happened to cite
+	// it originally (e.g. "DEC-3's reopen marked only removed requirements
+	// REQ-4, REQ-13") -- never useful, and never what a human reopening the
+	// decision needed to see.
+	liveReq := map[string]bool{}
+	if allReqs, rerr := db.ListRequirements(ctx, initiativeID); rerr == nil {
+		for _, r := range allReqs {
+			if r.Status != domain.RequirementRemoved && r.SupersededBy == "" {
+				liveReq[r.ID] = true
+			}
+		}
+	} else {
+		return nil, nil, nil, rerr
+	}
 	for _, e := range reqEdges {
-		if e.FromType == "requirement" && e.EdgeType == domain.EdgeDerivedFrom {
+		if e.FromType == "requirement" && e.EdgeType == domain.EdgeDerivedFrom && liveReq[e.FromID] {
 			reqIDs = append(reqIDs, e.FromID)
 		}
 	}

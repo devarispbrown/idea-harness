@@ -19,7 +19,7 @@ conditions. Everything else is ordinary policy that a human may override.
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
 | `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
-| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above, or one already dispositioned (a failing build check is `rejected`), is left untouched and still denies. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
+| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies, whatever disposition it carries. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
 `Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
@@ -83,6 +83,53 @@ One accepted trade-off: a dotted literal whose every segment is a plain identifi
 digit (e.g. a placeholder `xyz.abc.def.ghi`) is indistinguishable, by shape alone, from a genuine
 member-access expression, and is treated as the latter (not flagged) rather than risk a false
 positive on real code like `req.headers.authorization`.
+
+### Placeholder/low-entropy values and test-fixture paths (ICP re-run defect #1)
+
+A founder-journey run on an API-key-auth-with-rate-limiting feature hit three shapes of false
+positive the sweep did not distinguish from a real secret:
+
+1. The generic "credential assignment" rule matched a `"secret": "..."` field in a `*_test.go`
+   table-driven fixture, and a doc comment naming a header's shape (`// X-API-Key: <id>:<secret>`).
+2. Three example keys shaped like a Stripe secret key, with obviously-fake bodies
+   (`sk_live_...0000`, `...1111`, `...2222`), sat in `config.json` as documentation.
+3. `not_a_secret` only allowlists the exact (fingerprint, path) a human already saw, so it could
+   not help the *next* file or execute that hit the same class of false positive.
+
+Three independent mechanisms now apply, all in `internal/security` (`redact.go`):
+
+- **Placeholder/low-entropy shape (`isPlaceholderShape`, `validFlatTokenValue`).** A captured
+  value with a run of 4+ identical characters (`sk_live_...0000`), or whose Shannon entropy per
+  character falls under 2.5 bits (a repetitive or low-variety body), is never a credential at
+  all — not even advisory — for EVERY provider-specific pattern in the catalog (AWS, GitHub,
+  GitLab, Google, npm, OpenAI/Anthropic, Stripe, Slack) as well as the generic assignment rule.
+  Values over 200 characters (a PEM block, a JWT) are exempt: those are already highly specific
+  formats where a repeated-character run or a raw entropy score is not a meaningful signal.
+- **Placeholder vocabulary and sequential fill (`containsPlaceholderWord`, `isSequentialFill`,
+  `validGenericAssignment`).** Scoped to the GENERIC assignment rule only, never a
+  provider-specific format: a value containing `example`/`test`/`dummy`/`fake`/`placeholder`/
+  `changeme`/`xxx` (case-insensitive), or one that IS essentially a single long ascending/
+  descending run start to end (`abcdefghijklmnop`, not a short embedded fragment like
+  `django-insecure-abcdefgh`), is not a credential. Scoped this narrowly because a real,
+  documented example key can legitimately carry one of these words or a short sequential
+  fragment — AWS's own `AKIAIOSFODNN7EXAMPLE` and
+  `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` docs literals, and hand-written realistic-looking
+  test fixtures using `0123456789`/the alphabet as filler — and those must keep blocking.
+- **Test/fixture paths (`isTestFixturePath`, `CredentialFinding.Advisory`).** A GENERIC
+  assignment match (never a provider-specific format, never a configured secret value) found in
+  a `*_test.go`, `.spec.`/`.test.` file, or a path under `test/`, `tests/`, `testdata/`,
+  `fixtures/`, or `__tests__/` is downgraded to **advisory**: recorded as a real finding, visible
+  to the reviewer, but `Finding.Advisory` means `review.EvaluateApproval` and
+  `denyReviewOpenBlocking` skip it outright regardless of severity (§11/§15) — it never blocks a
+  change set on its own. A provider-specific format or a configured secret value keeps blocking
+  in a test path exactly as anywhere else.
+- **Comment/template placeholders (`looksLikeTemplatePlaceholder`).** A value that is (or
+  contains) `<...>`, or contains `${`/`{{`, never matches the generic assignment rule at all —
+  `<secret>`, `<id>:<secret>`, `"${API_KEY}"`, `"{{ vault_secret }}"`.
+
+None of this weakens detection of a real secret: `not_a_secret`, its HMAC fingerprinting, and its
+project-scoped allowlist (below) are unchanged, and every provider-specific format with realistic
+entropy still blocks unconditionally, test path or not.
 
 ### The secret allowlist (review H3/M1)
 

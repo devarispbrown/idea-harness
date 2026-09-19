@@ -96,10 +96,12 @@ func DeterministicChecks(initiativeID string, reqs []domain.Requirement) []domai
 }
 
 // EvaluateApproval implements the approval bar (§11): an initiative may not be
-// approved while any critical/high finding is not dispositioned as fixed or
-// (human) accepted_risk. An Advisory finding never blocks, whatever its
-// severity (review B1's rigor-cap note, and review B2's "about code this
-// change set did not touch").
+// approved while any critical/high finding is not resolved (Finding.
+// ResolvesBlocking -- fixed, accepted_risk, or a human's rejected on a
+// reviewer's own judgment call; see its doc comment, ICP re-run defect #2).
+// An Advisory finding never blocks, whatever its severity (review B1's
+// rigor-cap note, and review B2's "about code this change set did not
+// touch").
 func EvaluateApproval(findings []domain.Finding) (blocked bool, reason string) {
 	for _, f := range findings {
 		if f.Advisory {
@@ -108,7 +110,7 @@ func EvaluateApproval(findings []domain.Finding) (blocked bool, reason string) {
 		if !f.Severity.Blocking() {
 			continue
 		}
-		if f.Disposition != domain.DispositionFixed && f.Disposition != domain.DispositionAcceptedRisk {
+		if !f.ResolvesBlocking() {
 			return true, fmt.Sprintf("open %s finding: %s", f.Severity, f.Finding)
 		}
 	}

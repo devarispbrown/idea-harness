@@ -52,6 +52,54 @@ func TestDispositionEnum(t *testing.T) {
 	}
 }
 
+// TestFindingResolvesBlocking is the ICP re-run's own defect #2: a human's
+// rejected disposition on a reviewer's own judgment call (no deny code) must
+// resolve a blocking finding exactly like fixed/accepted_risk; a SYSTEM-set
+// rejected (a failing check, or any finding carrying a deny code) must not,
+// "system deny beats human approve".
+func TestFindingResolvesBlocking(t *testing.T) {
+	cases := []struct {
+		name string
+		f    Finding
+		want bool
+	}{
+		{"fixed", Finding{Disposition: DispositionFixed}, true},
+		{"accepted_risk", Finding{Disposition: DispositionAcceptedRisk}, true},
+		{
+			"human_rejected_reviewer_judgment",
+			Finding{Disposition: DispositionRejected, DispositionActor: "human"},
+			true,
+		},
+		{
+			"human_rejected_deny_coded_finding_still_blocks",
+			Finding{Disposition: DispositionRejected, DispositionActor: "human", Code: DenyCodeSecretSweep},
+			false,
+		},
+		{
+			"system_rejected_failing_check_still_blocks",
+			Finding{Disposition: DispositionRejected, DispositionActor: "orchestrator"},
+			false,
+		},
+		{
+			"unset_disposition_actor_still_blocks",
+			Finding{Disposition: DispositionRejected},
+			false,
+		},
+		{"deferred_still_blocks", Finding{Disposition: DispositionDeferred, DispositionActor: "human"}, false},
+		{"duplicate_still_blocks", Finding{Disposition: DispositionDuplicate, DispositionActor: "human"}, false},
+		{"mitigate_still_blocks", Finding{Disposition: DispositionMitigate, DispositionActor: "human"}, false},
+		{"not_applicable_still_blocks", Finding{Disposition: DispositionNotApplicable, DispositionActor: "human"}, false},
+		{"no_disposition_still_blocks", Finding{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.f.ResolvesBlocking(); got != tc.want {
+				t.Errorf("ResolvesBlocking() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAcceptanceCriterionVerifiable(t *testing.T) {
 	good := AcceptanceCriterion{Metric: "p95 latency", Target: "< 200ms", Condition: "on reference workload"}
 	if !good.Verifiable() {
