@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/model"
 )
 
 // Hermes resolves a provider name through its own registry, and that registry
@@ -70,15 +71,28 @@ type hermesModel struct {
 	Default  string `yaml:"default"`
 	Provider string `yaml:"provider"`
 	BaseURL  string `yaml:"base_url"`
+	// ContextLength declares the model's context window explicitly, in the
+	// exact key Hermes's own config schema expects at the top level
+	// (model.context_length -- see
+	// https://hermes-agent.nousresearch.com/docs/integrations/providers).
+	// Omitted (0) falls through to Hermes's own auto-detection chain, which
+	// is what let hermes + openai/gpt-4.1-mini fail deterministically: every
+	// provider here is an explicit custom_provider, for which that chain has
+	// the least to go on, and its model-family guess for gpt-4.1-mini landed
+	// under Hermes's own 64,000-token floor even though the model's real
+	// window is roughly 1M. Set from model.ContextWindowFor, which is 0 for
+	// ollama on purpose (see its own doc comment) -- there, and only there,
+	// this is still left to Hermes's auto-detection.
+	ContextLength int `yaml:"context_length,omitempty"`
 }
 
 // hermesConfigYAML renders the Hermes config that pins the agent to one
-// endpoint. baseURL is the provider's API root; model is the bare model id.
+// endpoint. baseURL is the provider's API root; modelID is the bare model id.
 //
 // Marshalled, not formatted by hand. The base URL and model come from
 // harness.yaml, and a hand-formatted file let a ` #` truncate a URL into a
 // comment, a `: ` in a model id break the parse, and a newline inject keys.
-func hermesConfigYAML(provider, baseURL, model, keyEnv string) (string, error) {
+func hermesConfigYAML(provider, baseURL, modelID, keyEnv string) (string, error) {
 	if !slugSafe.MatchString(provider) {
 		return "", fmt.Errorf("executor: provider %q is not a usable Hermes provider name", provider)
 	}
@@ -88,7 +102,12 @@ func hermesConfigYAML(provider, baseURL, model, keyEnv string) (string, error) {
 	slug := hermesProviderSlug(provider)
 	body, err := yaml.Marshal(hermesConfig{
 		CustomProviders: []hermesCustomProvider{{Name: slug, BaseURL: baseURL, KeyEnv: keyEnv}},
-		Model:           hermesModel{Default: model, Provider: slug, BaseURL: baseURL},
+		Model: hermesModel{
+			Default:       modelID,
+			Provider:      slug,
+			BaseURL:       baseURL,
+			ContextLength: model.ContextWindowFor(provider, modelID),
+		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("executor: render agent config: %w", err)

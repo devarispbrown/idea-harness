@@ -24,16 +24,29 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   still hit exactly this 404). Every provider's 404 now names the model and
   says how to change it (`idea model set <provider>/<model>`, or Settings →
   Providers) instead of a bare `status 404`.
-- **A known-incompatible executor/model combination is refused before a
-  wasted image pull or paid call.** `hermes` + `openai/gpt-4.1-mini` failed
-  deterministically, every run (Hermes Agent's own 64,000-token context floor
-  — see `docs/agents.md`, "Known executor/model compatibility" — is guessed
-  via auto-detection for every provider here, since none of them declare
-  `model.context_length`, and that guess lands under the floor for this
-  model). `idea executors setup`, the Build page's run-readiness check, and
-  `idea execute` itself now run the same small, data-driven table
-  (`internal/executor/compat.go`) and refuse a known-bad pairing outright, or
-  recommend `--smoke` for an untested one.
+- **Hermes declares the model's context window explicitly, instead of
+  guessing.** `hermes` + `openai/gpt-4.1-mini` failed deterministically, every
+  run: Hermes Agent refuses to start below 64,000 tokens of context, every
+  provider here is wired into Hermes as an explicit `custom_provider` (see
+  `hermescfg.go`), and without a declared `model.context_length` Hermes's own
+  auto-detection has the least to go on and guessed under its floor for this
+  model — even though gpt-4.1-mini's real window is roughly 1M tokens. The
+  generated config now sets `model.context_length` from a verified figure
+  (`internal/model/catalog.go`'s `ModelContextWindows`, checked against
+  OpenAI's own docs, for `gpt-4.1`/`gpt-4.1-mini`/`gpt-4o`/`gpt-4o-mini`/
+  `o3-mini`) or a conservative per-provider default for everything else
+  (`contextWindowFallback`; Ollama is left to Hermes's own — reliable, for a
+  local server — auto-detection, since a blanket default there could
+  overstate a small local model's real context). This fixed the root cause
+  rather than the symptom, so `idea executors setup`, the Build page, and
+  `idea execute` no longer refuse the combination — it gets the same
+  "untested, run `--smoke`" advisory as any other unverified model. The
+  small, data-driven known-incompatible table (`internal/executor/compat.go`)
+  used to name gpt-4.1-mini as a refused combination; it is now empty and
+  stays in place for the next combination that turns out to be genuinely,
+  unfixably incompatible rather than the same shape of bug.
+  See `docs/agents.md`, "Hermes declares the model's context window
+  explicitly" and "Known executor/model compatibility".
 - **`idea retry` resumes after the last completed phase instead of restarting
   framing from scratch.** A provider failure mid-PRD-authoring, followed by
   `idea retry`, used to re-run framing and research unconditionally even

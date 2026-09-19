@@ -54,3 +54,62 @@ func DefaultModelFor(provider string) string {
 	}
 	return "model"
 }
+
+// ModelContextWindows overrides contextWindowFallback with a verified figure
+// for a specific "provider/model" spec, checked against that provider's own
+// model documentation (not a listing, not a guess). Add an entry here only
+// once you have actually looked it up.
+//
+// This exists for the coding-agent executor (internal/executor/hermescfg.go):
+// Hermes Agent refuses to start below 64,000 tokens of context, and every
+// provider here is wired into Hermes as an explicit custom_provider with no
+// context declared, so without this Hermes has to guess via its own
+// model-family auto-detection -- which is exactly how hermes + openai/gpt-4.1
+// -mini failed deterministically (ICP walkthrough finding): gpt-4.1-mini
+// actually has a ~1M-token window, real and verified below, but Hermes's own
+// guess for it landed under the 64k floor anyway. Declaring the real number
+// explicitly removes the guess instead of refusing the combination.
+//
+// Checked 2026-09-19 against developers.openai.com/api/docs/models/<id>.
+var ModelContextWindows = map[string]int{
+	"openai/gpt-4.1":      1047576,
+	"openai/gpt-4.1-mini": 1047576,
+	"openai/gpt-4o":       128000,
+	"openai/gpt-4o-mini":  128000,
+	"openai/o3-mini":      200000,
+}
+
+// contextWindowFallback is the conservative default for a "provider/model"
+// not listed in ModelContextWindows: each provider's own
+// Capabilities.ContextLimit (internal/model/{openai,anthropic,gemini}.go),
+// the figures this codebase already states elsewhere -- not a fresh guess,
+// and every one of them comfortably clears Hermes's 64,000-token floor.
+//
+// ollama has no entry, deliberately: a local model's real context window
+// ranges from ~2k to over 1M depending entirely on what the operator pulled
+// and how they configured it, so a blanket default here could just as easily
+// understate it (harmless) as overstate it (Hermes then sends a prompt the
+// local server truncates or rejects -- a new, different failure). Ollama's
+// own /v1/models-style endpoint can report the real number, which is why
+// Hermes's own docs single it out as the one case its auto-detection is
+// actually reliable for (see the FAQ) -- so it is left to that.
+var contextWindowFallback = map[string]int{
+	"openai":     128000,
+	"anthropic":  200000,
+	"gemini":     1000000,
+	"deepseek":   128000,
+	"openrouter": 128000,
+}
+
+// ContextWindowFor returns the context window, in tokens, to declare for a
+// provider/model pair, or 0 when nothing should be declared explicitly (an
+// unrecognized provider, or ollama -- see contextWindowFallback).
+func ContextWindowFor(provider, model string) int {
+	if v, ok := ModelContextWindows[provider+"/"+model]; ok {
+		return v
+	}
+	if v, ok := contextWindowFallback[provider]; ok {
+		return v
+	}
+	return 0
+}

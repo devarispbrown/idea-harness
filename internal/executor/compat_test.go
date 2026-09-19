@@ -2,17 +2,41 @@ package executor
 
 import "testing"
 
-// TestCheckModelCompatBlocksTheKnownBadCombination pins the ICP walkthrough
-// finding: hermes + gpt-4.1-mini failed deterministically, every run, with no
-// preflight to catch it before a paid call. Once a combination is in the
-// known-incompatible table it must be refused, not merely warned about.
-func TestCheckModelCompatBlocksTheKnownBadCombination(t *testing.T) {
+// TestCheckModelCompatNoLongerBlocksGPT41Mini pins the actual fix for the ICP
+// walkthrough finding (hermes + gpt-4.1-mini failed deterministically): the
+// root cause was hermescfg.go never declaring model.context_length, so
+// Hermes's own auto-detection guessed under its 64,000-token floor for a
+// model that actually has roughly a 1M-token window. Once hermesConfigYAML
+// declares it explicitly (see hermescfg.go / model.ContextWindowFor), the
+// combination is not genuinely incompatible -- refusing it here would have
+// been treating the symptom. It is not verified either, so it still gets the
+// same "untested, run --smoke" advisory as any other unverified model.
+func TestCheckModelCompatNoLongerBlocksGPT41Mini(t *testing.T) {
 	got := CheckModelCompat("hermes", "openai/gpt-4.1-mini")
-	if !got.Blocked {
-		t.Fatal("known-incompatible combination was not blocked")
+	if got.Blocked {
+		t.Fatal("gpt-4.1-mini is blocked, but the root cause (missing context_length) is now fixed in hermescfg.go")
 	}
-	if got.Message == "" {
-		t.Fatal("a blocked combination must say why")
+	if got.Message == "" || !contains(got.Message, "--smoke") {
+		t.Errorf("message = %q, want an untested/--smoke advisory (not verified, not blocked)", got.Message)
+	}
+}
+
+// TestCheckModelCompatBlocksAKnownBadRow proves the blocking mechanism itself
+// still works, independent of whatever knownIncompatible currently holds
+// (empty as of this fix -- see its own doc comment): a row placed there is
+// refused, not merely warned about. The table exists for the next combination
+// that turns out to be genuinely, unfixably incompatible.
+func TestCheckModelCompatBlocksAKnownBadRow(t *testing.T) {
+	saved := knownIncompatible
+	knownIncompatible = []modelIncompatibility{{kind: "hermes", spec: "openai/test-only-bad-model", reason: "test fixture"}}
+	t.Cleanup(func() { knownIncompatible = saved })
+
+	got := CheckModelCompat("hermes", "openai/test-only-bad-model")
+	if !got.Blocked {
+		t.Fatal("a row in knownIncompatible was not blocked")
+	}
+	if got.Message == "" || !contains(got.Message, "test fixture") {
+		t.Errorf("message = %q, want it to include the row's reason", got.Message)
 	}
 }
 

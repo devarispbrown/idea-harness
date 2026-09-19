@@ -46,6 +46,59 @@ func TestEveryPresetProviderRendersAHermesConfig(t *testing.T) {
 	}
 }
 
+// TestHermesConfigDeclaresContextLengthExplicitly pins the root-cause fix for
+// hermes + openai/gpt-4.1-mini failing deterministically: Hermes Agent
+// refuses to start below 64,000 tokens of context, and left to guess (every
+// provider here is an explicit custom_provider, which its own auto-detection
+// has the least to go on for) its model-family pattern for "-mini" models
+// landed under that floor even though gpt-4.1-mini's real window is ~1M. The
+// generated config now declares `model.context_length` explicitly, so Hermes
+// never has to guess.
+func TestHermesConfigDeclaresContextLengthExplicitly(t *testing.T) {
+	cfg, err := hermesConfigYAML("openai", "https://api.openai.com/v1", "gpt-4.1-mini", "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cfg, "context_length: 1047576") {
+		t.Errorf("config does not declare gpt-4.1-mini's real context window:\n%s", cfg)
+	}
+
+	// A model not specifically verified still gets a conservative,
+	// provider-level default, not the guess Hermes would otherwise make.
+	cfg, err = hermesConfigYAML("openai", "https://api.openai.com/v1", "some-future-model", "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cfg, "context_length: 128000") {
+		t.Errorf("config does not fall back to a conservative default for an unverified model:\n%s", cfg)
+	}
+
+	var parsed hermesConfig
+	if err := yaml.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Model.ContextLength != 128000 {
+		t.Errorf("parsed model.context_length = %d, want 128000", parsed.Model.ContextLength)
+	}
+}
+
+// TestHermesConfigLeavesOllamaToAutoDetect: a local model's real context
+// varies wildly with what the operator pulled, and Hermes's own endpoint
+// auto-detection can query the live Ollama server directly -- the one case
+// its auto-detection is actually reliable for (see the FAQ). Declaring a
+// number here could understate a large local model (harmless) or overstate a
+// small one (Hermes then sends a prompt the server truncates or rejects), so
+// none is declared.
+func TestHermesConfigLeavesOllamaToAutoDetect(t *testing.T) {
+	cfg, err := hermesConfigYAML("ollama", "http://host.docker.internal:11434/v1", "qwen3.8", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg, "context_length") {
+		t.Errorf("ollama's config declares a context_length, which its own live server should answer instead:\n%s", cfg)
+	}
+}
+
 func TestHermesConfigRefusesAnUnusableProvider(t *testing.T) {
 	if _, err := hermesConfigYAML("", "https://x/v1", "m", ""); err == nil {
 		t.Error("an empty provider name was accepted")
