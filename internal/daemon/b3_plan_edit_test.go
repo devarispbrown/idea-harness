@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -374,5 +375,112 @@ func TestMergeTasksDedupesDependentEdges(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly 1 depends_on edge to the survivor, got %d", count)
+	}
+}
+
+// concurrentGetOrPost fires an HTTP request and reports its status code and
+// any transport error, WITHOUT calling t.Fatal -- safe to call from a
+// goroutine other than the test's own (the testing package forbids FailNow
+// there).
+func concurrentGetOrPost(method, url, token, body string) (status int, err error) {
+	var r *http.Request
+	if body != "" {
+		r, err = http.NewRequest(method, url, strings.NewReader(body))
+	} else {
+		r, err = http.NewRequest(method, url, nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if token != "" {
+		r.Header.Set("X-Idea-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// TestSetTaskDependsOnConcurrentRequestsNeverCreateACycle is review M5's
+// end-to-end guarantee: two real concurrent set-depends_on requests (A->B
+// and B->A) must never both succeed. lockPlanEdit serializes plan edits per
+// initiative, and SetTaskDependencies (store.TestSetTaskDependenciesRejectsCycleAgainstCurrentGraph
+// covers that one deterministically -- goroutine timing alone cannot
+// reliably force the narrow interleaving the original bug needed) re-checks
+// for a cycle inside the write transaction. This test fires both requests
+// with real goroutines as a best-effort end-to-end check that the observable
+// outcome is always "exactly one wins, and the graph has no cycle either
+// way", on top of that deterministic coverage.
+func TestSetTaskDependsOnConcurrentRequestsNeverCreateACycle(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, nil)
+
+	urlA := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + a.ID + "/depends-on"
+	urlB := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + b.ID + "/depends-on"
+
+	var wg sync.WaitGroup
+	statuses := make([]int, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		statuses[0], errs[0] = concurrentGetOrPost(http.MethodPost, urlA, token, `{"depends_on":["`+b.Code+`"]}`)
+	}()
+	go func() {
+		defer wg.Done()
+		statuses[1], errs[1] = concurrentGetOrPost(http.MethodPost, urlB, token, `{"depends_on":["`+a.Code+`"]}`)
+	}()
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	oks, bads := 0, 0
+	for _, status := range statuses {
+		switch status {
+		case http.StatusOK:
+			oks++
+		case http.StatusBadRequest:
+			bads++
+		default:
+			t.Fatalf("unexpected status %d (want 200 or 400)", status)
+		}
+	}
+	if oks != 1 || bads != 1 {
+		t.Fatalf("expected exactly one request to succeed and one to be refused as a cycle, got statuses %v", statuses)
+	}
+
+	// Whatever the outcome, the final graph must have no cycle: exactly one
+	// of the two dependency edges was written, never both.
+	edgesA, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edgesB, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aDependsOnB, bDependsOnA := false, false
+	for _, e := range edgesA {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == b.ID {
+			aDependsOnB = true
+		}
+	}
+	for _, e := range edgesB {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == a.ID {
+			bDependsOnA = true
+		}
+	}
+	if aDependsOnB && bDependsOnA {
+		t.Fatal("both edges were written -- A depends on B AND B depends on A, a cycle")
+	}
+	if !aDependsOnB && !bDependsOnA {
+		t.Fatal("expected exactly one of the two dependency edges to have been written")
 	}
 }
