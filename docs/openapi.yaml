@@ -2552,9 +2552,12 @@ paths:
       summary: Set a finding's disposition
       description: |
         `not_a_secret` is valid only when the finding's `category` is `secret_sweep` (review
-        changes #1); every other category refuses it with 400. Recording it also writes a
-        `SecretAllowlistEntry` for the finding's `secret_fingerprint`, so the secret sweep ignores
-        that fingerprint from then on, at both Execute and Apply.
+        changes #1); every other category refuses it with 400. A finding whose
+        `secret_overridable` is `false` (review H3 -- a value drawn from the project's own
+        configured secrets) refuses it too, unconditionally, with 400. Recording it also writes a
+        `SecretAllowlistEntry` for the finding's `secret_fingerprint` scoped to `secret_path`, so
+        the secret sweep ignores that exact (fingerprint, path) pair from then on, at Execute,
+        Apply, and the deterministic-check output sweep.
       requestBody:
         required: true
         content:
@@ -4027,14 +4030,35 @@ components:
         secret_fingerprint:
           type: string
           description: |
-            Set only on a `secret_sweep` finding raised from a per-file credential pattern match: the
-            sha256 of the matched value's capture group. Never the value itself.
+            Set only on a `secret_sweep` finding raised from a per-file credential match: a
+            per-project HMAC-SHA256 of the matched value's capture group (review H3 -- never a bare
+            sha256, which would be the same, precomputable value across every installation that
+            ever saw the same secret). Never the value itself. Scoped together with `secret_path`
+            when disposed `not_a_secret`: the allowlist entry it creates only suppresses this exact
+            fingerprint at this exact path.
         secret_kind:
           type: string
           description: The kind of secret matched, e.g. "looks like an OpenAI API key". Set alongside `secret_fingerprint`.
         secret_path:
           type: string
-          description: The `path:line`-bearing file the match was found in. Set alongside `secret_fingerprint`.
+          description: |
+            The `path:line`-bearing file the match was found in, or a synthetic path such as
+            "output of build" for a match found in a deterministic check's captured output rather
+            than a file. Set alongside `secret_fingerprint`.
+        secret_overridable:
+          type: boolean
+          description: |
+            Whether this finding is even eligible for a `not_a_secret` disposition (review H3):
+            `true` for an ordinary pattern-shaped match (might be a false positive), `false` for a
+            value drawn from the project's own configured secrets -- a real credential by
+            construction. The store refuses `not_a_secret` outright when this is `false`. Only
+            meaningful on a `secret_sweep` finding.
+        secret_preview:
+          type: string
+          description: |
+            A masked preview of the matched value (review H3): the first 4 and last 4 characters,
+            the rest replaced by a single ellipsis (e.g. `sk-p…Xy9z`); a value of 8 characters or
+            fewer is masked entirely. Never the raw value. Set alongside `secret_fingerprint`.
         path:
           type: string
           description: |
@@ -4061,14 +4085,18 @@ components:
       type: object
       title: SecretAllowlistEntry
       description: |
-        One human "not a secret" override (review changes #1), as `GET .../secret-allowlist`
-        projects it: fingerprint prefix, kind, path at the time, actor, created_at. Recorded when a
-        `secret_sweep` finding is dispositioned `not_a_secret`.
+        One human "not a secret" override (review changes #1, review H3), as
+        `GET .../secret-allowlist` projects it: fingerprint prefix, kind, path at the time, actor,
+        created_at. Recorded when a `secret_sweep` finding is dispositioned `not_a_secret`, scoped
+        to (fingerprint, path) together -- the same value allowlisted at one path still blocks at
+        another.
       properties:
         id: { type: string }
         fingerprint_prefix:
           type: string
-          description: The first characters of the sha256 fingerprint -- enough to tell entries apart, never the full digest.
+          description: |
+            The first characters of the per-project HMAC fingerprint (review H3; not a bare
+            sha256) -- enough to tell entries apart, never the full digest.
         kind:
           type: string
           description: The kind of secret matched, e.g. "looks like an OpenAI API key".
