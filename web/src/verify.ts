@@ -54,3 +54,53 @@ export function stripSourceTag(text: string): string {
 export function stripSourceTagsInText(text: string): string {
   return text.replace(/\[Source:[^\]\n]*\]\s*/gi, "");
 }
+
+// ---- task 7: evidence from tests (C2 wire contract) ----------------------
+//
+// A requirement's `evidence_tests` (docs/plans/icp-v06.md "C2 wire
+// contract"): the test names a passing check maps to, so a passing check
+// reads as evidence rather than a human having to re-derive it.
+
+export interface EvidenceTest {
+  name: string;
+  status: "passed" | "failed";
+  change_set?: string;
+}
+
+// allEvidencePassed is true only when there IS evidence and every one of it
+// passed -- an empty list is "no automatic evidence", not "all passed",
+// which matters for hasConfirmableEvidence below (an empty list must never
+// make a requirement look confirmable).
+export function allEvidencePassed(tests: EvidenceTest[] | undefined): boolean {
+  return !!tests && tests.length > 0 && tests.every((t) => t.status === "passed");
+}
+
+// evidenceSummary (task 7's exact wording) is the line shown per requirement:
+// "✓ 3 passing tests: test_a, test_b, test_c" when every mapped test passed,
+// or a plainer count when some failed -- criteria with no passing evidence at
+// all keep the manual Pass/Fail with nothing extra to show here.
+export function evidenceSummary(tests: EvidenceTest[] | undefined): string {
+  if (!tests || tests.length === 0) return "";
+  const names = tests.map((t) => t.name);
+  if (allEvidencePassed(tests)) {
+    return `✓ ${tests.length} passing test${tests.length === 1 ? "" : "s"}: ${names.join(", ")}`;
+  }
+  const passed = tests.filter((t) => t.status === "passed").length;
+  return `${passed} of ${tests.length} tests passing: ${names.join(", ")}`;
+}
+
+export interface EvidenceRequirementLike {
+  status: string;
+  evidence_tests?: EvidenceTest[];
+}
+
+// hasConfirmableEvidence gates the "Confirm all with passing tests" button
+// (task 7): it only makes sense to offer when at least one active,
+// not-yet-verified requirement actually has evidence that all passed --
+// otherwise the button would post `confirm_passing_tests` and confirm
+// nothing.
+export function hasConfirmableEvidence(reqs: EvidenceRequirementLike[]): boolean {
+  return reqs.some(
+    (r) => r.status !== "removed" && r.status !== "verified" && r.status !== "waived" && allEvidencePassed(r.evidence_tests),
+  );
+}
