@@ -185,7 +185,14 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	// nil -- an initiative with no change sets yet (or a store hiccup) must
 	// not turn "recommended next move" into a 500; it just gets the old,
 	// change-set-agnostic guidance.
-	recentChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	//
+	// M7: reduced to the latest change set per ACTIVE task before being
+	// handed to BuildGuidance, not the raw list -- see
+	// LatestChangeSetsPerActiveTask's and latestChangeSetOutcome's doc
+	// comments for why passing the raw list was wrong.
+	allChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	tasks, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	recentChangeSets := projection.LatestChangeSetsPerActiveTask(allChangeSets, tasks)
 	g := projection.BuildGuidance(ini, u, recentChangeSets)
 
 	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
