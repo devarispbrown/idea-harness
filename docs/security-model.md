@@ -13,7 +13,7 @@ conditions. Everything else is ordinary policy that a human may override.
 
 | DenyCode | Where enforced | Description |
 |----------|----------------|-------------|
-| `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) | A real credential value — a known key/token format (`security.FindCredential`), or one of the project's own resolved secret values — appears in produced file content. The content is never written to the redaction-free store. The raised `Finding` names `path:line` and the kind of secret (e.g. "src/keys.js:14: looks like an OpenAI API key"), never the value. **Conditionally overridable** (review changes #1, ICP round): a human may disposition the raised finding `not_a_secret`, which allowlists its fingerprint — the sha256 of the matched value's capture group, never the value — for the project, with the actor and time recorded. The sweep ignores an allowlisted fingerprint from then on, at both Execute and Apply. The override is scoped to a pattern-shaped match; a value drawn from the project's own configured secrets is never eligible for it. |
+| `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) + the deterministic-check output sweep (review M2) | A real credential value — a known key/token format (`security.FindCredential`), or one of the project's own resolved secret values — appears in produced file content, or in the raw output of a build/test check. The content is never written to the redaction-free store. The raised `Finding` names `path:line` and the kind of secret (e.g. "src/keys.js:14: looks like an OpenAI API key"), or `"in the output of <check>"` when found in check output, never the value; `Finding.Evidence` carries a masked preview of the source line instead (see below). **Conditionally overridable** (review changes #1, ICP round; hardened by review H3): a human may disposition the raised finding `not_a_secret`, which allowlists its fingerprint scoped to the path it was found at — never the value — for the project, with the actor and time recorded. The sweep ignores an allowlisted (fingerprint, path) pair from then on, at Execute, Apply, and the check-output sweep. The override is scoped to a pattern-shaped match; a value drawn from the project's own configured secrets is never eligible for it, and the store refuses the disposition outright (not merely re-denying it on the next sweep) when `Finding.SecretOverridable` is `false`. |
 | `pii` | **declared, never produced** | Reserved for a hard-rejected PII signal. A bare vocabulary marker (below) no longer hard-rejects anything, so no code path emits this today. |
 | `path_escape` | **declared, never produced** | Reserved for a diff path escaping the workspace. The path guard rejects that case, but it returns its own error rather than this code, so no `Finding` ever carries it. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
@@ -40,6 +40,45 @@ raises a non-blocking `sensitive_area` finding (severity `medium`, no
 `Finding.Code`) so the change set still gets a closer look in review, exactly
 as before, but a human decides instead of a word scan. Only a real credential
 value — `secret_sweep` above — still blocks.
+
+### The secret allowlist (review H3/M1)
+
+A `secret_sweep` finding's `not_a_secret` disposition writes one row to a project-scoped
+allowlist (`secret_allowlist`, exposed read-only via `GET /api/projects/{id}/secret-allowlist`).
+Several properties hold regardless of how the disposition is invoked:
+
+- **A configured secret can never be allowlisted.** Every finding carries `SecretOverridable`
+  (`secret_overridable` in the API): `true` for an ordinary pattern-shaped match (might be a
+  false positive), `false` for a value drawn from the project's own resolved secrets. The store's
+  `SetFindingDisposition` refuses `not_a_secret` outright when `SecretOverridable` is `false` — it
+  does not merely record the disposition and let the sweep silently re-deny the value later.
+- **Scoped to fingerprint *and* path.** An allowlist entry only suppresses the identical
+  fingerprint at the identical path. A value allowlisted in `tests/fixture.js` still blocks the
+  same value in `src/prod.js`.
+- **A known-value match always wins over a pattern match, even at the same fingerprint.** If a
+  configured secret's value happens to also match a pattern rule, the pattern-shaped occurrence's
+  fingerprint is identical (fingerprinting is a function of the value alone) — but the known-value
+  finding's `SecretOverridable = false` means allowlisting the pattern-shaped finding's fingerprint
+  can never suppress the known-value finding at that same fingerprint+path. `filterAllowlisted`
+  only ever drops a match where `Overridable` is true.
+- **The fingerprint is a per-project HMAC, not a bare sha256.** `internal/security.Fingerprint`
+  previously hashed the matched value alone, so the same secret fingerprinted identically on every
+  installation that ever scanned it — a cross-project correlation risk for a value meant to be
+  secret. Each project now generates and persists a random 32-byte key
+  (`store.DB.SecretFingerprintKey`, stored in `project_state`) the first time it is needed, and
+  every fingerprint this project's sweep computes is `HMAC-SHA256(key, value)`. The allowlist
+  listing API still shows only a short prefix of the resulting digest, never the full value.
+- **Findings never carry the raw value, but do carry a masked preview.** `Finding.SecretPreview`
+  (`secret_preview`) is the value's first 4 and last 4 characters with the middle collapsed to a
+  single ellipsis (e.g. `sk-p…Xy9z`; a value of 8 characters or fewer is masked entirely).
+  `Finding.Evidence` carries the full source line with the value itself replaced by that same
+  mask, so a reviewer can see roughly where and what without the secret ever being persisted or
+  returned in full.
+- **One entry per (fingerprint, path).** `secret_allowlist` has a unique index on
+  `(fingerprint, path)`; a repeat disposition upserts rather than duplicating a row, and revoking
+  an entry deletes by that same pair (cleaning up any pre-existing duplicate too). Changing a
+  finding's disposition away from `not_a_secret` removes the entry it created, so the sweep denies
+  that value again.
 
 ## Engine-assigned trust tiers
 

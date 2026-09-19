@@ -126,3 +126,94 @@ func TestContainsCredentialKnownValueAndPattern(t *testing.T) {
 		t.Fatal("nil redactor cannot detect a value that only exists as a known value")
 	}
 }
+
+// TestFingerprintWithKeyDiffersPerProject is review H3: the same secret value
+// must fingerprint differently under different per-project keys, so a
+// fingerprint is not the same, precomputable value across every installation
+// that ever saw the same credential (the bare sha256 this replaces was).
+// Mutation-check: make FingerprintWithKey ignore its key argument (e.g.
+// `return Fingerprint(value)`), and this fails.
+func TestFingerprintWithKeyDiffersPerProject(t *testing.T) {
+	const value = "sk-ant-api03-some-secret-value-0123456789"
+	keyA := []byte("project-a-key-0123456789abcdef0")
+	keyB := []byte("project-b-key-0123456789abcdef0")
+
+	fpA := FingerprintWithKey(keyA, value)
+	fpB := FingerprintWithKey(keyB, value)
+	fpNone := FingerprintWithKey(nil, value)
+
+	if fpA == fpB {
+		t.Fatalf("FingerprintWithKey(keyA, ...) == FingerprintWithKey(keyB, ...) = %q, want different fingerprints per key", fpA)
+	}
+	if fpA == fpNone || fpB == fpNone {
+		t.Fatal("a keyed fingerprint must differ from the unkeyed (nil-key) fingerprint")
+	}
+	// Deterministic: the same key+value always fingerprints the same way, so
+	// the allowlist can recognize a repeat.
+	if got := FingerprintWithKey(keyA, value); got != fpA {
+		t.Fatalf("FingerprintWithKey(keyA, ...) = %q, want the same value again: %q", got, fpA)
+	}
+
+	r := NewRedactorWithKey(keyA)
+	if got := r.fingerprint(value); got != fpA {
+		t.Fatalf("Redactor.fingerprint with keyA = %q, want %q (FingerprintWithKey(keyA, ...))", got, fpA)
+	}
+}
+
+// TestFindPatternsInFileHonorsRedactorKey checks the actual sweep path (a
+// Redactor built with NewRedactorWithKey) produces per-project fingerprints
+// for pattern matches too, not just FindKnownInFile's known-value matches.
+func TestFindPatternsInFileHonorsRedactorKey(t *testing.T) {
+	content := "const key = \"AKIA1234567890ABCDEF\"\n"
+	r1 := NewRedactorWithKey([]byte("key-one-0123456789abcdef01234567"))
+	r2 := NewRedactorWithKey([]byte("key-two-0123456789abcdef01234567"))
+
+	m1 := r1.FindPatternsInFile("a.go", content)
+	m2 := r2.FindPatternsInFile("a.go", content)
+	if len(m1) == 0 || len(m2) == 0 {
+		t.Fatal("expected at least one match from both redactors")
+	}
+	if m1[0].Fingerprint == m2[0].Fingerprint {
+		t.Fatalf("pattern match fingerprint did not vary by Redactor key: %q", m1[0].Fingerprint)
+	}
+}
+
+// TestMaskedPreviewNeverCarriesTheRawValue is review H3: a finding's preview
+// must show only the first/last 4 characters (or be fully masked for a short
+// value), and the masked line must not contain the raw value anywhere.
+func TestMaskedPreviewNeverCarriesTheRawValue(t *testing.T) {
+	const value = "AKIA1234567890ABCDEF"
+	content := "aws_key = \"" + value + "\" # do not commit\n"
+	matches := FindCredentialsInFile("a.env", content)
+	if len(matches) == 0 {
+		t.Fatal("expected a match")
+	}
+	m := matches[0]
+	if strings.Contains(m.Preview, value) {
+		t.Fatalf("Preview leaks the raw value: %q", m.Preview)
+	}
+	if strings.Contains(m.MaskedLine, value) {
+		t.Fatalf("MaskedLine leaks the raw value: %q", m.MaskedLine)
+	}
+	if !strings.HasPrefix(m.Preview, value[:4]) || !strings.HasSuffix(m.Preview, value[len(value)-4:]) {
+		t.Fatalf("Preview = %q, want it to start/end with the value's first/last 4 characters", m.Preview)
+	}
+	if !strings.Contains(m.MaskedLine, m.Preview) {
+		t.Fatalf("MaskedLine = %q, want it to contain the masked Preview %q", m.MaskedLine, m.Preview)
+	}
+}
+
+// TestMaskValueMasksShortValuesEntirely: an 8-character-or-shorter value has
+// no safe 4+4 split (it would reveal the whole thing, or nearly), so it is
+// masked entirely instead.
+func TestMaskValueMasksShortValuesEntirely(t *testing.T) {
+	for _, v := range []string{"a", "abcdefgh"} {
+		got := maskValue(v)
+		if strings.ContainsAny(got, "abcdefgh") {
+			t.Errorf("maskValue(%q) = %q, leaks characters of a short value", v, got)
+		}
+		if len(got) != len(v) {
+			t.Errorf("maskValue(%q) = %q, want same length %d", v, got, len(v))
+		}
+	}
+}
