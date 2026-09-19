@@ -47,9 +47,45 @@ describe("openItemsNote", () => {
 
 describe("planTaskActions", () => {
   it("offers everything before approval, only cancel once approved, nothing when complete", () => {
-    expect(planTaskActions("needs_human_judgment")).toEqual({ reorder: true, edit: true, cancel: true, add: true });
-    expect(planTaskActions("plan_approved")).toEqual({ reorder: false, edit: false, cancel: true, add: false });
-    expect(planTaskActions("complete")).toEqual({ reorder: false, edit: false, cancel: false, add: false });
+    expect(planTaskActions("needs_human_judgment")).toEqual({
+      reorder: true,
+      edit: true,
+      cancel: true,
+      add: true,
+      merge: true,
+      split: true,
+      dependsOn: true,
+    });
+    expect(planTaskActions("plan_approved")).toEqual({
+      reorder: false,
+      edit: false,
+      cancel: true,
+      add: false,
+      merge: false,
+      split: false,
+      dependsOn: false,
+    });
+    expect(planTaskActions("complete")).toEqual({
+      reorder: false,
+      edit: false,
+      cancel: false,
+      add: false,
+      merge: false,
+      split: false,
+      dependsOn: false,
+    });
+  });
+
+  // Wave 3: merge/split/dependsOn must track reorder exactly (review B3 --
+  // "merge, split and dependencies behave like reorder, i.e. only before
+  // approval"), for every status this function distinguishes.
+  it("keeps merge, split and dependsOn locked in lockstep with reorder", () => {
+    for (const status of ["needs_human_judgment", "draft", "plan_approved", "complete"]) {
+      const a = planTaskActions(status);
+      expect(a.merge).toBe(a.reorder);
+      expect(a.split).toBe(a.reorder);
+      expect(a.dependsOn).toBe(a.reorder);
+    }
   });
 });
 

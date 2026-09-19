@@ -38,10 +38,28 @@ export function openItemsNote(status: string, nextVersion: number, judgmentReaso
 // approved it is what Build runs, so only cancelling a task remains; once the
 // initiative is complete, nothing. The controls used to stay and fail with an
 // unhandled 409.
-export function planTaskActions(status: string): { reorder: boolean; edit: boolean; cancel: boolean; add: boolean } {
-  if (status === "complete") return { reorder: false, edit: false, cancel: false, add: false };
-  if (status === "plan_approved") return { reorder: false, edit: false, cancel: true, add: false };
-  return { reorder: true, edit: true, cancel: true, add: true };
+//
+// Wave 3 extends this with merge, split and dependsOn (review B3's plan
+// editing: merge/split tasks, edit dependencies) -- each behaves exactly like
+// `reorder`, available only before the plan is approved, since all four
+// reshape the very structure Build then executes against.
+export interface PlanTaskActions {
+  reorder: boolean;
+  edit: boolean;
+  cancel: boolean;
+  add: boolean;
+  merge: boolean;
+  split: boolean;
+  dependsOn: boolean;
+}
+export function planTaskActions(status: string): PlanTaskActions {
+  if (status === "complete") {
+    return { reorder: false, edit: false, cancel: false, add: false, merge: false, split: false, dependsOn: false };
+  }
+  if (status === "plan_approved") {
+    return { reorder: false, edit: false, cancel: true, add: false, merge: false, split: false, dependsOn: false };
+  }
+  return { reorder: true, edit: true, cancel: true, add: true, merge: true, split: true, dependsOn: true };
 }
 
 // PLAN_LOCKED_STATUSES are every status reachable only once a plan has been
