@@ -151,7 +151,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Response{}, httpError("openai", resp)
+		return Response{}, httpError("openai", req.Model, resp)
 	}
 	var parsed openAIChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {

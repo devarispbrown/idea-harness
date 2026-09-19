@@ -45,6 +45,63 @@ func TestExecutorSetupRejectsABareModel(t *testing.T) {
 	}
 }
 
+// The positional kind (`executors setup omp`) used to be discarded --
+// cmdExecutorSetup only ever read --kind, so kind silently defaulted to
+// "hermes" and the command pulled, verified and configured a hermes executor
+// while claiming (via the omp argument) to set up omp. Because omp has no
+// canonical default image, a correctly-parsed "omp" must fail asking for
+// --image, not proceed as hermes.
+func TestExecutorSetupHonorsThePositionalKind(t *testing.T) {
+	newFakeDaemon(t)
+	_, _, err := run(t, "executors", "setup", "omp", "--yes")
+	if err == nil {
+		t.Fatal("setup with a positional omp kind and no --image succeeded (it silently used hermes)")
+	}
+	if !strings.Contains(err.Error(), "no canonical omp image") {
+		t.Errorf("positional kind was not honored: %v", err)
+	}
+}
+
+// An unknown positional kind must be refused clearly, the same as an unknown
+// --kind would be.
+func TestExecutorSetupRejectsAnUnknownPositionalKind(t *testing.T) {
+	newFakeDaemon(t)
+	_, _, err := run(t, "executors", "setup", "bogus", "--yes")
+	if err == nil || !strings.Contains(err.Error(), `unsupported executor kind "bogus"`) {
+		t.Errorf("an unknown positional kind was not rejected: %v", err)
+	}
+}
+
+// A positional kind that disagrees with --kind must be refused rather than
+// silently picking one of the two.
+func TestExecutorSetupRejectsConflictingPositionalAndFlagKind(t *testing.T) {
+	newFakeDaemon(t)
+	_, _, err := run(t, "executors", "setup", "hermes", "--kind", "omp", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "conflicting executor kind") {
+		t.Errorf("a conflicting positional kind and --kind were not rejected: %v", err)
+	}
+}
+
+// A known-incompatible executor/model combination (docs/agents.md, "Known
+// executor/model compatibility") is refused before the multi-gigabyte image
+// pull, the same as an unknown provider is -- it is going to fail every time,
+// so there is no reason to spend the pull or a paid call finding that out.
+func TestExecutorSetupRejectsAKnownIncompatibleCombination(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.providers.Providers = []cliProvider{{Name: "openai", Type: "openai", BaseURL: "https://api.openai.com/v1"}}
+	_, _, err := run(t, "executors", "setup", "--kind", "hermes", "--model", "openai/gpt-4.1-mini",
+		"--image", "example/does-not-exist:never", "--yes")
+	if err == nil {
+		t.Fatal("a known-incompatible combination was accepted")
+	}
+	if !strings.Contains(err.Error(), "gpt-4.1-mini") {
+		t.Errorf("the refusal does not name the model: %v", err)
+	}
+	if strings.Contains(err.Error(), "pull") {
+		t.Errorf("the image was pulled before the compatibility check: %v", err)
+	}
+}
+
 // A provider the daemon itself refuses (a preset whose base_url was
 // overridden, say) must not be smoked, pulled for, or configured.
 func TestExecutorSetupRejectsAProviderWithAProblem(t *testing.T) {

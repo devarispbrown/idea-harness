@@ -1278,6 +1278,25 @@ func TestKeyedProviderWithoutAKeyIsRefused(t *testing.T) {
 	}
 }
 
+// A known-incompatible executor/model combination is refused before the
+// container starts (docs/agents.md, "Known executor/model compatibility"):
+// hermes + gpt-4.1-mini failed deterministically, every run, in the ICP
+// walkthrough, with no signal until the agent had already been launched and
+// produced nothing.
+func TestSelectExecutorRefusesAKnownIncompatibleModel(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-4.1-mini"},
+	}}
+	_, err := e.selectExecutor()
+	if err == nil {
+		t.Fatal("a known-incompatible executor/model combination was accepted")
+	}
+	if !strings.Contains(err.Error(), "gpt-4.1-mini") {
+		t.Errorf("the refusal does not name the model: %v", err)
+	}
+}
+
 // Every provider this project presets must reach the coding agent.
 func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
 	for _, p := range config.Presets {

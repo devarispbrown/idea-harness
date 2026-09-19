@@ -37,9 +37,28 @@ const maxErrBody = 2048
 // -free scrub rather than internal/security's catalog: internal/model must not
 // import it (security imports config, config imports model), and the failure
 // mode to avoid here is a key reaching a log, not a full redaction contract.
-func httpError(provider string, resp *http.Response) error {
+//
+// model is the id that was actually sent (req.Model), so a 404 -- which is
+// always the model id, every provider's own docs agree on that -- can name it
+// and say how to change it. An ICP walkthrough hit exactly this: a stale
+// catalog entry (gemini-2.5-flash, retired for new accounts) 404'd on the
+// first real call, and the message was indistinguishable from any other
+// non-200 status. Diagnosing "which config value do I even change" cost the
+// walkthrough real time that `idea model set <provider>/<model>` or Settings
+// -> Providers would have saved in one line.
+func httpError(provider, model string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 	msg := scrubForLog(string(body))
+	if resp.StatusCode == http.StatusNotFound {
+		detail := ""
+		if msg != "" {
+			detail = ": " + msg
+		}
+		return fmt.Errorf("%s: model %q not found (status 404)%s -- "+
+			"this model id is unknown, retired, or unavailable on your account; "+
+			"change it with `idea model set %s/<model>` (or Settings → Providers in the web UI)",
+			provider, model, detail, provider)
+	}
 	if msg == "" {
 		return fmt.Errorf("%s: status %d (no response body)", provider, resp.StatusCode)
 	}

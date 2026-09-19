@@ -90,6 +90,26 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 			return nil, fmt.Errorf("executor: provider %q needs %s, which is set neither in the daemon's environment nor in the project's .env; "+
 				"export it and restart the daemon (`idea daemon stop`), or add it to .env", provider.Name, provider.KeyEnv)
 		}
+		// Known-incompatible combination (docs/agents.md, "Known executor/model
+		// compatibility"): refused here, before the container starts, rather
+		// than after a paid model call that was always going to fail the same
+		// way (ICP walkthrough: hermes + gpt-4.1-mini failed deterministically,
+		// every run, with no signal until the agent produced nothing). An
+		// untested combination is only logged -- Execute is not the place to
+		// block on "nobody has tried this yet".
+		if compat := executor.CheckModelCompat(string(e.cfg.Executor.Kind), model); compat.Message != "" {
+			if compat.Blocked {
+				return nil, fmt.Errorf("executor: %s", compat.Message)
+			}
+			// e.log is nil for an Engine built as a bare struct literal (several
+			// selectExecutor tests do this rather than going through New(),
+			// which is the only place that defaults it) -- nil-checked rather
+			// than requiring every such test to wire a logger for an advisory
+			// log line.
+			if e.log != nil {
+				e.log.Warn("untested executor/model combination", "kind", e.cfg.Executor.Kind, "model", model, "detail", compat.Message)
+			}
+		}
 		var ex *executor.SandboxedAgentExecutor
 		if e.cfg.Executor.Kind == config.ExecutorOMP {
 			ex = executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
