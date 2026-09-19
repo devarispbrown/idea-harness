@@ -53,27 +53,41 @@ call this scan exists to prompt. This also means the initiative-level risk tier 
 no longer be floored to `medium` by a payment/PII word alone, or to `high` by a bare URL — an
 accepted trade-off of the same tuning, not a separate decision.
 
-### Credential-assignment pattern coverage (review M3)
+### Credential-assignment pattern coverage (review M3, H5)
 
 Alongside the vendor-specific key formats (`AKIA…`, `sk-…`, `ghp_…`, …),
 `internal/security.credentialCatalog` includes a generic "credential assignment" rule for values
 that carry no distinctive prefix, keyed on the surrounding variable/field name instead:
-`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret|passw(?:or)?d|token)["']?\s*[:=]\s*(?:"(...)"|'(...)'|(...))`.
+`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret(?:[_-]?(?:key|value))?|passw(?:or)?d|pwd|token)["']?\s*[:=]\s*(?:"(...)"|'(...)'|(...))`.
 It matches a JSON key with a quote before the colon (`{"password": "..."}`), a SCREAMING_SNAKE_CASE
-env-var assignment (`DB_PASSWORD=...`), and a snake_case field (`client_secret: ...`) — none of which
-an earlier, `\b`-anchored version of this rule matched, since `_` is a word character and `\b` never
-fires between it and the keyword. A dedicated rule covers `AWS_SECRET_ACCESS_KEY=...` separately,
-since `ACCESS_KEY` (not one of the generic rule's keywords) sits between `SECRET` and the separator.
-The value itself must look like a literal, not an identifier or a function call: quoted, almost
-anything 8+ characters counts; unquoted, the value may not contain whitespace, quotes, parens,
-braces, brackets, commas, or `.` — which is what keeps `token = getenv(...)` and
-`const token = req.headers...` from matching (each stops short of the 8-character floor at the
-first excluded character) while still matching a bare shell/env-style assignment.
+env-var assignment (`DB_PASSWORD=...`), a snake_case field (`client_secret: ...`), a `pwd` keyword,
+and a `secret_key`/`secret_value`-style suffix (`SECRET_KEY = "..."`) — none of the last three
+matched an earlier version of this rule. A separate pattern matches URL userinfo credentials
+(`scheme://user:PASSWORD@host`, e.g. `postgres://admin:hunter2345@db`). A dedicated rule covers
+`AWS_SECRET_ACCESS_KEY=...` separately, since `ACCESS_KEY` (not one of the generic rule's keywords)
+sits between `SECRET` and the separator.
+
+The value itself must look like a literal, not an identifier, a member-access expression, or a
+function call. A quoted value counts (almost anything 8+ characters, so long as it does not start
+with `$` — `"${API_KEY}"` is a reference, not a literal); RE2 (Go's regexp engine) has no
+lookahead, so an unquoted value additionally goes through a Go-level check
+(`validCredentialAssignmentValue`) after the regex match, rejecting it when it:
+
+- starts with `$` (`$GITHUB_TOKEN_VALUE`);
+- is immediately followed by a call's `(` (`generate_csrf_token()`, `getToken()`);
+- reads as a bare camelCase/snake_case name with no digit (`authToken`, `token_from_somewhere`); or
+- reads as a member-access chain — every dot-segment itself identifier-shaped
+  (`req.headers.authorization`, `settings.API_KEY_FROM_ENV`).
+
+One accepted trade-off: a dotted literal whose every segment is a plain identifier word with no
+digit (e.g. a placeholder `xyz.abc.def.ghi`) is indistinguishable, by shape alone, from a genuine
+member-access expression, and is treated as the latter (not flagged) rather than risk a false
+positive on real code like `req.headers.authorization`.
 
 ### The secret allowlist (review H3/M1)
 
 A `secret_sweep` finding's `not_a_secret` disposition writes one row to a project-scoped
-allowlist (`secret_allowlist`, exposed read-only via `GET /api/projects/{id}/secret-allowlist`).
+allowlist (`secret_allowlist`, exposed read-only via `GET /api/v1/projects/{id}/secret-allowlist`).
 Several properties hold regardless of how the disposition is invoked:
 
 - **A configured secret can never be allowlisted.** Every finding carries `SecretOverridable`
@@ -97,12 +111,34 @@ Several properties hold regardless of how the disposition is invoked:
   (`store.DB.SecretFingerprintKey`, stored in `project_state`) the first time it is needed, and
   every fingerprint this project's sweep computes is `HMAC-SHA256(key, value)`. The allowlist
   listing API still shows only a short prefix of the resulting digest, never the full value.
+  **Scope of what this protects, precisely:** the HMAC key is stored in plaintext, in the same
+  `state.db` as the fingerprints it keys — it is not a secret the sweep is protected against an
+  attacker who already has read access to that database, and it defends only against a *different*
+  threat: a fingerprint from this project being recognizably the same value as a fingerprint from
+  a completely different installation's project (the bare-sha256 cross-project correlation
+  problem above). There is no key rotation: rotating the key would invalidate every existing
+  allowlist entry's fingerprint (a fingerprint computed under the old key can never match one
+  computed under a new key for the same value), so the key is generated once and kept for the
+  life of the project's `state.db`.
+  **Migration note:** upgrading past migration 30 switches every NEW fingerprint to this
+  per-project HMAC, but existing `secret_allowlist` rows recorded under the old bare-sha256 scheme
+  are **not**, and cannot be, recomputed — there is no way to derive an HMAC from a stored sha256
+  digest without the original secret value. Every "not a secret" exemption granted before that
+  upgrade is silently orphaned (its fingerprint never matches a newly-computed one again) and must
+  be re-granted; see `CHANGELOG.md`.
 - **Findings never carry the raw value, but do carry a masked preview.** `Finding.SecretPreview`
-  (`secret_preview`) is the value's first 4 and last 4 characters with the middle collapsed to a
-  single ellipsis (e.g. `sk-p…Xy9z`; a value of 8 characters or fewer is masked entirely).
-  `Finding.Evidence` carries the full source line with the value itself replaced by that same
-  mask, so a reviewer can see roughly where and what without the secret ever being persisted or
-  returned in full.
+  (`secret_preview`) reveals at most `min(4, len/4)` characters of the value on each side, with the
+  middle collapsed to a single ellipsis (e.g. `sk-p…Xy9z` for a long key) — and nothing at all for a
+  value under 16 characters, which is masked entirely. `Finding.Evidence` carries the full source
+  line with **every** credential match on that line replaced by its own such mask (not just the
+  finding's own value), and is itself redacted again before being persisted, so a reviewer can see
+  roughly where and what without the secret — or a second, different secret on the same line — ever
+  being persisted or returned in full.
+- **A renamed file's allowlist entry does not follow it.** `fsdiff` expresses a rename as a delete
+  of the old path plus an add of the new one, so an allowlist entry keyed on `(fingerprint, path)`
+  for the old path does not cover the new one — a renamed, previously-allowlisted fixture blocks
+  again and must be re-allowlisted at its new path. This fails closed (a rename can't be used to
+  smuggle an allowlisted value to an unreviewed location) and is accepted as-is, not a defect.
 - **One entry per (fingerprint, path).** `secret_allowlist` has a unique index on
   `(fingerprint, path)`; a repeat disposition upserts rather than duplicating a row, and revoking
   an entry deletes by that same pair (cleaning up any pre-existing duplicate too). Changing a

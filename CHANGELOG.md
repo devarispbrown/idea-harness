@@ -28,6 +28,128 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   (`TestReRunAfterDenialSucceeds`) now guards it either way).
 - **The denial's copy no longer promises a re-plan that never happens.** "The
   task will be re-planned" is now "Run the task again."
+- **An advisory finding no longer wedges `idea verify`.** A quick-accepted
+  critical/high finding used to be saved as a plain open blocker: approval
+  succeeded, and verify/complete then refused forever with no way to
+  un-stick the initiative. `hasOpenBlockingFindings` now skips every
+  `Advisory` finding, and the PRD/plan quick-accept paths mark the
+  adversarial reviewer's findings `Advisory=true` before persisting them.
+  Triage now shows advisory findings too, as non-blocking, instead of
+  hiding them from disposition entirely.
+- **Rigor can no longer auto-approve a structural plan or PRD defect.** A
+  dependency cycle, an untraced task, a superseded-requirement citation, a
+  duplicate REQ code, or a missing/vague acceptance criterion always goes
+  through `needs_human_judgment`, at every rigor level — quick no longer
+  skips straight to approval just because a small vertical slice
+  calibrated to it. Rigor now only ever relaxes the adversarial reviewer's
+  own findings.
+- **The findings cap never drops a real blocker.** A non-advisory
+  critical/high finding is now always kept, however far over the cap the
+  cycle's findings are; only advisory findings and lower severities are
+  capped, non-advisory before advisory, then by severity. The drop-note no
+  longer falsely claims only "lower-severity" findings were cut.
+- **Change-set review no longer relaxes at `quick`.** Critical/high
+  findings in the diff now block at every rigor level; `quick` means one
+  review pass and a smaller findings cap (5), not "no gate". Change-size
+  calibration now also counts changed lines (not just files), closing the
+  gap where a 3-file, 10,000-line change calibrated to `quick` on file
+  count alone.
+- **The in-diff check no longer fails open.** A finding's `path` is now
+  normalized (`path.Clean`, stripped `./`/`a/`/`b/` prefixes, a trailing
+  `:N`, a workspace-absolute prefix) before being compared against the
+  change set's own files, and a path that still doesn't match falls back
+  to the reviewer's own `in_diff` self-report instead of being silently
+  demoted to advisory. A patch that fails to load now fails the review
+  instead of being treated as an empty file set.
+- **Secret masking reveals less, and masks every match on a line.**
+  `maskValue` now reveals at most `min(4, len/4)` characters per side, and
+  nothing at all under 16 characters (the old 8-character floor revealed
+  8 of a 9-character value's own characters). A masked-line preview now
+  masks every credential match on the line, not just the finding's own
+  value, and the evidence saved for a `secret_sweep` finding is redacted
+  again before being persisted.
+- **The credential-assignment regex has far fewer false positives, and a
+  few new true positives.** `const token = authToken`, `password = newPassword`,
+  `api_key = settings.API_KEY_FROM_ENV`, and a `${VAR}`-interpolated value
+  no longer match; `SECRET_KEY = "..."`, a `pwd` keyword, a dotted
+  `client_secret=` value, and `scheme://user:pass@host` URL credentials
+  now do.
+- **Branch-per-initiative no longer risks reverting local commits.** A new
+  initiative branch is now created from the LOCAL default branch
+  (`refs/heads/<default>`), never the remote-tracking `origin/HEAD`, which
+  could be behind unpushed local commits and silently revert every file
+  outside the change set to origin's older version. When the working tree
+  isn't already at that commit, the branch is created from current HEAD
+  instead (never switching the tree), with a warning surfaced as the
+  change set's `git_commit_warning`. Default-branch detection no longer
+  consults `init.defaultBranch` (a global git setting, not a statement
+  about this repository) or guesses `develop`.
+- **Merging a task can no longer delete the survivor or create a cycle.**
+  `task_ids: [A, A]` (a self-merge) is now refused with 400 instead of
+  deleting the named survivor; a merge that would introduce a dependency
+  cycle in the task graph is refused, writing nothing; a task that
+  depended on both merged tasks no longer gets two identical `depends_on`
+  edges to the survivor. The whole merge is now one store transaction.
+- **Splitting a task no longer half-applies on a bad replacement.** Every
+  replacement task's title and `requirement_ids` are now validated before
+  any task is created, and the whole split (creating the replacements,
+  rewiring dependents, deleting the original) is one store transaction.
+  `requirement_ids: []` (explicitly empty) is now rejected rather than
+  silently producing a task with no requirement.
+- **Plan edits (add/update/delete/cancel/reorder task, set `depends_on`,
+  merge, split) are now serialized per initiative.** Two concurrent
+  `set depends_on` requests (A→B and B→A) used to each pass their own
+  cycle check before either write landed, and together create a cycle.
+  `set depends_on` additionally re-checks for a cycle inside the same
+  transaction as the write. A body with no `depends_on` field (or a
+  misspelled one) is now refused with 400 instead of silently clearing
+  every existing dependency.
+- **Fuzzy decision/question dedup no longer breaks requirement wiring, or
+  merges questions that differ only by a number.** A requirement citing a
+  decision that merged into an earlier one (different exact wording, same
+  Jaccard-similar judgment) is now correctly wired via `derived_from` — the
+  merge now reports which decision id it resolved to, used directly instead
+  of re-matching by (possibly mismatched) text afterward. `tokenize` no
+  longer drops numeric tokens under 3 characters, so "Support Python 3.11?"
+  and "Support Python 3.12?" (and similar quantity-only differences) are no
+  longer treated as the same question.
+- **`accept-recommendations` no longer records an answer a decision never
+  offered.** A recommendation is now mapped onto a unique matching option
+  (or skipped) when the decision has options, matching the single-resolve
+  path's own guard. A decision a concurrent single-resolve call answers in
+  the meantime is now treated as skipped rather than a `500` that aborted
+  the rest of the batch.
+- **Guidance no longer hides or gets stuck on a rejected change set.** The
+  Recommended Next Move used to look only at the initiative's globally last
+  change set: a rejected change set on one task was hidden the moment ANY
+  other task's change set was created afterward, and stayed stuck reporting
+  "Resolve CHG-n" forever once its own task was cancelled or deleted.
+  Guidance now considers the latest change set per still-active task.
+- **`idea pr` now works from a `gh repo fork --clone` checkout.** That
+  layout sets `origin` to the fork and `upstream` to the parent, with no
+  per-branch remote config; the PR's `--head` now correctly gets the
+  `owner:branch` form gh needs whenever the push remote's owner differs
+  from `upstream`'s (falling back to `origin`'s owner when there is no
+  `upstream` remote), instead of only ever comparing against `origin`'s own
+  owner.
+- **A revert refusal now names the change set to revert first correctly.**
+  When more than one later change set touched the same file, the advice
+  named the earliest of them; following it just produced a second refusal,
+  since a still-later change set was what was actually sitting on top. It
+  now names the latest.
+- **CONVENTIONS.md content is now labeled untrusted in prompts.** It is
+  read from the live workspace, which an earlier agent-applied change set
+  could have edited to steer later reviews; it is now wrapped in an
+  explicit untrusted-data marker wherever it's included, and its
+  truncation now cuts on a UTF-8 rune boundary instead of a raw byte
+  offset.
+- **Migration 32** sets `findings.secret_overridable = 0` where
+  `secret_kind = 'configured secret value'`, a follow-up to migration 30.
+  It does not (and cannot) recompute HMAC fingerprints for pre-migration-30
+  `secret_allowlist` rows recorded under the old bare-sha256 scheme —
+  there is no key to invert a hash with — so any "not a secret" exemption
+  granted before a project's HMAC key existed is orphaned and **must be
+  re-granted** after upgrading.
 
 ### Added
 
