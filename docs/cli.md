@@ -162,9 +162,9 @@ what actually touched the file (not a manual edit), the advice names it instead 
 There is no `--force`. The change set stays `applied`; act on the advice yourself, then run
 `idea revert` again. This is a synchronous `409`, not an operation that starts and fails in the
 background — see [`api.md`](api.md#errors) for the exact contract. The refusal also records a
-`stale_post` finding on the change set, at an observation (non-blocking) severity: it does not gate
-`idea complete`, since it names a workspace-vs-post-image mismatch to look at, not something a
-disposition resolves.
+`stale_post` finding on the change set, at an observation (non-blocking) severity: it does not
+block completing the initiative (`idea verify`), since it names a workspace-vs-post-image mismatch
+to look at, not something a disposition resolves.
 
 ## How it works
 
