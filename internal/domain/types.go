@@ -225,8 +225,14 @@ type Initiative struct {
 	// status, and clearing it on every transition would mean touching the claim
 	// path, which failure_reason already showed to be the wrong place.
 	JudgmentReason JudgmentReason `json:"judgment_reason,omitempty"`
-	CreatedAt     time.Time        `json:"created_at"`
-	UpdatedAt     time.Time        `json:"updated_at"`
+	// GitBranch is the dedicated branch (`idea/<slug>`) this initiative's
+	// change sets commit to when git.branch_per_initiative is on. Set on the
+	// initiative's first apply and reused by every later one, so all of its
+	// change sets land on the same branch. Empty when the setting is off, or
+	// before a first apply has created it.
+	GitBranch string    `json:"git_branch,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Event is an append-only event record (§32).
