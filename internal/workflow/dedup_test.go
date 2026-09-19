@@ -302,7 +302,7 @@ func TestRequirementWiresToMergedDecisionByThisCyclesWording(t *testing.T) {
 		`"decisions":[{"question":"Which DNS provider will we use for hosting?","options":["eNom"],"recommendation":"eNom"}],`+
 		`"open_questions":[],"risks":[]}`)
 
-	if err := eng.runProductDefinition(ctx, ini.ID, nil); err != nil {
+	if err := eng.runProductDefinition(ctx, ini.ID, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,6 +334,118 @@ func TestRequirementWiresToMergedDecisionByThisCyclesWording(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected the requirement to be wired (derived_from) to the merged-into decision %s, got edges %+v", existing.ID, edges)
+	}
+}
+
+// TestSimilarDecisionMergesSameSubjectAcrossWordingDrift is review ICP
+// re-run #2: a real run had the model re-ask essentially the same rate-limit
+// algorithm choice each round with different phrasing, creating DEC-8/9/10
+// as near-duplicates of DEC-5/6/7 instead of merging. Pure text similarity
+// between these two phrasings falls short of nearDuplicateThreshold, but
+// they offer the same options, so similarDecision must still merge them.
+func TestSimilarDecisionMergesSameSubjectAcrossWordingDrift(t *testing.T) {
+	a := "Which rate limiting algorithm should we use for the API?"
+	b := "Which rate limiting algorithm should we use for the endpoints?"
+	if jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b)) >= nearDuplicateThreshold {
+		t.Fatal("test setup: these two phrasings must NOT already clear the pure-text threshold")
+	}
+	aOpts := []string{"token bucket", "sliding window", "fixed window"}
+	bOpts := []string{"fixed window", "token bucket", "sliding window"}
+	if !similarDecision(a, b, aOpts, bOpts) {
+		t.Fatalf("expected same-subject decisions with matching options to merge:\n a=%q opts=%v\n b=%q opts=%v", a, aOpts, b, bOpts)
+	}
+}
+
+// TestSimilarDecisionKeepsFalseMergeProtection is review ICP re-run #2's
+// explicit guard: two decisions that merely offer the same generic options
+// (a plain yes/no choice) but are about unrelated subjects must NOT merge
+// just because their options match -- the text floor is what stops it.
+func TestSimilarDecisionKeepsFalseMergeProtection(t *testing.T) {
+	a := "Should offline mode be supported in v1?"
+	b := "Should request bodies be logged for debugging?"
+	opts := []string{"yes", "no"}
+	if similarDecision(a, b, opts, opts) {
+		t.Fatalf("unrelated decisions must not merge on identical generic options alone: %q vs %q", a, b)
+	}
+
+	// The review B4 pair ("which database?" vs "which cache?") must also
+	// stay apart even when given plausible, non-identical options: distinct
+	// subjects, low text similarity, and options that do not clear the
+	// same-subject threshold either.
+	if similarDecision("Which database should we use?", "Which cache should we use?",
+		[]string{"postgres", "mysql"}, []string{"redis", "memcached"}) {
+		t.Fatal("distinct subjects with distinct options must not merge")
+	}
+}
+
+// TestOptionsSimilarity pins the raw options metric independent of the merge
+// threshold, so a future threshold change cannot silently also change the
+// arithmetic (mirrors TestJaccardSimilarity for options lists).
+func TestOptionsSimilarity(t *testing.T) {
+	cases := []struct {
+		a, b []string
+		want float64
+	}{
+		{[]string{"token bucket", "fixed window"}, []string{"fixed window", "token bucket"}, 1},
+		{[]string{"yes"}, []string{"no"}, 0},
+		{nil, []string{"yes"}, 0},
+	}
+	for _, c := range cases {
+		if got := optionsSimilarity(c.a, c.b); got != c.want {
+			t.Errorf("optionsSimilarity(%v, %v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestCreateDecisionIfNewMergesRealisticReRunPair is the end-to-end version
+// of TestSimilarDecisionMergesSameSubjectAcrossWordingDrift, through the
+// actual dedup path createDecisionIfNew uses, proving DEC-8/9/10 would now
+// merge into DEC-5/6/7 rather than being created as new rows (review ICP
+// re-run #2).
+func TestCreateDecisionIfNewMergesRealisticReRunPair(t *testing.T) {
+	fp := scriptedProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	first := &domain.Decision{
+		InitiativeID: ini.ID, Type: domain.DecisionProduct,
+		Question:       "Which rate limiting algorithm should we use for the API?",
+		Options:        []string{"token bucket", "sliding window", "fixed window"},
+		Recommendation: "token bucket",
+	}
+	firstID, err := eng.createDecisionIfNew(ctx, ini.ID, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A later round re-asks it with drifted wording (below the pure-text
+	// merge threshold on its own) but the same options, as a real ICP
+	// re-run's DEC-8 did against DEC-5.
+	relisted := &domain.Decision{
+		InitiativeID: ini.ID, Type: domain.DecisionProduct,
+		Question:       "Which rate limiting algorithm should we use for the endpoints?",
+		Options:        []string{"fixed window", "token bucket", "sliding window"},
+		Recommendation: "token bucket",
+	}
+	relistedID, err := eng.createDecisionIfNew(ctx, ini.ID, relisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relistedID != firstID {
+		t.Fatalf("expected the re-worded, same-options decision to merge into %q, got %q", firstID, relistedID)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 1 {
+		t.Fatalf("expected 1 decision after merge, got %d: %+v", len(decs), decs)
 	}
 }
 

@@ -189,6 +189,27 @@ type changeSize struct {
 	// 10,000-line change on a 20-file repo calibrated to "quick" with file
 	// count alone), so line count also pushes calibration toward `thorough`.
 	Lines int
+	// IdeaWords is a proxy for the scope of the idea/feature request itself
+	// (ICP re-run #1), used ONLY to calibrate PRD-authoring and PRD-review
+	// rigor. It must never be derived from anything the PRD step itself
+	// produces: the PM model reliably writes >=9 requirements regardless of
+	// how small the idea is, so calibrating the PRD's OWN rigor from its OWN
+	// requirement count can never select `quick`, no matter how small the
+	// ask -- the review loop then demands statistical rigor and hardware
+	// specs from a toy app's one-file change. Word count of the idea's
+	// description text is available before the PRD is authored, and does
+	// not change across revise cycles, so it keeps calibration both
+	// non-circular and stable.
+	IdeaWords int
+}
+
+// ideaWordCount is the crude size proxy calibrateRigor uses for an idea's own
+// scope (review ICP re-run #1): a whitespace-separated word count of the
+// idea's description text. Deliberately not more clever than that -- this is
+// a coarse "toy app one-liner" vs "multi-paragraph spec" signal, not an
+// attempt to measure complexity.
+func ideaWordCount(idea string) int {
+	return len(strings.Fields(idea))
 }
 
 // calibrateRigor derives review.rigor: auto's effective level from project and
@@ -206,11 +227,12 @@ func calibrateRigor(configured RigorLevel, scale projectScale, chg changeSize) R
 	if configured != "" && configured != RigorAuto {
 		return configured
 	}
-	big := scale.Files > 200 || scale.LOC > 20000 || chg.Requirements > 15 || chg.Files > 15 || chg.Lines > 500
+	big := scale.Files > 200 || scale.LOC > 20000 || chg.Requirements > 15 || chg.Files > 15 || chg.Lines > 500 || chg.IdeaWords > 120
 	// scale.Files > 0 is required: a zero scale means the workspace could not
 	// be measured (no workspace yet, a brand-new idea, a read error), which is
 	// unknown, not small, and must not default to the LEAST scrutiny.
-	small := scale.Files > 0 && scale.Files <= 20 && scale.LOC <= 1500 && chg.Requirements <= 3 && chg.Files <= 3
+	small := scale.Files > 0 && scale.Files <= 20 && scale.LOC <= 1500 && chg.Requirements <= 3 && chg.Files <= 3 &&
+		chg.IdeaWords <= 40
 	switch {
 	case big:
 		return RigorThorough
@@ -281,6 +303,66 @@ func renderConventions(conventions string) string {
 	b.WriteString("BEGIN UNTRUSTED DATA\n")
 	b.WriteString(conventions)
 	b.WriteString("\nEND UNTRUSTED DATA\n")
+	return b.String()
+}
+
+// targetRequirementRange is the PRD-authoring prompt's target requirement
+// count, scaled to the calibrated rigor (ICP re-run #1: "small repo + single
+// feature -> 3-6 requirements"). It is guidance, not a hard cap -- the
+// deterministic checks and adversarial reviewer still catch a genuinely
+// under-specified PRD -- but it makes a proportionate PRD the model's default
+// shape instead of something a reviewer has to fight for after the fact.
+func targetRequirementRange(rigor RigorLevel) (min, max int) {
+	switch rigor {
+	case RigorQuick:
+		return 3, 6
+	case RigorThorough:
+		return 10, 20
+	default:
+		return 6, 12
+	}
+}
+
+// requirementCountGuidance renders the PRD-authoring prompt's proportionality
+// instruction (review ICP re-run #1, B5): a target requirement count scaled
+// to the calibrated rigor, and acceptance criteria that must be testable by
+// the project's own tests rather than lab-grade measurement -- the ICP round
+// this answers saw an 89-line HTTP service's PRD grow requirements demanding
+// statistical sample sizes, confidence levels and named test-machine specs.
+func requirementCountGuidance(rigor RigorLevel) string {
+	lo, hi := targetRequirementRange(rigor)
+	return fmt.Sprintf(
+		"Target %d-%d requirements for this idea and project size (review rigor: %s) -- prefer the low end for "+
+			"a small, single-feature idea in a small project. Do not add requirements the idea did not ask for "+
+			"merely to reach a round number, and do not split one feature into many requirements to look thorough. "+
+			"Acceptance criteria must be testable by the project's own tests, a deterministic check, or a manual "+
+			"gate a human can actually perform -- do not require statistical sample sizes, confidence levels, "+
+			"named hardware/test-machine specs, or percentile SLOs unless the idea itself is asking for "+
+			"performance work.\n", lo, hi, rigor)
+}
+
+// reviewerSeverityGuidance is the PRD adversarial reviewer's severity
+// calibration (review ICP re-run #1): the reviewer always sees the rigor and
+// project scale it is reviewing at, and at quick/standard rigor it is told
+// to reserve "high" severity for ambiguity that would lead to a WRONG or
+// UNSAFE implementation. Measurement methodology, statistical rigor, sample
+// sizes, confidence levels, and hardware/test-environment specifications are
+// at most "low" unless the requirement under review is itself a performance
+// SLO the idea asked for -- the ICP round this answers saw a toy app's PRD
+// review raise 13 "high" findings like "no statistical rigor / sample size /
+// confidence level" and "baseline startup time undefined", none of which the
+// idea asked for. Thorough rigor (a large project or a large change) keeps
+// the reviewer's own full judgment on severity.
+func reviewerSeverityGuidance(rigor RigorLevel, scale projectScale) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Review rigor for this PRD is %s (project scale: %d files, ~%d lines).\n", rigor, scale.Files, scale.LOC)
+	if rigor != RigorThorough {
+		b.WriteString("At this rigor, reserve \"high\" severity for ambiguity that would lead to a WRONG or " +
+			"UNSAFE implementation. Measurement methodology, statistical sampling or confidence levels, and " +
+			"hardware or test-environment specifications are at most \"low\" severity findings unless the " +
+			"requirement under review is itself a performance SLO the idea asked for -- do not demand lab-grade " +
+			"rigor a project this size never asked for.\n")
+	}
 	return b.String()
 }
 

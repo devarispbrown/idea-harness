@@ -266,8 +266,13 @@ enterprise system, regardless of its actual size.
     ignore rules the executor's seed copy uses (tracked + untracked-but-not-ignored files in a git
     repository; a plain walk skipping dotdirs and `node_modules`/`vendor`/`dist`/`build`/`target`
     outside one);
-  - **change size** — the requirement count for the PRD/plan review, or the file count for the
-    change-set review.
+  - **change size** — for the execution-plan review, the (already-approved) requirement count; for
+    the change-set review, the file count and changed-line count. For the **PRD review**, this is
+    deliberately **not** a requirement count: an ICP re-run found the PM model reliably writes 9+
+    requirements regardless of idea size, so calibrating the PRD's own rigor from the PRD's own
+    requirement count could never select `quick`, however small the idea. PRD-authoring and
+    PRD-review rigor instead use the **idea's own word count** (from its description text), which is
+    known before the PRD exists and does not change across revise cycles.
 
   A small project AND a small change calibrate to `quick`; a large project OR a large change
   calibrates to `thorough` (touching one file of a 500-file codebase still gets more scrutiny than a
@@ -321,6 +326,22 @@ Effects, at every level:
   **PRD-authoring and framing ("explore") prompts**, not the reviewer or planner — this is review
   B5's proportionate-PRD behavior, which also adds an explicit "do not add infrastructure the
   project does not have unless the idea asks for it" instruction on those two prompts specifically.
+- **The PRD-authoring prompt states a target requirement count** scaled to the calibrated rigor
+  (roughly 3–6 at `quick`, 6–12 at `standard`, 10–20 at `thorough`) and requires acceptance criteria
+  testable by the project's own tests, a deterministic check, or a manual gate — not statistical
+  sample sizes, confidence levels, named hardware/test-machine specs, or percentile SLOs, unless the
+  idea itself asks for performance work. This is guidance, not a hard cap: the deterministic checks
+  and the adversarial reviewer still catch a genuinely under-specified PRD.
+- **The PRD adversarial reviewer's prompt always states the rigor and project scale it is reviewing
+  at**, and at `quick`/`standard` caps "high" severity to ambiguity that would cause a wrong or
+  unsafe implementation — measurement methodology, statistical rigor, and hardware/environment specs
+  are at most "low" there unless the requirement under review is itself a performance SLO the idea
+  asked for. `thorough` keeps the reviewer's own full judgment on severity.
+- **A PRD revision keeps requirement codes stable.** When the model's response cites a requirement's
+  exact existing code (e.g. `REQ-4`), that requirement is updated in place — same id, same code,
+  preserving its `derived_from`/`produced_by` graph edges — instead of being superseded and
+  recreated with a new code every revise cycle. Only the requirements this cycle's response does not
+  continue at all are superseded.
 
 `idea config validate` rejects any `review.rigor` value other than `auto`, `quick`, `standard`, or
 `thorough`.

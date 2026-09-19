@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -300,6 +301,56 @@ func TestQuickRigorChangeSetReviewStillBlocksCriticalFindings(t *testing.T) {
 	}
 	if got2.Status != domain.ChangeSetApproved {
 		t.Fatalf("expected approved after accept-findings, got %q", got2.Status)
+	}
+}
+
+// TestChangeSetReviewerPromptRequiresConcreteEvidence is review ICP re-run
+// #3: a real run's only "high" change-set finding was "whitespace
+// manipulation" against a value the diff already ran through TrimSpace --
+// speculative, with no concrete failure input. The reviewer prompt must tell
+// the model to cite a specific line/path and a concrete failure input per
+// finding, and to keep speculative concerns at low/advisory.
+func TestChangeSetReviewerPromptRequiresConcreteEvidence(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, call := range fp.Calls() {
+		if call.JSONSchemaName != ChangeSetReviewSchemaName {
+			continue
+		}
+		found = true
+		if !strings.Contains(call.System, "specific line or path") {
+			t.Errorf("change-set reviewer prompt missing the specific line/path requirement:\n%s", call.System)
+		}
+		if !strings.Contains(call.System, "CONCRETE failure input") {
+			t.Errorf("change-set reviewer prompt missing the concrete-failure-input requirement:\n%s", call.System)
+		}
+		if !strings.Contains(call.System, "speculative") {
+			t.Errorf("change-set reviewer prompt missing the speculative-findings-are-advisory guidance:\n%s", call.System)
+		}
+	}
+	if !found {
+		t.Fatal("expected a change-set review call")
 	}
 }
 
