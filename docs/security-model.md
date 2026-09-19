@@ -41,6 +41,23 @@ raises a non-blocking `sensitive_area` finding (severity `medium`, no
 as before, but a human decides instead of a word scan. Only a real credential
 value — `secret_sweep` above — still blocks.
 
+### Credential-assignment pattern coverage (review M3)
+
+Alongside the vendor-specific key formats (`AKIA…`, `sk-…`, `ghp_…`, …),
+`internal/security.credentialCatalog` includes a generic "credential assignment" rule for values
+that carry no distinctive prefix, keyed on the surrounding variable/field name instead:
+`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret|passw(?:or)?d|token)["']?\s*[:=]\s*(?:"(...)"|'(...)'|(...))`.
+It matches a JSON key with a quote before the colon (`{"password": "..."}`), a SCREAMING_SNAKE_CASE
+env-var assignment (`DB_PASSWORD=...`), and a snake_case field (`client_secret: ...`) — none of which
+an earlier, `\b`-anchored version of this rule matched, since `_` is a word character and `\b` never
+fires between it and the keyword. A dedicated rule covers `AWS_SECRET_ACCESS_KEY=...` separately,
+since `ACCESS_KEY` (not one of the generic rule's keywords) sits between `SECRET` and the separator.
+The value itself must look like a literal, not an identifier or a function call: quoted, almost
+anything 8+ characters counts; unquoted, the value may not contain whitespace, quotes, parens,
+braces, brackets, commas, or `.` — which is what keeps `token = getenv(...)` and
+`const token = req.headers...` from matching (each stops short of the 8-character floor at the
+first excluded character) while still matching a bare shell/env-style assignment.
+
 ### The secret allowlist (review H3/M1)
 
 A `secret_sweep` finding's `not_a_secret` disposition writes one row to a project-scoped
