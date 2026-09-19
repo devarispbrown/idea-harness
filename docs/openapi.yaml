@@ -4858,6 +4858,10 @@ components:
         by_phase:
           type: array
           items: { $ref: "#/components/schemas/PhaseCost" }
+          description: >-
+            Ordered by the pipeline's own step order (framing, research, product_definition,
+            review, ...), not alphabetically by stage key; a stage the pipeline order does not
+            name sorts after every known one (review Low fix).
         agent: { $ref: "#/components/schemas/AgentCost" }
       required: [total_usd, by_phase, agent]
 

@@ -3,11 +3,37 @@ package projection
 import (
 	"context"
 	"regexp"
+	"sort"
 	"strconv"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
+
+// workflowStageOrder is the pipeline's own step order (mirrors
+// internal/workflow's Stage* constants -- duplicated as plain strings rather
+// than imported, to keep projection out of the workflow-engine dependency,
+// same as normalizeRequirementCode in evidence.go). Used only to order
+// GET .../costs' by_phase array for display (review Low fix: "phases are
+// listed alphabetically by raw stage key", so "review" sorted before
+// "research" and "architecture" sorted before "framing" -- readable only by
+// accident, never in the order the pipeline actually runs them). A stage not
+// listed here (a future stage key, "suggest_answers", "describe_image", or a
+// stray "agent:*" that reached this list some other way) sorts after every
+// known one, alphabetically among themselves, so nothing is ever dropped.
+var workflowStageOrder = map[string]int{
+	"framing":               0,
+	"research":              1,
+	"product_definition":    2,
+	"review":                3,
+	"architecture":          4,
+	"product_design":        5,
+	"verification_design":   6,
+	"convergence":           7,
+	"execution_plan":        8,
+	"execution_plan_review": 9,
+	"implementation_brief":  10,
+}
 
 // BuildCosts builds an initiative's spend/time summary (C3, wave 3 contract)
 // from the run records that already exist: model-call cost/duration (per
@@ -29,6 +55,18 @@ func BuildCosts(ctx context.Context, db *store.DB, initiativeID string) (domain.
 			Phase: row.Stage, USD: row.CostUSD, Seconds: float64(row.DurationMS) / 1000, Calls: row.Calls,
 		})
 	}
+	// review Low fix: pipeline order, not alphabetical by raw stage key.
+	sort.SliceStable(out.ByPhase, func(i, j int) bool {
+		oi, oki := workflowStageOrder[out.ByPhase[i].Phase]
+		oj, okj := workflowStageOrder[out.ByPhase[j].Phase]
+		if oki && okj {
+			return oi < oj
+		}
+		if oki != okj {
+			return oki // a known stage always sorts before an unlisted one
+		}
+		return out.ByPhase[i].Phase < out.ByPhase[j].Phase
+	})
 
 	agentStats, err := db.ListAgentRunStats(ctx, initiativeID)
 	if err != nil {
