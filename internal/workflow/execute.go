@@ -1568,6 +1568,37 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 		return fmt.Errorf("workflow: no canonical workspace root configured")
 	}
 
+	// Refuse to erase an edit made in the workspace after apply: an ICP user
+	// added a comment to src/app.js after apply, and a revert that only ever
+	// looked at its own pre-image silently erased it. Mirror of
+	// ApplyChangeSet's fsdiff.StaleBase guard at the opposite end of the
+	// change set's life -- apply protects an edit made BEFORE it ran; this
+	// protects one made AFTER (review A3). Checked before any write, so a
+	// refusal here writes nothing. No force option: the recovery is for the
+	// human to commit or discard their own edit, then revert again --
+	// RevertBlockedReason lets the API/CLI say so before an operation even
+	// starts, and this is the authoritative recheck under the engine lock.
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return err
+	}
+	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
+		msg := revertRefusedMessage(cs.HumanID, stale)
+		_ = e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       changeSetID,
+			Severity:       domain.SeverityHigh,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "stale_post",
+			Finding:        "The workspace changed after this change set was applied, so reverting it now would erase that work.",
+			Evidence:       strings.Join(stale, "\n"),
+			Impact:         "Nothing was written.",
+			Recommendation: "Commit or discard the edits to the listed files, then revert again.",
+		})
+		return fmt.Errorf("workflow: %s", msg)
+	}
+
 	preDigest, err := e.db.JournalSnapshotDigest(ctx, changeSetID)
 	if err != nil {
 		return err
@@ -1598,6 +1629,62 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 	}
 	_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativePlanApproved, store.ActorOrchestrator)
 	return nil
+}
+
+// revertRefusedMessage explains, in terms of what to do next, why cs cannot be
+// reverted while stale (fsdiff.StalePost's output, one line per file) is
+// non-empty: "commit or discard your edits to X, then revert" (review A3).
+func revertRefusedMessage(humanID string, stale []string) string {
+	files := make([]string, 0, len(stale))
+	for _, s := range stale {
+		if i := strings.Index(s, ": "); i >= 0 {
+			files = append(files, s[:i])
+		} else {
+			files = append(files, s)
+		}
+	}
+	return fmt.Sprintf(
+		"revert refused: the workspace changed since %s was applied: %s; commit or discard your edits to %s, then revert",
+		humanID, strings.Join(stale, "; "), strings.Join(files, ", "))
+}
+
+// RevertBlockedReason reports why RevertChangeSet would refuse to revert
+// changeSetID right now, or "" when it would not. It mirrors RevertChangeSet's
+// own stale-workspace guard read-only and lock-free (see RunBlockedReason), so
+// Runtime can answer a synchronous 409 instead of starting an operation that
+// can only fail in the background, and so a client can grey out "Revert" and
+// say why before the click.
+//
+// A race between this read and RevertChangeSet's own authoritative recheck
+// (taken under the engine lock, immediately before any byte is restored) is
+// still safe: a file edited in that narrow window is caught there instead,
+// and nothing is written either way.
+func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSetID string) (string, error) {
+	cs, err := e.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return "", err
+	}
+	if cs.InitiativeID != initiativeID {
+		return "", fmt.Errorf("workflow: change set %q does not belong to initiative %q", changeSetID, initiativeID)
+	}
+	// Only an applied change set has a post-image to protect; every other
+	// status is refused elsewhere (handleRevertChangeSet's own state check) for
+	// its own reason, not this one.
+	if cs.Status != domain.ChangeSetApplied {
+		return "", nil
+	}
+	workspaceRoot := e.workspaceRoot
+	if workspaceRoot == "" {
+		return "", nil
+	}
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return "", err
+	}
+	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
+		return revertRefusedMessage(cs.HumanID, stale), nil
+	}
+	return "", nil
 }
 
 // ReviewChangeSet applies a human review verdict. "approved" runs the
