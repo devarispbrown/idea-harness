@@ -36,17 +36,36 @@ type markerRule struct {
 // is matched as a whole word (bounded by non-word characters), so short markers
 // like "auth"/"token"/"secret" do not false-positive on "author"/"tokenize"/
 // "secretary". The scan is fully deterministic.
+//
+// Tuned down to four markers (review low-priority item): api_key, https://,
+// http://, payment, credit card, and ssn used to be in this catalog too, and
+// every one of them turned out to be noise in practice for what this catalog
+// actually gates -- the non-blocking `sensitive_area` advisory finding
+// (execute.go). A change set that merely links to a website (an ordinary doc
+// comment, a README update) matched "https://" and got flagged as a
+// "sensitive area" with nothing sensitive in it; "payment"/"credit card"/
+// "ssn" fired on ordinary product copy discussing a billing feature just as
+// often as on code that actually handles the data. auth/password/secret/token
+// are kept because they at least correlate with code that plausibly touches
+// credentials or an auth boundary, which is the judgment call this catalog
+// exists to prompt a closer look for. api_key was dropped alongside them: it
+// overlaps password/token/secret in intent (a name containing "key" that
+// isn't already caught by one of those three is rare), and the REAL secret
+// detector for actual credential VALUES is internal/security's
+// credentialCatalog, not this vocabulary scan -- this one only ever produces
+// an advisory, never a deny.
+//
+// This also narrows floorTier's SignalNetwork/SignalPayment/SignalPII cases
+// to permanently unreachable (nothing in this catalog can produce those
+// signals anymore): left in place rather than deleted, since a future marker
+// could still target them, but the initiative-level risk tier this feeds
+// (handleRisk) will no longer be floored to medium by a payment/PII mention
+// alone -- an accepted trade-off, not an oversight.
 var markerCatalog = []markerRule{
-	{"api_key", SignalCredential},
 	{"password", SignalCredential},
 	{"token", SignalCredential},
 	{"secret", SignalSecret},
 	{"auth", SignalAuth},
-	{"https://", SignalNetwork},
-	{"http://", SignalNetwork},
-	{"payment", SignalPayment},
-	{"credit card", SignalPayment},
-	{"ssn", SignalPII},
 }
 
 // containsWord reports whether word appears in s bounded by non-word characters

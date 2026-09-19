@@ -30,16 +30,28 @@ not treat any of them as evidence that the condition is enforced.
 
 ### Vocabulary markers are advisory, not a deny code
 
-`internal/risk.RiskSignals` scans produced content for whole-word markers —
-`auth`, `secret`, `token`, `password`, `api_key`, network URLs, `payment`,
-`credit card`, `ssn` — and used to hard-reject a change set on a bare word
-match, with no file or line and no override (the ICP-round finding this fixed:
-a patch that legitimately mentioned "per-user API keys with rate limiting"
-could never get past it). It no longer blocks anything: a detected marker now
-raises a non-blocking `sensitive_area` finding (severity `medium`, no
-`Finding.Code`) so the change set still gets a closer look in review, exactly
-as before, but a human decides instead of a word scan. Only a real credential
-value — `secret_sweep` above — still blocks.
+`internal/risk.RiskSignals` scans produced content for whole-word markers — `auth`, `secret`,
+`token`, `password` (review low-priority item narrowed the catalog to these four; see below) —
+and used to hard-reject a change set on a bare word match, with no file or line and no override
+(the ICP-round finding this fixed: a patch that legitimately mentioned "per-user API keys with
+rate limiting" could never get past it). It no longer blocks anything: a detected marker now
+raises **at most one** non-blocking `sensitive_area` finding per change set (severity `medium`, no
+`Finding.Code`) so the change set still gets a closer look in review, exactly as before, but a
+human decides instead of a word scan. Only a real credential value — `secret_sweep` above — still
+blocks.
+
+The catalog used to also include `api_key`, network URLs (`https://`/`http://`), `payment`,
+`credit card` and `ssn`, every one of which turned out to be noise for what this scan actually
+gates: a change set that merely linked to a website matched `https://` and was flagged as a
+"sensitive area" with nothing sensitive in it, and `payment`/`credit card`/`ssn` fired on ordinary
+product copy discussing a billing feature as often as on code that actually handles the data.
+`api_key` was dropped alongside them — it overlaps `password`/`token`/`secret` in intent, and the
+catalog that actually detects credential *values* is `internal/security`'s pattern catalog above,
+not this vocabulary scan. `auth`/`secret`/`token`/`password` are kept because they at least
+correlate with code that plausibly touches credentials or an auth boundary, which is the judgment
+call this scan exists to prompt. This also means the initiative-level risk tier (`idea risk`) can
+no longer be floored to `medium` by a payment/PII word alone, or to `high` by a bare URL — an
+accepted trade-off of the same tuning, not a separate decision.
 
 ### Credential-assignment pattern coverage (review M3)
 

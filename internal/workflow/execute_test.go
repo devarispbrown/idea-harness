@@ -222,6 +222,49 @@ func TestExecuteDoesNotRejectOnSecretMarkerAlone(t *testing.T) {
 	}
 }
 
+// TestSensitiveAreaFindingCreatedAtMostOnce is the low-priority review item:
+// createSensitiveAreaFinding is called from both Execute's own sweep and the
+// apply-time re-sweep (ApplyChangeSet), and a retried apply calls the latter
+// again -- none of which should pile up a second, third, ... near-identical
+// advisory finding on the same change set. Mutation-check: remove the
+// "already recorded" early-return in createSensitiveAreaFinding, and this
+// fails.
+func TestSensitiveAreaFindingCreatedAtMostOnce(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Store password in vault", Statement: "secret", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Call createSensitiveAreaFinding again directly, simulating a second
+	// pass over the same change set (e.g. a retried apply's re-sweep) with
+	// signals still detected.
+	signals := []domain.RiskSignal{{Name: "credential", Detected: true}}
+	if err := eng.createSensitiveAreaFinding(ctx, iniID, cs.ID, signals, "second pass"); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range findings {
+		if f.Category == "sensitive_area" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("sensitive_area findings on %s = %d, want exactly 1", cs.ID, n)
+	}
+}
+
 // TestExecuteRejectsOnRealCredential is the other half: a real credential
 // VALUE (a known key format) still blocks, and the denial names where -- the
 // path:line -- and the kind of secret, never the value itself (review #2).
