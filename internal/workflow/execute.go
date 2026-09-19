@@ -348,17 +348,31 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	files := fsdiff.Diff(before, after)
 
-	// Sweep the produced content BEFORE persisting it: if it carries a known
-	// secret or credential, we reject without ever writing the raw bytes to the
+	// Sweep the produced content BEFORE persisting it: if it carries a real
+	// credential, we reject without ever writing the raw bytes to the
 	// redaction-free raw store (review: raw-blob GC for rejected patches).
+	//
+	// Vocabulary markers (auth, password, token, secret, network, payment, pii
+	// -- word-boundary matches, not value inspection) no longer block on their
+	// own (review D2/A1): risk.RiskSignals still runs and its result still
+	// surfaces as a non-blocking "sensitive area" finding below, but only a
+	// detected credential VALUE gates persistence and rejection now.
 	diffText := e.renderDiffTextFromWorkRoot(req.WorkRoot, files)
-	hasCredential := e.detectCredential(diffText)
 	signals := risk.RiskSignals(ctx, "", diffText)
+	allowlist, err := e.secretAllowlist(ctx)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	credMatches := filterAllowlisted(e.scanWorkRootForCredentials(req.WorkRoot, files), allowlist)
+	hasCredential := len(credMatches) > 0
 
 	// Persist each produced file's content and the patch manifest to the blob
 	// store, so apply/revert can reconstruct the diff from digests alone. Skip
-	// the raw content write when ANY blocking signal was detected (credential OR
-	// risk marker), so rejected content is never written to the raw store.
+	// the raw content write when a credential was detected, so rejected content
+	// is never written to the raw store. hasBlockingRiskSignal is always false
+	// (review D2/A1) but stays in this expression, not inlined away, so the one
+	// guard that used to hard-reject on a bare word is still one place to
+	// mutation-check: restore its old body and TestExecuteDoesNotRejectOnSecretMarkerAlone fails.
 	sweepBlocked := hasCredential || hasBlockingRiskSignal(signals)
 	if !sweepBlocked {
 		if err := e.persistDiff(req.WorkRoot, files); err != nil {
@@ -408,10 +422,14 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			// The build/test command output is attacker-influenced (agent-produced
 			// code runs in the sandbox). Sweep the RAW output FIRST so a secret
 			// printed by the agent's code is rejected, then redact for persistence.
+			// This is command output, not a file, so there is no path:line to name.
+			// A bare vocabulary marker in it does not block either (review D2/A1);
+			// hasBlockingRiskSignal is always false, kept for the same
+			// mutation-check reason as its other call sites.
 			rawCred := e.detectCredential(f.Evidence)
 			rawSignals := risk.RiskSignals(ctx, "", f.Evidence)
 			if rawCred || hasBlockingRiskSignal(rawSignals) {
-				f.Code = sweepDenyCode(rawCred, rawSignals)
+				f.Code = sweepDenyCode(rawCred)
 				f.Severity = domain.SeverityHigh
 				checksBlocked = true
 			}
@@ -485,32 +503,54 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
-	// Secret/credential/pii sweep gates rejection. diffText/signals/hasCredential
-	// were computed above from the work-root content, BEFORE the raw store write.
+	// The vocabulary marker scan is advisory only now (review D2/A1): it never
+	// blocks, but it still surfaces to the reviewer as a non-blocking "sensitive
+	// area" finding -- the same signals that used to hard-reject on a bare word
+	// match now just flag the change set for a closer look.
+	if len(signals) > 0 {
+		if err := e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   cs.InitiativeID,
+			TargetType:     "change_set",
+			TargetID:       cs.ID,
+			Severity:       domain.SeverityMedium,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "sensitive_area",
+			Finding:        "sensitive area: " + detectedRiskNames(signals),
+			Evidence:       "deterministic marker scan of the produced patch",
+			Impact:         "advisory only; look closer before approving",
+			Recommendation: "review the change for real secrets or unsafe handling before approving",
+		}); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	}
+
+	// A real credential sweep gates rejection now, not a bare vocabulary word
+	// (review D2/A1). credMatches was computed above from the work-root
+	// content, BEFORE the raw store write, and already excludes any fingerprint
+	// a human dispositioned "not a secret" for this project.
 	rejected := false
-	if checksBlocked || hasBlockingRiskSignal(signals) || hasCredential {
+	if checksBlocked || hasCredential || hasBlockingRiskSignal(signals) {
 		rejected = true
-		// Record a blocking finding so the rejection is traceable. The finding
-		// never echoes the credential value (full-platform review: secret leak).
-		if hasBlockingRiskSignal(signals) || hasCredential {
-			reason := detectedRiskNames(signals)
-			code := sweepDenyCode(hasCredential, signals)
-			if hasCredential {
-				reason = "credential detected"
-			}
+		// One finding per match, each naming path:line and the kind of secret --
+		// never the value (full-platform review: secret leak) -- so the denial
+		// says where, instead of a bare "blocking risk signal detected".
+		for _, m := range credMatches {
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
-				InitiativeID:   cs.InitiativeID,
-				TargetType:     "change_set",
-				TargetID:       cs.ID,
-				Severity:       domain.SeverityCritical,
-				Confidence:     domain.ConfidenceHigh,
-				Category:       "secret_sweep",
-				Code:           code,
-				Finding:        "blocking risk signal detected: " + reason,
-				Evidence:       "deterministic scan of the produced patch",
-				Impact:         "change set rejected before review",
-				Recommendation: "remove the sensitive content and re-execute",
-				Disposition:    domain.DispositionRejected,
+				InitiativeID:      cs.InitiativeID,
+				TargetType:        "change_set",
+				TargetID:          cs.ID,
+				Severity:          domain.SeverityCritical,
+				Confidence:        domain.ConfidenceHigh,
+				Category:          "secret_sweep",
+				Code:              sweepDenyCode(true),
+				Finding:           fmt.Sprintf("%s:%d: looks like %s", m.Path, m.Line, m.Kind),
+				Evidence:          "deterministic scan of the produced patch",
+				Impact:            "change set rejected before review",
+				Recommendation:    secretSweepRecommendation(m),
+				Disposition:       domain.DispositionRejected,
+				SecretFingerprint: m.Fingerprint,
+				SecretKind:        m.Kind,
+				SecretPath:        m.Path,
 			}); err != nil {
 				return domain.ChangeSet{}, err
 			}
@@ -608,6 +648,101 @@ func (e *Engine) detectCredential(s string) bool {
 		return e.redactor.ContainsCredential(s)
 	}
 	return security.FindCredential(s) != ""
+}
+
+// secretAllowlist loads the project's "not a secret" fingerprints (review
+// changes #1), so a sweep can ignore a value a human already dispositioned.
+// Detection runs per file from the work root or the persisted patch, so unlike
+// the pre-fix whole-blob scan, the location survives into the finding it denies
+// with (§ D2, review #7).
+func (e *Engine) secretAllowlist(ctx context.Context) (map[string]bool, error) {
+	if e.db == nil {
+		return nil, nil
+	}
+	return e.db.SecretAllowlistFingerprints(ctx)
+}
+
+// scanForCredentials runs every file in files through the credential detector
+// (the redactor's configured secret values plus the pattern catalog),
+// returning each match located by path and line -- never the value. read
+// supplies one file's content; a file that cannot be read (or a delete) is
+// skipped, matching the sweep's existing "read what was produced" behaviour.
+func (e *Engine) scanForCredentials(files []domain.FileChange, read func(domain.FileChange) (string, bool)) []security.CredentialFinding {
+	var out []security.CredentialFinding
+	for _, fc := range files {
+		if fc.IsDelete() {
+			continue
+		}
+		content, ok := read(fc)
+		if !ok {
+			continue
+		}
+		if e.redactor != nil {
+			out = append(out, e.redactor.FindKnownInFile(fc.Path, content)...)
+		}
+		out = append(out, security.FindCredentialsInFile(fc.Path, content)...)
+	}
+	return out
+}
+
+// scanWorkRootForCredentials is scanForCredentials reading from the isolated
+// work root, for the execute-time sweep (before anything is persisted).
+func (e *Engine) scanWorkRootForCredentials(workRoot string, files []domain.FileChange) []security.CredentialFinding {
+	return e.scanForCredentials(files, func(fc domain.FileChange) (string, bool) {
+		content, err := os.ReadFile(filepath.Join(workRoot, filepath.FromSlash(fc.Path)))
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	})
+}
+
+// scanBlobsForCredentials is scanForCredentials reading each file's content
+// from the content-addressed blob store, for the apply-time re-sweep (the
+// work root is long gone by then; only the persisted patch remains).
+func (e *Engine) scanBlobsForCredentials(files []domain.FileChange) []security.CredentialFinding {
+	return e.scanForCredentials(files, func(fc domain.FileChange) (string, bool) {
+		if e.contentBlobs() == nil {
+			return "", false
+		}
+		content, err := e.contentBlobs().Get(fc.Digest)
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	})
+}
+
+// filterAllowlisted drops every Overridable match whose fingerprint a human
+// already dispositioned "not a secret" for this project. A match drawn from
+// the project's own configured secrets (Overridable=false) is never filtered:
+// a real, resolved credential is not eligible for the override regardless of
+// what fingerprint someone else allowlisted.
+func filterAllowlisted(matches []security.CredentialFinding, allowed map[string]bool) []security.CredentialFinding {
+	if len(allowed) == 0 {
+		return matches
+	}
+	out := make([]security.CredentialFinding, 0, len(matches))
+	for _, m := range matches {
+		if m.Overridable && allowed[m.Fingerprint] {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// secretSweepRecommendation is the Recommendation text for a credential
+// finding: an overridable (pattern-shaped) match gets a route out for a false
+// positive, a configured-secret-value match does not (review changes #1 --
+// that override exists for shapes that might be false positives, never for a
+// value the project itself resolved as a real secret).
+func secretSweepRecommendation(m security.CredentialFinding) string {
+	if m.Overridable {
+		return "remove the sensitive content and re-execute, or, if this is not really a secret, " +
+			"disposition this finding \"not a secret\" to allow it from now on"
+	}
+	return "remove the sensitive content and re-execute"
 }
 
 // renderDiffTextFromWorkRoot renders the produced file contents directly from
@@ -1131,46 +1266,37 @@ func truncateOutput(s string) string {
 	return s
 }
 
-// hasBlockingRiskSignal reports whether any detected signal hard-rejects the
-// change set at deterministic checks (§45). The hard-reject set is limited to
-// markers that are always sensitive in source regardless of context:
+// hasBlockingRiskSignal reports whether a detected vocabulary-marker signal
+// alone should hard-reject a change set at deterministic checks (§45).
 //
-//   - secret / credential (api keys, passwords, tokens) — never legitimate.
-//   - pii (SSN) — personal data in a patch is always a bug.
+// It always returns false (review D2/A1, "words stop blocking"). Every marker
+// in risk.markerCatalog -- auth, secret, credential, network, payment, pii --
+// is a whole-word match against the diff text, not an inspection of any actual
+// value, so a patch that legitimately discusses authentication, adds an HTTPS
+// URL, or stores a per-user rate limit under the word "token" used to be
+// refused outright with no override and no file or line (the ICP finding this
+// fixes). The scan still runs and its result still surfaces as a non-blocking
+// "sensitive area" finding for the reviewer -- see the signals-driven finding
+// built in Execute -- but nothing here alone denies a change set anymore.
+// Only a detected credential VALUE blocks now; see sweepDenyCode and each
+// hasCredential call site.
 //
-// auth, network, and payment are intentionally review-gated, not hard-rejected:
-// a legitimate patch may add an auth endpoint, an HTTPS URL, or a payment field,
-// so the adversarial reviewer decides instead of a naive word scan.
+// Kept as a named function, not inlined to `false`, so the invariant is one
+// place to mutation-check: flip this back to the old marker-based switch and
+// TestExecuteDoesNotRejectOnSecretMarkerAlone (and its siblings) fail.
 func hasBlockingRiskSignal(signals []domain.RiskSignal) bool {
-	for _, s := range signals {
-		if !s.Detected {
-			continue
-		}
-		switch s.Name {
-		case risk.SignalSecret, risk.SignalCredential, risk.SignalPII:
-			return true
-		}
-	}
 	return false
 }
 
-// sweepDenyCode derives the machine-readable system-deny code from what the
-// sweep actually detected: secret/credential (marker OR credential pattern) →
-// secret_sweep; PII-only → pii. This keeps Finding.Code consistent with the
-// human-readable reason.
-func sweepDenyCode(hasCredential bool, signals []domain.RiskSignal) domain.DenyCode {
-	for _, s := range signals {
-		if !s.Detected {
-			continue
-		}
-		if s.Name == risk.SignalSecret || s.Name == risk.SignalCredential {
-			return domain.DenyCodeSecretSweep
-		}
-	}
+// sweepDenyCode is the machine-readable system-deny code for a credential-
+// blocked change set. Vocabulary markers no longer block on their own (review
+// D2/A1: hasBlockingRiskSignal above), so the only remaining reason a sweep
+// denies is a detected credential value, and the code is always secret_sweep.
+func sweepDenyCode(hasCredential bool) domain.DenyCode {
 	if hasCredential {
 		return domain.DenyCodeSecretSweep
 	}
-	return domain.DenyCodePII
+	return ""
 }
 
 // detectedRiskNames joins the names of the detected risk signals for a readable
@@ -1213,28 +1339,54 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	}
 
 	// Re-sweep the patch content at the apply boundary (defense-in-depth): the
-	// secret/credential/PII catalog may have grown since Execute swept it. Never
-	// mutate the workspace if a signal is now detected (system-deny).
+	// credential catalog may have grown since Execute swept it. Never mutate the
+	// workspace if a credential is now detected (system-deny). Consistent with
+	// the execute-time sweep (review D2/A1): vocabulary markers are advisory
+	// only here too, and an allowlisted fingerprint is ignored here too.
 	diffText := e.renderDiffText(patch.Files)
 	signals := risk.RiskSignals(ctx, cs.PatchDigest, diffText)
-	hasCredential := e.detectCredential(diffText)
-	if hasCredential || hasBlockingRiskSignal(signals) {
-		code := sweepDenyCode(hasCredential, signals)
+	allowlist, err := e.secretAllowlist(ctx)
+	if err != nil {
+		return err
+	}
+	credMatches := filterAllowlisted(e.scanBlobsForCredentials(patch.Files), allowlist)
+	if len(signals) > 0 {
 		if err := e.db.CreateFinding(ctx, &domain.Finding{
 			InitiativeID:   cs.InitiativeID,
 			TargetType:     "change_set",
 			TargetID:       changeSetID,
-			Severity:       domain.SeverityCritical,
+			Severity:       domain.SeverityMedium,
 			Confidence:     domain.ConfidenceHigh,
-			Category:       "secret_sweep",
-			Code:           code,
-			Finding:        "blocking risk signal detected in patch at apply time",
-			Evidence:       "deterministic re-sweep of the persisted patch",
-			Impact:         "apply denied before workspace mutation",
-			Recommendation: "reject the change set and re-execute without the sensitive content",
-			Disposition:    domain.DispositionRejected,
+			Category:       "sensitive_area",
+			Finding:        "sensitive area: " + detectedRiskNames(signals),
+			Evidence:       "deterministic marker re-scan of the persisted patch",
+			Impact:         "advisory only; look closer before applying again",
+			Recommendation: "review the change for real secrets or unsafe handling",
 		}); err != nil {
 			return err
+		}
+	}
+	if len(credMatches) > 0 || hasBlockingRiskSignal(signals) {
+		for _, m := range credMatches {
+			if err := e.db.CreateFinding(ctx, &domain.Finding{
+				InitiativeID:      cs.InitiativeID,
+				TargetType:        "change_set",
+				TargetID:          changeSetID,
+				Severity:          domain.SeverityCritical,
+				Confidence:        domain.ConfidenceHigh,
+				Category:          "secret_sweep",
+				Code:              sweepDenyCode(true),
+				Finding:           fmt.Sprintf("%s:%d: looks like %s (found at apply time)", m.Path, m.Line, m.Kind),
+				Evidence:          "deterministic re-sweep of the persisted patch",
+				Impact:            "apply denied before workspace mutation",
+				Recommendation:    secretSweepRecommendation(m),
+				Disposition:       domain.DispositionRejected,
+				SecretFingerprint: m.Fingerprint,
+				SecretKind:        m.Kind,
+				SecretPath:        m.Path,
+			}); err != nil {
+				return err
+			}
 		}
 		// Recover the change set to a terminal state and re-open the task so a
 		// corrected re-execute replaces it (review: system-deny deadlock fix).
@@ -1242,7 +1394,7 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		if cs.TaskID != "" {
 			_ = e.db.SetTaskStatus(context.Background(), cs.TaskID, domain.TaskProposed)
 		}
-		return fmt.Errorf("workflow: apply denied: system deny %s", code)
+		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
 	}
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {

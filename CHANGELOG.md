@@ -9,6 +9,47 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The secret sweep no longer blocks on a bare word.** `password`, `token`,
+  `secret`, `auth` and similar vocabulary markers used to hard-reject a change
+  set anywhere they appeared in a patch, with no file or line and no way past
+  it — the ICP finding that stopped a per-user-API-keys-with-rate-limiting
+  feature from ever landing. They now raise a non-blocking `sensitive_area`
+  finding instead; only a real credential value still blocks.
+- **A secret-sweep denial names where.** The blocking `secret_sweep` finding
+  now reads `path:line: looks like <kind>` (e.g. `src/keys.js:14: looks like
+  an OpenAI API key`) instead of a bare "blocking risk signal detected", and
+  never echoes the value. The apply-time re-sweep and the stopped-run
+  kept-files sweep match.
+- **Re-running a denied task's initiative is no longer refused with a 409**
+  (this did not reproduce against the ordinary "wait for the denied execute's
+  operation, then execute again" path; a permanent regression test
+  (`TestReRunAfterDenialSucceeds`) now guards it either way).
+- **The denial's copy no longer promises a re-plan that never happens.** "The
+  task will be re-planned" is now "Run the task again."
+
+### Added
+
+- **A human can disposition a `secret_sweep` finding `not_a_secret`.** This
+  allowlists the finding's fingerprint (the sha256 of the matched value's
+  capture group, never the value) for the project, with the actor and time
+  recorded; the sweep ignores an allowlisted fingerprint from then on, at both
+  Execute and Apply. `GET /api/v1/projects/{projectId}/secret-allowlist` lists
+  entries (fingerprint prefix, kind, path at the time, actor, created_at);
+  `DELETE …/secret-allowlist/{id}` revokes one.
+
+### Changed
+
+- **`security.FindCredential`'s catalog now names a kind and exposes a stable
+  value capture group per pattern** (`security.FindCredentialsInFile`,
+  `security.Fingerprint`), so a match can be located, named and fingerprinted
+  without ever returning the value itself.
+- **`docs/security-model.md`** documents `secret_sweep` as conditionally
+  overridable by the `not_a_secret` disposition, mirroring
+  `review_open_blocking` — the only two system-deny conditions a human may
+  overrule.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

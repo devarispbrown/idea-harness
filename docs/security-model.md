@@ -13,20 +13,33 @@ conditions. Everything else is ordinary policy that a human may override.
 
 | DenyCode | Where enforced | Description |
 |----------|----------------|-------------|
-| `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) | A known secret value or credential pattern appears in produced file content. The content is never written to the redaction-free store. |
-| `pii` | Execute | A blocking PII signal (e.g. SSN) appears in produced file content. |
+| `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) | A real credential value — a known key/token format (`security.FindCredential`), or one of the project's own resolved secret values — appears in produced file content. The content is never written to the redaction-free store. The raised `Finding` names `path:line` and the kind of secret (e.g. "src/keys.js:14: looks like an OpenAI API key"), never the value. **Conditionally overridable** (review changes #1, ICP round): a human may disposition the raised finding `not_a_secret`, which allowlists its fingerprint — the sha256 of the matched value's capture group, never the value — for the project, with the actor and time recorded. The sweep ignores an allowlisted fingerprint from then on, at both Execute and Apply. The override is scoped to a pattern-shaped match; a value drawn from the project's own configured secrets is never eligible for it. |
+| `pii` | **declared, never produced** | Reserved for a hard-rejected PII signal. A bare vocabulary marker (below) no longer hard-rejects anything, so no code path emits this today. |
 | `path_escape` | **declared, never produced** | Reserved for a diff path escaping the workspace. The path guard rejects that case, but it returns its own error rather than this code, so no `Finding` ever carries it. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
 | `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
-| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. **Conditionally overridable, and only this one.** `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above, or one already dispositioned (a failing build check is `rejected`), is left untouched and still denies. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
+| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above, or one already dispositioned (a failing build check is `rejected`), is left untouched and still denies. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
 `Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
-two marked **declared, never produced**, which exist in the `DenyCode` enum and
+three marked **declared, never produced**, which exist in the `DenyCode` enum and
 in `Valid()` but have no producer. They are listed rather than deleted because a
 client switching on `DenyCode` should know the full set it may one day see; do
-not treat either as evidence that the condition is enforced.
+not treat any of them as evidence that the condition is enforced.
+
+### Vocabulary markers are advisory, not a deny code
+
+`internal/risk.RiskSignals` scans produced content for whole-word markers —
+`auth`, `secret`, `token`, `password`, `api_key`, network URLs, `payment`,
+`credit card`, `ssn` — and used to hard-reject a change set on a bare word
+match, with no file or line and no override (the ICP-round finding this fixed:
+a patch that legitimately mentioned "per-user API keys with rate limiting"
+could never get past it). It no longer blocks anything: a detected marker now
+raises a non-blocking `sensitive_area` finding (severity `medium`, no
+`Finding.Code`) so the change set still gets a closer look in review, exactly
+as before, but a human decides instead of a word scan. Only a real credential
+value — `secret_sweep` above — still blocks.
 
 ## Engine-assigned trust tiers
 

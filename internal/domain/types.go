@@ -187,7 +187,29 @@ type Finding struct {
 	Disposition      Disposition `json:"disposition,omitempty"`
 	DispositionActor string      `json:"disposition_actor,omitempty"`
 	Note             string      `json:"note,omitempty"`
-	CreatedAt        time.Time   `json:"created_at"`
+	// SecretFingerprint, SecretKind and SecretPath are set only on a
+	// secret_sweep finding raised from a per-file credential pattern match
+	// (§ D2, review changes #1). SecretFingerprint is the sha256 of the
+	// matched value's capture group, never the value itself; disposing the
+	// finding not_a_secret allowlists it by this fingerprint.
+	SecretFingerprint string    `json:"secret_fingerprint,omitempty"`
+	SecretKind        string    `json:"secret_kind,omitempty"`
+	SecretPath        string    `json:"secret_path,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+// SecretAllowlistEntry is a human "not a secret" disposition on a detected
+// credential pattern match, scoped to one project (review changes #1). The
+// fingerprint is the sha256 of the matched value's capture group -- never the
+// raw value -- so the sweep can recognise the same false positive again
+// without ever having stored the secret it decided wasn't one.
+type SecretAllowlistEntry struct {
+	ID          string    `json:"id"`
+	Fingerprint string    `json:"fingerprint"`
+	Kind        string    `json:"kind"`
+	Path        string    `json:"path"`
+	Actor       string    `json:"actor"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Initiative is the user-facing idea under development.

@@ -205,9 +205,16 @@ func (e *Engine) capturePartial(ctx context.Context, initiativeID, taskID, workR
 	}
 	pw := partialWork{TaskID: taskID, CreatedAt: time.Now()}
 	// The same gate persistDiff has: content that trips it is never written to
-	// the redaction-free store.
+	// the redaction-free store. Consistent with the execute-time sweep (review
+	// D2/A1): only a real credential drops the kept files, not a vocabulary
+	// marker, and an allowlisted fingerprint is ignored here too.
+	allowlist, allowlistErr := e.secretAllowlist(ctx)
+	if allowlistErr != nil {
+		e.log.Warn("could not load the secret allowlist; keeping the stopped run's files unswept against it", "initiative", initiativeID, "err", allowlistErr)
+	}
+	credMatches := filterAllowlisted(e.scanWorkRootForCredentials(workRoot, files), allowlist)
 	diffText := e.renderDiffTextFromWorkRoot(workRoot, files)
-	if e.detectCredential(diffText) || hasBlockingRiskSignal(risk.RiskSignals(ctx, "", diffText)) {
+	if len(credMatches) > 0 || hasBlockingRiskSignal(risk.RiskSignals(ctx, "", diffText)) {
 		pw.Dropped = "the files it wrote looked like they contained a secret, so they were not kept"
 	} else if err := e.persistDiff(workRoot, files); err != nil {
 		e.log.Warn("could not keep the stopped run's files", "initiative", initiativeID, "err", err)
