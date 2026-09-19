@@ -282,3 +282,126 @@ func TestAgentCostFromRuns_DenominatorIsRunCountNotChangeSetCount(t *testing.T) 
 		t.Errorf("usd = %v, want ~0.50", *agent.USD)
 	}
 }
+
+// TestParseAgentTokenUsage is a narrow unit test of the token-count regex.
+func TestParseAgentTokenUsage(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		wantIn    int64
+		wantOut   int64
+		wantFound bool
+	}{
+		{"hermes-style json fields", `{"input_tokens": 1200, "output_tokens": 450, "total_tokens": 1650}`, 1200, 450, true},
+		{"plain text with colons", "input tokens: 900\noutput tokens: 300", 900, 300, true},
+		{"openai-style", "prompt_tokens=2000 completion_tokens=800", 2000, 800, true},
+		{"no usage reported", "wrote server.js and ran the tests", 0, 0, false},
+		{"only a total, no split", "total_tokens: 1500", 0, 0, false},
+		{"last cumulative value wins over an earlier per-turn one", "input_tokens: 100\noutput_tokens: 40\ninput_tokens: 900\noutput_tokens: 300", 900, 300, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in, out, ok := ParseAgentTokenUsage(c.in)
+			if ok != c.wantFound {
+				t.Fatalf("ok = %v, want %v", ok, c.wantFound)
+			}
+			if !ok {
+				return
+			}
+			if in != c.wantIn || out != c.wantOut {
+				t.Errorf("got (%d, %d), want (%d, %d)", in, out, c.wantIn, c.wantOut)
+			}
+		})
+	}
+}
+
+// TestAgentCostFromRuns_EstimatesFromTokenCountsWhenNoDollarLine is a
+// regression test for review defect #5: /costs reported agent.usd null for
+// six real Sonnet runs. When a run's own output reports token counts but
+// never prints an explicit "$" cost line, the harness must price it itself
+// from the model catalog rather than reporting null.
+func TestAgentCostFromRuns_EstimatesFromTokenCountsWhenNoDollarLine(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s"}
+	if err := db.CreateTaskMulti(ctx, task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{
+		InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d",
+		Model:       "anthropic/claude-sonnet-5",
+		AgentOutput: `run complete. {"input_tokens": 100000, "output_tokens": 50000, "total_tokens": 150000}`,
+	}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := db.CreateRun(ctx, domain.RunAgent, "", "implementer", ini.ID, "agent:TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRunManifest(ctx, &domain.RunManifest{RunID: runID, Usage: domain.RunUsage{DurationMS: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.ListAgentRunStats(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := AgentCostFromRuns(ctx, db, ini.ID, stats)
+	if agent.USD == nil {
+		t.Fatal("usd is nil, want a token-based estimate")
+	}
+	// claude-sonnet-5 catalog pricing: $2.00/1M input, $10.00/1M output.
+	want := (100000.0/1e6)*2.00 + (50000.0/1e6)*10.00
+	if *agent.USD < want-0.0001 || *agent.USD > want+0.0001 {
+		t.Errorf("usd = %v, want ~%v", *agent.USD, want)
+	}
+}
+
+// TestAgentCostFromRuns_NoModelMeansNoTokenEstimate: without a known model
+// spec (e.g. the "demo" placeholder), token counts cannot be priced at all --
+// there is no catalog row to price them against -- so the result must stay
+// "not measured" rather than silently pricing them at some default/guessed
+// rate.
+func TestAgentCostFromRuns_NoModelMeansNoTokenEstimate(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s"}
+	if err := db.CreateTaskMulti(ctx, task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{
+		InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d", Model: "demo",
+		AgentOutput: `{"input_tokens": 100000, "output_tokens": 50000}`,
+	}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := db.CreateRun(ctx, domain.RunAgent, "", "implementer", ini.ID, "agent:TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRunManifest(ctx, &domain.RunManifest{RunID: runID, Usage: domain.RunUsage{DurationMS: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.ListAgentRunStats(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := AgentCostFromRuns(ctx, db, ini.ID, stats)
+	if agent.USD != nil {
+		t.Fatalf("usd = %v, want nil (a demo/placeholder run cannot be priced)", *agent.USD)
+	}
+	if agent.Note == "" {
+		t.Error("expected a note explaining usd is nil")
+	}
+}

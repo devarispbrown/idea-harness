@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -201,5 +202,139 @@ func TestCollectSecretsIncludesDotEnvSecrets(t *testing.T) {
 		if s == "development" || s == "8080" {
 			t.Fatalf("common value %q must not be a known secret", s)
 		}
+	}
+}
+
+// TestEnsureProjectAutoReloadsOnHandEditedHarnessYAML is a regression test
+// for review defect #4: a hand edit to .idea-harness/harness.yaml (e.g.
+// test_cmd) used to be invisible to execute/checks until the daemon was
+// restarted, because EnsureProject's cache-hit path never re-read the file
+// and ReloadProject only ever ran when the daemon itself had just written it
+// (the provider/executor settings endpoints). Every handler resolves its
+// project through EnsureProject (Server.project), so this is the fix's
+// single choke point: a file edited directly on disk, with no API call in
+// between, must take effect on the very next request.
+func TestEnsureProjectAutoReloadsOnHandEditedHarnessYAML(t *testing.T) {
+	rt, err := NewRuntime(filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rt.Close() })
+
+	projDir := t.TempDir()
+	if err := project.InitConfig(projDir); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	pid, err := rt.global.RegisterProject(ctx, "proj", projDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pr, err := rt.EnsureProject(ctx, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.cfg.Harness.TestCmd != "" {
+		t.Fatalf("fixture precondition: expected no test_cmd yet, got %q", pr.cfg.Harness.TestCmd)
+	}
+
+	// Hand-edit harness.yaml directly -- no WriteHarness, no ReloadProject
+	// call, exactly like a developer opening the file in an editor. Force the
+	// mtime forward: on a coarse filesystem clock a same-second rewrite could
+	// otherwise not register as "changed".
+	harnessPath := filepath.Join(projDir, config.Dir, "harness.yaml")
+	data, err := os.ReadFile(harnessPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := string(data) + "\ntest_cmd: \"go test ./...\"\n"
+	if err := os.WriteFile(harnessPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(harnessPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := rt.EnsureProject(ctx, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.cfg.Harness.TestCmd != "go test ./..." {
+		t.Fatalf("EnsureProject did not pick up the hand-edited test_cmd: got %q", reloaded.cfg.Harness.TestCmd)
+	}
+	// Same underlying runtime (same engine/mutex), exactly like an explicit
+	// ReloadProject -- this must feel like a reload, not a fresh open.
+	if reloaded != pr {
+		t.Fatal("auto-reload must keep the same *projectRuntime (same engine -> shared mutex)")
+	}
+
+	// A second call with nothing changed on disk must not reload again (no
+	// observable effect either way here, but exercises the "not stale" path
+	// without error).
+	again, err := rt.EnsureProject(ctx, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.cfg.Harness.TestCmd != "go test ./..." {
+		t.Fatalf("config regressed on a no-op EnsureProject call: got %q", again.cfg.Harness.TestCmd)
+	}
+}
+
+// TestEnsureProjectAutoReloadSkipsWhileAnOperationIsRunning is a regression
+// guard on the auto-reload path added for review defect #4: it must reuse
+// ReloadProject's existing in-flight-operation guard (a pipeline goroutine
+// reads the engine's config without holding its lock) rather than swapping
+// config underneath a running operation, and — critically — a reload that
+// cannot happen right now must not fail the request. The stale-but-valid
+// config keeps serving.
+func TestEnsureProjectAutoReloadSkipsWhileAnOperationIsRunning(t *testing.T) {
+	rt, err := NewRuntime(filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rt.Close() })
+
+	projDir := t.TempDir()
+	if err := project.InitConfig(projDir); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	pid, err := rt.global.RegisterProject(ctx, "proj", projDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, err := rt.EnsureProject(ctx, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pr.db.CreateOperation(ctx, pid, "", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	harnessPath := filepath.Join(projDir, config.Dir, "harness.yaml")
+	data, err := os.ReadFile(harnessPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.WriteFile(harnessPath, append(data, []byte("\ntest_cmd: \"go test ./...\"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(harnessPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := rt.EnsureProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("EnsureProject must not fail the request when auto-reload cannot happen: %v", err)
+	}
+	if again != pr {
+		t.Fatal("expected the same runtime to keep serving when auto-reload is skipped")
+	}
+	if again.cfg.Harness.TestCmd != "" {
+		t.Fatalf("config must not change while an operation is running, got test_cmd=%q", again.cfg.Harness.TestCmd)
 	}
 }
