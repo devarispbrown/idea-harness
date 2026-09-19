@@ -1881,6 +1881,9 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 		// Mirror §11 EvaluateApproval: only fixed/accepted_risk resolve a blocking
 		// finding; deferred/duplicate/mitigate/not_applicable/rejected do NOT clear
 		// a system-deny (review: non-overridable means non-overridable).
+		if f.Advisory {
+			continue
+		}
 		resolved := f.Disposition == domain.DispositionFixed || f.Disposition == domain.DispositionAcceptedRisk
 		if !resolved && f.Severity.Blocking() {
 			if f.Code == "" {
@@ -1966,9 +1969,22 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		if err := e.denyReviewOpenBlocking(ctx, changeSetID); err != nil {
 			return err
 		}
-		runID, findings, err := e.runChangeSetAdversarialReview(ctx, cs)
+		runID, findings, rigor, err := e.runChangeSetAdversarialReview(ctx, cs)
 		if err != nil {
 			return err
+		}
+		if rigor == RigorQuick {
+			// Quick converges in one pass and accepts with advisories (review
+			// B1): the adversarial reviewer's own judgment no longer gates
+			// approval, though the findings are still recorded, honestly
+			// marked advisory rather than silently skipped. A system-deny
+			// finding (denyReviewOpenBlocking, above) is unaffected -- that is
+			// a security invariant, not a rigor knob.
+			for i := range findings {
+				if findings[i].Code == "" {
+					findings[i].Advisory = true
+				}
+			}
 		}
 		for i := range findings {
 			findings[i].InitiativeID = initiativeID
@@ -2074,8 +2090,19 @@ func (e *Engine) RejectConflicted(ctx context.Context, initiativeID, changeSetID
 const ChangeSetReviewSchemaName = "change_set_review"
 
 // runChangeSetAdversarialReview runs the adversarial reviewer over a change set
-// and converts its structured output into findings.
-func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, error) {
+// and converts its structured output into findings. The returned RigorLevel is
+// the one this review actually ran at (review B1), so the caller can decide
+// whether a blocking finding should still block (quick converges in one pass
+// and accepts with advisories instead).
+func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, RigorLevel, error) {
+	patch, _ := e.loadPatch(cs)
+	changeFiles := changeSetFilePaths(patch)
+
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	chg := changeSize{Files: len(changeFiles)}
+	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, chg)
+	conventions := projectConventions(e.workspaceRoot)
+
 	// "change_set_review", not "review". The name is a demo/test discriminator
 	// only -- JSONSchemaName is read by nothing but the fake provider, and real
 	// providers never see it, because runModel inlines the schema text into the
@@ -2086,19 +2113,74 @@ func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.C
 	// passes and every audit missed the live-lock behind it.
 	runID, obj, err := e.runModel(ctx, cs.InitiativeID, StageReview, RoleAdversarialReviewer, ChangeSetReviewSchemaName, schema.Review,
 		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Independently challenge the change set. Emit structured findings. Never set accepted_risk."},
+			{Selector: "immutable_policy", Content: "Independently challenge the change set. Emit structured findings. Never set accepted_risk. " +
+				"For each finding, set `path` to the file it is about when it names one, and `in_diff` to whether it is about code this change set actually touches."},
+			{Selector: "project_scale", Content: scaleAndConventions(scale, chg, rigor, conventions)},
 			{Selector: "change_set", Content: renderChangeSet(cs, e.RenderPatch(cs))},
 		},
 		"Adversarial review of change set "+cs.HumanID+".",
 	)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	findings, err := review.ParseFindings(runID, "change_set", cs.ID, obj)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
-	return runID, findings, nil
+	for i := range findings {
+		classifyDiffEvidence(&findings[i], changeFiles)
+	}
+	findings = capFindings(findings, findingCap(rigor), rigor)
+	return runID, findings, rigor, nil
+}
+
+// changeSetFilePaths returns the set of file paths a change set's patch
+// touches, for review B2's deterministic "is this finding about a file the
+// change set actually touches" check. A nil/unreadable patch yields an empty
+// set (never a match), which is the safe direction: a finding that names a
+// path outside a set we could not determine is advisory, not silently
+// blocking.
+func changeSetFilePaths(patch *fsdiff.Patch) map[string]bool {
+	out := map[string]bool{}
+	if patch == nil {
+		return out
+	}
+	for _, fc := range patch.Files {
+		out[fc.Path] = true
+	}
+	return out
+}
+
+// classifyDiffEvidence applies review B2's deterministic in-diff rule to one
+// change-set review finding, mutating it in place:
+//
+//   - Path given, and not one of the change set's files: Advisory, with a note
+//     that it is about code this change set did not touch. Path given AND a
+//     change-set file: left alone -- the deterministic check confirmed it.
+//   - Path omitted: the reviewer's own in_diff self-report decides Advisory
+//     instead, and the note says the finding's diff-membership is
+//     unverified -- self-report, not the deterministic path check.
+func classifyDiffEvidence(f *domain.Finding, changeFiles map[string]bool) {
+	if f.Path != "" {
+		if !changeFiles[f.Path] {
+			f.Advisory = true
+			f.Note = appendNote(f.Note, "about code this change set did not touch")
+		}
+		return
+	}
+	f.Note = appendNote(f.Note, "unverified")
+	if !f.InDiff {
+		f.Advisory = true
+	}
+}
+
+// appendNote appends a note fragment, keeping any note already present
+// (e.g. contradictsDecision's heuristic note) rather than clobbering it.
+func appendNote(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	return existing + "; " + add
 }
 
 // renderChangeSet renders a change set for the adversarial reviewer's context,

@@ -181,7 +181,12 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	g := projection.BuildGuidance(ini, u)
+	// Review C6: BuildGuidance's own signature change. Errors are swallowed to
+	// nil -- an initiative with no change sets yet (or a store hiccup) must
+	// not turn "recommended next move" into a 500; it just gets the old,
+	// change-set-agnostic guidance.
+	recentChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	g := projection.BuildGuidance(ini, u, recentChangeSets)
 
 	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
 		g.NextTask = &projection.NextTaskRef{ID: nt.ID, HumanID: nt.HumanID, Title: nt.Title}
@@ -769,6 +774,92 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleAcceptRecommendations resolves every open decision on an initiative
+// with its own recommendation, actor human (review B4, adopted #8): the "53
+// things need your judgment" problem the ICP round found, answered in one
+// call instead of one click per decision. A decision with no recommendation
+// (the model raised it without one) is left open and named in `skipped`.
+func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	decs, err := pr.db.ListDecisions(r.Context(), ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	resolved := []string{}
+	skipped := []string{}
+	for _, d := range decs {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		if strings.TrimSpace(d.Recommendation) == "" {
+			skipped = append(skipped, d.Code)
+			continue
+		}
+		if err := pr.db.ResolveDecision(r.Context(), d.ID, d.Recommendation, store.HumanActor); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		resolved = append(resolved, d.Code)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": resolved, "skipped": skipped})
+}
+
+// handleTriage returns the ranked "what needs your judgment first" view
+// (review B4, adopted #8): the top 3 open decisions/questions/blocking
+// findings by impact, the rest labelled optional.
+func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	ctx := r.Context()
+	decs, err := pr.db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	questions, err := pr.db.ListQuestions(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	findings, err := pr.db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Dependents: how many requirements cite each open decision, via the
+	// requirement --derived_from--> decision edge runProductDefinition wires.
+	// Questions have no such edge today, so they default to 0 dependents
+	// (they still rank by blocking/severity -- neither applies to a question,
+	// so this only affects tie-breaking among questions themselves).
+	dependents := map[string]int{}
+	for _, d := range decs {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		edges, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "decision", d.ID)
+		if err != nil {
+			continue
+		}
+		n := 0
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDerivedFrom {
+				n++
+			}
+		}
+		dependents[d.ID] = n
+	}
+	items := projection.BuildTriage(decs, questions, findings, dependents)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -1185,17 +1276,18 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
-	// Refuse if any other task depends on this one.
-	edges, err := pr.db.ListGraphEdgesTo(r.Context(), ini.ID, "task", task.ID)
-	if err != nil {
+	// Refuse if any other task depends on this one, naming which ones (review
+	// B3: the message was raw `{"error":"another task depends on this
+	// task…"}` -- true, and useless, since it never said which task or what
+	// to do about it).
+	if dependents, err := s.taskDependents(r.Context(), pr, ini.ID, task.ID); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
-	}
-	for _, e := range edges {
-		if e.EdgeType == domain.EdgeDependsOn {
-			writeError(w, http.StatusConflict, "another task depends on this task; remove that dependency first")
-			return
-		}
+	} else if len(dependents) > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"%s cannot be deleted: %s depend on it. Remove those dependencies first, or delete them too.",
+			task.Code, strings.Join(dependents, ", ")))
+		return
 	}
 	if err := pr.db.DeleteTask(r.Context(), ini.ID, task.ID); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
@@ -1251,6 +1343,327 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleSetTaskDependsOn replaces a task's depends_on wholesale (review B3:
+// "set a task's depends_on (validate for cycles)"), refusing a set that would
+// create a dependency cycle. Unlike PATCH (which leaves depends_on untouched
+// when omitted), this endpoint's whole purpose is depends_on, so an empty
+// list is a legitimate request -- "make this task depend on nothing".
+func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	var body struct {
+		DependsOn []string `json:"depends_on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, body.DependsOn)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	for _, id := range depIDs {
+		if id == task.ID {
+			writeError(w, http.StatusBadRequest, "a task cannot depend on itself")
+			return
+		}
+	}
+	if cycle, err := s.wouldCycle(r.Context(), pr, ini.ID, task.ID, depIDs); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if cycle != "" {
+		writeError(w, http.StatusBadRequest, "that dependency would create a cycle: "+cycle)
+		return
+	}
+	if err := pr.db.ReplaceTaskDependencies(r.Context(), ini.ID, task.ID, depIDs); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// wouldCycle reports whether replacing taskID's depends_on with newDeps would
+// introduce a dependency cycle anywhere in the initiative's task graph. It
+// builds the FULL graph (every task's current depends_on) with taskID's edges
+// swapped for newDeps, so a cycle introduced through some OTHER task is caught
+// too, not just a direct A-depends-on-A/B-depends-on-A-depends-on-B case.
+func (s *Server) wouldCycle(ctx context.Context, pr *projectRuntime, initiativeID, taskID string, newDeps []string) (string, error) {
+	tasks, err := pr.db.ListTasks(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	deps := map[string][]string{}
+	for _, t := range tasks {
+		if t.ID == taskID {
+			deps[t.ID] = newDeps
+			continue
+		}
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", t.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDependsOn {
+				deps[t.ID] = append(deps[t.ID], e.ToID)
+			}
+		}
+	}
+	return store.DetectTaskCycle(deps), nil
+}
+
+// handleMergeTasks merges two tasks into one (review B3): the requirements of
+// both are unioned onto the surviving (first-named) task, their statements
+// are concatenated, every dependency edge either task held is rewired onto
+// the survivor, and the second task is deleted.
+func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	var body struct {
+		TaskIDs []string `json:"task_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.TaskIDs) != 2 {
+		writeError(w, http.StatusBadRequest, "task_ids must name exactly 2 tasks")
+		return
+	}
+	keep, err := pr.db.GetTask(r.Context(), body.TaskIDs[0])
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[0])
+		return
+	}
+	merge, err := pr.db.GetTask(r.Context(), body.TaskIDs[1])
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[1])
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, keep); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, merge); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+
+	ctx := r.Context()
+	// Union the requirements each task implements.
+	reqIDs, err := s.taskRequirementIDs(ctx, pr, ini.ID, keep.ID, merge.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := pr.db.ReplaceTaskRequirements(ctx, ini.ID, keep.ID, reqIDs); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Concatenate the statements.
+	statement := strings.TrimSpace(keep.Statement)
+	if s2 := strings.TrimSpace(merge.Statement); s2 != "" {
+		if statement != "" {
+			statement += "\n\n"
+		}
+		statement += s2
+	}
+	if err := pr.db.UpdateTask(ctx, ini.ID, keep.ID, keep.Title, statement, keep.Priority, keep.Estimate); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Rewire dependencies: the survivor inherits both tasks' outgoing
+	// depends_on (minus references to each other and itself), and anything
+	// that depended on the merged task now depends on the survivor instead.
+	outgoing, err := s.unionTaskDeps(ctx, pr, ini.ID, keep.ID, merge.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := pr.db.ReplaceTaskDependencies(ctx, ini.ID, keep.ID, outgoing); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", merge.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, e := range dependents {
+		if e.EdgeType != domain.EdgeDependsOn || e.FromID == keep.ID {
+			continue
+		}
+		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, []string{keep.ID}); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	// DeleteTask cascades every remaining edge naming the merged task (its
+	// own outgoing edges, and the now-superseded incoming ones just rewired).
+	if err := pr.db.DeleteTask(ctx, ini.ID, merge.ID); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	updated, _ := pr.db.GetTask(ctx, keep.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// taskRequirementIDs returns the union of the requirement ids two tasks each
+// implement (`implements` edges), for a merge (review B3).
+func (s *Server) taskRequirementIDs(ctx context.Context, pr *projectRuntime, initiativeID string, taskIDs ...string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range taskIDs {
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeImplements && !seen[e.ToID] {
+				seen[e.ToID] = true
+				out = append(out, e.ToID)
+			}
+		}
+	}
+	return out, nil
+}
+
+// unionTaskDeps returns the union of two tasks' own outgoing depends_on
+// (each other and self-references dropped), for a merge (review B3).
+func (s *Server) unionTaskDeps(ctx context.Context, pr *projectRuntime, initiativeID string, taskIDs ...string) ([]string, error) {
+	exclude := map[string]bool{}
+	for _, id := range taskIDs {
+		exclude[id] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range taskIDs {
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDependsOn && !exclude[e.ToID] && !seen[e.ToID] {
+				seen[e.ToID] = true
+				out = append(out, e.ToID)
+			}
+		}
+	}
+	return out, nil
+}
+
+// handleSplitTask splits one task into two or more (review B3). Each new
+// task's requirement_ids defaults to the original task's own requirements
+// when omitted. Every new task inherits the original's outgoing depends_on,
+// and anything that depended on the original now depends on ALL the new
+// tasks (a safe superset -- narrowing it is a follow-up `set depends_on`).
+// The original task is then deleted.
+func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	var body struct {
+		Tasks []struct {
+			Title          string   `json:"title"`
+			Statement      string   `json:"statement"`
+			RequirementIDs []string `json:"requirement_ids"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Tasks) < 2 {
+		writeError(w, http.StatusBadRequest, "tasks must name at least 2 replacement tasks")
+		return
+	}
+
+	ctx := r.Context()
+	originalReqs, err := s.taskRequirementIDs(ctx, pr, ini.ID, task.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	originalDeps, err := s.unionTaskDeps(ctx, pr, ini.ID, task.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", task.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	created := make([]*domain.Task, 0, len(body.Tasks))
+	for _, spec := range body.Tasks {
+		if strings.TrimSpace(spec.Title) == "" {
+			writeError(w, http.StatusBadRequest, "each replacement task needs a title")
+			return
+		}
+		reqIDs := originalReqs
+		if spec.RequirementIDs != nil {
+			reqIDs, err = s.resolveRequirementRefs(ctx, pr, ini.ID, spec.RequirementIDs)
+			if err != nil {
+				s.writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		nt := &domain.Task{
+			InitiativeID: ini.ID,
+			Title:        pr.redactor.RedactString(strings.TrimSpace(spec.Title)),
+			Statement:    pr.redactor.RedactString(spec.Statement),
+			Priority:     task.Priority,
+		}
+		if err := pr.db.CreateTaskMulti(ctx, nt, reqIDs, originalDeps); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		created = append(created, nt)
+	}
+
+	newIDs := make([]string, len(created))
+	for i, nt := range created {
+		newIDs[i] = nt.ID
+	}
+	for _, e := range dependents {
+		if e.EdgeType != domain.EdgeDependsOn || e.FromID == task.ID {
+			continue
+		}
+		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, newIDs); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	if err := pr.db.DeleteTask(ctx, ini.ID, task.ID); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, created)
+}
+
 // handleGenerateVerificationTask creates a plan task whose purpose is verifying
 // a requirement (wired with a `verifies` edge), for a requirement that has no
 // human or automated evidence yet.
@@ -1286,6 +1699,27 @@ func verificationStatement(r *domain.Requirement) string {
 		fmt.Fprintf(&b, "- %s %s (%s)\n", ac.Metric, ac.Target, ac.Condition)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// taskDependents returns the human-readable codes of tasks whose depends_on
+// names taskID, for a readable delete refusal (review B3).
+func (s *Server) taskDependents(ctx context.Context, pr *projectRuntime, initiativeID, taskID string) ([]string, error) {
+	edges, err := pr.db.ListGraphEdgesTo(ctx, initiativeID, "task", taskID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range edges {
+		if e.EdgeType != domain.EdgeDependsOn {
+			continue
+		}
+		if t, err := pr.db.GetTask(ctx, e.FromID); err == nil {
+			out = append(out, t.Code)
+		} else {
+			out = append(out, e.FromID)
+		}
+	}
+	return out, nil
 }
 
 // resolveTaskRefs resolves task references (title, code, or id) to task ids.

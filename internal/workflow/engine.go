@@ -517,6 +517,7 @@ func displayModel(spec string) string {
 func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) error {
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Produce a concise IdeaBrief."},
+		{Selector: "project_scale", Content: proportionateContext(projectScaleOf(ctx, e.workspaceRoot), detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot))},
 		{Selector: "task", Content: idea},
 	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
@@ -562,9 +563,16 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 }
 
 // createQuestionIfNew adds a question unless an equivalent one already exists
-// for the initiative (§4: no duplicate open questions). A judgment already
-// raised as a structured decision is not re-asked as a free-form question —
-// decisions take precedence over questions.
+// for the initiative (§4: no duplicate open questions), merging near-duplicates
+// by token Jaccard similarity, not just exact text (review B4, adopted #8). A
+// judgment already raised as a structured decision is not re-asked as a
+// free-form question — decisions take precedence over questions.
+//
+// A question that matches one already RESOLVED is not re-created either
+// (review B4: "a question already answered is not re-created in a later
+// cycle"); a `question.reraised_answered` event links the re-raising to the
+// answered original, so the audit trail shows the cycle asked again rather
+// than looking like nothing happened.
 func (e *Engine) createQuestionIfNew(ctx context.Context, initiativeID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -590,17 +598,32 @@ func (e *Engine) createQuestionIfNew(ctx context.Context, initiativeID, text str
 	for _, q := range questions {
 		qn := normalizeJudgment(q.Question)
 		if qn == norm || similarJudgment(qn, norm) {
+			if q.Status == domain.QuestionResolved {
+				_ = e.db.ApplyNoop(ctx, store.Event{
+					AggregateType: "question",
+					AggregateID:   q.ID,
+					Actor:         store.ActorOrchestrator,
+					EventType:     "question.reraised_answered",
+				})
+			}
 			return nil
 		}
 	}
 	return e.db.CreateQuestion(ctx, &domain.Question{InitiativeID: initiativeID, Question: text})
 }
 
-// createDecisionIfNew adds a decision unless an equivalent one already exists.
+// createDecisionIfNew adds a decision unless an equivalent one of the SAME
+// TYPE already exists, merging near-duplicates by token Jaccard similarity
+// after normalization, not just exact text (review B4, adopted #8: "same type
+// and a token Jaccard similarity of at least 0.85"). Two decisions of
+// different types are never merged even if worded identically -- a product
+// decision and an operations decision can legitimately ask the same words
+// about different concerns.
+//
 // The model re-lists prior decisions (prefixed with "[Source: ...]") on every
-// revise cycle, so this collapses those re-listings onto the original row. It
-// also resolves any equivalent open question — a structured decision takes
-// precedence over a free-form question.
+// revise cycle, so this also collapses those re-listings onto the original
+// row. It resolves any equivalent open question too — a structured decision
+// takes precedence over a free-form question.
 func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d *domain.Decision) error {
 	if strings.TrimSpace(d.Question) == "" {
 		return nil
@@ -611,7 +634,7 @@ func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d
 		return err
 	}
 	for _, x := range existing {
-		if normalizeJudgment(x.Question) == norm {
+		if x.Type == d.Type && (normalizeJudgment(x.Question) == norm || similarJudgment(x.Question, d.Question)) {
 			return nil
 		}
 	}
@@ -700,6 +723,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text."},
+		{Selector: "project_scale", Content: proportionateContext(projectScaleOf(ctx, e.workspaceRoot), detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot))},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decisions)},
@@ -790,9 +814,13 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 }
 
 // runReviewLoop runs deterministic checks + adversarial review with bounded
-// revise cycles (§11).
+// revise cycles (§11). Rigor (review B1) is calibrated once, from the
+// requirement count of the FIRST cycle: a revise cycle is the review asking
+// for more of the same PRD, not a new, larger one, so recalibrating each
+// cycle could flip level mid-review.
 func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	maxCycles := e.cfg.Review.MaxCycles
+	var rigor RigorLevel
 
 	for cycle := 1; ; cycle++ {
 		reqs, err := e.db.ListRequirements(ctx, initiativeID)
@@ -801,12 +829,21 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		}
 		active := activeRequirements(reqs)
 
+		if rigor == "" {
+			scale := projectScaleOf(ctx, e.workspaceRoot)
+			rigor = calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(active)})
+			if rigor == RigorQuick {
+				maxCycles = 1
+			}
+		}
+
 		detFindings := review.DeterministicChecks(initiativeID, active)
-		advFindings, err := e.runAdversarialReview(ctx, initiativeID, active)
+		advFindings, err := e.runAdversarialReview(ctx, initiativeID, active, rigor)
 		if err != nil {
 			return domain.InitiativeFailed, err
 		}
 		all := append(detFindings, advFindings...)
+		all = capFindings(all, findingCap(rigor), rigor)
 
 		for i := range all {
 			all[i].InitiativeID = initiativeID
@@ -823,14 +860,21 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		}
 
 		blocked, reason := review.EvaluateApproval(all)
-		if !blocked {
-			e.log.Info("review passed", "cycle", cycle, "findings", len(all))
-			// Close prior cycles' still-open findings: the review has converged,
-			// so their concerns are resolved. Without this, hasOpenBlockingFindings
-			// (verify gate) would see stale critical/high findings from earlier
-			// cycles and wedge completion (full-platform review: non-monotonic gate).
-			if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionFixed, RoleAdversarialReviewer); err != nil {
-				return domain.InitiativeFailed, err
+		if !blocked || rigor == RigorQuick {
+			if blocked {
+				// Quick converges in one pass and accepts with advisories
+				// (review B1): the findings stand, but do not gate approval,
+				// and are not falsely dispositioned "fixed" -- nothing was.
+				e.log.Info("review passed (quick, advisory)", "cycle", cycle, "findings", len(all))
+			} else {
+				e.log.Info("review passed", "cycle", cycle, "findings", len(all))
+				// Close prior cycles' still-open findings: the review has converged,
+				// so their concerns are resolved. Without this, hasOpenBlockingFindings
+				// (verify gate) would see stale critical/high findings from earlier
+				// cycles and wedge completion (full-platform review: non-monotonic gate).
+				if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionFixed, RoleAdversarialReviewer); err != nil {
+					return domain.InitiativeFailed, err
+				}
 			}
 			if err := e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativeApproved, RoleAdversarialReviewer); err != nil {
 				return domain.InitiativeFailed, err
@@ -1027,10 +1071,13 @@ func (e *Engine) DiscussDecision(ctx context.Context, decisionID, message string
 	return response, nil
 }
 
-func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, reqs []domain.Requirement) ([]domain.Finding, error) {
+func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, reqs []domain.Requirement, rigor RigorLevel) ([]domain.Finding, error) {
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	conventions := projectConventions(e.workspaceRoot)
 	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,
 		[]ccontext.Input{
 			{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk."},
+			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, conventions)},
 			{Selector: "requirements", Content: renderRequirements(reqs)},
 		},
 		"Adversarial review of the PRD requirements.",

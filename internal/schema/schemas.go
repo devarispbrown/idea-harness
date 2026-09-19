@@ -105,7 +105,9 @@ const Review = `{
           "finding": {"type": "string"},
           "evidence": {"type": "string"},
           "impact": {"type": "string"},
-          "recommendation": {"type": "string"}
+          "recommendation": {"type": "string"},
+          "path": {"type": "string", "description": "The file this finding is about, if it names a specific one (change-set review only; review B2)."},
+          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."}
         },
         "required": ["severity", "confidence", "category", "finding", "recommendation"]
       }

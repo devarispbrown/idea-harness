@@ -69,7 +69,7 @@ func TestBuildGuidanceTerminalState(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			nm := BuildGuidance(domain.Initiative{Status: c.status}, c.understanding)
+			nm := BuildGuidance(domain.Initiative{Status: c.status}, c.understanding, nil)
 			if nm.Action != c.wantAction {
 				t.Fatalf("action: got %q, want %q", nm.Action, c.wantAction)
 			}

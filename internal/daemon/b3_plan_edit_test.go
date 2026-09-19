@@ -1,0 +1,226 @@
+package daemon
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/devarispbrown/idea-harness/internal/domain"
+)
+
+// b3Fixture creates a plan_approved initiative, ready for task-graph tests.
+func b3Fixture(t *testing.T) (ts *httptest.Server, token, projectID, iniID string, pr *projectRuntime) {
+	t.Helper()
+	rt, ts, tok := newTestServer(t)
+	pid, iid := newTestProjectInitiative(t, rt, ts, tok)
+	p, err := rt.EnsureProject(t.Context(), pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, rt, pid, iid, domain.InitiativePlanApproved)
+	return ts, tok, pid, iid, p
+}
+
+func mustCreateRequirement(t *testing.T, pr *projectRuntime, iniID string) *domain.Requirement {
+	t.Helper()
+	r := &domain.Requirement{InitiativeID: iniID, Statement: "do the thing", Priority: domain.PriorityMust}
+	if err := pr.db.CreateRequirement(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func mustCreateTask(t *testing.T, pr *projectRuntime, iniID, title string, reqID string, dependsOn []string) *domain.Task {
+	t.Helper()
+	task := &domain.Task{InitiativeID: iniID, Title: title, Statement: "stmt for " + title, Priority: domain.PriorityMust}
+	if err := pr.db.CreateTaskMulti(t.Context(), task, []string{reqID}, dependsOn); err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+// TestDeleteTaskWithDependentsNamesThem proves review B3's readable 409: the
+// error names the specific dependent task(s) instead of the old
+// undifferentiated "another task depends on this task" message.
+func TestDeleteTaskWithDependentsNamesThem(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	base := mustCreateTask(t, pr, iniID, "Base task", req.ID, nil)
+	dependent := mustCreateTask(t, pr, iniID, "Dependent task", req.ID, []string{base.ID})
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + base.ID
+	resp := doReq(t, http.MethodDelete, url, token, "", "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+	body := errorBody(t, resp)
+	if !strings.Contains(body, dependent.Code) {
+		t.Fatalf("409 body %q does not name the dependent task %s", body, dependent.Code)
+	}
+	if !strings.Contains(body, base.Code) {
+		t.Fatalf("409 body %q does not name the task being deleted %s", body, base.Code)
+	}
+}
+
+// TestMergeTasksUnionsRequirementsAndConcatenatesStatements proves review
+// B3's merge endpoint: requirements union, statements concatenate,
+// dependencies rewire, and the merged task is gone.
+func TestMergeTasksUnionsRequirementsAndConcatenatesStatements(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req1 := mustCreateRequirement(t, pr, iniID)
+	req2 := mustCreateRequirement(t, pr, iniID)
+	upstream := mustCreateTask(t, pr, iniID, "Upstream", req1.ID, nil)
+	keep := mustCreateTask(t, pr, iniID, "Keep me", req1.ID, []string{upstream.ID})
+	merge := mustCreateTask(t, pr, iniID, "Merge me", req2.ID, nil)
+	downstream := mustCreateTask(t, pr, iniID, "Downstream", req1.ID, []string{merge.ID})
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/merge"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"task_ids":["`+keep.ID+`","`+merge.ID+`"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("merge: %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	var merged domain.Task
+	if err := json.NewDecoder(resp.Body).Decode(&merged); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if merged.Statement != "stmt for Keep me\n\nstmt for Merge me" {
+		t.Fatalf("statements not concatenated: %q", merged.Statement)
+	}
+
+	// The merged task is gone.
+	if _, err := pr.db.GetTask(t.Context(), merge.ID); err == nil {
+		t.Fatal("merged task still exists")
+	}
+
+	// Requirements unioned onto the survivor.
+	edges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", keep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqIDs := map[string]bool{}
+	depIDs := map[string]bool{}
+	for _, e := range edges {
+		switch e.EdgeType {
+		case domain.EdgeImplements:
+			reqIDs[e.ToID] = true
+		case domain.EdgeDependsOn:
+			depIDs[e.ToID] = true
+		}
+	}
+	if !reqIDs[req1.ID] || !reqIDs[req2.ID] {
+		t.Fatalf("expected both requirements on survivor, got %v", reqIDs)
+	}
+	if !depIDs[upstream.ID] {
+		t.Fatalf("expected survivor to keep its own upstream dependency, got %v", depIDs)
+	}
+
+	// The downstream task, which depended on the merged task, now depends on
+	// the survivor instead.
+	downstreamEdges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", downstream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range downstreamEdges {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == keep.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("downstream task was not rewired to depend on the survivor: %+v", downstreamEdges)
+	}
+}
+
+// TestSplitTaskCreatesReplacementsAndDeletesOriginal proves review B3's split
+// endpoint.
+func TestSplitTaskCreatesReplacementsAndDeletesOriginal(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	upstream := mustCreateTask(t, pr, iniID, "Upstream", req.ID, nil)
+	original := mustCreateTask(t, pr, iniID, "Big task", req.ID, []string{upstream.ID})
+	downstream := mustCreateTask(t, pr, iniID, "Downstream", req.ID, []string{original.ID})
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + original.ID + "/split"
+	body := `{"tasks":[{"title":"Part A","statement":"a"},{"title":"Part B","statement":"b"}]}`
+	resp := doReq(t, http.MethodPost, url, token, "", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("split: %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	var created []domain.Task
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(created) != 2 {
+		t.Fatalf("expected 2 new tasks, got %d", len(created))
+	}
+
+	if _, err := pr.db.GetTask(t.Context(), original.ID); err == nil {
+		t.Fatal("original task still exists after split")
+	}
+
+	for _, nt := range created {
+		edges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", nt.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasReq, hasUpstream := false, false
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeImplements && e.ToID == req.ID {
+				hasReq = true
+			}
+			if e.EdgeType == domain.EdgeDependsOn && e.ToID == upstream.ID {
+				hasUpstream = true
+			}
+		}
+		if !hasReq {
+			t.Errorf("new task %s missing the original's requirement", nt.Code)
+		}
+		if !hasUpstream {
+			t.Errorf("new task %s missing the original's upstream dependency", nt.Code)
+		}
+	}
+
+	downstreamEdges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", downstream.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newIDs := map[string]bool{created[0].ID: true, created[1].ID: true}
+	seen := 0
+	for _, e := range downstreamEdges {
+		if e.EdgeType == domain.EdgeDependsOn && newIDs[e.ToID] {
+			seen++
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("expected downstream to depend on both new tasks, got %d matches", seen)
+	}
+}
+
+// TestSetTaskDependsOnRejectsCycle proves review B3's "set a task's
+// depends_on (validate for cycles)".
+func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, []string{a.ID}) // B depends on A
+
+	// Now try to make A depend on B, which would create A -> B -> A.
+	// depends_on takes titles/codes (matching handleAddTask's own contract),
+	// not raw ids.
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + a.ID + "/depends-on"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+b.Code+`"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a cycle, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+
+	// A valid, acyclic change succeeds.
+	c := mustCreateTask(t, pr, iniID, "C", req.ID, nil)
+	resp2 := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+c.Code+`"]}`)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected a valid depends_on to succeed, got %d: %s", resp2.StatusCode, errorBody(t, resp2))
+	}
+}

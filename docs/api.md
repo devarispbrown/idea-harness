@@ -277,6 +277,9 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority, estimate, or (via `requirement_ids[]`, which replaces the links entirely and requires at least one) its requirements. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Delete a task. |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel` | Cancel a running task. |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on` | Set a task's `depends_on` wholesale from `{"depends_on": [...]}` (titles, codes, or ids). Refused if it would introduce a cycle anywhere in the graph (review B3). |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/split` | Split one task into two or more from `{"tasks": [{"title", "statement", "requirement_ids"}, ...]}`. Each replacement defaults to the original's requirements when `requirement_ids` is omitted, inherits its `depends_on`, and anything depending on the original now depends on all the replacements. The original is deleted (review B3). |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/merge` | Merge two tasks from `{"task_ids": [survivor, merged]}`: requirements union onto the survivor, statements concatenate, every dependency edge rewires onto the survivor, and the merged task is deleted (review B3). |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/reorder` | Reorder the plan from `{"task_ids": [...]}`. |
 
 ### Context docs
@@ -292,6 +295,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
+| POST | `/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations` | Resolve every OPEN decision with its own `recommendation`, actor `human`, in one call. A decision with no recommendation is left open and named in `skipped` (review B4). |
+| GET | `/projects/{projectId}/initiatives/{id}/triage` | The top 3 open decisions/questions/blocking findings by impact (blocking, then severity, then dependents count), labelled `priority`; the rest `optional` (review B4). |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. Also marks stale (review A4 #5) the requirements that cite it, their tasks, and the applied change sets for those tasks — see `stale_items` on `/guidance` and `staleness` on `/impact`. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |

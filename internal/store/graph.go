@@ -205,6 +205,36 @@ func (db *DB) AddTaskDependencies(ctx context.Context, initiativeID, taskID stri
 	})
 }
 
+// ReplaceTaskDependencies replaces a task's depends_on edges wholesale with
+// one per id in depTaskIDs (review B3: "set a task's depends_on"). An empty
+// depTaskIDs clears every dependency. Cycle validation is the caller's job
+// (it needs the whole initiative's graph, not just this one task's edges).
+func (db *DB) ReplaceTaskDependencies(ctx context.Context, initiativeID, taskID string, depTaskIDs []string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.dependencies_replaced",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			DELETE FROM graph_edges
+			WHERE initiative_id = ? AND from_type = 'task' AND from_id = ? AND edge_type = ? AND to_type = 'task'`,
+			initiativeID, taskID, string(domain.EdgeDependsOn)); err != nil {
+			return err
+		}
+		var edges []EdgeToWrite
+		seen := map[string]bool{}
+		for _, dep := range depTaskIDs {
+			if dep == "" || dep == taskID || seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: taskID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
+		}
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}
+
 // ReplaceTaskRequirements replaces a task's `implements` edges with one per
 // requirement id given (N:M, review A4 #4). Used by the Plan-editing "add
 // task"/"update task" API so a task's requirement links can be set or

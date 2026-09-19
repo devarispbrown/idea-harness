@@ -29,7 +29,8 @@ const harnessSchema = `{
       "properties": {
         "max_cycles":   { "type": "integer", "minimum": 0 },
         "max_tokens":   { "type": "integer", "minimum": 0 },
-        "max_cost_usd": { "type": "number",  "minimum": 0 }
+        "max_cost_usd": { "type": "number",  "minimum": 0 },
+        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] }
       },
       "additionalProperties": false
     },

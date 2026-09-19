@@ -195,7 +195,25 @@ type Finding struct {
 	SecretFingerprint string    `json:"secret_fingerprint,omitempty"`
 	SecretKind        string    `json:"secret_kind,omitempty"`
 	SecretPath        string    `json:"secret_path,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	// Path is the file the finding is about, self-reported by the reviewer
+	// (change-set review only, review B2, adopted #5). Optional: a finding
+	// with no specific file leaves it empty.
+	Path string `json:"path,omitempty"`
+	// InDiff is the reviewer's own claim that Path (or, if Path is empty, the
+	// finding as a whole) is about code the change set actually touches
+	// (review B2, adopted #5). Only consulted when Path is empty -- when Path
+	// is set, whether it is one of the change set's files is checked
+	// deterministically instead of trusting this self-report.
+	InDiff bool `json:"in_diff,omitempty"`
+	// Advisory marks a finding that does not block approval regardless of
+	// severity: today, only "about code this change set did not touch"
+	// (review B2) and a rigor cap's own dropped-count note (review B1) set
+	// it. Kept as its own bool rather than folded into Severity or
+	// Disposition -- review.EvaluateApproval and denyReviewOpenBlocking both
+	// skip an advisory finding outright, and a UI backlog view is exactly the
+	// findings with this set and no disposition yet.
+	Advisory  bool      `json:"advisory,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // SecretAllowlistEntry is a human "not a secret" disposition on a detected
