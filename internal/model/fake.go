@@ -3,6 +3,8 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -119,6 +121,14 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 
 	if raw == "" {
 		raw = demoResponse(req.JSONSchemaName, userIdea(req))
+		// The demo plan and brief cite a requirement. They used to cite REQ-1
+		// always, which after a revise cycle is superseded -- and design and
+		// plan now see only live requirements, so the plan was refused as
+		// citing a requirement that no longer exists. Cite the first one the
+		// inputs actually list.
+		if code := firstRequirementCode(req); code != "" && code != "REQ-1" {
+			raw = strings.ReplaceAll(raw, `"REQ-1"`, strconv.Quote(code))
+		}
 	}
 	return Response{
 		RawJSON:     raw,
@@ -322,4 +332,17 @@ func shortTitle(idea string) string {
 		return "Untitled idea"
 	}
 	return idea
+}
+
+var requirementCodeRe = regexp.MustCompile(`\bREQ-\d+\b`)
+
+// firstRequirementCode is the first requirement code in the request's input,
+// or "" when it names none.
+func firstRequirementCode(req Request) string {
+	for _, m := range req.Messages {
+		if c := requirementCodeRe.FindString(m.Content); c != "" {
+			return c
+		}
+	}
+	return requirementCodeRe.FindString(req.System)
 }
