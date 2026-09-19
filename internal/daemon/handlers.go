@@ -3197,9 +3197,19 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Bounded (review defect #2: "the diff endpoint that didn't respond in
+	// 100s"): RenderPatchPage/StructuredDiffPage cap the per-file redact-and-
+	// diff work at maxDiffEndpointFiles rather than processing every file of
+	// an arbitrarily large change set synchronously in this request.
+	// total_files/truncated are additive fields; a client reading only
+	// patch/files behaves exactly as before.
+	patch, total := pr.engine.RenderPatchPage(cs)
+	files, _ := pr.engine.StructuredDiffPage(cs)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"patch": pr.engine.RenderPatch(cs),
-		"files": pr.engine.StructuredDiff(cs),
+		"patch":       patch,
+		"files":       files,
+		"total_files": total,
+		"truncated":   total > len(files),
 	})
 }
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {

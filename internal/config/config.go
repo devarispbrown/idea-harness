@@ -20,7 +20,15 @@ type ProjectConfig struct {
 	Name string `json:"name" yaml:"name"`
 }
 
-// NetworkPolicy is the v0.1 network mode (§46).
+// NetworkPolicy is the v0.1 network mode (§46). It governs ONLY the
+// deterministic idea-brief/research/PRD pipeline (Engine.researchEvidence and
+// the offline fact→assumption downgrade in Engine.runResearch) -- it does NOT
+// gate the coding agent's network access (executor.kind omp/hermes always has
+// egress, deliberately, to reach its model API: internal/executor/agent.go)
+// or the build/test check sandbox's (internal/executor/sandbox.go always runs
+// with `--network none`, unconditionally). A prior version of this comment,
+// and of docs/configuration.md, did not say so, which read as though setting
+// this to "disabled" also sandboxed those (review defect #3).
 type NetworkPolicy string
 
 const (

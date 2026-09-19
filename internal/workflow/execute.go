@@ -27,6 +27,34 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/textdiff"
 )
 
+// snapshotSanityMaxFiles and snapshotSanityMaxBytes bound how much of an
+// agent's write to the work root the orchestrator will ever collect into a
+// change set. Past this, something is badly wrong -- most commonly an agent
+// downloading a toolchain it should never have needed (review defect #2: an
+// ICP run's agent wrote ~14,300 files under .tools/, producing 79 false
+// secret-sweep findings and a diff endpoint that never responded) -- and the
+// run fails now, with a clear and actionable error, instead of the collector,
+// the secret sweep, and the diff endpoint all silently drowning in it later.
+const (
+	snapshotSanityMaxFiles = 3000
+	snapshotSanityMaxBytes = 150 << 20 // 150 MiB
+)
+
+// afterRunSnapshotOptions are the fsdiff.SnapshotOptions applied to every
+// snapshot taken of a work root AFTER an external agent has run in it --
+// i.e. of untrusted content. It excludes whatever the workspace's own
+// .gitignore excludes (on top of fsdiff's always-on default-ignored
+// directories) and enforces the sanity cap above (review defect #2).
+// Snapshots taken BEFORE the agent runs use fsdiff.Snapshot with no options:
+// that content came from seedWorkRoot, which already applied the workspace's
+// ignore rules once when it copied the files in.
+func (e *Engine) afterRunSnapshotOptions() []fsdiff.SnapshotOption {
+	return []fsdiff.SnapshotOption{
+		fsdiff.WithWorkspaceIgnore(e.workspaceRoot),
+		fsdiff.WithSanityCap(snapshotSanityMaxFiles, snapshotSanityMaxBytes),
+	}
+}
+
 // SetWorkRoot sets the directory that Execute derives per-initiative isolated
 // work roots from. The daemon points this at its per-project state directory so
 // the executor's WorkRoot mirrors "<state-root>/work/<initiative>".
@@ -239,7 +267,53 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 		b.WriteString("This project's stack could not be auto-detected from its root-level files: match whatever language/framework its existing files already use; do not introduce a new one.\n")
 	}
 	b.WriteString("Write your changes directly to files in the workspace. Do not paste code, diffs, or file contents in your chat response -- only files actually written to disk are collected as this task's change set.\n")
+	// Review defect #3: an agent with network egress (needed to reach its own
+	// model API) but no toolchain in its container downloaded a full Go
+	// toolchain into the workspace to run `go build`/`go test` itself,
+	// producing ~14,300 extra files (review defect #2). The harness already
+	// runs these same checks itself, in an isolated sandbox, right after this
+	// run -- naming the actual commands here removes any reason to install
+	// one. This is deliberately the only addition this defect makes to the
+	// brief; it does not touch the rest of runPlanner's assembly above.
+	b.WriteString(checkCommandsBriefNote(e.cfg, e.workspaceRoot))
 	return b.String(), nil
+}
+
+// checkCommandsBriefNote tells the implementer which build/test commands the
+// harness will run itself after this task, so it never has a reason to
+// install a toolchain or download an SDK to verify its own work (review
+// defect #3). It mirrors runDeterministicChecks' own config-then-detected
+// precedence so the commands named here are the ones that actually run.
+func checkCommandsBriefNote(cfg config.HarnessConfig, workspaceRoot string) string {
+	detectedBuild, detectedTest := detectCheckCommands(workspaceRoot)
+	build := effectiveCheckCommand(cfg.BuildCmd, detectedBuild)
+	test := effectiveCheckCommand(cfg.TestCmd, detectedTest)
+	if build == "" && test == "" {
+		return "The harness runs its own build/test checks after this task, in an isolated sandbox with no network access; " +
+			"it could not determine this project's build/test commands, but do not install a toolchain, compiler, or SDK yourself to verify your work -- write the code and let the checks run.\n"
+	}
+	var b strings.Builder
+	b.WriteString("The harness runs its own deterministic checks after this task, in an isolated sandbox with no network access:")
+	if build != "" {
+		fmt.Fprintf(&b, " build: `%s`", build)
+	}
+	if test != "" {
+		if build != "" {
+			b.WriteString(";")
+		}
+		fmt.Fprintf(&b, " tests: `%s`", test)
+	}
+	b.WriteString(". Do not install a toolchain, compiler, or SDK yourself to build or test your work -- write the code and let the harness's own checks run afterward.\n")
+	return b.String()
+}
+
+// effectiveCheckCommand returns the command that actually runs: the
+// configured one if set, otherwise the detected one, otherwise "".
+func effectiveCheckCommand(configured string, detected detectedCommand) string {
+	if configured != "" {
+		return configured
+	}
+	return detected.Cmd
 }
 
 // Execute runs the multi-role pipeline for the next ready task — planner
@@ -408,8 +482,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	completed = true
 	e.markLiveDone(initiativeID, agentOutput)
 
-	// Snapshot AFTER and compute the orchestrator-authored diff.
-	after, err := fsdiff.Snapshot(req.WorkRoot)
+	// Snapshot AFTER and compute the orchestrator-authored diff. The agent's
+	// container had network egress, so what it wrote back is untrusted:
+	// afterRunSnapshotOptions applies the workspace's own .gitignore and a
+	// sanity cap on top of fsdiff's always-on default exclusions (review
+	// defect #2).
+	after, err := fsdiff.Snapshot(req.WorkRoot, e.afterRunSnapshotOptions()...)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: snapshot after: %w", err)
 	}
@@ -1033,6 +1111,29 @@ func (e *Engine) RenderPatch(cs *domain.ChangeSet) string {
 	return security.Redact(raw)
 }
 
+// RenderPatchPage is RenderPatch bounded to at most maxDiffEndpointFiles
+// files (the diff endpoint's variant; see maxDiffEndpointFiles). total is the
+// change set's true file count, so a truncated response can say so.
+func (e *Engine) RenderPatchPage(cs *domain.ChangeSet) (rendered string, total int) {
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return fmt.Sprintf("(patch unreadable: %v)", err), 0
+	}
+	total = len(patch.Files)
+	files := patch.Files
+	var note string
+	if total > maxDiffEndpointFiles {
+		files = files[:maxDiffEndpointFiles]
+		note = fmt.Sprintf("\n… showing %d of %d files; the rest are omitted from this rendering.\n",
+			maxDiffEndpointFiles, total)
+	}
+	raw := e.renderDiffText(files) + note
+	if e.redactor != nil {
+		return e.redactor.RedactString(raw), total
+	}
+	return security.Redact(raw), total
+}
+
 // StructuredFile is one file of a change set for per-file display: its path,
 // add/modify/delete kind, byte size, and REDACTED content. Content is redacted
 // at this display surface exactly like RenderPatch, so raw bytes never reach a
@@ -1160,8 +1261,50 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 	if err != nil {
 		return []StructuredFile{}
 	}
-	out := make([]StructuredFile, 0, len(patch.Files))
-	for _, fc := range patch.Files {
+	return e.structuredFiles(patch.Files)
+}
+
+// maxDiffEndpointFiles bounds how many files the diff endpoint (GET
+// .../change-sets/{id}/diff) computes a per-file redacted rendering and
+// unified hunk for in one request. Review defect #2: an ICP run's agent
+// wrote ~14,300 files into its work root, and this endpoint tried to
+// redact-and-diff every one of them synchronously and never responded within
+// 100s. The real fix is upstream -- Snapshot's sanity cap (afterRunSnapshotOptions)
+// now refuses to turn that many files into a change set in the first place --
+// but a change set persisted before that fix, or one that is simply large,
+// must still not be able to hang this endpoint. StructuredDiff/RenderPatch's
+// unpaged form is untouched: they also render the adversarial reviewer's and
+// the risk endpoint's input, and neither is this endpoint.
+const maxDiffEndpointFiles = 500
+
+// StructuredDiffPage is StructuredDiff bounded to at most maxDiffEndpointFiles
+// files, returning the change set's true total file count alongside the
+// (possibly truncated) list so a caller can report "showing 500 of 14300".
+func (e *Engine) StructuredDiffPage(cs *domain.ChangeSet) (files []StructuredFile, total int) {
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return []StructuredFile{}, 0
+	}
+	total = len(patch.Files)
+	limited := patch.Files
+	if len(limited) > maxDiffEndpointFiles {
+		limited = limited[:maxDiffEndpointFiles]
+	}
+	return e.structuredFiles(limited), total
+}
+
+// structuredFiles is StructuredDiff/StructuredDiffPage's shared per-file
+// rendering: path + kind + redacted content. Deleted files carry no content.
+// A change set rejected by the secret sweep never had its raw bytes persisted
+// (persistDiff is skipped), but carries a MASKED version instead
+// (RedactedDigest, persistRedactedDiff) -- that is served here with
+// Redacted=true rather than leaving Content empty, so the human can see what
+// was blocked. Content is genuinely absent (Size 0, Redacted false) only when
+// neither the raw nor the masked bytes could be found -- e.g. a patch
+// persisted before this fix, or a masking failure.
+func (e *Engine) structuredFiles(files []domain.FileChange) []StructuredFile {
+	out := make([]StructuredFile, 0, len(files))
+	for _, fc := range files {
 		ct := string(fc.ChangeType)
 		if ct == "" {
 			// Patches persisted before ChangeType existed only carried a digest;
