@@ -783,7 +783,15 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 	if err != nil {
 		return err
 	}
-	if err := db.Apply(ctx, Event{
+	// Discovery reads BEFORE the transaction starts (see decisionDependents'
+	// doc comment: db.sql is a single-connection handle, so a pool read from
+	// inside an open transaction deadlocks against the transaction's own
+	// connection).
+	reqIDs, taskIDs, csIDs, err := db.decisionDependents(ctx, dec.InitiativeID, dec.ID)
+	if err != nil {
+		return err
+	}
+	return db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
 		Actor:         actor,
@@ -798,11 +806,11 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 			return notFoundOrState(tx, "decisions", decisionID, "decision",
 				fmt.Errorf("decision %s is not decided", decisionID))
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return db.markDecisionDependentsStale(ctx, dec.InitiativeID, dec.ID, dec.Code)
+		// review M5: marked in the SAME transaction as the reopen above, so a
+		// crash between the two can never leave the decision reopened with
+		// nothing marked stale.
+		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
+	})
 }
 
 // SetDecisionRecommendation overwrites a decision's recommendation with a
