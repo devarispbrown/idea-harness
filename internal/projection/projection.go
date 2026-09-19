@@ -370,12 +370,17 @@ func BuildTriage(decisions []domain.Decision, questions []domain.Question, findi
 		items = append(items, TriageItem{Type: "question", ID: q.ID, Label: q.Question, Dependents: dependents[q.ID]})
 	}
 	for _, f := range findings {
-		if f.Advisory || f.Disposition != "" {
+		if f.Disposition != "" {
 			continue
 		}
+		// C1: an advisory finding never blocks completion (see
+		// hasOpenBlockingFindings), but it must still be shown here so the
+		// user can see it and disposition it -- otherwise a quick-accepted
+		// critical/high finding is saved and then never surfaced anywhere.
+		// It ranks as non-blocking regardless of its severity.
 		items = append(items, TriageItem{
 			Type: "finding", ID: f.ID, Label: f.Finding,
-			Blocking: f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
+			Blocking: !f.Advisory && f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {

@@ -585,6 +585,25 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
+
+	// C2: rigor only ever relaxes the ADVERSARIAL reviewer's findings.
+	// Deterministic findings (a dependency cycle, an untraced task, a
+	// reference to a superseded requirement) must always go through
+	// EvaluateApproval / needs_human_judgment, at every rigor -- quick must
+	// never auto-approve a plan with a structural defect just because the
+	// vertical slice produced few enough tasks to calibrate to quick.
+	//
+	// C1: when quick DOES accept the adversarial reviewer's findings, they
+	// must be marked Advisory=true before they are capped and persisted.
+	// Leaving them unmarked (the old behaviour) saved them as plain open
+	// blockers: approval would go through here, and `idea verify`/complete
+	// would then refuse forever with no way to un-stick the initiative.
+	if rigor == RigorQuick {
+		for i := range adv {
+			adv[i].Advisory = true
+		}
+	}
+
 	all := append(det, adv...)
 	all = capFindings(all, findingCap(rigor), rigor)
 	for i := range all {
@@ -610,15 +629,21 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		}
 	}
 
+	// blocked now reflects only non-advisory blocking findings: at quick,
+	// that means exactly the deterministic ones (the adversarial reviewer's
+	// were just marked Advisory above), and at standard/thorough it means
+	// any of them. Either way it must always route to human judgment --
+	// there is no rigor level at which a structural plan defect is
+	// auto-approved.
 	blocked, reason := review.EvaluateApproval(all)
-	if blocked && rigor != RigorQuick {
+	if blocked {
 		e.log.Warn("plan review blocked", "initiative", initiativeID, "reason", reason)
 		if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanReview, RoleAdversarialReviewer); err != nil {
 			return domain.InitiativeFailed, err
 		}
 		return domain.InitiativeNeedsHumanJudgment, nil
 	}
-	if blocked {
+	if rigor == RigorQuick && len(adv) > 0 {
 		// Quick converges in one pass and accepts with advisories (review
 		// B1): the findings stand but do not gate plan approval.
 		e.log.Info("plan review passed (quick, advisory)", "initiative", initiativeID, "findings", len(all))
