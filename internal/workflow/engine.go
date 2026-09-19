@@ -624,39 +624,57 @@ func (e *Engine) createQuestionIfNew(ctx context.Context, initiativeID, text str
 // revise cycle, so this also collapses those re-listings onto the original
 // row. It resolves any equivalent open question too — a structured decision
 // takes precedence over a free-form question.
-func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d *domain.Decision) error {
+//
+// Returns the id of the decision this call resolved to (review M1): the
+// EXISTING, merged-into decision's id when a near-duplicate was found, or
+// the newly-created decision's id otherwise -- "" only when d.Question was
+// empty and nothing happened. Callers that need to wire something to "the
+// decision this call just represents" (a requirement's derived_from edge)
+// must use this return value, not re-look-up the decision by d's own
+// (possibly since-merged-away) wording afterward: that was exactly the M1
+// bug -- the requirement's own citation (`ref`) names this cycle's exact
+// wording, but the DB row a near-duplicate merges into keeps the EARLIER
+// wording, so re-fetching decisions and matching by normalized text after
+// the fact never found it.
+func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d *domain.Decision) (string, error) {
 	if strings.TrimSpace(d.Question) == "" {
-		return nil
+		return "", nil
 	}
 	norm := normalizeJudgment(d.Question)
 	existing, err := e.db.ListDecisions(ctx, initiativeID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, x := range existing {
 		if x.Type == d.Type && (normalizeJudgment(x.Question) == norm || similarJudgment(x.Question, d.Question)) {
-			return nil
+			return x.ID, nil
 		}
 	}
 	if err := e.db.CreateDecision(ctx, d); err != nil {
-		return err
+		return "", err
 	}
-	// Resolve any open question this decision now covers.
+	// Resolve any open question this decision now covers. M2: matched the
+	// same way createQuestionIfNew matches a decision against a question --
+	// exact normalized text OR the same Jaccard-similarity test -- rather
+	// than exact text only, which left a near-duplicate open question
+	// unresolved by a decision that (by createDecisionIfNew's own merge
+	// rule, above) is considered the same judgment.
 	questions, err := e.db.ListQuestions(ctx, initiativeID)
 	if err != nil {
-		return err
+		return d.ID, err
 	}
 	for _, q := range questions {
 		if q.Status != domain.QuestionOpen {
 			continue
 		}
-		if normalizeJudgment(q.Question) == norm {
+		qn := normalizeJudgment(q.Question)
+		if qn == norm || similarJudgment(qn, norm) {
 			digest := e.storeBlob("covered by decision " + d.Code)
 			_ = e.db.AnswerQuestion(ctx, q.ID, digest, store.ActorOrchestrator)
 			_ = e.db.WireDecisionDerivedFromQuestion(ctx, initiativeID, d.ID, q.ID)
 		}
 	}
-	return nil
+	return d.ID, nil
 }
 
 func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) error {
@@ -772,29 +790,37 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			decisionRefByReqID[req.ID] = ref
 		}
 	}
+	// M1: decIDByNorm is keyed by THIS CYCLE's own decision wording (what the
+	// model actually put in decisions[], which is also what a requirement's
+	// `decision` field cites) mapped to whatever id createDecisionIfNew
+	// resolved it to -- the existing decision's id on a near-duplicate merge,
+	// or the newly-created one otherwise. Re-fetching decisions from the
+	// store afterward and matching by normalized text (the old approach)
+	// missed exactly the merge case: the requirement's ref names this
+	// cycle's wording, but the stored row for a merged-into decision keeps
+	// its EARLIER wording, and the two need not normalize identically even
+	// though they're Jaccard-similar enough to have merged.
+	decIDByNorm := make(map[string]string, len(decisionRefByReqID))
 	for _, d := range objSlice(obj["decisions"]) {
-		if err := e.createDecisionIfNew(ctx, initiativeID, &domain.Decision{
+		question := e.redact(str(d["question"]))
+		id, err := e.createDecisionIfNew(ctx, initiativeID, &domain.Decision{
 			InitiativeID:   initiativeID,
 			Type:           domain.DecisionProduct,
-			Question:       e.redact(str(d["question"])),
+			Question:       question,
 			Options:        e.redactSlice(strSlice(d["options"])),
 			Recommendation: e.redact(str(d["recommendation"])),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if id != "" {
+			decIDByNorm[normalizeJudgment(question)] = id
 		}
 	}
 	// Wire requirement→decision edges for requirements shaped by a decision,
 	// matched by the decision's exact question text (normalized), so an open
 	// decision's impact ("blocks N") is the set of requirements waiting on it.
 	if len(decisionRefByReqID) > 0 {
-		decs, err := e.db.ListDecisions(ctx, initiativeID)
-		if err != nil {
-			return err
-		}
-		decIDByNorm := make(map[string]string, len(decs))
-		for _, dec := range decs {
-			decIDByNorm[normalizeJudgment(dec.Question)] = dec.ID
-		}
 		for reqID, ref := range decisionRefByReqID {
 			if decID, ok := decIDByNorm[normalizeJudgment(ref)]; ok {
 				if err := e.db.WireRequirementDerivedFromDecision(ctx, initiativeID, reqID, decID); err != nil {
