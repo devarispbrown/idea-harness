@@ -620,6 +620,36 @@ ALTER TABLE findings ADD COLUMN path TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN in_diff INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE findings ADD COLUMN advisory INTEGER NOT NULL DEFAULT 0;
 `,
+	// 30: secret-allowlist safety (review H3/M1).
+	//
+	//   - project_state is a small per-project key/value table (state.db's
+	//     counterpart to global.db's daemon_meta) for the per-project HMAC key
+	//     Fingerprint now uses instead of a bare sha256, so a secret's
+	//     fingerprint is not the same, precomputable value across every
+	//     installation that ever saw it.
+	//   - findings.secret_overridable records whether a secret_sweep finding
+	//     is even eligible for the not_a_secret override (false for a match
+	//     drawn from the project's own configured secrets); defaults to 1
+	//     (true) so a pre-existing pattern-match finding is not retroactively
+	//     treated as a configured-secret match.
+	//   - findings.secret_preview carries the masked preview
+	//     (SecretPreview) of what a not_a_secret disposition would allowlist.
+	//   - secret_allowlist gets a unique index on (fingerprint, path) instead
+	//     of fingerprint alone (a value allowlisted in one file must still be
+	//     denied in another), with any pre-existing duplicate rows for the
+	//     same pair collapsed to one before the index is created.
+	`
+CREATE TABLE IF NOT EXISTS project_state (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+ALTER TABLE findings ADD COLUMN secret_overridable INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE findings ADD COLUMN secret_preview TEXT NOT NULL DEFAULT '';
+DELETE FROM secret_allowlist
+	WHERE rowid NOT IN (SELECT MIN(rowid) FROM secret_allowlist GROUP BY fingerprint, path);
+DROP INDEX IF EXISTS idx_secret_allowlist_fingerprint;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint_path ON secret_allowlist(fingerprint, path);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

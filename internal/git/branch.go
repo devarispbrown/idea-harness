@@ -60,12 +60,11 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 	if !isRepo(workTree) {
 		return "", "", nil
 	}
-	if existingBranch != "" {
-		if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", existingBranch); err != nil {
-			return "", "", fmt.Errorf("git: checkout %s: %w: %s", existingBranch, err, strings.TrimSpace(out))
-		}
-		return existingBranch, "", nil
-	}
+	// The dirty check applies to BOTH paths: switching to an already-created
+	// initiative branch and creating a brand-new one. A switch that silently
+	// carried someone else's mid-edit onto the initiative's branch would break
+	// the promise docs/configuration.md makes (review H2) -- reusing a branch
+	// is not exempt just because the branch itself already exists.
 	dirty, err := dirtyPathsOutside(ctx, workTree, keepPaths)
 	if err != nil {
 		return "", "", err
@@ -73,43 +72,86 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 	if len(dirty) > 0 {
 		return "", "the workspace has uncommitted changes outside this change set: " + strings.Join(dirty, ", "), nil
 	}
+	if existingBranch != "" {
+		if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", existingBranch); err != nil {
+			return "", "", fmt.Errorf("git: checkout %s: %w: %s", existingBranch, err, strings.TrimSpace(out))
+		}
+		return existingBranch, "", nil
+	}
 	name, err := freeBranchName(ctx, workTree, "idea/"+Slugify(titleSeed, 40))
 	if err != nil {
 		return "", "", err
 	}
-	if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", "-b", name); err != nil {
+	// A brand-new initiative branch is created from the repository's default
+	// branch, never from whatever HEAD happens to be checked out (review H2):
+	// HEAD may be another initiative's own branch, and branching from it would
+	// silently stack this initiative's commits on top of that unrelated one.
+	// When no default branch can be resolved (e.g. a fresh repo with only one
+	// commit and no candidate name), falling back to plain `checkout -b`
+	// (from current HEAD) keeps the pre-existing, harmless behavior.
+	args := []string{"checkout", "-q", "-b", name}
+	if _, baseRef, refErr := defaultBranchRef(ctx, workTree); refErr != nil {
+		return "", "", refErr
+	} else if baseRef != "" {
+		args = append(args, baseRef)
+	}
+	if out, err := runGit(ctx, workTree, sanitizedEnv(), args...); err != nil {
 		return "", "", fmt.Errorf("git: checkout -b %s: %w: %s", name, err, strings.TrimSpace(out))
 	}
 	return name, "", nil
 }
 
 // dirtyPathsOutside returns the workspace-relative paths `git status
-// --porcelain` reports as dirty (staged, unstaged, or untracked) and are not
-// in keep. `git status --porcelain` prefixes every line with a two-character
-// status code and a space; the path starts at column 4 for an ordinary entry,
-// which is all EnsureInitiativeBranch's caller ever produces (a rename's
-// "old -> new" form is a git-side heuristic on unstaged files, not something
-// fsdiff's own add/modify/delete change list produces, so it is intentionally
-// not special-cased here).
+// --porcelain=v1 -z --untracked-files=all` reports as dirty (staged,
+// unstaged, or untracked) and are not in keep.
+//
+// The plain `git status --porcelain` (no -z, default untracked-files=normal)
+// this used to run has two bugs (review H1): a brand-new directory collapses
+// to a single "?? dir/" entry instead of listing the files inside it, so a
+// change set that adds a nested file like src/new/a.go sees "src/" reported
+// dirty and is refused forever; and a path containing a space or another
+// shell-special character is quoted C-style, which the byte-offset-3 slice
+// below left quoted (and unescaped) instead of matching keep.
+//
+// `-z` NUL-terminates every record and never quotes a path, and
+// `--untracked-files=all` lists every file inside a new directory
+// individually instead of just the directory. A rename or copy record
+// carries two NUL-terminated fields (the new path, then the original path);
+// both are checked against keep, since either one dirties the tree outside
+// the change set.
 func dirtyPathsOutside(ctx context.Context, workTree string, keep []string) ([]string, error) {
-	out, err := runGit(ctx, workTree, sanitizedEnv(), "status", "--porcelain")
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
-		return nil, fmt.Errorf("git: status --porcelain: %w: %s", err, strings.TrimSpace(out))
+		return nil, fmt.Errorf("git: status --porcelain=v1 -z: %w: %s", err, strings.TrimSpace(out))
 	}
 	keepSet := make(map[string]bool, len(keep))
 	for _, p := range keep {
 		keepSet[filepath.ToSlash(p)] = true
 	}
+	fields := strings.Split(strings.TrimRight(out, "\x00"), "\x00")
 	var dirty []string
-	for _, line := range strings.Split(out, "\n") {
-		if len(line) < 4 {
+	seen := make(map[string]bool)
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if len(entry) < 4 {
 			continue
 		}
-		p := filepath.ToSlash(strings.TrimSpace(line[3:]))
-		if p == "" || keepSet[p] {
-			continue
+		status := entry[:2]
+		paths := []string{entry[3:]}
+		// A rename or copy (X or Y is 'R'/'C') carries a second field: the
+		// original path, immediately following in the NUL stream.
+		if (status[0] == 'R' || status[0] == 'C' || status[1] == 'R' || status[1] == 'C') && i+1 < len(fields) {
+			i++
+			paths = append(paths, fields[i])
 		}
-		dirty = append(dirty, p)
+		for _, p := range paths {
+			p = filepath.ToSlash(p)
+			if p == "" || keepSet[p] || seen[p] {
+				continue
+			}
+			seen[p] = true
+			dirty = append(dirty, p)
+		}
 	}
 	return dirty, nil
 }

@@ -39,8 +39,13 @@ func TestRevertOfAStaleWorkspaceIs409(t *testing.T) {
 	if !strings.Contains(msg, "hello.txt") {
 		t.Errorf("409 message does not name the changed file: %q", msg)
 	}
-	if !strings.Contains(msg, "commit or discard") {
+	// review M4: committing does not change the file's bytes, so the advice
+	// must say discard (or stash), never "commit".
+	if !strings.Contains(msg, "discard") {
 		t.Errorf("409 message does not say what to do next: %q", msg)
+	}
+	if strings.Contains(msg, "commit") {
+		t.Errorf("409 message suggests committing, which cannot help: %q", msg)
 	}
 
 	// Nothing was written: no operation was even started, and the file the

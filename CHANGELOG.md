@@ -218,6 +218,95 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 | `workflow.similarJudgment`'s near-duplicate threshold: overlap-over-shorter-side ≥ 0.6 | token-Jaccard similarity ≥ 0.85 after normalization (review B4, adopted #8) — a stricter, more accurate measure; some previously-merged near-duplicates (e.g. two decisions sharing only a couple of common words) now stay distinct. |
 | `DELETE .../tasks/{taskId}` on a task with dependents: `{"error":"another task depends on this task; remove that dependency first"}` | `{"error":"TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies first, or delete them too."}` — still a 409 with the same JSON error shape, now naming the dependents. |
 
+### Security
+
+- **The secret allowlist can no longer be tricked into passing a configured secret.** A finding now
+  carries `secret_overridable` (`Finding.SecretOverridable`): `false` for a value drawn from the
+  project's own configured secrets, and `SetFindingDisposition` refuses `not_a_secret` outright
+  when it is `false`, rather than merely letting the sweep re-deny the value on the next scan.
+  Allowlist entries are scoped to `(fingerprint, path)` instead of fingerprint alone (a value
+  allowlisted in one file still blocks in another), enforced by a unique index and upsert. A
+  finding's `secret_fingerprint` is now a per-project HMAC (`project_state` table, new) instead of a
+  bare sha256, so the same secret no longer fingerprints identically across every installation that
+  ever saw it. Findings carry a masked `secret_preview` (first/last 4 characters) and their
+  `evidence` is now the source line with the value replaced by that mask, instead of a generic
+  placeholder.
+- **The deterministic-check output sweep (build/test command output) now honors the allowlist.** It
+  previously ran a bare credential-detected boolean with no override path; a value a human already
+  allowlisted (e.g. a test fixture the test runner prints back) is now recognized there too, and a
+  denial reads `in the output of <check>: looks like <kind>`.
+- **The credential-assignment pattern catches named forms it used to miss**: `{"password":
+  "..."}` (a quote before the colon), `DB_PASSWORD=...`, `AWS_SECRET_ACCESS_KEY=...` (its own
+  dedicated rule) and `client_secret: ...` — all missed before because the old pattern required a
+  word boundary immediately before the keyword, which never fires between an underscore and the
+  following word. Tightened to require the value look like a literal (quoted, or unquoted without
+  parens/dots/etc.), so `token = getenv(...)` and `const token = req.headers...` still do not match.
+- **The branch-per-initiative dirty check no longer sees a new nested directory, or a path with a
+  space, as a workspace it can never touch again.** `git status --porcelain` (default mode)
+  collapsed a brand-new directory to a single `?? dir/` entry and left special characters quoted;
+  switched to `--porcelain=v1 -z --untracked-files=all`, which lists every file individually and
+  never quotes.
+- **A branch-per-initiative switch (or creation) now checks for someone else's uncommitted edits in
+  both directions**, not just when creating the branch for the first time; a brand-new initiative
+  branch is created from the repository's default branch, never from whatever HEAD happens to be
+  checked out (which may be a different initiative's own branch). The commit-on-apply guards
+  (merge/rebase/cherry-pick/detached HEAD) now run *before* any branch switch, and only the
+  default-branch check runs after it, against whatever branch ends up checked out. The commit
+  itself now uses `git commit --only -- <paths>`, so content the user had already staged before the
+  daemon ran can never enter the agent's commit.
+- **`idea pr` passes `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, `XDG_CONFIG_HOME`, `GH_HOST` and `GH_TOKEN`**
+  through to both `git push` and `gh`, pushes to the branch's configured upstream remote (falling
+  back to `origin`), and gives `gh pr create --head` the `owner:branch` form when the push remote is
+  a `github.com` fork under a different owner than `origin`.
+
+### Fixed
+
+- **Reopening a second decision against an already-stale target no longer disappears.** Stale marks
+  are now keyed on `(target, decision)` instead of target alone, so acknowledging one decision's
+  mark leaves another decision's mark on the same target active. Marking dependents stale now
+  happens in the same transaction as the decision reopen (previously two separate transactions,
+  so a crash between them could leave a decision reopened with nothing marked stale).
+  `ClearStaleItemsForInitiative` (used by `revise-plan`/re-opening a phase) now clears only task and
+  change-set marks, never a requirement mark — regenerating the plan does not re-verify the
+  requirement itself against the decision that changed. The `/guidance` "why" no longer points at
+  `idea revise-plan` when a change set already holds work (revise-plan refuses in that state);
+  it advises acknowledging the items or re-running the affected tasks instead.
+- **Revert's advice said "commit or discard" your edits**, but committing does not change a file's
+  bytes and cannot make the byte-for-byte post-image comparison pass. Now says "discard (or
+  stash)". When a *later* change set is what actually touched the file (not a manual edit), the
+  advice now names it — "revert CHG-4 first" — instead of wrongly suggesting the human discard what
+  is really that change set's own work. The `stale_post` finding this refusal records is now
+  observation-level (was `high`), so it no longer blocks completing the initiative.
+- **Toolchain detection no longer treats a Node version range as a single version.** `>=24`, `<21`
+  and `^18||^20` (and caret/tilde ranges like `^18.2.0`) used to be silently accepted as if they
+  named one version; now refused and left undetected, exactly like any other ambiguous marker.
+  `go.mod`'s `toolchain go1.x` line (when present) is now preferred over the `go` directive, since
+  it is what a `go` invocation actually builds with.
+- **`handleUpdateTask` validated `priority` after already replacing a task's requirement links**, so
+  an invalid `priority` in the same PATCH request returned 400 with the links already replaced.
+  Every field now validates before either write runs. Referencing a superseded requirement in
+  `requirement_ids` is now refused, naming an active requirement with the identical statement when
+  one exists.
+- **`Impact`'s change-set label read "CHG CHG-3"** (the human-readable id already includes the
+  prefix); fixed. Both `Impact`'s list and `ImpactCounts`' "blocks N" now exclude a rejected or
+  superseded change set — dead, and not actually blocking anything.
+- **Credential findings are deduped on `(path, line, fingerprint)`**: the same value at the same
+  spot could match more than one pattern (or both a known value and a pattern) and was reported
+  once per match.
+- **`sensitive_area` is raised at most once per change set** (previously once per sweep pass, so a
+  retried apply could pile up several near-identical advisory findings). The vocabulary-marker
+  catalog was narrowed to `auth`/`secret`/`token`/`password` — `api_key`, bare `https://`/`http://`,
+  `payment`, `credit card` and `ssn` were dropped as noise for what this scan gates (a change set
+  that merely linked to a website, or mentioned billing/PII in ordinary product copy, no longer
+  gets flagged). This also means the initiative-level risk tier (`idea risk`) can no longer be
+  floored by a payment/PII word or a bare URL alone.
+- **The system-deny card's copy said a rejected change set "cannot be approved, overridden, or
+  applied" unconditionally**, but a `secret_sweep` deny specifically can be overridden (disposition
+  the finding "not a secret"); the copy now says so for that case.
+- **The demo provider could cite a superseded requirement code.** `firstRequirementCode` now
+  prefers a code found in the compiled "requirements" context section over one merely mentioned
+  elsewhere (e.g. decision history naming a code since superseded).
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

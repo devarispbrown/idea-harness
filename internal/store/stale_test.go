@@ -87,6 +87,89 @@ func TestMarkStaleIdempotent(t *testing.T) {
 	}
 }
 
+// TestMarkStaleKeyedOnTargetAndDecision is review M5: reopening TWO DIFFERENT
+// decisions that both bear on the same requirement must yield TWO separate
+// marks (keyed on (target, decision_id)), and acknowledging one must leave
+// the other active. Before this fix, markStaleTx's idempotency check ignored
+// decision_id, so the second decision's reopen found the target already
+// marked (by the first decision) and silently dropped its own mark --
+// acknowledging the first decision's mark alone then read as "nothing is
+// stale here" even though the second decision was never separately
+// acknowledged. Mutation-check: drop `AND decision_id = ?` from
+// markStaleTx's idempotency SELECT, and this fails.
+func TestMarkStaleKeyedOnTargetAndDecision(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	decA := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "a?", Options: []string{"x", "y"}}
+	if err := db.CreateDecision(ctx, decA); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, decA.ID, "x", "human"); err != nil {
+		t.Fatal(err)
+	}
+	decB := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "b?", Options: []string{"x", "y"}}
+	if err := db.CreateDecision(ctx, decB); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, decB.ID, "x", "human"); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "r", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, decA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, decB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ReopenDecision(ctx, decA.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReopenDecision(ctx, decB.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forA, forB *domain.StaleItem
+	for i := range items {
+		if items[i].TargetType != "requirement" || items[i].TargetID != req.ID {
+			continue
+		}
+		switch items[i].DecisionID {
+		case decA.ID:
+			forA = &items[i]
+		case decB.ID:
+			forB = &items[i]
+		}
+	}
+	if forA == nil || forB == nil {
+		t.Fatalf("expected one mark per decision on the shared requirement, got %+v", items)
+	}
+
+	// Acking decision A's mark must leave decision B's mark active.
+	if err := db.ClearStaleItem(ctx, ini.ID, forA.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].ID != forB.ID {
+		t.Fatalf("expected only decision B's mark to remain after acking A's, got %+v", after)
+	}
+}
+
 // TestClearStaleItem proves explicit acknowledgement clears one item without
 // touching others (review A4 #5: "explicitly acknowledging the item clears
 // the stale state").
@@ -149,7 +232,12 @@ func TestClearStaleItem(t *testing.T) {
 }
 
 // TestClearStaleItemsForInitiative proves the bulk-clear path used by
-// RevisePlan/ReopenPhase.
+// RevisePlan/ReopenPhase clears task and change-set marks, but -- review M5
+// -- leaves a REQUIREMENT mark active: regenerating the plan does not
+// re-verify the requirement itself against the decision that changed, so a
+// fresh plan has done nothing to make that requirement-level staleness
+// untrue. Mutation-check: drop the `target_type IN (...)` clause from
+// ClearStaleItemsForInitiative's UPDATE, and this fails.
 func TestClearStaleItemsForInitiative(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -172,11 +260,34 @@ func TestClearStaleItemsForInitiative(t *testing.T) {
 	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, dec.ID); err != nil {
 		t.Fatal(err)
 	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	applied := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d1"}
+	if err := db.CreateChangeSet(ctx, applied); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct{ from, to domain.ChangeSetStatus }{
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired},
+		{domain.ChangeSetReviewRequired, domain.ChangeSetApproved},
+		{domain.ChangeSetApproved, domain.ChangeSetApplying},
+	} {
+		if err := db.TransitionChangeSet(ctx, applied.ID, step.from, step.to, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.MarkChangeSetApplied(ctx, applied.ID, "digest", "test"); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
 		t.Fatal(err)
 	}
-	if items, _ := db.ListStaleItems(ctx, ini.ID); len(items) == 0 {
-		t.Fatal("expected at least one stale item before clearing")
+	before, _ := db.ListStaleItems(ctx, ini.ID)
+	if len(before) != 3 {
+		t.Fatalf("expected 3 stale items (requirement, task, change_set) before clearing, got %+v", before)
 	}
 
 	if err := db.ClearStaleItemsForInitiative(ctx, ini.ID, "orchestrator"); err != nil {
@@ -186,8 +297,8 @@ func TestClearStaleItemsForInitiative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("expected all stale items cleared, got %+v", items)
+	if len(items) != 1 || items[0].TargetType != "requirement" || items[0].TargetID != req.ID {
+		t.Fatalf("expected only the requirement mark to survive, got %+v", items)
 	}
 }
 

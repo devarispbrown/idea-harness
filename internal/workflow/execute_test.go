@@ -222,6 +222,49 @@ func TestExecuteDoesNotRejectOnSecretMarkerAlone(t *testing.T) {
 	}
 }
 
+// TestSensitiveAreaFindingCreatedAtMostOnce is the low-priority review item:
+// createSensitiveAreaFinding is called from both Execute's own sweep and the
+// apply-time re-sweep (ApplyChangeSet), and a retried apply calls the latter
+// again -- none of which should pile up a second, third, ... near-identical
+// advisory finding on the same change set. Mutation-check: remove the
+// "already recorded" early-return in createSensitiveAreaFinding, and this
+// fails.
+func TestSensitiveAreaFindingCreatedAtMostOnce(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Store password in vault", Statement: "secret", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Call createSensitiveAreaFinding again directly, simulating a second
+	// pass over the same change set (e.g. a retried apply's re-sweep) with
+	// signals still detected.
+	signals := []domain.RiskSignal{{Name: "credential", Detected: true}}
+	if err := eng.createSensitiveAreaFinding(ctx, iniID, cs.ID, signals, "second pass"); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range findings {
+		if f.Category == "sensitive_area" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("sensitive_area findings on %s = %d, want exactly 1", cs.ID, n)
+	}
+}
+
 // TestExecuteRejectsOnRealCredential is the other half: a real credential
 // VALUE (a known key format) still blocks, and the denial names where -- the
 // path:line -- and the kind of secret, never the value itself (review #2).
@@ -325,13 +368,83 @@ func TestNotASecretDispositionUnblocksFutureExecutes(t *testing.T) {
 	}
 }
 
+// TestDedupeCredentialFindings is the low-priority review item: the same
+// value at the same (path, line) can match more than one catalog pattern (or
+// both a known value and a pattern), and must be reported once, not once per
+// pattern that happened to match. Mutation-check: make dedupeCredentialFindings
+// a no-op (`return matches`), and this fails.
+func TestDedupeCredentialFindings(t *testing.T) {
+	dup := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "AWS access key ID", Overridable: true}
+	dupAgain := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "credential assignment", Overridable: true}
+	sameLineDifferentValue := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-2", Overridable: true}
+	differentLine := security.CredentialFinding{Path: "a.go", Line: 6, Fingerprint: "fp-1", Overridable: true}
+	differentPath := security.CredentialFinding{Path: "b.go", Line: 5, Fingerprint: "fp-1", Overridable: true}
+	knownValueFirst := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: false, Kind: "configured secret value"}
+	patternSameSpot := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: true, Kind: "API key"}
+
+	out := dedupeCredentialFindings([]security.CredentialFinding{
+		dup, dupAgain, sameLineDifferentValue, differentLine, differentPath, knownValueFirst, patternSameSpot,
+	})
+	if len(out) != 5 {
+		t.Fatalf("dedupeCredentialFindings returned %d matches, want 5 (dup/dupAgain collapsed, and known/pattern at the same spot collapsed): %+v", len(out), out)
+	}
+	// The first occurrence at (a.go, 5, fp-1) must be the one kept.
+	for _, m := range out {
+		if m.Path == "a.go" && m.Line == 5 && m.Fingerprint == "fp-1" && m.Kind != dup.Kind {
+			t.Errorf("expected the first occurrence's Kind %q to survive, got %q", dup.Kind, m.Kind)
+		}
+		// A known-value match must survive over a same-spot pattern match, not
+		// the reverse (review H3's Overridable=false invariant, reinforced by
+		// dedup order).
+		if m.Path == "c.go" && !m.Overridable && m.Kind != "configured secret value" {
+			t.Errorf("expected the known-value match to survive at c.go:1, got %+v", m)
+		}
+	}
+}
+
+// TestFilterAllowlistedScopedToPath is review H3, tested directly against
+// the pure function: an allowlisted (fingerprint, path) pair must not
+// suppress the SAME fingerprint at a DIFFERENT path.
+func TestFilterAllowlistedScopedToPath(t *testing.T) {
+	allowed := map[string]bool{store.AllowlistKey("fp-1", "tests/fixture.js"): true}
+	matches := []security.CredentialFinding{
+		{Path: "tests/fixture.js", Fingerprint: "fp-1", Overridable: true},
+		{Path: "src/prod.js", Fingerprint: "fp-1", Overridable: true},
+	}
+	out := filterAllowlisted(matches, allowed)
+	if len(out) != 1 || out[0].Path != "src/prod.js" {
+		t.Fatalf("filterAllowlisted = %+v, want only src/prod.js to survive", out)
+	}
+}
+
+// TestFilterAllowlistedNeverDropsAKnownValueMatch is review H3: even when
+// the pattern-shaped match for the identical value+path was allowlisted (so
+// its fingerprint+path IS in allowed), a known-value (Overridable=false)
+// match with the same fingerprint+path must still survive -- a configured
+// secret is never eligible for the override regardless of what a pattern
+// match at the same fingerprint was allowlisted as. Mutation-check: drop
+// `m.Overridable &&` from filterAllowlisted's condition, and this fails.
+func TestFilterAllowlistedNeverDropsAKnownValueMatch(t *testing.T) {
+	allowed := map[string]bool{store.AllowlistKey("fp-shared", "src/config.go"): true}
+	matches := []security.CredentialFinding{
+		{Path: "src/config.go", Fingerprint: "fp-shared", Overridable: false, Kind: "configured secret value"},
+	}
+	out := filterAllowlisted(matches, allowed)
+	if len(out) != 1 {
+		t.Fatalf("filterAllowlisted dropped a non-overridable match: %+v", out)
+	}
+}
+
 // TestConfiguredSecretValueIsNeverAllowlistable is the Overridable=false
-// invariant (review changes #1): a value drawn from the project's own
-// configured secrets (the executor's resolved key, via the engine's redactor)
-// is never eligible for the not_a_secret override -- unlike a pattern-shaped
-// match, it is not a "might be a false positive" shape, it is a real
-// credential by construction. Mutation-check: drop `m.Overridable &&` from
-// filterAllowlisted's condition, and this fails.
+// invariant (review changes #1, inverted by review H3): a value drawn from
+// the project's own configured secrets (the executor's resolved key, via the
+// engine's redactor) is never eligible for the not_a_secret override at all
+// -- unlike a pattern-shaped match, it is not a "might be a false positive"
+// shape, it is a real credential by construction, and the store itself now
+// refuses the disposition outright (persisted secret_overridable=false)
+// rather than merely have the sweep re-deny it later. Mutation-check: remove
+// the `!secretOverridable` refusal from SetFindingDisposition, or drop
+// `m.Overridable &&` from filterAllowlisted's condition, and this fails.
 func TestConfiguredSecretValueIsNeverAllowlistable(t *testing.T) {
 	eng, db, iniID := newExecuteFixture(t)
 	ctx := context.Background()
@@ -363,23 +476,36 @@ func TestConfiguredSecretValueIsNeverAllowlistable(t *testing.T) {
 		if f.SecretKind != "configured secret value" {
 			t.Errorf("SecretKind = %q, want %q", f.SecretKind, "configured secret value")
 		}
+		if f.SecretOverridable {
+			t.Errorf("SecretOverridable = true, want false for a configured secret value")
+		}
 	}
 	if findingID == "" {
 		t.Fatal("setup: no secret_sweep finding")
 	}
-	// The store doesn't know Overridable, so the disposition itself is
-	// recorded and allowlisted...
-	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
-		t.Fatalf("disposition not_a_secret: %v", err)
+	// The store now knows this finding is not eligible for the override at
+	// all, and refuses the disposition outright.
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err == nil {
+		t.Fatal("want SetFindingDisposition to refuse not_a_secret on a configured secret value, got nil error")
 	}
 
-	// ...but the sweep must still deny the identical content again.
+	// The refused disposition must not have written an allowlist entry either
+	// (belt and suspenders on top of the store-level refusal above).
+	allowed, err := db.SecretAllowlistFingerprints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allowed) != 0 {
+		t.Fatalf("SecretAllowlistFingerprints = %v, want empty: the refused disposition must not have allowlisted anything", allowed)
+	}
+
+	// The sweep must still deny the identical content again.
 	cs2, err := eng.Execute(ctx, iniID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cs2.Status != domain.ChangeSetRejected {
-		t.Fatalf("a configured secret value must still be denied after a not_a_secret disposition, got %q", cs2.Status)
+		t.Fatalf("a configured secret value must still be denied, got %q", cs2.Status)
 	}
 }
 
@@ -750,6 +876,85 @@ func TestExecutePassesConfiguredBuild(t *testing.T) {
 	}
 	if cs.Status != domain.ChangeSetReviewRequired {
 		t.Fatalf("expected review_required (build passes), got %q", cs.Status)
+	}
+}
+
+// TestExecuteRejectsCredentialInCheckOutput is review M2: a credential
+// printed by the build/test command's own output must deny the change set
+// via the same catalog + allowlist path file content gets -- a dedicated
+// secret_sweep finding named "in the output of <check>", never the value.
+// Before the fix, this used a bare detectCredential boolean with no
+// allowlist filter and no dedicated finding at all.
+func TestExecuteRejectsCredentialInCheckOutput(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+	const fixtureKey = "AKIA1234567890ABCDEF"
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		Check:    config.CheckConfig{Image: "alpine:3.20"},
+		BuildCmd: "echo " + fixtureKey,
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (credential in check output), got %q", cs.Status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category != "secret_sweep" {
+			continue
+		}
+		if !strings.Contains(f.Finding, "in the output of build") {
+			continue
+		}
+		findingID = f.ID
+		if strings.Contains(f.Finding, fixtureKey) || strings.Contains(f.Evidence, fixtureKey) {
+			t.Errorf("the denial must never echo the credential value: %+v", f)
+		}
+		if f.SecretPath != "output of build" {
+			t.Errorf("SecretPath = %q, want %q", f.SecretPath, "output of build")
+		}
+		if !f.SecretOverridable {
+			t.Error("a pattern-shaped match in check output should be Overridable")
+		}
+	}
+	if findingID == "" {
+		t.Fatalf("no 'in the output of build' secret_sweep finding among: %+v", findings)
+	}
+
+	// review M2's other half: allowlisting that finding must let an identical
+	// re-run pass, exactly like a file-content match.
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+	cs2, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("an allowlisted fixture value printed by the build command must pass, got %q", cs2.Status)
 	}
 }
 

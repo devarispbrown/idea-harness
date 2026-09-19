@@ -144,34 +144,58 @@ exposes the same switch under **Settings**.
 lands via `git_commit` or `git.branch_per_initiative`: a pre-commit or commit-msg hook is arbitrary
 code, and the daemon's commits never run it. This is not configurable.
 
-**`git_commit` guards (review C4).** Even with `git_commit: true`, the commit-on-apply path refuses
-to create a commit — and instead records why on the change set as `git_commit_warning`, leaving the
-apply itself to succeed exactly as it would with `git_commit` off — when:
+**`git_commit` guards (review C4, reordered by review H2).** Even with `git_commit: true`, the
+commit-on-apply path refuses to create a commit — and instead records why on the change set as
+`git_commit_warning`, leaving the apply itself to succeed exactly as it would with `git_commit`
+off. The checks run in two groups, in this order:
 
-- HEAD is detached;
-- a rebase, merge or cherry-pick is in progress (`.git/rebase-merge`, `.git/rebase-apply`,
-  `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD` — resolved per-worktree via `git rev-parse
-  --git-path`, so this is correct even inside a linked worktree);
-- the current branch is the repository's default branch (a remote's `origin/HEAD` when configured,
-  otherwise `main`/`master`), unless `git.allow_default_branch` is set.
+1. **Before any branch switch** (so a hazardous repository state is never checked out into):
+   - HEAD is detached;
+   - a rebase, merge or cherry-pick is in progress (`.git/rebase-merge`, `.git/rebase-apply`,
+     `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD` — resolved per-worktree via `git rev-parse
+     --git-path`, so this is correct even inside a linked worktree).
+2. **After** `git.branch_per_initiative`'s branch switch (if enabled), judged against whatever branch
+   is checked out by then — the initiative's own branch, not whatever HEAD was before:
+   - the current branch is the repository's default branch (a remote's `origin/HEAD` when configured;
+     otherwise the repository's own `init.defaultBranch` if set; otherwise the first of
+     `main`/`master`/`trunk`/`develop` that exists), unless `git.allow_default_branch` is set.
 
 A refused commit never half-applies a change set: the files are written and the change set is marked
-`applied` exactly as it would be with the commit switched off. Only the commit itself is skipped.
-`git.allow_default_branch` is irrelevant once `git.branch_per_initiative` is on, since apply then
-always commits on the initiative's own branch, never the default one.
+`applied` exactly as it would be with the commit switched off. Only the commit itself (and, when the
+pre-checkout group refuses, the branch switch too) is skipped. `git.allow_default_branch` is
+irrelevant once `git.branch_per_initiative` is on, since apply then always commits on the
+initiative's own branch, never the default one.
+
+The commit itself is scoped to exactly the change set's own paths with `git commit --only -- <paths>`
+(not a plain `git commit`), so anything the user had already staged in the index before the daemon
+ever ran — a mid-edit, a partially staged unrelated change — can never ride into the agent's commit
+just because `git add -- <paths>` staged the change set's own files onto that same index.
 
 **`git.branch_per_initiative`** creates and checks out `idea/<short-slug-of-the-initiative-title>` on
-an initiative's first apply (refusing if the workspace has uncommitted changes outside the change
-set's own files, so a branch switch never carries someone else's in-progress edit along with it),
-and commits every later change set for that initiative there.
+an initiative's first apply, refusing if the workspace has uncommitted changes outside the change
+set's own files — so a branch switch never carries someone else's in-progress edit along with it —
+whether that switch creates the branch for the first time or reuses one from a prior apply of the
+same initiative. A brand-new branch is created from the repository's default branch (resolved the
+same way as the default-branch guard above), never from whatever HEAD happens to be checked out,
+which may be a different initiative's own branch and would otherwise stack this initiative's commits
+on top of that unrelated one. Every later change set for the initiative commits there.
 
-**`idea pr`** pushes that branch and runs `gh pr create`, with a body built from the initiative (PRD
-summary, change sets, verification progress). It requires the GitHub CLI (`gh`) on `PATH` and a `git`
-remote named `origin`; a missing `gh` answers a clear message rather than an opaque exec error.
-It is idempotent — a repeat call answers the pull request already recorded on the initiative
-(`initiative.pr_url`) rather than opening a second one. `idea pr checks <change-set-id>` shows the
-latest CI status via `gh pr checks`, which every change set of the initiative shares. See
-[`cli.md`](cli.md) and [`api.md`](api.md) for the exact commands and routes.
+**`idea pr`** pushes that branch — to its configured upstream remote (`branch.<name>.remote`) when
+one is set, otherwise `origin` — and runs `gh pr create`, with a body built from the initiative (PRD
+summary, change sets, verification progress). It requires the GitHub CLI (`gh`) on `PATH`; a missing
+`gh` answers a clear message rather than an opaque exec error. `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`,
+`XDG_CONFIG_HOME`, `GH_HOST` and `GH_TOKEN` are passed through from the daemon's own environment to
+both `git push` and `gh` (nothing else is — see the redaction/sanitization notes above). When the
+push remote is a `github.com` fork under a different owner than `origin`, `--head` is given the
+`owner:branch` form so `gh` resolves it against the fork rather than the base repository; this
+owner-parsing only understands `github.com` remote URLs (`git@github.com:owner/repo.git`,
+`https://github.com/owner/repo.git`, `ssh://git@github.com/owner/repo.git`) — a non-GitHub host, or a
+remote URL shaped differently, falls back to a plain branch name, which only resolves correctly when
+the push remote and the base repository share the same owner. `idea pr` is idempotent — a repeat call
+answers the pull request already recorded on the initiative (`initiative.pr_url`) rather than opening
+a second one. `idea pr checks <change-set-id>` shows the latest CI status via `gh pr checks`, which
+every change set of the initiative shares. See [`cli.md`](cli.md) and [`api.md`](api.md) for the
+exact commands and routes.
 
 ### The three review budgets
 

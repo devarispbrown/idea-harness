@@ -151,12 +151,20 @@ files:
 ```
 $ idea revert CHG-3
 idea: revert refused: the workspace changed since CHG-3 was applied: src/app.js: it was edited in
-the workspace after apply; commit or discard your edits to src/app.js, then revert
+the workspace after apply; discard (or stash) your edits to src/app.js, then revert again
 ```
 
-There is no `--force`. The change set stays `applied`; commit or discard the listed edits yourself,
-then run `idea revert` again. This is a synchronous `409`, not an operation that starts and fails in
-the background — see [`api.md`](api.md#errors) for the exact contract.
+The advice is **discard (or stash)**, never "commit" (review M4): committing does not change a
+file's bytes, so it cannot make the byte-for-byte comparison above pass. If a *later* change set is
+what actually touched the file (not a manual edit), the advice names it instead —
+`revert CHG-4 first` — since discarding what is really CHG-4's own change would be wrong.
+
+There is no `--force`. The change set stays `applied`; act on the advice yourself, then run
+`idea revert` again. This is a synchronous `409`, not an operation that starts and fails in the
+background — see [`api.md`](api.md#errors) for the exact contract. The refusal also records a
+`stale_post` finding on the change set, at an observation (non-blocking) severity: it does not
+block completing the initiative (`idea verify`), since it names a workspace-vs-post-image mismatch
+to look at, not something a disposition resolves.
 
 ## How it works
 

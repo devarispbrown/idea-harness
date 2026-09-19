@@ -106,16 +106,24 @@ func TestRiskSignalsDetection(t *testing.T) {
 		wantSig []string
 	}{
 		{"empty diff", "", nil},
-		{"credential markers dedupe", "set api_key and password and token here", []string{SignalCredential}},
+		{"credential markers dedupe", "set password and token here", []string{SignalCredential}},
 		{"secret", "the secret value", []string{SignalSecret}},
 		{"auth", "add auth header", []string{SignalAuth}},
-		{"http network", "fetch http://example.com", []string{SignalNetwork}},
-		{"https network", "fetch https://example.com", []string{SignalNetwork}},
-		{"payment", "process payment", []string{SignalPayment}},
-		{"credit card is payment", "store credit card", []string{SignalPayment}},
-		{"ssn is pii", "ssn field", []string{SignalPII}},
-		{"multiple categories in catalog order", "auth then payment then api_key",
-			[]string{SignalCredential, SignalAuth, SignalPayment}},
+		{"multiple categories in catalog order", "auth then token",
+			[]string{SignalCredential, SignalAuth}},
+		// review low-priority item: the marker catalog was tuned down to
+		// auth/password/secret/token -- api_key, http(s)://, payment, credit
+		// card and ssn used to be markers too, and each was noise for what
+		// this scan gates (the non-blocking sensitive_area advisory): a bare
+		// URL, or ordinary product copy about billing/PII, said nothing about
+		// whether the change actually handles anything sensitive. None of
+		// these produce a signal any more.
+		{"http network no longer a marker", "fetch http://example.com", nil},
+		{"https network no longer a marker", "fetch https://example.com", nil},
+		{"payment no longer a marker", "process payment", nil},
+		{"credit card no longer a marker", "store credit card", nil},
+		{"ssn no longer a marker", "ssn field", nil},
+		{"api_key no longer a marker on its own", "set api_key here", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -135,7 +143,7 @@ func TestRiskSignalsDetection(t *testing.T) {
 }
 
 func TestRiskSignalsCaseInsensitive(t *testing.T) {
-	got := RiskSignals(context.Background(), "digest", "PASSWORD: sk-abc123 and an API_KEY")
+	got := RiskSignals(context.Background(), "digest", "PASSWORD: sk-abc123 and a TOKEN")
 	var names []string
 	for _, s := range got {
 		names = append(names, s.Name)

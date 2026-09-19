@@ -391,8 +391,19 @@ export default function BuildPage({
                 <span className="deny-code">{deny.code}</span>
               </div>
               <div className="deny-desc">
-                A deterministic boundary rejected this change set. It cannot be approved, overridden,
-                or applied — system deny beats human approve. Run the task again.
+                {deny.code === "secret_sweep" ? (
+                  <>
+                    A deterministic boundary rejected this change set. It cannot be approved or
+                    applied — system deny beats human approve. If the flagged value is not really a
+                    secret, mark that finding "not a secret" to allow it, then run the task again;
+                    otherwise remove it and run the task again.
+                  </>
+                ) : (
+                  <>
+                    A deterministic boundary rejected this change set. It cannot be approved,
+                    overridden, or applied — system deny beats human approve. Run the task again.
+                  </>
+                )}
               </div>
               {(deny.evidence || deny.category) && (
                 <div className="deny-evidence">{deny.evidence || deny.category}</div>

@@ -422,11 +422,18 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			// The build/test command output is attacker-influenced (agent-produced
 			// code runs in the sandbox). Sweep the RAW output FIRST so a secret
 			// printed by the agent's code is rejected, then redact for persistence.
-			// This is command output, not a file, so there is no path:line to name.
-			// A bare vocabulary marker in it does not block either (review D2/A1);
-			// hasBlockingRiskSignal is always false, kept for the same
-			// mutation-check reason as its other call sites.
-			rawCred := e.detectCredential(f.Evidence)
+			// review M2: this now runs the SAME credential catalog + allowlist
+			// filter file content gets (e.scanTextForCredentials + filterAllowlisted),
+			// not a bare detectCredential boolean with no override path -- so a
+			// value a human already allowlisted (e.g. a test fixture the test
+			// runner prints back) does not deny the change set here even though it
+			// would still deny on first sight. A bare vocabulary marker in it does
+			// not block either (review D2/A1); hasBlockingRiskSignal is always
+			// false, kept for the same mutation-check reason as its other call
+			// sites.
+			checkOutputPath := "output of " + f.Category
+			rawMatches := filterAllowlisted(e.scanTextForCredentials(checkOutputPath, f.Evidence), allowlist)
+			rawCred := len(rawMatches) > 0
 			rawSignals := risk.RiskSignals(ctx, "", f.Evidence)
 			if rawCred || hasBlockingRiskSignal(rawSignals) {
 				f.Code = sweepDenyCode(rawCred)
@@ -439,6 +446,35 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			f.Recommendation = e.redact(f.Recommendation)
 			if err := e.db.CreateFinding(ctx, &f); err != nil {
 				return domain.ChangeSet{}, err
+			}
+			// One dedicated secret_sweep finding per surviving match, named
+			// "in the output of <check>" (review M2), mirroring the execute-time
+			// and apply-time sweeps: never the value, a masked-line Evidence, and
+			// SecretPath/SecretFingerprint/SecretOverridable/SecretPreview set so
+			// the finding is independently dispositionable (and allowlistable)
+			// the same way a file-content match is.
+			for _, m := range rawMatches {
+				if err := e.db.CreateFinding(ctx, &domain.Finding{
+					InitiativeID:      cs.InitiativeID,
+					TargetType:        "change_set",
+					TargetID:          cs.ID,
+					Severity:          domain.SeverityCritical,
+					Confidence:        domain.ConfidenceHigh,
+					Category:          "secret_sweep",
+					Code:              sweepDenyCode(true),
+					Finding:           fmt.Sprintf("in the output of %s: looks like %s", f.Category, m.Kind),
+					Evidence:          secretSweepEvidence(m),
+					Impact:            "change set rejected before review",
+					Recommendation:    secretSweepRecommendation(m),
+					Disposition:       domain.DispositionRejected,
+					SecretFingerprint: m.Fingerprint,
+					SecretKind:        m.Kind,
+					SecretPath:        checkOutputPath,
+					SecretOverridable: m.Overridable,
+					SecretPreview:     m.Preview,
+				}); err != nil {
+					return domain.ChangeSet{}, err
+				}
 			}
 		}
 	}
@@ -507,21 +543,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// blocks, but it still surfaces to the reviewer as a non-blocking "sensitive
 	// area" finding -- the same signals that used to hard-reject on a bare word
 	// match now just flag the change set for a closer look.
-	if len(signals) > 0 {
-		if err := e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       cs.ID,
-			Severity:       domain.SeverityMedium,
-			Confidence:     domain.ConfidenceHigh,
-			Category:       "sensitive_area",
-			Finding:        "sensitive area: " + detectedRiskNames(signals),
-			Evidence:       "deterministic marker scan of the produced patch",
-			Impact:         "advisory only; look closer before approving",
-			Recommendation: "review the change for real secrets or unsafe handling before approving",
-		}); err != nil {
-			return domain.ChangeSet{}, err
-		}
+	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, cs.ID, signals, "deterministic marker scan of the produced patch"); err != nil {
+		return domain.ChangeSet{}, err
 	}
 
 	// A real credential sweep gates rejection now, not a bare vocabulary word
@@ -544,13 +567,15 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 				Category:          "secret_sweep",
 				Code:              sweepDenyCode(true),
 				Finding:           fmt.Sprintf("%s:%d: looks like %s", m.Path, m.Line, m.Kind),
-				Evidence:          "deterministic scan of the produced patch",
+				Evidence:          secretSweepEvidence(m),
 				Impact:            "change set rejected before review",
 				Recommendation:    secretSweepRecommendation(m),
 				Disposition:       domain.DispositionRejected,
 				SecretFingerprint: m.Fingerprint,
 				SecretKind:        m.Kind,
 				SecretPath:        m.Path,
+				SecretOverridable: m.Overridable,
+				SecretPreview:     m.Preview,
 			}); err != nil {
 				return domain.ChangeSet{}, err
 			}
@@ -680,7 +705,36 @@ func (e *Engine) scanForCredentials(files []domain.FileChange, read func(domain.
 		if e.redactor != nil {
 			out = append(out, e.redactor.FindKnownInFile(fc.Path, content)...)
 		}
-		out = append(out, security.FindCredentialsInFile(fc.Path, content)...)
+		// e.redactor.FindPatternsInFile is nil-safe and, when e.redactor is set,
+		// fingerprints with this project's own HMAC key (review H3) rather than
+		// the package-level FindCredentialsInFile's unkeyed fallback.
+		out = append(out, e.redactor.FindPatternsInFile(fc.Path, content)...)
+	}
+	return dedupeCredentialFindings(out)
+}
+
+// dedupeCredentialFindings collapses matches to at most one per (path, line,
+// fingerprint) (review low-priority item): the SAME value at the SAME
+// location can match more than one pattern in the catalog (or both a known
+// value and a pattern -- e.g. a configured secret whose value also happens
+// to look like an AWS key), and showing it twice is pure noise for the
+// reviewer. The first occurrence wins: FindKnownInFile's known-value matches
+// (Overridable=false) are always appended before FindPatternsInFile's, so a
+// known-value match is kept over a pattern match for the identical
+// (path, line, fingerprint) rather than the other way around.
+func dedupeCredentialFindings(matches []security.CredentialFinding) []security.CredentialFinding {
+	if len(matches) < 2 {
+		return matches
+	}
+	seen := make(map[string]bool, len(matches))
+	out := make([]security.CredentialFinding, 0, len(matches))
+	for _, m := range matches {
+		key := fmt.Sprintf("%s\x00%d\x00%s", m.Path, m.Line, m.Fingerprint)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, m)
 	}
 	return out
 }
@@ -695,6 +749,23 @@ func (e *Engine) scanWorkRootForCredentials(workRoot string, files []domain.File
 		}
 		return string(content), true
 	})
+}
+
+// scanTextForCredentials runs the same credential detector scanForCredentials
+// uses (known values + pattern catalog, keyed by this project's redactor) over
+// a single block of raw text under a synthetic "path" -- for content that
+// never was a file, such as a build/test command's captured output (review
+// M2). Using the same detector and the same allowlist scoping as file content
+// means a value a human already allowlisted at this same synthetic path
+// (i.e. dispositioned not_a_secret on a prior "in the output of <check>"
+// finding) is recognized here exactly as it would be for a real file.
+func (e *Engine) scanTextForCredentials(path, content string) []security.CredentialFinding {
+	var out []security.CredentialFinding
+	if e.redactor != nil {
+		out = append(out, e.redactor.FindKnownInFile(path, content)...)
+	}
+	out = append(out, e.redactor.FindPatternsInFile(path, content)...)
+	return dedupeCredentialFindings(out)
 }
 
 // scanBlobsForCredentials is scanForCredentials reading each file's content
@@ -713,23 +784,39 @@ func (e *Engine) scanBlobsForCredentials(files []domain.FileChange) []security.C
 	})
 }
 
-// filterAllowlisted drops every Overridable match whose fingerprint a human
-// already dispositioned "not a secret" for this project. A match drawn from
-// the project's own configured secrets (Overridable=false) is never filtered:
-// a real, resolved credential is not eligible for the override regardless of
-// what fingerprint someone else allowlisted.
+// filterAllowlisted drops every Overridable match whose (fingerprint, path)
+// a human already dispositioned "not a secret" for this project (review H3:
+// scoped to path too, not fingerprint alone, so the same value allowlisted
+// in one file -- e.g. a test fixture -- still blocks in another). A match
+// drawn from the project's own configured secrets (Overridable=false) is
+// never filtered: a real, resolved credential is not eligible for the
+// override regardless of what fingerprint+path someone else allowlisted, so
+// even a coincidental fingerprint collision with an allowlisted pattern match
+// can never let a configured secret value through.
 func filterAllowlisted(matches []security.CredentialFinding, allowed map[string]bool) []security.CredentialFinding {
 	if len(allowed) == 0 {
 		return matches
 	}
 	out := make([]security.CredentialFinding, 0, len(matches))
 	for _, m := range matches {
-		if m.Overridable && allowed[m.Fingerprint] {
+		if m.Overridable && allowed[store.AllowlistKey(m.Fingerprint, m.Path)] {
 			continue
 		}
 		out = append(out, m)
 	}
 	return out
+}
+
+// secretSweepEvidence is the Evidence text for a secret_sweep finding (review
+// H3): the source line with the secret value itself replaced by its masked
+// preview, so a reviewer can see WHERE and roughly WHAT without the raw
+// value ever being persisted or returned. Falls back to a generic note when
+// MaskedLine could not be computed (should not normally happen).
+func secretSweepEvidence(m security.CredentialFinding) string {
+	if m.MaskedLine != "" {
+		return m.MaskedLine
+	}
+	return "deterministic scan of the produced patch"
 }
 
 // secretSweepRecommendation is the Recommendation text for a credential
@@ -1331,6 +1418,40 @@ func detectedRiskNames(signals []domain.RiskSignal) string {
 	return strings.Join(names, ", ")
 }
 
+// createSensitiveAreaFinding creates at most one "sensitive_area" finding per
+// change set (review low-priority item). Execute's own sweep and the
+// apply-time re-sweep both call this for the same change set (and a retried
+// apply calls the latter again), and without this check a change set could
+// accumulate several near-identical advisory findings restating the same
+// signals -- noise on top of noise, on a finding that is already advisory
+// and never blocks anything.
+func (e *Engine) createSensitiveAreaFinding(ctx context.Context, initiativeID, targetID string, signals []domain.RiskSignal, evidence string) error {
+	if len(signals) == 0 {
+		return nil
+	}
+	existing, err := e.db.ListFindingsByTarget(ctx, "change_set", targetID)
+	if err != nil {
+		return err
+	}
+	for _, f := range existing {
+		if f.Category == "sensitive_area" {
+			return nil
+		}
+	}
+	return e.db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID:   initiativeID,
+		TargetType:     "change_set",
+		TargetID:       targetID,
+		Severity:       domain.SeverityMedium,
+		Confidence:     domain.ConfidenceHigh,
+		Category:       "sensitive_area",
+		Finding:        "sensitive area: " + detectedRiskNames(signals),
+		Evidence:       evidence,
+		Impact:         "advisory only; look closer before approving",
+		Recommendation: "review the change for real secrets or unsafe handling before approving",
+	})
+}
+
 // ApplyChangeSet applies an approved change set: approved→applying→applied.
 // It writes the orchestrator-computed diff into the canonical workspace via
 // atomic per-file temp+rename, capturing the pre-image into the journal so
@@ -1370,21 +1491,8 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return err
 	}
 	credMatches := filterAllowlisted(e.scanBlobsForCredentials(patch.Files), allowlist)
-	if len(signals) > 0 {
-		if err := e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       changeSetID,
-			Severity:       domain.SeverityMedium,
-			Confidence:     domain.ConfidenceHigh,
-			Category:       "sensitive_area",
-			Finding:        "sensitive area: " + detectedRiskNames(signals),
-			Evidence:       "deterministic marker re-scan of the persisted patch",
-			Impact:         "advisory only; look closer before applying again",
-			Recommendation: "review the change for real secrets or unsafe handling",
-		}); err != nil {
-			return err
-		}
+	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, changeSetID, signals, "deterministic marker re-scan of the persisted patch"); err != nil {
+		return err
 	}
 	if len(credMatches) > 0 || hasBlockingRiskSignal(signals) {
 		for _, m := range credMatches {
@@ -1397,13 +1505,15 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 				Category:          "secret_sweep",
 				Code:              sweepDenyCode(true),
 				Finding:           fmt.Sprintf("%s:%d: looks like %s (found at apply time)", m.Path, m.Line, m.Kind),
-				Evidence:          "deterministic re-sweep of the persisted patch",
+				Evidence:          secretSweepEvidence(m),
 				Impact:            "apply denied before workspace mutation",
 				Recommendation:    secretSweepRecommendation(m),
 				Disposition:       domain.DispositionRejected,
 				SecretFingerprint: m.Fingerprint,
 				SecretKind:        m.Kind,
 				SecretPath:        m.Path,
+				SecretOverridable: m.Overridable,
+				SecretPreview:     m.Preview,
 			}); err != nil {
 				return err
 			}
@@ -1572,6 +1682,16 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		paths = append(paths, f.Path)
 	}
 
+	// Merge/rebase/cherry-pick/detached-HEAD are checked BEFORE any checkout
+	// (review H2): switching branches (below) while one of those is in
+	// progress is exactly the hazard the guard exists to prevent, so it must
+	// run first, not after branch-per-initiative has already moved HEAD.
+	if reason, err := git.PreCommitGuardReason(ctx, e.workspaceRoot); err != nil {
+		return "", "", err
+	} else if reason != "" {
+		return "", "not committed because " + reason, nil
+	}
+
 	if e.cfg.Git.BranchPerInitiative {
 		ini, iniErr := e.db.GetInitiative(ctx, cs.InitiativeID)
 		if iniErr != nil {
@@ -1591,7 +1711,10 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		}
 	}
 
-	if reason, err := git.CommitGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
+	// The default-branch check runs AFTER the branch switch above (review
+	// H2): it must judge the initiative's own branch, once
+	// branch-per-initiative has switched to it, not whatever HEAD was before.
+	if reason, err := git.DefaultBranchGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
 		return "", "", err
 	} else if reason != "" {
 		return "", "not committed because " + reason, nil
@@ -1658,18 +1781,28 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 		return err
 	}
 	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
-		msg := revertRefusedMessage(cs.HumanID, stale)
+		laterByFile, lerr := e.laterChangeSetsTouchingByFile(ctx, cs, staleFilePaths(stale))
+		if lerr != nil {
+			laterByFile = nil // best-effort naming; a lookup failure must not block the refusal itself
+		}
+		msg := revertRefusedMessage(cs.HumanID, stale, laterByFile)
 		_ = e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       changeSetID,
-			Severity:       domain.SeverityHigh,
+			InitiativeID: cs.InitiativeID,
+			TargetType:   "change_set",
+			TargetID:     changeSetID,
+			// review M4: stale_post is advisory, not a blocker of `complete` --
+			// hasOpenBlockingFindings only ever looks at Severity.Blocking()
+			// (critical/high), and there is nothing to accept-risk or override
+			// here: it is resolved by acting on the Recommendation, not by a
+			// disposition. Mutation-check: set this back to SeverityHigh and a
+			// pending stale_post finding blocks complete again.
+			Severity:       domain.SeverityObservation,
 			Confidence:     domain.ConfidenceHigh,
 			Category:       "stale_post",
 			Finding:        "The workspace changed after this change set was applied, so reverting it now would erase that work.",
 			Evidence:       strings.Join(stale, "\n"),
 			Impact:         "Nothing was written.",
-			Recommendation: "Commit or discard the edits to the listed files, then revert again.",
+			Recommendation: revertAdvice(staleFilePaths(stale), laterByFile),
 		})
 		return fmt.Errorf("workflow: %s", msg)
 	}
@@ -1706,10 +1839,9 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 	return nil
 }
 
-// revertRefusedMessage explains, in terms of what to do next, why cs cannot be
-// reverted while stale (fsdiff.StalePost's output, one line per file) is
-// non-empty: "commit or discard your edits to X, then revert" (review A3).
-func revertRefusedMessage(humanID string, stale []string) string {
+// staleFilePaths extracts the bare workspace-relative path from each of
+// fsdiff.StalePost's "path: reason" lines.
+func staleFilePaths(stale []string) []string {
 	files := make([]string, 0, len(stale))
 	for _, s := range stale {
 		if i := strings.Index(s, ": "); i >= 0 {
@@ -1718,9 +1850,90 @@ func revertRefusedMessage(humanID string, stale []string) string {
 			files = append(files, s)
 		}
 	}
+	return files
+}
+
+// revertAdvice builds the actionable half of the revert-refusal message
+// (review M4): for a file a LATER applied change set itself touched, the fix
+// is "revert <that change set> first" -- discarding what looks like a "user
+// edit" there would actually discard a legitimate later change. For every
+// other file, the advice is "discard (or stash) your edits to X": committing
+// does not change the file's bytes on disk, so it cannot make StalePost's
+// byte-for-byte comparison pass -- only discarding (or moving the edit aside
+// with a stash) does.
+func revertAdvice(files []string, laterByFile map[string]string) string {
+	var laterNames []string
+	seenLater := map[string]bool{}
+	var edited []string
+	for _, f := range files {
+		if human, ok := laterByFile[f]; ok && human != "" {
+			if !seenLater[human] {
+				seenLater[human] = true
+				laterNames = append(laterNames, human)
+			}
+			continue
+		}
+		edited = append(edited, f)
+	}
+	var parts []string
+	if len(laterNames) > 0 {
+		parts = append(parts, fmt.Sprintf("revert %s first", strings.Join(laterNames, ", ")))
+	}
+	if len(edited) > 0 {
+		parts = append(parts, fmt.Sprintf("discard (or stash) your edits to %s", strings.Join(edited, ", ")))
+	}
+	return strings.Join(parts, "; ") + ", then revert again"
+}
+
+// revertRefusedMessage explains, in terms of what to do next, why cs cannot
+// be reverted while stale (fsdiff.StalePost's output, one line per file) is
+// non-empty (review A3, sharpened by review M4: see revertAdvice).
+// laterByFile maps a stale path to the HumanID of a later, still-applied
+// change set that touched it, when one exists (nil or a missing entry means
+// none did, for that path).
+func revertRefusedMessage(humanID string, stale []string, laterByFile map[string]string) string {
+	files := staleFilePaths(stale)
 	return fmt.Sprintf(
-		"revert refused: the workspace changed since %s was applied: %s; commit or discard your edits to %s, then revert",
-		humanID, strings.Join(stale, "; "), strings.Join(files, ", "))
+		"revert refused: the workspace changed since %s was applied: %s; %s",
+		humanID, strings.Join(stale, "; "), revertAdvice(files, laterByFile))
+}
+
+// laterChangeSetsTouchingByFile maps each of files to the HumanID of the
+// earliest OTHER applied change set for cs's initiative, created after cs,
+// whose own patch touches that path (review M4). Used so a revert refusal
+// can tell the human which later change set to revert first instead of
+// wrongly suggesting they "discard" what is actually a legitimate later
+// change. Best-effort: a patch that fails to load for one candidate change
+// set is skipped rather than failing the whole lookup, since this only
+// sharpens advice text and must never itself block or fail a revert attempt.
+func (e *Engine) laterChangeSetsTouchingByFile(ctx context.Context, cs *domain.ChangeSet, files []string) (map[string]string, error) {
+	all, err := e.db.ListChangeSets(ctx, cs.InitiativeID)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(files))
+	for _, f := range files {
+		want[f] = true
+	}
+	result := make(map[string]string)
+	for i := range all {
+		other := all[i]
+		if other.ID == cs.ID || other.Status != domain.ChangeSetApplied || !other.CreatedAt.After(cs.CreatedAt) {
+			continue
+		}
+		patch, err := e.loadPatch(&other)
+		if err != nil {
+			continue
+		}
+		for _, fc := range patch.Files {
+			if want[fc.Path] {
+				if _, already := result[fc.Path]; !already {
+					result[fc.Path] = other.HumanID
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 // RevertBlockedReason reports why RevertChangeSet would refuse to revert
@@ -1757,7 +1970,11 @@ func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSe
 		return "", err
 	}
 	if stale := fsdiff.StalePost(workspaceRoot, patch.Files); len(stale) > 0 {
-		return revertRefusedMessage(cs.HumanID, stale), nil
+		laterByFile, lerr := e.laterChangeSetsTouchingByFile(ctx, cs, staleFilePaths(stale))
+		if lerr != nil {
+			laterByFile = nil
+		}
+		return revertRefusedMessage(cs.HumanID, stale, laterByFile), nil
 	}
 	return "", nil
 }

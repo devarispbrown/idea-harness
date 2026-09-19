@@ -32,9 +32,9 @@ func initRepoOnBranch(t *testing.T, branch string) string {
 	return dir
 }
 
-func TestCommitGuardAllowsAnOrdinaryFeatureBranch(t *testing.T) {
+func TestPreCommitGuardAllowsAnOrdinaryFeatureBranch(t *testing.T) {
 	repo := initRepoOnBranch(t, "idea/add-health")
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := PreCommitGuardReason(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +43,25 @@ func TestCommitGuardAllowsAnOrdinaryFeatureBranch(t *testing.T) {
 	}
 }
 
-func TestCommitGuardRefusesTheDefaultBranch(t *testing.T) {
-	for _, name := range []string{"main", "master"} {
+func TestPreCommitGuardAllowsTheDefaultBranch(t *testing.T) {
+	// PreCommitGuardReason no longer judges the default branch at all (review
+	// H2 split): that is DefaultBranchGuardReason's job, run only after any
+	// checkout.
+	repo := initRepoOnBranch(t, "main")
+	reason, err := PreCommitGuardReason(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want none: PreCommitGuardReason must not judge the default branch", reason)
+	}
+}
+
+func TestDefaultBranchGuardRefusesTheDefaultBranch(t *testing.T) {
+	for _, name := range []string{"main", "master", "trunk", "develop"} {
 		t.Run(name, func(t *testing.T) {
 			repo := initRepoOnBranch(t, name)
-			reason, err := CommitGuardReason(t.Context(), repo, false)
+			reason, err := DefaultBranchGuardReason(t.Context(), repo, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,9 +78,9 @@ func TestCommitGuardRefusesTheDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestCommitGuardAllowsTheDefaultBranchWhenOverridden(t *testing.T) {
+func TestDefaultBranchGuardAllowsTheDefaultBranchWhenOverridden(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
-	reason, err := CommitGuardReason(t.Context(), repo, true)
+	reason, err := DefaultBranchGuardReason(t.Context(), repo, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +89,13 @@ func TestCommitGuardAllowsTheDefaultBranchWhenOverridden(t *testing.T) {
 	}
 }
 
-func TestCommitGuardHonoursOriginHEADOverMainMaster(t *testing.T) {
+func TestDefaultBranchGuardHonoursOriginHEADOverMainMaster(t *testing.T) {
 	repo := initRepoOnBranch(t, "trunk")
 	// Simulate a clone's remote-tracking default without a real remote: only
 	// the ref needs to exist, never a network fetch.
 	gitOut(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
 
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := DefaultBranchGuardReason(t.Context(), repo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +104,7 @@ func TestCommitGuardHonoursOriginHEADOverMainMaster(t *testing.T) {
 	}
 
 	gitOut(t, repo, "checkout", "-q", "-b", "main")
-	reason, err = CommitGuardReason(t.Context(), repo, false)
+	reason, err = DefaultBranchGuardReason(t.Context(), repo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,12 +113,40 @@ func TestCommitGuardHonoursOriginHEADOverMainMaster(t *testing.T) {
 	}
 }
 
-func TestCommitGuardRefusesADetachedHEAD(t *testing.T) {
+// TestDefaultBranchGuardHonoursInitDefaultBranchConfig is the low-priority
+// item: when origin/HEAD is missing, git's own init.defaultBranch config (if
+// set) names the default branch, rather than only ever guessing
+// main/master/trunk/develop.
+func TestDefaultBranchGuardHonoursInitDefaultBranchConfig(t *testing.T) {
+	repo := initRepoOnBranch(t, "development")
+	gitOut(t, repo, "config", "init.defaultBranch", "development")
+
+	reason, err := DefaultBranchGuardReason(t.Context(), repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason == "" {
+		t.Fatal("want development refused: init.defaultBranch names it, got no refusal")
+	}
+
+	// A branch that is neither origin/HEAD's target nor init.defaultBranch's
+	// value, and not one of the bare guesses either, must NOT be refused.
+	gitOut(t, repo, "checkout", "-q", "-b", "feature")
+	reason, err = DefaultBranchGuardReason(t.Context(), repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want none: feature is not the configured default", reason)
+	}
+}
+
+func TestPreCommitGuardRefusesADetachedHEAD(t *testing.T) {
 	repo := initRepoOnBranch(t, "work")
 	sha := gitOut(t, repo, "rev-parse", "HEAD")
 	gitOut(t, repo, "checkout", "-q", "--detach", sha)
 
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := PreCommitGuardReason(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +155,7 @@ func TestCommitGuardRefusesADetachedHEAD(t *testing.T) {
 	}
 }
 
-func TestCommitGuardRefusesAMergeInProgress(t *testing.T) {
+func TestPreCommitGuardRefusesAMergeInProgress(t *testing.T) {
 	repo := initRepoOnBranch(t, "work")
 	gitOut(t, repo, "checkout", "-q", "-b", "feature")
 	writeFile(t, repo, "a.txt", "feature-change")
@@ -125,7 +167,7 @@ func TestCommitGuardRefusesAMergeInProgress(t *testing.T) {
 	mergeCmd := gitCmd(t, repo, "merge", "feature")
 	_ = mergeCmd.Run() // conflict expected; ignore the (nonzero) exit
 
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := PreCommitGuardReason(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +176,7 @@ func TestCommitGuardRefusesAMergeInProgress(t *testing.T) {
 	}
 }
 
-func TestCommitGuardRefusesARebaseInProgress(t *testing.T) {
+func TestPreCommitGuardRefusesARebaseInProgress(t *testing.T) {
 	repo := initRepoOnBranch(t, "work")
 	gitOut(t, repo, "checkout", "-q", "-b", "feature")
 	writeFile(t, repo, "a.txt", "feature-change")
@@ -146,7 +188,7 @@ func TestCommitGuardRefusesARebaseInProgress(t *testing.T) {
 	rebaseCmd := gitCmd(t, repo, "rebase", "feature")
 	_ = rebaseCmd.Run() // conflict expected; ignore the (nonzero) exit
 
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := PreCommitGuardReason(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +197,7 @@ func TestCommitGuardRefusesARebaseInProgress(t *testing.T) {
 	}
 }
 
-func TestCommitGuardRefusesACherryPickInProgress(t *testing.T) {
+func TestPreCommitGuardRefusesACherryPickInProgress(t *testing.T) {
 	repo := initRepoOnBranch(t, "work")
 	gitOut(t, repo, "checkout", "-q", "-b", "feature")
 	writeFile(t, repo, "a.txt", "feature-change")
@@ -168,7 +210,7 @@ func TestCommitGuardRefusesACherryPickInProgress(t *testing.T) {
 	pickCmd := gitCmd(t, repo, "cherry-pick", pickSHA)
 	_ = pickCmd.Run() // conflict expected; ignore the (nonzero) exit
 
-	reason, err := CommitGuardReason(t.Context(), repo, false)
+	reason, err := PreCommitGuardReason(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +219,18 @@ func TestCommitGuardRefusesACherryPickInProgress(t *testing.T) {
 	}
 }
 
-func TestCommitGuardAllowsANonRepo(t *testing.T) {
-	reason, err := CommitGuardReason(t.Context(), t.TempDir(), false)
+func TestPreCommitGuardAllowsANonRepo(t *testing.T) {
+	reason, err := PreCommitGuardReason(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want none: Commit's own isRepo check already no-ops a non-repository", reason)
+	}
+}
+
+func TestDefaultBranchGuardAllowsANonRepo(t *testing.T) {
+	reason, err := DefaultBranchGuardReason(t.Context(), t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
