@@ -15,6 +15,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/fsdiff"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
@@ -1662,4 +1663,133 @@ func TestTruncateOutputN(t *testing.T) {
 	if truncateOutputN(realistic, testsOutputCap) != realistic {
 		t.Error("a realistic test suite's output must not be truncated at the tests-only cap")
 	}
+}
+
+// TestDiffEndpointPagingCapsFileCount is a regression test for review defect
+// #2's "make the diff endpoint bounded ... so it never hangs": a change set
+// with far more files than maxDiffEndpointFiles must still return promptly,
+// with a truncated (but non-empty) rendering and the change set's true file
+// count so a client can say "showing N of Total" rather than the request
+// simply hanging until every file was redacted and diffed.
+func TestDiffEndpointPagingCapsFileCount(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+	task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	digest, err := eng.contentBlobs().Put([]byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const fileCount = maxDiffEndpointFiles + 200
+	files := make([]domain.FileChange, fileCount)
+	for i := range files {
+		files[i] = domain.FileChange{
+			Path: strconv.Itoa(i) + ".txt", Digest: digest, Mode: "file", ChangeType: domain.FileAdded,
+		}
+	}
+	patchDigest, err := eng.persistPatch(fsdiff.Patch{Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{InitiativeID: iniID, TaskID: task.ID, PatchDigest: patchDigest}
+
+	sfiles, total := eng.StructuredDiffPage(cs)
+	if total != fileCount {
+		t.Fatalf("StructuredDiffPage total = %d, want %d", total, fileCount)
+	}
+	if len(sfiles) != maxDiffEndpointFiles {
+		t.Fatalf("StructuredDiffPage returned %d files, want the cap %d", len(sfiles), maxDiffEndpointFiles)
+	}
+
+	rendered, total2 := eng.RenderPatchPage(cs)
+	if total2 != fileCount {
+		t.Fatalf("RenderPatchPage total = %d, want %d", total2, fileCount)
+	}
+	if !strings.Contains(rendered, "showing 500 of 700") {
+		t.Errorf("RenderPatchPage output should note truncation, got a %d-byte string without it", len(rendered))
+	}
+}
+
+// TestRunPlannerBriefTellsTheAgentNotToInstallAToolchain is a regression test
+// for review defect #3: an agent given network egress (to reach its own model
+// API) but no toolchain in its container downloaded a full Go toolchain into
+// the workspace to run its own build/test, producing the ~14,300-file
+// explosion behind review defect #2. The brief must name the harness's own
+// detected check commands and tell the agent not to install one.
+func TestRunPlannerBriefTellsTheAgentNotToInstallAToolchain(t *testing.T) {
+	t.Run("detected commands are named", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t)
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "go build ./...") || !strings.Contains(brief, "go test ./...") {
+			t.Errorf("brief does not name the detected build/test commands: %q", brief)
+		}
+		if !strings.Contains(brief, "Do not install a toolchain") {
+			t.Errorf("brief is missing the do-not-install-a-toolchain instruction: %q", brief)
+		}
+		if !strings.Contains(brief, "no network access") {
+			t.Errorf("brief does not describe the check sandbox as network-isolated: %q", brief)
+		}
+	})
+
+	t.Run("configured commands take precedence over detected", func(t *testing.T) {
+		fp := model.NewFakeProvider()
+		eng, db := newTestEngine(t, fp, config.HarnessConfig{
+			Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3},
+			BuildCmd: "make build", TestCmd: "make test",
+		})
+		eng.SetWorkRoot(t.TempDir())
+		eng.SetWorkspaceRoot(t.TempDir())
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		ini := &domain.Initiative{Title: "x", Description: "x"}
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, ini.ID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "make build") || !strings.Contains(brief, "make test") {
+			t.Errorf("brief should name the configured commands, got: %q", brief)
+		}
+		if strings.Contains(brief, "go build ./...") {
+			t.Errorf("brief should not name the detected command once one is configured: %q", brief)
+		}
+	})
+
+	t.Run("no build/test command available", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t) // empty workspace: nothing detectable
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "do not install a toolchain") {
+			t.Errorf("brief should still tell the agent not to install a toolchain when nothing was detected: %q", brief)
+		}
+	})
 }

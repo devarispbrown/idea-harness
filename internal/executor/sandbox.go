@@ -20,6 +20,16 @@ import (
 // are writable; an optional project root is mounted read-only at /repo. This is
 // the OS-isolation boundary for external coding agents and deterministic checks
 // (§52, review B2/H3).
+//
+// The /tmp tmpfs mounts are explicitly `exec` (Docker's tmpfs default is
+// `noexec`). A compiled toolchain -- `go test`, jest's native transforms,
+// cargo build scripts, pytest's compiled extensions -- stages its binary
+// under $TMPDIR/os.TempDir() before it fork/execs it; under a noexec /tmp
+// that exec fails with "permission denied" even though the compile itself
+// succeeded (review defect #1). TMPDIR is set explicitly so every toolchain
+// -- not just Go, which already defaults to os.TempDir() -- resolves its
+// scratch directory to this same exec-capable tmpfs rather than whatever
+// its own default happens to be.
 type ContainerSandbox struct {
 	image      string
 	dockerPath string
@@ -54,11 +64,20 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 		"--user", uid,
 		"--memory", "2g",
 		"--pids-limit", "256",
-		"--tmpfs", "/tmp",
-		"--tmpfs", "/tmp/cache",
+		// rw,exec,nosuid,size=... : Docker's tmpfs default is noexec, which
+		// blocks fork/exec (and PROT_EXEC mmap, i.e. dlopen) of anything
+		// staged here. Test/build toolchains compile a binary into $TMPDIR
+		// and then run it, so noexec breaks `go test`, jest's native
+		// transforms, cargo build scripts, and pytest's compiled
+		// extensions alike (review defect #1). nosuid+size keep this from
+		// being a privilege-escalation or unbounded-RAM vector.
+		"--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
+		"--tmpfs", "/tmp/cache:rw,exec,nosuid,size=1g",
 		"-e", "HOME=/tmp",
+		"-e", "TMPDIR=/tmp",
 		"-e", "GOCACHE=/tmp/cache/go",
 		"-e", "GOMODCACHE=/tmp/cache/gomod",
+		"-e", "GOTMPDIR=/tmp",
 		"-e", "NPM_CONFIG_CACHE=/tmp/cache/npm",
 		"-v", opts.WorkRoot + ":/work",
 	}

@@ -194,7 +194,10 @@ func (e *Engine) partialPath(initiativeID string) string {
 // a daemon shutdown are the reasons it runs -- so it works on a detached one.
 func (e *Engine) capturePartial(ctx context.Context, initiativeID, taskID, workRoot string, before fsdiff.Manifest) {
 	ctx = context.WithoutCancel(ctx)
-	after, err := fsdiff.Snapshot(workRoot)
+	// Same untrusted-content treatment as the normal after-snapshot (review
+	// defect #2): a stopped run's work root can carry the same downloaded
+	// toolchain a completed one can.
+	after, err := fsdiff.Snapshot(workRoot, e.afterRunSnapshotOptions()...)
 	if err != nil {
 		e.log.Warn("could not keep the stopped run's files", "initiative", initiativeID, "err", err)
 		return

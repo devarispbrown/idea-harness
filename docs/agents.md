@@ -258,6 +258,65 @@ Choose **Start over** to discard them and begin from the workspace. Over the API
 different one, and when a phase is reopened or the plan revised. Files that look like they hold a
 secret are never kept, and the Build page says so.
 
+## Agent spend
+
+`GET .../initiatives/{id}/costs` reports the deterministic pipeline's model-call spend precisely
+(every phase call goes through the harness's own model registry, which always knows the price). The
+coding agent's own spend is different: OMP/Hermes run as an opaque subprocess in a container, and the
+harness only has whatever that subprocess printed to stdout (redacted, kept as the change set's
+`agent_output`) to work with.
+
+The harness tries two things, in order, against that text:
+
+1. An explicit dollar figure ("cost: $0.42", "total cost: $1.20") — used verbatim.
+2. Failing that, a reported token count (`input_tokens`/`output_tokens`, or the OpenAI-shaped
+   `prompt_tokens`/`completion_tokens`) — priced against the model catalog's own per-token rates
+   (`internal/model/pricing.go`, the same table `review.max_cost_usd` enforcement uses), via
+   `model.CostUSD`.
+
+Neither is guaranteed: an agent that prints neither leaves `agent.usd: null` with
+`agent.note: "agent spend not measured"` (`idea status` and the UI both show this as a caveat next
+to the total, not as a silent zero — review defect #5). A run's total cost is only ever reported
+once EVERY agent run in the initiative was priced one of these two ways; a partial sum would
+understate the real spend, which is worse than admitting it is not measured.
+
+**Follow-up, not yet done:** Hermes's CLI documents a `--usage-file <path>` flag that writes a
+machine-readable JSON usage report (`estimated_cost_usd`, `input_tokens`/`output_tokens`/
+`total_tokens`, `api_calls`, …) after a run — but it is documented against `hermes -z`
+(the standalone one-shot entry point), and this harness invokes `hermes chat --yolo -q ...`. Whether
+`--usage-file` (or an equivalent) is available in that exact invocation, and what changing the
+invocation to get it would risk breaking (the exact argv Hermes accepts has broken this integration
+silently before — see the `hermesArgs` comment in `internal/executor/agent.go`), needs verifying
+against a real Hermes container before being wired in. Until then, the stdout-scraping above is the
+whole story.
+
+## Toolchains: the agent's image doesn't need one, and shouldn't install one
+
+The OMP/Hermes agent image only needs to contain the agent CLI itself. It does **not** need a Go,
+Node, Python, or Rust toolchain: the harness runs its own build/test checks after every task, in a
+*separate*, network-isolated sandbox (`check.image`, `internal/executor/sandbox.go`) — never inside
+the agent's own container. `network: disabled` in `harness.yaml` does not change this either way; see
+[`configuration.md`](configuration.md#harnessyaml) for what that setting actually governs.
+
+A real run surfaced the failure mode this invites: given network egress (which the agent container
+has, deliberately, to reach its own model API — see
+[`security-model.md`](security-model.md#what-this-does-not-protect-against)) but no toolchain, an agent asked to
+verify its own Go code ran `go build`/`go test` by downloading a full Go toolchain into the
+workspace. That toolchain (~14,300 files under `.tools/`) then got swept up as though it were part
+of the change set, which is a separate, now-fixed defect (see the `.gitignore`-aware collector and
+sanity cap in `internal/fsdiff`). The right fix is upstream of that: the implementation brief
+(`runPlanner`, `internal/workflow/execute.go`) now names the harness's own detected (or configured)
+build/test commands and tells the agent not to install a toolchain, compiler, or SDK to verify its
+own work — the harness already will, right after.
+
+**Follow-up, not yet done:** offering the check image's own toolchain to the agent container
+directly (e.g. a read-only bind mount of a matching toolchain layer, or running the agent from the
+same base image as `check.image`) would remove even the temptation, and might be cheap for the
+common case where `executor.image` and the derived/configured `check.image` are the same toolchain
+family. It isn't implemented here — it changes how the agent container and the check sandbox relate
+to each other, which is more than this fix's scope — but it's a reasonable next step if this keeps
+recurring in practice.
+
 ## Security / trust tradeoff — read this before wiring an agent
 
 The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of all four executor kinds against what each one actually passes:

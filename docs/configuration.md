@@ -7,6 +7,13 @@ idea-harness reads portable config from `.idea-harness/` in the project root. Ru
 You can also configure providers and the default model from the web UI (**Settings**) or the CLI
 (`idea model`), both of which write `harness.yaml` for you.
 
+A hand edit to `harness.yaml` — in an editor, not through the UI/CLI — takes effect on the daemon's
+next request for that project; no daemon restart is needed. The daemon notices the file's changed
+mtime and reloads it automatically (review defect #4). The one exception: a reload is deferred,
+with a logged warning, while that project has an operation in flight (execute, apply, revert, a
+review, …), since swapping config out from under a running one is unsafe; it reloads on the request
+after that operation finishes.
+
 ## `project.yaml`
 
 ```yaml
@@ -16,7 +23,15 @@ name: my-product   # project display name
 ## `harness.yaml`
 
 ```yaml
-# Network policy v0.1: disabled | enabled (default: disabled).
+# Network policy v0.1: disabled | enabled (default: disabled). This governs
+# ONLY the deterministic idea-brief/research/PRD pipeline: whether the
+# researcher fetches research.urls below, and whether its findings may be
+# typed "fact" (disabled downgrades every finding to "assumption"). It does
+# NOT gate the coding agent's network access or the build/test check
+# sandbox's: the coding agent (executor.kind omp/hermes) always has network
+# egress, deliberately, to reach its model API (see docs/agents.md); the
+# check sandbox always runs with no network at all, unconditionally (see
+# docs/security-model.md). Neither reads this setting (review defect #3).
 network: disabled
 
 # Review budget (§11, §16). The three fields bound different things — see the

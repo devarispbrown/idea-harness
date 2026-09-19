@@ -11,6 +11,76 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **`go test` (and other toolchains) can now actually pass inside the check
+  sandbox.** Docker's default `--tmpfs /tmp` is `noexec`, so a compiled test
+  binary — `go test`'s own, jest's native transforms, a cargo build script,
+  pytest's compiled extensions — could be written but never executed:
+  `fork/exec /tmp/go-build.../x.test: permission denied`, even though the
+  build itself succeeded. `internal/executor/sandbox.go`'s `/tmp` and
+  `/tmp/cache` tmpfs mounts are now `rw,exec,nosuid,size=1g`, with `TMPDIR`/
+  `GOTMPDIR` pointed at them explicitly; the rest of the container hardening
+  (`--network none`, read-only root, dropped capabilities, no-new-privileges,
+  resource limits) is unchanged. A real-Docker regression test
+  (`TestContainerSandboxGoTestExecutes`, skipped when Docker is unavailable)
+  runs `go test` on a tiny module inside the check sandbox and asserts it
+  passes.
+- **The change-set collector no longer sweeps up an agent's downloaded
+  toolchain.** An ICP run's agent downloaded a full Go toolchain into its
+  work root (`.tools/`, ~14,300 files), which the after-run snapshot captured
+  whole: 79 false secret-sweep findings and a diff endpoint that did not
+  respond in 100s. `fsdiff.Snapshot` now always excludes a documented list of
+  well-known cache/toolchain directories (`.git`, `node_modules`, `.tools`,
+  `.venv`, `target`, …) and, via the new `fsdiff.WithWorkspaceIgnore` option,
+  the workspace's own `.gitignore` (`git check-ignore` when the workspace is
+  a git repository, a best-effort matcher otherwise); the after-run snapshot
+  in `execute.go`/`runstate.go` additionally applies `fsdiff.WithSanityCap`
+  (3,000 files / 150 MiB), failing the run with a clear, actionable message
+  instead of hanging. `GET .../change-sets/{id}/diff` is also now bounded on
+  its own terms (`RenderPatchPage`/`StructuredDiffPage`, capped at 500 files
+  with a `total_files`/`truncated` count), so a change set persisted before
+  this fix — or simply a large one — cannot hang that endpoint either.
+- **The implementer's container never needed a toolchain, and now the brief
+  says so.** `network: disabled` in `harness.yaml` only ever governed the
+  research pipeline's offline mode — never the coding agent's network access
+  (always on, deliberately, to reach its model API) or the check sandbox's
+  (always off, unconditionally) — but nothing said so, and an ICP run's agent
+  downloaded a Go toolchain believing it needed one. `docs/configuration.md`
+  and the `NetworkPolicy` doc comment now say plainly what the setting does
+  and does not govern; the implementation brief (`runPlanner`,
+  `internal/workflow/execute.go`) now names the harness's own detected (or
+  configured) build/test commands and tells the agent not to install a
+  toolchain, compiler, or SDK — the harness runs its own checks, in an
+  isolated sandbox, right after. Offering the check image's own toolchain to
+  the agent container is documented as a follow-up (`docs/agents.md`), not
+  implemented here.
+- **A hand-edited `harness.yaml` now takes effect on the next request, not at
+  the next daemon restart.** `ReloadProject` previously only ran when the
+  daemon itself had just written the file (the provider/executor settings
+  endpoints); a hand edit — e.g. to `test_cmd` — was invisible to
+  execute/checks until the daemon was restarted, because nothing ever
+  re-read the file for a project whose runtime was already cached.
+  `Runtime.EnsureProject` (every HTTP handler's single choke point for
+  resolving a project) now compares `harness.yaml`'s mtime against the one
+  recorded at last load and reloads automatically when it changed; a reload
+  that cannot safely happen right now (an operation in flight) is logged and
+  deferred to the next request rather than failing the current one.
+- **`/costs` no longer reports a bare, misleadingly-precise total when agent
+  spend isn't measured.** Six real Sonnet runs correctly returned
+  `agent.usd: null` with `agent.note: "agent spend not measured"` from the
+  API, but `idea status` decoded neither field and printed
+  `spend: $0.0032` — the model-phase cost alone, read as the initiative's
+  total. It now prints `spend: $0.0032 (model phases only; agent spend not
+  measured) · time: ...` whenever there were real agent runs and their cost
+  isn't captured (the web UI already showed this correctly). Separately,
+  when an agent run reports token counts (`input_tokens`/`output_tokens`, or
+  the OpenAI-shaped `prompt_tokens`/`completion_tokens`) without an explicit
+  dollar figure, the cost is now computed from the model catalog's own
+  per-token pricing (`model.CostUSD`) instead of falling back to "not
+  measured". Wiring Hermes's documented `--usage-file` usage-report flag in
+  is a follow-up (`docs/agents.md`): it is documented against `hermes -z`,
+  not the `hermes chat --yolo -q ...` invocation used here, and needs
+  verifying against a real Hermes container first.
+
 - **`idea executors setup` honors the positional kind.** `idea executors setup
   omp --yes` silently ignored the positional argument and configured
   `hermes`, with no error and nothing in `--help` explaining that `--kind` was
