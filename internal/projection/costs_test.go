@@ -74,6 +74,57 @@ func TestBuildCostsByPhase(t *testing.T) {
 	}
 }
 
+// TestBuildCostsByPhase_PipelineOrder pins the review Low fix: by_phase is
+// ordered by the pipeline's own step order, not alphabetically by raw stage
+// key ("review" sorted before "research", "architecture" before "framing").
+// An unlisted stage (a future key, or a stray non-pipeline one) still
+// appears, sorted after every known stage.
+func TestBuildCostsByPhase_PipelineOrder(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	mustRun := func(stage string) {
+		t.Helper()
+		runID, err := db.CreateRun(ctx, domain.RunModel, "", "role", ini.ID, stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.CreateRunManifest(ctx, &domain.RunManifest{
+			RunID: runID, RequestedModel: "m", ActualModel: "m",
+			Usage: domain.RunUsage{CostUSD: 0.01, DurationMS: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Created out of pipeline order on purpose.
+	mustRun("review")
+	mustRun("architecture")
+	mustRun("some_future_stage")
+	mustRun("framing")
+	mustRun("research")
+
+	costs, err := BuildCosts(ctx, db, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range costs.ByPhase {
+		got = append(got, p.Phase)
+	}
+	want := []string{"framing", "research", "review", "architecture", "some_future_stage"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: got %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // TestAgentCostFromRuns_NotMeasuredByDefault pins the safe default: with no
 // change sets (or none whose AgentOutput parses), usd is nil with a note --
 // never a guess.
@@ -162,6 +213,16 @@ func TestParseAgentCostUSD(t *testing.T) {
 		{"total cost: $1.20", 1.20, true},
 		{"cost=$0.03", 0.03, true},
 		{"no mention of spend here", 0, false},
+		// M6, review fix: a bare "cost: 10" with no "$" is not a dollar
+		// figure -- e.g. incidental YAML the agent printed -- and must not
+		// be misread as one.
+		{"cost: 10\nname: build-step", 0, false},
+		// M6, review fix: a per-step cost printed before the run's own
+		// final total must not win over that total.
+		{"step 1 cost: $0.01\nstep 2 cost: $0.02\ntotal cost: $0.42", 0.42, true},
+		// Without an explicit "total" label, the LAST plain cost wins (most
+		// agents print a running total last).
+		{"cost: $0.01\ncost: $0.05", 0.05, true},
 	}
 	for _, c := range cases {
 		got, ok := ParseAgentCostUSD(c.in)
@@ -172,5 +233,52 @@ func TestParseAgentCostUSD(t *testing.T) {
 		if ok && (got < c.want-0.0001 || got > c.want+0.0001) {
 			t.Errorf("ParseAgentCostUSD(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// TestAgentCostFromRuns_DenominatorIsRunCountNotChangeSetCount pins M6: a
+// placeholder/demo change set (no AgentOutput at all, alongside a real agent
+// run that DID report its cost) must not make the total read "not measured"
+// -- the denominator is the agent run count, not the change-set count.
+func TestAgentCostFromRuns_DenominatorIsRunCountNotChangeSetCount(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s"}
+	if err := db.CreateTaskMulti(ctx, task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// One real agent-produced change set with a parseable cost.
+	real := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d1", Executor: "hermes", AgentOutput: "total cost: $0.50"}
+	if err := db.CreateChangeSet(ctx, real); err != nil {
+		t.Fatal(err)
+	}
+	// One placeholder/demo change set: no agent ever ran for it, so it has
+	// no AgentOutput and never will.
+	placeholder := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d2", Executor: "internal", Model: "demo"}
+	if err := db.CreateChangeSet(ctx, placeholder); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := db.CreateRun(ctx, domain.RunAgent, "", "implementer", ini.ID, "agent:TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateRunManifest(ctx, &domain.RunManifest{RunID: runID, Usage: domain.RunUsage{DurationMS: 500}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.ListAgentRunStats(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := AgentCostFromRuns(ctx, db, ini.ID, stats)
+	if agent.USD == nil {
+		t.Fatal("usd is nil, want 0.50 -- the one real run's cost was fully measured")
+	}
+	if *agent.USD < 0.499 || *agent.USD > 0.501 {
+		t.Errorf("usd = %v, want ~0.50", *agent.USD)
 	}
 }

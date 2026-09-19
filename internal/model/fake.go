@@ -17,6 +17,7 @@ type FakeProvider struct {
 	mu        sync.RWMutex
 	responses map[string]string
 	queue     map[string][]string // schema name -> queued responses (FIFO)
+	costQueue map[string][]float64 // schema name -> queued CostUSD (FIFO)
 	caps      Capabilities
 	calls     []Request
 }
@@ -96,6 +97,21 @@ func (f *FakeProvider) EnqueueResponse(schemaName, rawJSON string) {
 	f.queue[schemaName] = append(f.queue[schemaName], rawJSON)
 }
 
+// EnqueueCost appends a CostUSD to report on the NEXT Complete() call for a
+// schema name (FIFO, independent of EnqueueResponse's own queue) -- for
+// tests that need to script a specific per-attempt spend, e.g. proving a
+// retried call's cost is accumulated rather than overwritten by the next
+// attempt's (M5, review fix). A schema with nothing queued reports 0, as
+// before this existed.
+func (f *FakeProvider) EnqueueCost(schemaName string, usd float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.costQueue == nil {
+		f.costQueue = map[string][]float64{}
+	}
+	f.costQueue[schemaName] = append(f.costQueue[schemaName], usd)
+}
+
 // Name implements Provider.
 func (f *FakeProvider) Name() string { return "demo" }
 
@@ -117,6 +133,11 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 	if raw == "" {
 		raw = f.responses[req.Model]
 	}
+	costUSD := 0.0
+	if q := f.costQueue[req.JSONSchemaName]; len(q) > 0 {
+		costUSD = q[0]
+		f.costQueue[req.JSONSchemaName] = q[1:]
+	}
 	f.mu.Unlock()
 
 	if raw == "" {
@@ -133,7 +154,7 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 	return Response{
 		RawJSON:     raw,
 		Text:        raw,
-		Usage:       Usage{InputTokens: 0, OutputTokens: 0, CostUSD: 0},
+		Usage:       Usage{InputTokens: 0, OutputTokens: 0, CostUSD: costUSD},
 		ActualModel: "demo",
 	}, nil
 }

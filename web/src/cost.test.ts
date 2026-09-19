@@ -86,9 +86,13 @@ describe("costLine", () => {
     expect(costLine(costs())).toBe("$1.50 · 1m 30s");
   });
 
-  it("adds the agent segment once there is at least one agent run", () => {
+  // The time figure includes the agent's own seconds (review Low fix,
+  // matching `idea status`'s cliCosts.summary()): this used to sum only
+  // by_phase, so the same initiative showed a shorter elapsed time on the
+  // web than at the CLI. by_phase's 90s + the agent's 300s = 390s = 6m 30s.
+  it("adds the agent segment once there is at least one agent run, and folds the agent's seconds into the time figure", () => {
     const line = costLine(costs({ agent: { runs: 2, seconds: 300, usd: 0.8 } }));
-    expect(line).toBe("$1.50 · 1m 30s · agent: $0.80");
+    expect(line).toBe("$1.50 · 6m 30s · agent: $0.80");
   });
 
   it("shows 'not measured' for the agent segment when usd is null but runs exist", () => {

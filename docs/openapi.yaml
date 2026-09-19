@@ -633,9 +633,14 @@ paths:
       operationId: markSeen
       summary: Advance the UI read cursor
       description: |
-        Sets the project's `ui` read cursor to `through`, clamped to the highest event sequence, so
-        What Changed never clears events that arrived mid-read. Project-scoped despite pairing with
-        an initiative view.
+        Sets a read cursor to `through`, clamped to the highest event sequence, so What Changed
+        never clears events that arrived mid-read.
+
+        `initiative_id` (M1, wave 3 review fix) scopes the cursor to that one initiative
+        (`ui:<initiativeId>`) -- required so that marking one initiative seen cannot advance a
+        single project-wide cursor past another initiative's own, still-unseen events. Optional
+        and backward compatible: omitting it keeps writing the project-wide `ui` cursor, exactly
+        as every caller before this field existed.
       requestBody:
         required: true
         content:
@@ -648,6 +653,11 @@ paths:
                   format: int64
                   minimum: 0
                   description: The sequence echoed from `/changed`.
+                initiative_id:
+                  type: string
+                  description: >-
+                    Scopes the cursor to this initiative (`ui:<initiativeId>`). Omitted: writes
+                    the project-wide `ui` cursor (back-compat default).
               required: [through]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
@@ -949,10 +959,15 @@ paths:
                 confirm_passing_tests:
                   type: boolean
                   description: |
-                    C2, wave 3 contract: confirms every requirement whose mapped tests
-                    (`evidence_tests` on `GET .../requirements`) all passed, through the same
-                    human-evidence path as a manual pass, actor `human`. Nothing is ever
-                    auto-verified without this explicit request.
+                    C2/C3/H2/H4, wave 3 contract: confirms every requirement that is `approved`
+                    (never `draft`, `removed`, or one already carrying a human's own
+                    `verified`/`failed`/`waived` judgment), has acceptance criteria, and whose
+                    mapped tests (`evidence_tests` on `GET .../requirements`) all passed, through
+                    the same human-evidence path as a manual pass, actor `human`. Requires at
+                    least one applied change set for the initiative. Nothing is ever
+                    auto-verified without this explicit request, and one ineligible requirement
+                    never aborts the rest -- every candidate is attempted independently and the
+                    response says which were confirmed and which were skipped, and why.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -966,6 +981,26 @@ paths:
                   coverage:
                     type: array
                     items: { $ref: "#/components/schemas/Coverage" }
+                  confirmed:
+                    type: array
+                    items: { type: string }
+                    description: >-
+                      Present only when `confirm_passing_tests` was sent: the requirement codes
+                      it actually confirmed.
+                  skipped:
+                    type: array
+                    description: >-
+                      Present only when `confirm_passing_tests` was sent: every candidate
+                      requirement it looked at but did not confirm, and why (e.g. "no acceptance
+                      criteria", "not every mapped test passed", "the initiative has no applied
+                      change set yet"). A requirement that was never a candidate at all (already
+                      verified/failed/waived, draft, or removed) is not listed here.
+                    items:
+                      type: object
+                      properties:
+                        requirement: { type: string }
+                        reason: { type: string }
+                      required: [requirement, reason]
                 required: [status, coverage]
         "400":
           description: "`invalid body`, or the domain error from recording evidence or running the gate."
@@ -1340,22 +1375,28 @@ paths:
       operationId: retryInitiative
       summary: Re-run a failed initiative under a chosen model
       description: |
-        Restarts a run that failed, with the model named explicitly rather than inherited - a run
-        that failed on one model is often retried on another, and making the choice part of the
-        request keeps that decision in the operation's record.
+        Restarts a run that failed. `model` names the model explicitly rather than inheriting one
+        - a run that failed on one model is often retried on another, and making the choice part
+        of the request keeps that decision in the operation's record.
+
+        M4, wave 3 review fix: the whole body, including `model`, is optional and decoded
+        leniently (like `fresh`/`note` on `/execute`) - a caller that sends only `{"note":"..."}`
+        must not be rejected as if `model` were required. An absent or blank `model` falls back
+        to the initiative's already-configured default model, same as before this field existed.
 
         Asynchronous: poll the returned operation.
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              required: [model]
               properties:
                 model:
                   type: string
-                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-5`."
+                  description: >-
+                    `provider/model`, e.g. `anthropic/claude-sonnet-5`. Optional: falls back to
+                    the initiative's configured default model when absent or blank.
                 note:
                   type: string
                   description: |
@@ -1366,11 +1407,6 @@ paths:
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
-        "400":
-          description: model was empty.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1460,8 +1496,19 @@ paths:
       description: |
         D-b, wave 3 contract. Everything that needs the user across every initiative in the
         project: open blocking decisions, change sets awaiting review, conflicts, denials, stale
-        items, and verifications ready to confirm. Ranked blocking first, then by age (`rank`,
-        ascending — lower is more urgent); the list is returned pre-sorted.
+        items, and verifications ready to confirm. Ranked blocking first, then by age; the list
+        is returned pre-sorted.
+
+        `rank` (H6, wave 3 review fix) is a small 1..N ordinal position in that sorted list -- 1
+        is always the single most urgent item, N is the list's length -- never the daemon's
+        internal tier/age sort key (which routinely exceeds a double's safe-integer range and has
+        no meaning on its own). A denied change set (H3, review fix) appears here only for the
+        latest change set of its task, and only when a finding on it actually carries a
+        machine-readable deny code -- never for a plain human reject, a plain check failure, or an
+        attempt since superseded by a later one on the same task. A "ready to confirm" item (H4)
+        mirrors `confirm_passing_tests`' own eligibility: only an `approved` requirement. An
+        initiative that is `complete` or `failed` contributes nothing (H3): the queue is nothing
+        left for either to act on through it.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -4745,7 +4792,16 @@ components:
     TimelineEntry:
       type: object
       title: TimelineEntry
-      description: One human-language line of an initiative's timeline (C1, wave 3 contract).
+      description: |
+        One human-language line of an initiative's timeline (C1, wave 3 contract).
+
+        M3, wave 3 review fix: `change_set_denied` is reserved for a genuine system block -- a
+        finding on that change set carries a machine-readable deny code (a secret, PII, a path
+        escape, host exec, a blob mismatch, an unresolved blocking review finding). A plain check
+        failure (build/tests) and the restart-reconcile sweep (an interrupted run recovering, with
+        no findings of its own) both read `change_set_rejected` instead, same as a human
+        reviewer's own reject verdict -- none of those three is a system-level deny, whatever actor
+        recorded the transition.
       properties:
         at: { type: string, format: date-time }
         kind:
@@ -4802,6 +4858,10 @@ components:
         by_phase:
           type: array
           items: { $ref: "#/components/schemas/PhaseCost" }
+          description: >-
+            Ordered by the pipeline's own step order (framing, research, product_definition,
+            review, ...), not alphabetically by stage key; a stage the pipeline order does not
+            name sorts after every known one (review Low fix).
         agent: { $ref: "#/components/schemas/AgentCost" }
       required: [total_usd, by_phase, agent]
 
@@ -4818,8 +4878,12 @@ components:
         label: { type: string }
         rank:
           type: integer
-          format: int64
-          description: Sort key, ascending — lower is more urgent. Blocking items first, then by age.
+          format: int32
+          description: >-
+            A small 1..N ordinal position in the returned (already-sorted) list -- 1 is the
+            single most urgent item, N is the list's length (H6, wave 3 review fix: never the
+            internal tier/age sort key, which routinely exceeded a double's safe-integer range
+            and rendered as a garbled number).
         href: { type: string, description: "A client-side route, e.g. `#/i/<id>/build`." }
       required: [initiative_id, short_title, kind, label, rank, href]
 

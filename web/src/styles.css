@@ -3019,6 +3019,23 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   font-size: 0.85rem;
 }
 .w3-timeline-when { color: var(--text-muted); white-space: nowrap; }
+/* review Low fix: a real <button> for an entry whose `ref` links somewhere,
+   reset to read exactly like the plain-text row it replaces, with only a
+   hover/focus underline as the affordance that it is actually clickable. */
+.w3-timeline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.w3-timeline-link:hover,
+.w3-timeline-link:focus-visible {
+  text-decoration: underline;
+}
 .w3-timeline-day { margin-top: 16px; }
 .w3-timeline-day:first-child { margin-top: 0; }
 .w3-timeline-day h4 { margin: 0 0 6px; font-size: 0.85rem; color: var(--text-muted); }
@@ -3047,13 +3064,20 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--sunken);
   cursor: pointer;
+  /* review Low fix: this is now a real <button> (keyboard/screen-reader
+     reachable), reset to keep the same row look it had as a bare <li>. */
+  font: inherit;
+  color: inherit;
+  text-align: left;
 }
-.w3-queue-row:hover { border-color: var(--accent-line); }
+.w3-queue-row:hover,
+.w3-queue-row:focus-visible { border-color: var(--accent-line); }
 .w3-queue-title { font-weight: 600; }
 
 /* Triage collapse (B4). */

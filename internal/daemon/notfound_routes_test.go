@@ -53,8 +53,13 @@ var routeBodies = map[string]string{
 var wantStatus = map[string]int{
 	// Body validated before the lookup. Defensible, and reversing it buys a
 	// client nothing -- both are 4xx and both name the real problem.
+	//
+	// retry used to be in this list too: it required `model` before ever
+	// looking up the initiative, so a bogus id answered 400 "model is
+	// required" instead of 404. M4 (review fix) made `model` optional
+	// (lenient decoding, like `fresh` on /execute), which incidentally fixed
+	// this too -- a bogus id now reaches the real lookup and gets a real 404.
 	"POST /api/v1/projects/{projectId}/initiatives":                   http.StatusBadRequest,
-	"POST /api/v1/projects/{projectId}/initiatives/{id}/retry":        http.StatusBadRequest,
 	"POST /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase": http.StatusBadRequest,
 }
 

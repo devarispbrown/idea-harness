@@ -482,6 +482,89 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   the endpoint had no way to read or write them). `review_rigor` is validated against
   `auto|quick|standard|thorough`.
 
+### Fixed — surfaces, wave 3 adversarial review (C1, C2, C3, H1–H6, M1–M8)
+
+- **`confirm_passing_tests` could verify a requirement whose tests failed, never ran, or belonged
+  to another requirement** (C1). Evidence now comes only from the latest `tests` finding of each
+  task's latest change set, and only when that change set is applied (not reverted, rejected, or
+  superseded) and its own check exited 0. A test the verification plan names that is missing from
+  the check output now counts as failed, never silently dropped. Fallback code matching (a test
+  name containing a requirement's code) is now a word-boundary match, so `REQ-1` can no longer pick
+  up `REQ-10`'s test. Check output for a `tests` check is no longer truncated at 2000 bytes before
+  parsing.
+- **A coding agent's own test output could forge a passing result** (C2). A test name's parsed
+  result is now sticky-fail: once any occurrence of it reads as failed, a later line claiming it
+  passed can never overturn that, in either order. A `go test` check command now runs with
+  `-json` appended, so a Go result is read from `go test`'s own structured event stream (exact
+  package + test identity) rather than scraped from `-v` text; the text parser remains as a
+  fallback for other formats and gains the same sticky-fail rule, plus a guard against a result for
+  a test name whose own start marker never appeared once real markers are present in the stream.
+- **`confirm_passing_tests` could overwrite a human's recorded fail or waiver, abort mid-loop
+  leaving partial writes, or run with nothing built** (C3/H2/H4). It now only ever touches a
+  requirement that is `approved` (never `draft`, `removed`, or one already carrying a human
+  verdict), has acceptance criteria, and requires at least one applied change set for the
+  initiative. One ineligible requirement is skipped and reported, never aborting the rest; the
+  response now includes `confirmed` and `skipped` (with a reason) so a caller sees exactly what
+  happened. The Verify page's "Confirm all with passing tests" button is gated on something having
+  actually been built and applied (same as manual Pass/Fail), and its confirmation dialog now
+  names the exact requirement codes about to be flipped.
+- **Rejected change sets and unconfirmable requirements stayed in the "needs you" queue forever**
+  (H3/H4). A denial now shows only for the latest change set of its task, and only when a finding
+  on it carries a real system deny code — never a plain human reject, a plain check failure, or an
+  attempt since superseded by a later one on the same task. "Ready to confirm" now mirrors
+  `confirm_passing_tests`' own eligibility (`approved` only). A `complete` or `failed` initiative no
+  longer contributes anything to the queue.
+- **`pr_url` and a PR check's `link` were rendered as `href` with no scheme check** (H5): a
+  non-`http(s)` value (`gh` output, a third-party CI provider) now renders as plain text instead of
+  a clickable link.
+- **Queue `rank` was the internal `tier·2^59 + ms` sort key**, well past JavaScript's safe-integer
+  range, rendering as a garbled number (H6). It is now a small 1..N ordinal (1 = most urgent); the
+  UI no longer displays a raw internal number.
+- **Marking one initiative's "what changed" seen could hide another initiative's own unseen
+  changes** (M1): `POST …/seen` gained an optional `initiative_id`, writing a per-initiative cursor
+  (`ui:<initiativeId>`) instead of the one shared project-wide cursor; omitted, it keeps writing
+  that project-wide cursor exactly as before.
+- **The initiative-scoped event query silently dropped several event types** (M2):
+  `requirements.superseded`/`assertions.superseded` (recorded against the initiative id, which the
+  per-row subquery never matched) and `verification_evidence`, `stale_item`, `context_doc`,
+  `doc_comment` (not covered by any clause at all) now all appear in "what changed" again.
+- **Timeline entries mislabeled several rejections "denied"** (M3): a plain check failure
+  (build/tests) and the restart-reconcile sweep (an interrupted run recovering, no findings of its
+  own) now read `change_set_rejected` like a human reject would; `change_set_denied` is reserved for
+  a finding that actually carries a system deny code. A `phase_completed` entry is no longer emitted
+  for a `->running` resume or a `->failed` transition (already reported once as `run_failed`).
+- **`POST …/retry` required `model` even when only `note` was sent**, rejecting it with `400 model
+  is required` despite already being documented as decoded leniently (M4). `model` is now genuinely
+  optional; an absent or blank value falls back to the initiative's configured default, as before.
+- **Costs were understated** (M5): a model call's manifest now records the accumulated cost across
+  every retried attempt (not just the last one), and a model run that ultimately fails still writes
+  a manifest for whatever it actually spent. `describeImage` vision calls now get a real run and
+  manifest of their own, so their spend appears under `GET …/costs` instead of only being charged
+  against the shared budget with no attribution.
+- **The agent cost regex was too loose** (M6): it now requires a `$` (a bare `cost: 10` in
+  incidental output is no longer read as a dollar figure), and prefers an explicit "total cost"
+  label or else the LAST plain cost line, instead of the first one found anywhere. The "not
+  measured" fallback now compares against the actual agent run count, not the change-set count, so
+  a placeholder/demo change set alongside one real, fully-measured run no longer reads as
+  unmeasured.
+- **"Since you were last here" stamped only the moment an initiative was opened**, so everything
+  that happened during that visit — including the user's own actions — still read as new next time
+  (M7). It now also stamps on leaving.
+- **The Settings allowlist UI read a field the backend never sends** (M8): `fingerprint_prefix` is
+  now `fingerprint` (the field actually sent), truncated for display client-side.
+- Parser/UI polish: a TAP name containing `#` is no longer truncated at it (only a real `SKIP`/`TODO`
+  directive is stripped); a `go test` package-summary line whose package path starts with a digit
+  (e.g. `1password/foo`) is no longer misread as a TAP result; a pytest `ERROR` row now counts as
+  failed instead of being ignored; a `[tests: …]` list is no longer cut at the first `]` inside a
+  name. The "what changed" day grouping now buckets by the viewer's own local calendar day, not UTC.
+  A timeline entry whose `ref` names a change set or decision is now a real, keyboard-reachable link
+  to it. Queue rows are real `<button>`s (previously a bare `<li onClick>`, unreachable by keyboard
+  or a screen reader). `StaleBanner` uses `role="status"` instead of `role="alert"`. The web cost
+  line now includes agent seconds in its time figure, matching `idea status`. An operation's `stage`
+  is now cleared once it reaches a terminal status (succeeded, failed, or cancelled), instead of
+  showing the last step it was on forever after. `GET .../costs`' `by_phase` is now ordered by the
+  pipeline's own step order, not alphabetically by raw stage key.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added
