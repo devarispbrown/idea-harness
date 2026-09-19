@@ -28,6 +28,12 @@ func TestCalibrateRigor(t *testing.T) {
 		{"large project -> thorough even with a small change", RigorAuto, projectScale{Files: 500, LOC: 50000}, changeSize{Requirements: 1}, RigorThorough},
 		{"large change -> thorough even on a small project", RigorAuto, projectScale{Files: 5, LOC: 100}, changeSize{Requirements: 20}, RigorThorough},
 		{"mid-size -> standard", RigorAuto, projectScale{Files: 80, LOC: 8000}, changeSize{Requirements: 5}, RigorStandard},
+		// ICP re-run #1: a small idea on a small project must calibrate to
+		// quick from IdeaWords alone, with NO requirement count at all --
+		// this is the PRD-authoring/review calibration input, computed
+		// before the PRD (and its >=9 requirements) exists.
+		{"small idea, small project -> quick (no requirement count at all)", RigorAuto, projectScale{Files: 10, LOC: 400}, changeSize{IdeaWords: 8}, RigorQuick},
+		{"long idea -> thorough even on a small project", RigorAuto, projectScale{Files: 10, LOC: 400}, changeSize{IdeaWords: 200}, RigorThorough},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -168,7 +174,7 @@ func TestPRDPromptIncludesScaleAndStackSection(t *testing.T) {
 	if err := eng.runFraming(ctx, ini.ID, "add a widget"); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.runProductDefinition(ctx, ini.ID, nil); err != nil {
+	if err := eng.runProductDefinition(ctx, ini.ID, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -427,5 +433,229 @@ func TestRenderConventionsLabelsContentAsUntrusted(t *testing.T) {
 	// No conventions doc: no untrusted block at all (nothing to label).
 	if strings.Contains(renderConventions(""), "UNTRUSTED") {
 		t.Fatal("expected no untrusted block when there are no conventions")
+	}
+}
+
+// TestPRDCalibrationIgnoresItsOwnRequirementCount is review ICP re-run #1's
+// headline case: a real ICP run on an 89-line HTTP service found that
+// `review.rigor: auto` could never select `quick` for the PRD, because the
+// PM model always wrote >=9 requirements regardless of idea size, and
+// calibration used THAT count. Here the scripted PM writes 12 requirements
+// for a one-word idea on a small project; if calibration were still reading
+// the PRD's own requirement count, 12 > the small-project cap of 3 would
+// push this to standard/thorough. It must still land on quick, converging
+// in a single PRD-authoring call despite a blocking review finding.
+func TestPRDCalibrationIgnoresItsOwnRequirementCount(t *testing.T) {
+	fp := scriptedProvider()
+	var reqs strings.Builder
+	reqs.WriteString(`{"summary":"PRD","requirements":[`)
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			reqs.WriteString(",")
+		}
+		fmt.Fprintf(&reqs, `{"statement":"requirement %d","priority":"must",`+
+			`"acceptance_criteria":[{"metric":"m%d","target":">= 1","condition":"c"}]}`, i, i)
+	}
+	reqs.WriteString(`],"decisions":[],"open_questions":[],"risks":[]}`)
+	fp.SetResponse("prd", reqs.String())
+	fp.SetResponse("review", `{"findings":[{`+
+		`"severity":"high","confidence":"high","category":"x",`+
+		`"finding":"a real problem","recommendation":"fix it"`+
+		`}]}`)
+
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module x\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eng.SetWorkspaceRoot(workspace)
+
+	ini := &domain.Initiative{Title: "x", Description: "add auth"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	status, err := eng.Run(ctx, ini.ID, ini.Description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.InitiativeApproved {
+		t.Fatalf("a small idea on a small project must calibrate to quick and converge despite 12 requirements, got %q", status)
+	}
+
+	prdCalls := 0
+	for _, call := range fp.Calls() {
+		if call.JSONSchemaName == "prd" {
+			prdCalls++
+		}
+	}
+	if prdCalls != 1 {
+		t.Fatalf("expected exactly 1 PRD-authoring call (quick converges in one pass), got %d", prdCalls)
+	}
+}
+
+// TestPRDPromptIncludesProportionateRequirementGuidance is review ICP re-run
+// #1: the PRD-authoring prompt states a target requirement count scaled to
+// project/idea size, and tells the model acceptance criteria must be
+// testable by the project's own tests -- not lab-grade measurement
+// methodology, statistical sampling, or hardware specs unless the idea
+// itself asks for performance work.
+func TestPRDPromptIncludesProportionateRequirementGuidance(t *testing.T) {
+	fp := scriptedProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "add a widget"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.runProductDefinition(ctx, ini.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, call := range fp.Calls() {
+		if call.JSONSchemaName != "prd" {
+			continue
+		}
+		if !strings.Contains(call.System, "Target") || !strings.Contains(call.System, "requirements for this idea") {
+			t.Errorf("PRD prompt missing the target requirement count guidance:\n%s", call.System)
+		}
+		if !strings.Contains(call.System, "do not require statistical sample sizes") {
+			t.Errorf("PRD prompt missing the no-lab-grade-metrics guidance:\n%s", call.System)
+		}
+	}
+}
+
+// TestPRDReviewerPromptIncludesRigorAndSeverityGuidance is review ICP re-run
+// #1: the PRD adversarial reviewer's prompt always states the rigor and
+// project scale it is reviewing at, and at quick/standard rigor caps "high"
+// severity to ambiguity that would cause a wrong or unsafe implementation --
+// the ICP round this answers saw 13 "high" findings demanding statistical
+// rigor and hardware specs from a toy app.
+func TestPRDReviewerPromptIncludesRigorAndSeverityGuidance(t *testing.T) {
+	for _, rigor := range []RigorLevel{RigorQuick, RigorStandard, RigorThorough} {
+		t.Run(string(rigor), func(t *testing.T) {
+			fp := scriptedProvider()
+			eng, db := newTestEngine(t, fp, config.HarnessConfig{
+				Network: config.NetworkDisabled,
+				Review:  config.ReviewConfig{MaxCycles: 3, Rigor: string(rigor)},
+			})
+			ctx := context.Background()
+
+			ini := &domain.Initiative{Title: "x", Description: "x"}
+			if err := db.CreateInitiative(ctx, ini); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Run(ctx, ini.ID, ini.Description); err != nil {
+				t.Fatal(err)
+			}
+
+			found := false
+			for _, call := range fp.Calls() {
+				if call.JSONSchemaName != "review" {
+					continue
+				}
+				found = true
+				if !strings.Contains(call.System, "Review rigor for this PRD is "+string(rigor)) {
+					t.Errorf("reviewer prompt at rigor %s missing the rigor/scale sentence:\n%s", rigor, call.System)
+				}
+				wantSeverityCap := rigor != RigorThorough
+				hasSeverityCap := strings.Contains(call.System, "WRONG or UNSAFE implementation")
+				if hasSeverityCap != wantSeverityCap {
+					t.Errorf("reviewer prompt at rigor %s: severity-cap guidance present=%v, want %v:\n%s",
+						rigor, hasSeverityCap, wantSeverityCap, call.System)
+				}
+			}
+			if !found {
+				t.Fatal("expected at least one adversarial review call")
+			}
+		})
+	}
+}
+
+// TestReviseKeepsRequirementCodesStableAndPreservesEdges is review ICP
+// re-run #1's revision-churn fix: a revise cycle that continues a
+// requirement's subject (cited by its existing code) must update that
+// requirement IN PLACE -- same id, same code -- not supersede-and-recreate
+// it, so its derived_from edge to the decision that shaped it survives, and
+// requirement history stays readable instead of gaining a new REQ code every
+// cycle.
+func TestReviseKeepsRequirementCodesStableAndPreservesEdges(t *testing.T) {
+	fp := scriptedProvider()
+	// Cycle 1: a vague acceptance criterion trips a deterministic HIGH
+	// finding every time, forcing a revise. The requirement is shaped by a
+	// decision, so runProductDefinition wires a derived_from edge to it.
+	fp.EnqueueResponse("prd", `{"summary":"PRD","requirements":[{"statement":"Rate limit the API","priority":"must",`+
+		`"acceptance_criteria":[{"metric":"latency","target":"fast","condition":""}],`+
+		`"decision":"Which rate limit algorithm should we use?"}],`+
+		`"decisions":[{"question":"Which rate limit algorithm should we use?","options":["token bucket","fixed window"],"recommendation":"token bucket"}],`+
+		`"open_questions":[],"risks":[]}`)
+	// Cycle 2: the SAME requirement, now citing REQ-1's exact code and a
+	// quantified acceptance criterion -- this must update REQ-1 in place,
+	// not create REQ-2.
+	fp.EnqueueResponse("prd", `{"summary":"PRD","requirements":[{"statement":"Rate limit the API","priority":"must","code":"REQ-1",`+
+		`"acceptance_criteria":[{"metric":"latency","target":"< 50ms","condition":"p99"}],`+
+		`"decision":"Which rate limit algorithm should we use?"}],`+
+		`"decisions":[{"question":"Which rate limit algorithm should we use?","options":["token bucket","fixed window"],"recommendation":"token bucket"}],`+
+		`"open_questions":[],"risks":[]}`)
+	fp.SetResponse("review", `{"findings":[]}`)
+
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3, Rigor: "standard"},
+	})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "add rate limiting"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	status, err := eng.Run(ctx, ini.ID, ini.Description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.InitiativeApproved {
+		t.Fatalf("expected approved after the revision fixed the vague criterion, got %q", status)
+	}
+
+	allReqs, err := db.ListRequirements(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allReqs) != 1 {
+		t.Fatalf("expected the revision to UPDATE the one requirement in place, not add a second row: got %d: %+v", len(allReqs), allReqs)
+	}
+	req := allReqs[0]
+	if req.Code != "REQ-1" {
+		t.Fatalf("expected the requirement to keep its original code REQ-1, got %q", req.Code)
+	}
+	if req.Status == domain.RequirementRemoved {
+		t.Fatalf("the updated-in-place requirement must not end up superseded: %+v", req)
+	}
+	if req.AcceptanceCriteria[0].Target != "< 50ms" {
+		t.Fatalf("expected the revised acceptance criterion to be persisted, got %+v", req.AcceptanceCriteria)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 1 {
+		t.Fatalf("expected the re-listed decision to merge into the existing one, got %d: %+v", len(decs), decs)
+	}
+
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "requirement", req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDerivedFrom && e.ToID == decs[0].ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the updated-in-place requirement to keep its derived_from edge to the decision, got edges %+v", edges)
 	}
 }
