@@ -138,6 +138,37 @@ func TestRevertRefusalNamesALaterChangeSetInstead(t *testing.T) {
 	}
 }
 
+// TestRevertRefusalNamesTheLatestLaterChangeSetNotTheEarliest is review the
+// low-priority item: laterChangeSetsTouchingByFile used to keep only the
+// FIRST later change set it found touching a file, so with cs1 (being
+// reverted) < cs2 < cs3 all touching server.js, the advice named cs2 --
+// "revert CHG-2 first" -- when cs3 is what's actually sitting on top.
+// Following that advice would fail the same stale-workspace check again
+// (cs3 still touches the file), producing a second refusal instead of
+// unwinding anything. The advice must name the LATEST toucher, cs3.
+func TestRevertRefusalNamesTheLatestLaterChangeSetNotTheEarliest(t *testing.T) {
+	eng, db, iniID, _ := newWorkspaceFixture(t)
+	addTask(t, db, iniID, "add /health")
+	cs1 := applyOneTask(t, eng, db, iniID)
+
+	addTask(t, db, iniID, "add /metrics")
+	cs2 := applyOneTask(t, eng, db, iniID)
+
+	addTask(t, db, iniID, "add /status")
+	cs3 := applyOneTask(t, eng, db, iniID)
+
+	err := eng.RevertChangeSet(context.Background(), iniID, cs1.ID)
+	if err == nil {
+		t.Fatal("want a refusal: cs2 and cs3 both touched the same file after cs1 was applied")
+	}
+	if !strings.Contains(err.Error(), "revert "+cs3.HumanID+" first") {
+		t.Errorf("refusal does not name the LATEST toucher %s to revert first: %v", cs3.HumanID, err)
+	}
+	if strings.Contains(err.Error(), "revert "+cs2.HumanID+" first") {
+		t.Errorf("refusal names the EARLIEST later change set %s instead of the latest %s: %v", cs2.HumanID, cs3.HumanID, err)
+	}
+}
+
 // TestRevertSucceedsWhenWorkspaceUntouched is the control: revert must still
 // work in the ordinary case where nothing changed after apply.
 func TestRevertSucceedsWhenWorkspaceUntouched(t *testing.T) {

@@ -1525,14 +1525,24 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
+	// DependsOn is a pointer (review low-priority item): {} or a misspelled
+	// field name decodes to a nil field, which must be refused rather than
+	// silently treated as depends_on: [] and clearing every existing
+	// dependency. An explicitly empty array, {"depends_on": []}, decodes to
+	// a non-nil pointer to an empty slice and is still the legitimate "make
+	// this task depend on nothing" request the doc comment above describes.
 	var body struct {
-		DependsOn []string `json:"depends_on"`
+		DependsOn *[]string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, body.DependsOn)
+	if body.DependsOn == nil {
+		writeError(w, http.StatusBadRequest, "depends_on is required (use [] to clear all dependencies)")
+		return
+	}
+	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, *body.DependsOn)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return

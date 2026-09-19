@@ -484,3 +484,54 @@ func TestSetTaskDependsOnConcurrentRequestsNeverCreateACycle(t *testing.T) {
 		t.Fatal("expected exactly one of the two dependency edges to have been written")
 	}
 }
+
+// TestSetTaskDependsOnRejectsMissingField is the review low-priority item: a
+// body with no depends_on field at all (or a misspelled key) used to decode
+// to a nil/zero slice and silently clear every existing dependency. It must
+// be refused with 400 instead, and existing dependencies must survive.
+func TestSetTaskDependsOnRejectsMissingField(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, []string{a.ID}) // B depends on A
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + b.ID + "/depends-on"
+
+	for _, body := range []string{`{}`, `{"deppends_on":["` + a.Code + `"]}`} {
+		resp := doReq(t, http.MethodPost, url, token, "", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("body %s: expected 400 for a missing depends_on field, got %d: %s", body, resp.StatusCode, errorBody(t, resp))
+		}
+	}
+
+	// B's existing dependency on A must survive untouched.
+	edges, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDependsOn && e.ToID == a.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("B's existing dependency on A was silently cleared by a request with no depends_on field")
+	}
+
+	// An EXPLICIT empty array is still the legitimate "clear all
+	// dependencies" request.
+	resp := doReq(t, http.MethodPost, url, token, "", `{"depends_on":[]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an explicit empty depends_on, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	edges2, err := pr.db.ListGraphEdgesFrom(t.Context(), iniID, "task", b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range edges2 {
+		if e.EdgeType == domain.EdgeDependsOn {
+			t.Fatalf("expected all dependencies cleared by an explicit empty depends_on, got %+v", e)
+		}
+	}
+}

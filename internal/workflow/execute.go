@@ -1907,13 +1907,25 @@ func revertRefusedMessage(humanID string, stale []string, laterByFile map[string
 }
 
 // laterChangeSetsTouchingByFile maps each of files to the HumanID of the
-// earliest OTHER applied change set for cs's initiative, created after cs,
-// whose own patch touches that path (review M4). Used so a revert refusal
-// can tell the human which later change set to revert first instead of
-// wrongly suggesting they "discard" what is actually a legitimate later
-// change. Best-effort: a patch that fails to load for one candidate change
-// set is skipped rather than failing the whole lookup, since this only
-// sharpens advice text and must never itself block or fail a revert attempt.
+// LATEST OTHER applied change set for cs's initiative, created after cs,
+// whose own patch touches that path (review M4, low-priority item). Used so
+// a revert refusal can tell the human which later change set to revert
+// first instead of wrongly suggesting they "discard" what is actually a
+// legitimate later change.
+//
+// The latest, not the earliest: if a file was touched by CHG-2 and then
+// again by CHG-3 (both after the change set being reverted), CHG-3's
+// content is what currently sits on top -- reverting CHG-2 first, as the
+// earliest-wins version of this used to advise, would fail the same
+// stale-workspace check for the same reason (CHG-3 still sits on top of
+// it), producing a second refusal instead of unwinding anything.
+// ListChangeSets returns oldest-first, so always overwriting rather than
+// keeping only the first match naturally leaves each file's LATEST toucher
+// once the loop finishes.
+//
+// Best-effort: a patch that fails to load for one candidate change set is
+// skipped rather than failing the whole lookup, since this only sharpens
+// advice text and must never itself block or fail a revert attempt.
 func (e *Engine) laterChangeSetsTouchingByFile(ctx context.Context, cs *domain.ChangeSet, files []string) (map[string]string, error) {
 	all, err := e.db.ListChangeSets(ctx, cs.InitiativeID)
 	if err != nil {
@@ -1935,9 +1947,7 @@ func (e *Engine) laterChangeSetsTouchingByFile(ctx context.Context, cs *domain.C
 		}
 		for _, fc := range patch.Files {
 			if want[fc.Path] {
-				if _, already := result[fc.Path]; !already {
-					result[fc.Path] = other.HumanID
-				}
+				result[fc.Path] = other.HumanID
 			}
 		}
 	}

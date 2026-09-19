@@ -650,6 +650,27 @@ DELETE FROM secret_allowlist
 DROP INDEX IF EXISTS idx_secret_allowlist_fingerprint;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint_path ON secret_allowlist(fingerprint, path);
 `,
+	// 31: review low-priority item, migration 30's follow-up. Migration 30
+	// switched Fingerprint from a bare sha256 to a per-project HMAC, and left
+	// every pre-existing configured-secret finding's secret_overridable at
+	// its column default (1/true). That default is harmless in practice --
+	// a configured-secret disposition is refused server-side regardless of
+	// this flag (see the store's not_a_secret guard), and the old
+	// fingerprint no longer matches anything post-upgrade anyway -- but it
+	// mis-describes the finding, and this sets the record straight rather
+	// than leaving it to that other guard alone.
+	//
+	// This does NOT (and cannot) recompute HMAC fingerprints for old
+	// sha256-fingerprinted secret_allowlist rows -- there is no key to
+	// invert a hash with, and the whole point of the per-project HMAC is
+	// that it cannot be recomputed from the old value without the project's
+	// key. Any "not a secret" exemption granted before this project's HMAC
+	// key existed is silently orphaned by migration 30 (its stored
+	// fingerprint never matches a newly-computed one again) and must be
+	// re-granted; see CHANGELOG.md.
+	`
+UPDATE findings SET secret_overridable = 0 WHERE secret_kind = 'configured secret value';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
