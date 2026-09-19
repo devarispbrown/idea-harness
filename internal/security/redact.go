@@ -3,6 +3,7 @@
 package security
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
@@ -90,14 +91,52 @@ var credentialCatalog = []credentialPattern{
 
 const redacted = "[REDACTED]"
 
-// Fingerprint returns the stable sha256 hex digest of a secret value, used as
-// the "not a secret" allowlist key (review changes #1). It is computed over
-// the value's capture group, never the raw match text (which may include a
-// vendor prefix or surrounding quotes), so the same secret fingerprints the
-// same way regardless of quoting or whitespace.
+// Fingerprint returns a secret value's fingerprint using an empty HMAC key
+// (review H3: kept for callers with no per-project key -- tests, and any use
+// outside a project's own Redactor). FingerprintWithKey is what every
+// project-scoped call site should use instead, so the same secret does not
+// fingerprint identically across every installation that ever saw it.
 func Fingerprint(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+	return FingerprintWithKey(nil, value)
+}
+
+// FingerprintWithKey returns the stable HMAC-SHA256 hex digest of a secret
+// value under key, used as the "not a secret" allowlist key (review changes
+// #1, review H3: an HMAC keyed per-project replaces the original bare
+// sha256, which was the same, precomputable value for the same secret on
+// every installation). It is computed over the value's capture group, never
+// the raw match text (which may include a vendor prefix or surrounding
+// quotes), so the same secret fingerprints the same way regardless of
+// quoting or whitespace. A nil/empty key is a valid (degraded, but never an
+// error) case: the HMAC is still deterministic, just not keyed to a project.
+func FingerprintWithKey(key []byte, value string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// maskValue returns a masked preview of a secret value for display for a
+// human dispositioning a finding (review H3): the first 4 and last 4
+// characters are kept, the rest collapsed to a single ellipsis (e.g.
+// "sk-p…Xy9z"). A value of 8 characters or fewer is masked entirely, so a
+// short secret's preview never reveals enough characters to reconstruct it.
+func maskValue(v string) string {
+	if len(v) <= 8 {
+		return strings.Repeat("*", len(v))
+	}
+	return v[:4] + "…" + v[len(v)-4:]
+}
+
+// lineTextAt returns the full line of s containing byte offset pos (no
+// trailing newline), for building a masked preview of the line a credential
+// was found on.
+func lineTextAt(s string, pos int) string {
+	start := strings.LastIndexByte(s[:pos], '\n') + 1
+	rest := s[pos:]
+	if end := strings.IndexByte(rest, '\n'); end >= 0 {
+		return s[start : pos+end]
+	}
+	return s[start:]
 }
 
 // CredentialFinding is one detected credential occurrence, located but never
@@ -105,13 +144,18 @@ func Fingerprint(value string) string {
 // its stable fingerprint. Overridable reports whether a human may disposition
 // this specific match "not a secret" (true for a pattern-shaped match; false
 // for a value drawn from the project's own configured secrets, which are never
-// eligible for that override).
+// eligible for that override). Preview and MaskedLine (review H3) show what a
+// not_a_secret disposition would allowlist without ever carrying the raw
+// value: Preview is the value alone, masked (see maskValue); MaskedLine is
+// the full source line with the value replaced by that same mask.
 type CredentialFinding struct {
 	Path        string
 	Line        int
 	Kind        string
 	Fingerprint string
 	Overridable bool
+	Preview     string
+	MaskedLine  string
 }
 
 // lineAt returns the 1-based line number of byte offset pos within s.
@@ -124,33 +168,37 @@ func lineAt(s string, pos int) int {
 // matched value itself. It is the location-aware counterpart to FindCredential,
 // used so a denial can name path:line and the kind of secret instead of just
 // rejecting silently (§ D2 secret sweep, review changes #1/#7).
+//
+// Uses an empty HMAC key (see Fingerprint); (*Redactor)(nil).FindPatternsInFile
+// is the per-project-keyed equivalent used inside a project's own pipeline.
 func FindCredentialsInFile(path, content string) []CredentialFinding {
-	var out []CredentialFinding
-	for _, p := range credentialCatalog {
-		for _, idx := range p.re.FindAllStringSubmatchIndex(content, -1) {
-			value := content[idx[0]:idx[1]]
-			if len(idx) >= 4 && idx[2] >= 0 {
-				value = content[idx[2]:idx[3]]
-			}
-			out = append(out, CredentialFinding{
-				Path:        path,
-				Line:        lineAt(content, idx[0]),
-				Kind:        p.kind,
-				Fingerprint: Fingerprint(value),
-				Overridable: true,
-			})
-		}
-	}
-	return out
+	return (*Redactor)(nil).FindPatternsInFile(path, content)
 }
 
 // Redactor redacts known secret values and credential patterns from content.
 type Redactor struct {
 	known []string // sorted by length desc for longest-match replacement
+	// key is this project's HMAC key for Fingerprint (review H3), set via
+	// NewRedactorWithKey. Nil is valid (falls back to Fingerprint's degraded,
+	// unkeyed behavior) for a Redactor built with plain NewRedactor.
+	key []byte
 }
 
-// NewRedactor builds a Redactor with the given known secret values.
+// NewRedactor builds a Redactor with the given known secret values and no
+// per-project fingerprint key (fingerprints fall back to Fingerprint's
+// unkeyed, degraded form). Prefer NewRedactorWithKey wherever a project's own
+// store is available, so its findings' fingerprints are HMAC-keyed per
+// project (review H3).
 func NewRedactor(knownValues ...string) *Redactor {
+	return NewRedactorWithKey(nil, knownValues...)
+}
+
+// NewRedactorWithKey is NewRedactor with an explicit per-project HMAC key
+// (review H3) -- typically store.DB.SecretFingerprintKey's result -- so every
+// fingerprint this Redactor computes (known-value and pattern matches alike)
+// is scoped to the project rather than a bare, cross-installation-comparable
+// sha256 of the value.
+func NewRedactorWithKey(key []byte, knownValues ...string) *Redactor {
 	known := make([]string, 0, len(knownValues))
 	seen := map[string]bool{}
 	for _, v := range knownValues {
@@ -161,7 +209,18 @@ func NewRedactor(knownValues ...string) *Redactor {
 		}
 	}
 	sort.Slice(known, func(i, j int) bool { return len(known[i]) > len(known[j]) })
-	return &Redactor{known: known}
+	return &Redactor{known: known, key: key}
+}
+
+// fingerprint computes value's fingerprint with this Redactor's key (nil-safe:
+// a nil *Redactor falls back to an empty key, matching the package-level
+// Fingerprint/FindCredentialsInFile's degraded behavior).
+func (r *Redactor) fingerprint(value string) string {
+	var key []byte
+	if r != nil {
+		key = r.key
+	}
+	return FingerprintWithKey(key, value)
 }
 
 // Redact implements the blob.Redactor contract ([]byte in, []byte out).
@@ -220,14 +279,45 @@ func (r *Redactor) FindKnownInFile(path, content string) []CredentialFinding {
 				break
 			}
 			pos := start + i
+			preview := maskValue(v)
 			out = append(out, CredentialFinding{
 				Path:        path,
 				Line:        lineAt(content, pos),
 				Kind:        "configured secret value",
-				Fingerprint: Fingerprint(v),
+				Fingerprint: r.fingerprint(v),
 				Overridable: false,
+				Preview:     preview,
+				MaskedLine:  strings.ReplaceAll(lineTextAt(content, pos), v, preview),
 			})
 			start = pos + len(v)
+		}
+	}
+	return out
+}
+
+// FindPatternsInFile is FindCredentialsInFile's per-Redactor, per-project-key
+// equivalent (review H3): scans content for every known credential pattern,
+// fingerprinting each match with this Redactor's key (nil-safe: a nil
+// *Redactor falls back to an empty key, exactly matching the package-level
+// FindCredentialsInFile).
+func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding {
+	var out []CredentialFinding
+	for _, p := range credentialCatalog {
+		for _, idx := range p.re.FindAllStringSubmatchIndex(content, -1) {
+			value := content[idx[0]:idx[1]]
+			if len(idx) >= 4 && idx[2] >= 0 {
+				value = content[idx[2]:idx[3]]
+			}
+			preview := maskValue(value)
+			out = append(out, CredentialFinding{
+				Path:        path,
+				Line:        lineAt(content, idx[0]),
+				Kind:        p.kind,
+				Fingerprint: r.fingerprint(value),
+				Overridable: true,
+				Preview:     preview,
+				MaskedLine:  strings.ReplaceAll(lineTextAt(content, idx[0]), value, preview),
+			})
 		}
 	}
 	return out

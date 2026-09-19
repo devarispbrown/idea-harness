@@ -422,11 +422,18 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			// The build/test command output is attacker-influenced (agent-produced
 			// code runs in the sandbox). Sweep the RAW output FIRST so a secret
 			// printed by the agent's code is rejected, then redact for persistence.
-			// This is command output, not a file, so there is no path:line to name.
-			// A bare vocabulary marker in it does not block either (review D2/A1);
-			// hasBlockingRiskSignal is always false, kept for the same
-			// mutation-check reason as its other call sites.
-			rawCred := e.detectCredential(f.Evidence)
+			// review M2: this now runs the SAME credential catalog + allowlist
+			// filter file content gets (e.scanTextForCredentials + filterAllowlisted),
+			// not a bare detectCredential boolean with no override path -- so a
+			// value a human already allowlisted (e.g. a test fixture the test
+			// runner prints back) does not deny the change set here even though it
+			// would still deny on first sight. A bare vocabulary marker in it does
+			// not block either (review D2/A1); hasBlockingRiskSignal is always
+			// false, kept for the same mutation-check reason as its other call
+			// sites.
+			checkOutputPath := "output of " + f.Category
+			rawMatches := filterAllowlisted(e.scanTextForCredentials(checkOutputPath, f.Evidence), allowlist)
+			rawCred := len(rawMatches) > 0
 			rawSignals := risk.RiskSignals(ctx, "", f.Evidence)
 			if rawCred || hasBlockingRiskSignal(rawSignals) {
 				f.Code = sweepDenyCode(rawCred)
@@ -439,6 +446,35 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			f.Recommendation = e.redact(f.Recommendation)
 			if err := e.db.CreateFinding(ctx, &f); err != nil {
 				return domain.ChangeSet{}, err
+			}
+			// One dedicated secret_sweep finding per surviving match, named
+			// "in the output of <check>" (review M2), mirroring the execute-time
+			// and apply-time sweeps: never the value, a masked-line Evidence, and
+			// SecretPath/SecretFingerprint/SecretOverridable/SecretPreview set so
+			// the finding is independently dispositionable (and allowlistable)
+			// the same way a file-content match is.
+			for _, m := range rawMatches {
+				if err := e.db.CreateFinding(ctx, &domain.Finding{
+					InitiativeID:      cs.InitiativeID,
+					TargetType:        "change_set",
+					TargetID:          cs.ID,
+					Severity:          domain.SeverityCritical,
+					Confidence:        domain.ConfidenceHigh,
+					Category:          "secret_sweep",
+					Code:              sweepDenyCode(true),
+					Finding:           fmt.Sprintf("in the output of %s: looks like %s", f.Category, m.Kind),
+					Evidence:          secretSweepEvidence(m),
+					Impact:            "change set rejected before review",
+					Recommendation:    secretSweepRecommendation(m),
+					Disposition:       domain.DispositionRejected,
+					SecretFingerprint: m.Fingerprint,
+					SecretKind:        m.Kind,
+					SecretPath:        checkOutputPath,
+					SecretOverridable: m.Overridable,
+					SecretPreview:     m.Preview,
+				}); err != nil {
+					return domain.ChangeSet{}, err
+				}
 			}
 		}
 	}
@@ -544,13 +580,15 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 				Category:          "secret_sweep",
 				Code:              sweepDenyCode(true),
 				Finding:           fmt.Sprintf("%s:%d: looks like %s", m.Path, m.Line, m.Kind),
-				Evidence:          "deterministic scan of the produced patch",
+				Evidence:          secretSweepEvidence(m),
 				Impact:            "change set rejected before review",
 				Recommendation:    secretSweepRecommendation(m),
 				Disposition:       domain.DispositionRejected,
 				SecretFingerprint: m.Fingerprint,
 				SecretKind:        m.Kind,
 				SecretPath:        m.Path,
+				SecretOverridable: m.Overridable,
+				SecretPreview:     m.Preview,
 			}); err != nil {
 				return domain.ChangeSet{}, err
 			}
@@ -680,7 +718,10 @@ func (e *Engine) scanForCredentials(files []domain.FileChange, read func(domain.
 		if e.redactor != nil {
 			out = append(out, e.redactor.FindKnownInFile(fc.Path, content)...)
 		}
-		out = append(out, security.FindCredentialsInFile(fc.Path, content)...)
+		// e.redactor.FindPatternsInFile is nil-safe and, when e.redactor is set,
+		// fingerprints with this project's own HMAC key (review H3) rather than
+		// the package-level FindCredentialsInFile's unkeyed fallback.
+		out = append(out, e.redactor.FindPatternsInFile(fc.Path, content)...)
 	}
 	return out
 }
@@ -695,6 +736,23 @@ func (e *Engine) scanWorkRootForCredentials(workRoot string, files []domain.File
 		}
 		return string(content), true
 	})
+}
+
+// scanTextForCredentials runs the same credential detector scanForCredentials
+// uses (known values + pattern catalog, keyed by this project's redactor) over
+// a single block of raw text under a synthetic "path" -- for content that
+// never was a file, such as a build/test command's captured output (review
+// M2). Using the same detector and the same allowlist scoping as file content
+// means a value a human already allowlisted at this same synthetic path
+// (i.e. dispositioned not_a_secret on a prior "in the output of <check>"
+// finding) is recognized here exactly as it would be for a real file.
+func (e *Engine) scanTextForCredentials(path, content string) []security.CredentialFinding {
+	var out []security.CredentialFinding
+	if e.redactor != nil {
+		out = append(out, e.redactor.FindKnownInFile(path, content)...)
+	}
+	out = append(out, e.redactor.FindPatternsInFile(path, content)...)
+	return out
 }
 
 // scanBlobsForCredentials is scanForCredentials reading each file's content
@@ -713,23 +771,39 @@ func (e *Engine) scanBlobsForCredentials(files []domain.FileChange) []security.C
 	})
 }
 
-// filterAllowlisted drops every Overridable match whose fingerprint a human
-// already dispositioned "not a secret" for this project. A match drawn from
-// the project's own configured secrets (Overridable=false) is never filtered:
-// a real, resolved credential is not eligible for the override regardless of
-// what fingerprint someone else allowlisted.
+// filterAllowlisted drops every Overridable match whose (fingerprint, path)
+// a human already dispositioned "not a secret" for this project (review H3:
+// scoped to path too, not fingerprint alone, so the same value allowlisted
+// in one file -- e.g. a test fixture -- still blocks in another). A match
+// drawn from the project's own configured secrets (Overridable=false) is
+// never filtered: a real, resolved credential is not eligible for the
+// override regardless of what fingerprint+path someone else allowlisted, so
+// even a coincidental fingerprint collision with an allowlisted pattern match
+// can never let a configured secret value through.
 func filterAllowlisted(matches []security.CredentialFinding, allowed map[string]bool) []security.CredentialFinding {
 	if len(allowed) == 0 {
 		return matches
 	}
 	out := make([]security.CredentialFinding, 0, len(matches))
 	for _, m := range matches {
-		if m.Overridable && allowed[m.Fingerprint] {
+		if m.Overridable && allowed[store.AllowlistKey(m.Fingerprint, m.Path)] {
 			continue
 		}
 		out = append(out, m)
 	}
 	return out
+}
+
+// secretSweepEvidence is the Evidence text for a secret_sweep finding (review
+// H3): the source line with the secret value itself replaced by its masked
+// preview, so a reviewer can see WHERE and roughly WHAT without the raw
+// value ever being persisted or returned. Falls back to a generic note when
+// MaskedLine could not be computed (should not normally happen).
+func secretSweepEvidence(m security.CredentialFinding) string {
+	if m.MaskedLine != "" {
+		return m.MaskedLine
+	}
+	return "deterministic scan of the produced patch"
 }
 
 // secretSweepRecommendation is the Recommendation text for a credential
@@ -1397,13 +1471,15 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 				Category:          "secret_sweep",
 				Code:              sweepDenyCode(true),
 				Finding:           fmt.Sprintf("%s:%d: looks like %s (found at apply time)", m.Path, m.Line, m.Kind),
-				Evidence:          "deterministic re-sweep of the persisted patch",
+				Evidence:          secretSweepEvidence(m),
 				Impact:            "apply denied before workspace mutation",
 				Recommendation:    secretSweepRecommendation(m),
 				Disposition:       domain.DispositionRejected,
 				SecretFingerprint: m.Fingerprint,
 				SecretKind:        m.Kind,
 				SecretPath:        m.Path,
+				SecretOverridable: m.Overridable,
+				SecretPreview:     m.Preview,
 			}); err != nil {
 				return err
 			}
