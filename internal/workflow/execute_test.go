@@ -325,6 +325,40 @@ func TestNotASecretDispositionUnblocksFutureExecutes(t *testing.T) {
 	}
 }
 
+// TestDedupeCredentialFindings is the low-priority review item: the same
+// value at the same (path, line) can match more than one catalog pattern (or
+// both a known value and a pattern), and must be reported once, not once per
+// pattern that happened to match. Mutation-check: make dedupeCredentialFindings
+// a no-op (`return matches`), and this fails.
+func TestDedupeCredentialFindings(t *testing.T) {
+	dup := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "AWS access key ID", Overridable: true}
+	dupAgain := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "credential assignment", Overridable: true}
+	sameLineDifferentValue := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-2", Overridable: true}
+	differentLine := security.CredentialFinding{Path: "a.go", Line: 6, Fingerprint: "fp-1", Overridable: true}
+	differentPath := security.CredentialFinding{Path: "b.go", Line: 5, Fingerprint: "fp-1", Overridable: true}
+	knownValueFirst := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: false, Kind: "configured secret value"}
+	patternSameSpot := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: true, Kind: "API key"}
+
+	out := dedupeCredentialFindings([]security.CredentialFinding{
+		dup, dupAgain, sameLineDifferentValue, differentLine, differentPath, knownValueFirst, patternSameSpot,
+	})
+	if len(out) != 5 {
+		t.Fatalf("dedupeCredentialFindings returned %d matches, want 5 (dup/dupAgain collapsed, and known/pattern at the same spot collapsed): %+v", len(out), out)
+	}
+	// The first occurrence at (a.go, 5, fp-1) must be the one kept.
+	for _, m := range out {
+		if m.Path == "a.go" && m.Line == 5 && m.Fingerprint == "fp-1" && m.Kind != dup.Kind {
+			t.Errorf("expected the first occurrence's Kind %q to survive, got %q", dup.Kind, m.Kind)
+		}
+		// A known-value match must survive over a same-spot pattern match, not
+		// the reverse (review H3's Overridable=false invariant, reinforced by
+		// dedup order).
+		if m.Path == "c.go" && !m.Overridable && m.Kind != "configured secret value" {
+			t.Errorf("expected the known-value match to survive at c.go:1, got %+v", m)
+		}
+	}
+}
+
 // TestFilterAllowlistedScopedToPath is review H3, tested directly against
 // the pure function: an allowlisted (fingerprint, path) pair must not
 // suppress the SAME fingerprint at a DIFFERENT path.
