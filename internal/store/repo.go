@@ -601,6 +601,75 @@ func (db *DB) SupersedeRequirements(ctx context.Context, initiativeID, supersede
 	})
 }
 
+// SupersedeRequirementsExcept marks every active requirement of an
+// initiative as removed EXCEPT those in keepIDs, recording the superseding
+// reason. Used by a PRD revision that updates some requirements in place
+// (UpdateRequirement) rather than recreating them (review ICP re-run #1):
+// only the requirements this cycle's response actually dropped are
+// superseded, so the code and every graph edge of a requirement carried
+// forward stays stable across the revision. An empty keepIDs behaves exactly
+// like SupersedeRequirements -- backward compatible, additive API.
+func (db *DB) SupersedeRequirementsExcept(ctx context.Context, initiativeID, supersededBy string, keepIDs []string) error {
+	if len(keepIDs) == 0 {
+		return db.SupersedeRequirements(ctx, initiativeID, supersededBy)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirements.superseded",
+	}, func(tx *sql.Tx) error {
+		placeholders := make([]string, len(keepIDs))
+		args := make([]any, 0, len(keepIDs)+3)
+		args = append(args, domain.RequirementRemoved, supersededBy, initiativeID)
+		for i, id := range keepIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, domain.RequirementRemoved)
+		query := `UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND id NOT IN (` +
+			strings.Join(placeholders, ",") + `) AND status != ?`
+		_, err := tx.Exec(query, args...)
+		return err
+	})
+}
+
+// UpdateRequirement updates an existing requirement's statement, priority
+// and acceptance criteria in place -- same id, same code -- and records the
+// run that produced the revision. Used when a PRD revision continues a
+// requirement's SUBJECT rather than replacing it (review ICP re-run #1):
+// keeping the same id preserves every graph edge already wired to it
+// (derived_from a decision, implements from a task, produced_by an earlier
+// run) instead of orphaning them the way supersede-and-recreate did on every
+// revise cycle. r.ID must already be set to the existing requirement's id.
+func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   r.ID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirement.revised",
+	}, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`
+			UPDATE requirements
+			SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?
+			WHERE id = ?`,
+			r.Statement, mustJSON(r.AcceptanceCriteria), r.Priority, r.ProducedByRun, r.ID)
+		if err != nil {
+			return err
+		}
+		if r.ProducedByRun == "" {
+			return nil
+		}
+		// A new produced_by edge per revision (not a replace) is deliberate:
+		// it keeps every run that ever shaped this requirement in the graph,
+		// which is exactly the traceability an update-in-place must not lose
+		// relative to the old supersede-and-recreate path.
+		return db.wireEdges(tx, r.InitiativeID, []EdgeToWrite{
+			{FromType: "requirement", FromID: r.ID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: r.ProducedByRun},
+		})
+	})
+}
+
 // nextCode computes the next monotonic code (e.g. REQ-17) within a transaction.
 // It derives from MAX(numeric suffix) so codes are never reused after a row is
 // deleted (a COUNT(*)-based scheme would regress, e.g. TASK-5 → TASK-5 again).

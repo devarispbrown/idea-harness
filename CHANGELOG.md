@@ -671,6 +671,59 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   not paste code, regardless of what the planner model itself chose to
   include.
 
+### Fixed — ICP re-run follow-up (round 2)
+
+- **`review.rigor: auto` could never calibrate the PRD to `quick`, however
+  small the idea.** Calibration read the PRD's OWN requirement count, and the
+  PM model reliably writes 9+ requirements regardless of idea size — so a
+  single-feature idea on an 89-line service still calibrated to `standard`,
+  blocked three review cycles on findings like "no statistical rigor /
+  sample size / confidence level" and "test machine specs undefined", and
+  ended non-converged. PRD-authoring and PRD-review rigor is now calibrated
+  from the idea's own word count and the project's scale — never from
+  anything the PRD step itself produces — and is stable across revise
+  cycles. See "Review rigor" in
+  [`docs/configuration.md`](docs/configuration.md) for the thresholds.
+- **The PRD prompt now targets a requirement count scaled to project/idea
+  size** (3–6 for a small idea on a small project, up to 10–20 at `thorough`)
+  and tells the model acceptance criteria must be testable by the project's
+  own tests or a manual check — not statistical sample sizes, confidence
+  levels, named hardware/test-machine specs, or percentile SLOs, unless the
+  idea itself asks for performance work.
+- **The PRD adversarial reviewer's prompt now states the rigor and project
+  scale it is reviewing at**, and at `quick`/`standard` rigor reserves "high"
+  severity for ambiguity that would cause a wrong or unsafe implementation —
+  measurement methodology, statistical rigor and hardware/environment specs
+  are now at most "low" there, unless the requirement under review is itself
+  a performance SLO the idea asked for.
+- **A PRD revision churned every requirement's code on every cycle**, even
+  when only fixing one finding: the revise step superseded the entire active
+  set and had the model rewrite it from scratch, so a converged PRD's
+  requirements never kept a stable code across cycles and every review round
+  showed a brand-new set. A revision now updates a requirement in place
+  (same id, same code — preserving its `derived_from`/`produced_by` graph
+  edges) when the model's response cites the requirement's exact existing
+  code, and only supersedes the requirements this cycle's response actually
+  drops.
+- **Two near-duplicate decisions asked with different wording across review
+  rounds no longer create separate DEC rows.** Decision dedupe merges on
+  text similarity alone (≥0.85 token Jaccard); a real re-run had the model
+  re-ask the same choice with enough wording drift to fall short of that on
+  its own each round. It now also merges when the question text is still
+  recognizably the same subject (≥0.5 token Jaccard) AND the two decisions
+  offer materially the same options (≥0.7 token Jaccard) — a same-subject
+  signal that options rarely drift on even when wording does. Two decisions
+  that merely share generic options (e.g. both a plain yes/no) but are about
+  unrelated subjects still do not merge; the text floor guards against it.
+- **The change-set adversarial reviewer's prompt now requires a concrete
+  failure input.** A real run's one "high" finding on an already-`TrimSpace`d
+  value ("whitespace manipulation") had no specific line, path, or input
+  that would actually trigger it. Every finding must now cite the specific
+  line/path and a concrete failure input or scenario; a speculative concern
+  with no concrete trigger is at most low severity and advisory. Existing
+  rigor gating (critical/high in-diff blocks, out-of-diff is advisory) is
+  unchanged.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

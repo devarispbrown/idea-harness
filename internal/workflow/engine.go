@@ -239,7 +239,7 @@ func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.Ini
 	if err := e.runResearch(ctx, initiativeID, idea); err != nil {
 		return domain.InitiativeFailed, err
 	}
-	if err := e.runProductDefinition(ctx, initiativeID, nil); err != nil {
+	if err := e.runProductDefinition(ctx, initiativeID, nil, ""); err != nil {
 		return domain.InitiativeFailed, err
 	}
 	status, err := e.runReviewLoop(ctx, initiativeID)
@@ -749,7 +749,11 @@ func (e *Engine) createDecisionIfNew(ctx context.Context, initiativeID string, d
 		return "", err
 	}
 	for _, x := range existing {
-		if x.Type == d.Type && (normalizeJudgment(x.Question) == norm || similarJudgment(x.Question, d.Question)) {
+		// ICP re-run #2: similarDecision also catches a same-subject decision
+		// re-asked with more wording drift than similarJudgment's pure-text
+		// threshold tolerates, PROVIDED it offers materially the same
+		// options -- see similarDecision's doc for the false-merge guard.
+		if x.Type == d.Type && (normalizeJudgment(x.Question) == norm || similarDecision(x.Question, d.Question, x.Options, d.Options)) {
 			return x.ID, nil
 		}
 	}
@@ -832,7 +836,20 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 // from the immediately preceding cycle (captured before supersede); passing them
 // — instead of the full requirement history — prevents the PRD from growing
 // unboundedly across revise cycles.
-func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, priorReqs []domain.Requirement) error {
+//
+// reviseReason is "" for a from-scratch authoring (the initial PRD, or a
+// retry that has already unconditionally superseded and wants a clean
+// rewrite) and non-empty for a revision that should keep requirement codes
+// STABLE (review ICP re-run #1): "review-cycle-N" from the adversarial
+// review loop, "human-revise" from Revise(). When non-empty, a response
+// requirement whose `code` names one of priorReqs is UPDATED IN PLACE (same
+// id, same code -- see store.UpdateRequirement) instead of superseded and
+// recreated, so its graph edges (derived_from a decision, implements from a
+// task, produced_by earlier runs) survive the revision. Only the priorReqs
+// NOT referenced by this cycle's response are superseded afterward. A prior
+// re-run of the whole set on every cycle is exactly what churned REQ codes
+// on every revise cycle and made requirement history unreadable.
+func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, priorReqs []domain.Requirement, reviseReason string) error {
 	reqs := priorReqs
 	if reqs == nil {
 		all, _ := e.db.ListRequirements(ctx, initiativeID)
@@ -843,9 +860,16 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	questions, _ := e.db.ListQuestions(ctx, initiativeID)
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
 
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	// Calibrated from the idea's own size and the project's scale (ICP
+	// re-run #1) -- NEVER from a requirement count this very step produces,
+	// which is exactly the circularity that made `auto` unable to select
+	// `quick` for the PRD no matter how small the idea.
+	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
+
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text."},
-		{Selector: "project_scale", Content: proportionateContext(projectScaleOf(ctx, e.workspaceRoot), detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot))},
+		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement."},
+		{Selector: "project_scale", Content: proportionateContext(scale, detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot)) + requirementCountGuidance(rigor)},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decisions)},
@@ -870,6 +894,22 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		return err
 	}
 
+	// priorByCode indexes THIS cycle's starting requirements by normalized
+	// code, so a revision response can update one in place instead of
+	// superseding and recreating it (review ICP re-run #1). Only consulted
+	// when reviseReason is set: an initial authoring (or a retry, which
+	// already superseded everything itself) has nothing to update in place.
+	var priorByCode map[string]domain.Requirement
+	if reviseReason != "" {
+		priorByCode = make(map[string]domain.Requirement, len(reqs))
+		for _, r := range reqs {
+			if r.Code != "" {
+				priorByCode[NormalizeRequirementRef(r.Code)] = r
+			}
+		}
+	}
+	keptIDs := make([]string, 0, len(reqs))
+
 	var decisionRefByReqID map[string]string // requirementID -> decision question text
 	for _, r := range objSlice(obj["requirements"]) {
 		var acs []domain.AcceptanceCriterion
@@ -885,14 +925,32 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			AcceptanceCriteria: acs,
 			ProducedByRun:      runID,
 		}
-		if err := e.db.CreateRequirement(ctx, req); err != nil {
-			return err
+		if prior, ok := priorByCode[NormalizeRequirementRef(str(r["code"]))]; ok && str(r["code"]) != "" {
+			req.ID = prior.ID
+			req.Code = prior.Code
+			if err := e.db.UpdateRequirement(ctx, req); err != nil {
+				return err
+			}
+		} else {
+			if err := e.db.CreateRequirement(ctx, req); err != nil {
+				return err
+			}
 		}
+		// Every requirement THIS cycle produced must survive the
+		// supersede-except below, whether it was updated in place or
+		// created brand new -- only a PRIOR requirement this cycle's
+		// response does not continue at all is dropped.
+		keptIDs = append(keptIDs, req.ID)
 		if ref := strings.TrimSpace(e.redact(str(r["decision"]))); ref != "" {
 			if decisionRefByReqID == nil {
 				decisionRefByReqID = map[string]string{}
 			}
 			decisionRefByReqID[req.ID] = ref
+		}
+	}
+	if reviseReason != "" {
+		if err := e.db.SupersedeRequirementsExcept(ctx, initiativeID, reviseReason, keptIDs); err != nil {
+			return err
 		}
 	}
 	// M1: decIDByNorm is keyed by THIS CYCLE's own decision wording (what the
@@ -945,10 +1003,13 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 }
 
 // runReviewLoop runs deterministic checks + adversarial review with bounded
-// revise cycles (§11). Rigor (review B1) is calibrated once, from the
-// requirement count of the FIRST cycle: a revise cycle is the review asking
-// for more of the same PRD, not a new, larger one, so recalibrating each
-// cycle could flip level mid-review.
+// revise cycles (§11). Rigor (review B1) is calibrated once, from the idea's
+// own size and the project's scale (ICP re-run #1) -- NEVER from the PRD's
+// own requirement count, which a revise cycle only ever grows, and which the
+// PM model writes >=9 of regardless of how small the idea is. Those two
+// inputs are also both stable across cycles (a revise cycle is the review
+// asking for more of the same PRD, not a new, larger one), so calibrating
+// once up front cannot flip level mid-review either way.
 func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	maxCycles := e.cfg.Review.MaxCycles
 	var rigor RigorLevel
@@ -962,7 +1023,11 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 
 		if rigor == "" {
 			scale := projectScaleOf(ctx, e.workspaceRoot)
-			rigor = calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(active)})
+			ini, err := e.db.GetInitiative(ctx, initiativeID)
+			if err != nil {
+				return domain.InitiativeFailed, err
+			}
+			rigor = calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 			if rigor == RigorQuick {
 				maxCycles = 1
 			}
@@ -1050,12 +1115,12 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			return domain.InitiativeNeedsHumanJudgment, nil
 		}
 
-		// Revise: supersede old requirements and re-run product definition.
+		// Revise: re-run product definition, updating requirements that
+		// continue in place (same code) and superseding only the ones this
+		// cycle's response dropped (review ICP re-run #1 -- see
+		// runProductDefinition's reviseReason doc).
 		e.log.Info("revising", "cycle", cycle)
-		if err := e.db.SupersedeRequirements(ctx, initiativeID, "review-cycle-"+fmt.Sprint(cycle)); err != nil {
-			return domain.InitiativeFailed, err
-		}
-		if err := e.runProductDefinition(ctx, initiativeID, active); err != nil {
+		if err := e.runProductDefinition(ctx, initiativeID, active, "review-cycle-"+fmt.Sprint(cycle)); err != nil {
 			return domain.InitiativeFailed, err
 		}
 	}
@@ -1108,18 +1173,17 @@ func (e *Engine) Resume(ctx context.Context, initiativeID string) (status domain
 // review. This is the "apply my judgment → updated PRD" loop (§8, §11).
 func (e *Engine) Revise(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	e.log.Info("revising after human decisions", "initiative", initiativeID)
-	// Capture the current active requirements before superseding so the model
-	// improves the immediately preceding set rather than re-reading the full
-	// (unbounded) requirement history.
+	// Capture the current active requirements so the model improves the
+	// immediately preceding set rather than re-reading the full (unbounded)
+	// requirement history. Superseding happens inside runProductDefinition
+	// now (review ICP re-run #1), and only for the ones this cycle's
+	// response does not continue in place.
 	all, err := e.db.ListRequirements(ctx, initiativeID)
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
 	prior := activeRequirements(all)
-	if err := e.db.SupersedeRequirements(ctx, initiativeID, "human-revise"); err != nil {
-		return domain.InitiativeFailed, err
-	}
-	if err := e.runProductDefinition(ctx, initiativeID, prior); err != nil {
+	if err := e.runProductDefinition(ctx, initiativeID, prior, "human-revise"); err != nil {
 		return domain.InitiativeFailed, err
 	}
 	return e.runReviewLoop(ctx, initiativeID)
@@ -1231,7 +1295,7 @@ func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, 
 	conventions := projectConventions(e.workspaceRoot)
 	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,
 		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk."},
+			{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk. " + reviewerSeverityGuidance(rigor, scale)},
 			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, conventions)},
 			{Selector: "requirements", Content: renderRequirements(reqs)},
 		},
