@@ -562,6 +562,69 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getTimeline
+      summary: Human-language "what changed" timeline
+      description: |
+        C1, wave 3 contract. Built from the event log and the change-set, decision and stale-mark
+        tables, scoped to this initiative throughout — the bug this replaces let `GET .../changed`
+        leak another initiative's counts, since the events table carries no `initiative_id` of its
+        own. Newest first. `idea changed` uses this endpoint.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: RFC3339 timestamp; excludes entries at or before it.
+          schema: { type: string, format: date-time }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The timeline, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TimelineEntry" }
+        "400":
+          description: "`since must be RFC3339`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/costs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getCosts
+      summary: Spend and time per phase
+      description: |
+        C3, wave 3 contract. Model-call spend/time per workflow phase, from the run records that
+        already exist, plus the coding-agent run count/duration separately — agent spend is
+        parsed best-effort from the agent's own output and is `null` with a note when it could
+        not be recovered for every run.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The cost/time summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InitiativeCosts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/seen:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -776,6 +839,12 @@ paths:
                 fresh:
                   type: boolean
                   description: Discard a stopped run's kept files, once this run is accepted.
+                note:
+                  type: string
+                  description: |
+                    D-a, wave 3 contract: an optional human note steering this one run, appended
+                    to the implementer's brief and recorded on the agent run. Decoded as leniently
+                    as `fresh`.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202":
@@ -877,6 +946,13 @@ paths:
                   type: boolean
                   description: Records the requirement as waived. Same one-disposition rule as `fail`.
                 note: { type: string }
+                confirm_passing_tests:
+                  type: boolean
+                  description: |
+                    C2, wave 3 contract: confirms every requirement whose mapped tests
+                    (`evidence_tests` on `GET .../requirements`) all passed, through the same
+                    human-evidence path as a manual pass, actor `human`. Nothing is ever
+                    auto-verified without this explicit request.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1280,6 +1356,13 @@ paths:
                 model:
                   type: string
                   description: "`provider/model`, e.g. `anthropic/claude-sonnet-5`."
+                note:
+                  type: string
+                  description: |
+                    D-a, wave 3 contract: an optional human note steering this retry. Retry re-runs
+                    framing→research→PRD→review rather than the implementer, so it joins the
+                    framing prompt (there is no implementer brief at this stage) and is recorded on
+                    that run. Decoded leniently.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -1366,6 +1449,33 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/queue:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [projects]
+      operationId: listQueue
+      summary: Cross-initiative "needs you" queue
+      description: |
+        D-b, wave 3 contract. Everything that needs the user across every initiative in the
+        project: open blocking decisions, change sets awaiting review, conflicts, denials, stale
+        items, and verifications ready to confirm. Ranked blocking first, then by age (`rank`,
+        ascending — lower is more urgent); the list is returned pre-sorted.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The queue, pre-sorted by `rank`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/QueueItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/artifacts/diff:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -3109,6 +3219,22 @@ paths:
                 git_commit:
                   type: boolean
                   description: Omitted leaves the current value; null is treated as omitted.
+                git_allow_default_branch:
+                  type: boolean
+                  description: |
+                    harness.yaml `git.allow_default_branch` (review C4, adopted #2; wave 3
+                    contract). Omitted leaves the current value; null is treated as omitted.
+                git_branch_per_initiative:
+                  type: boolean
+                  description: |
+                    harness.yaml `git.branch_per_initiative`. Omitted leaves the current value;
+                    null is treated as omitted.
+                review_rigor:
+                  type: string
+                  enum: [auto, quick, standard, thorough]
+                  description: |
+                    harness.yaml `review.rigor` (review B1). Omitted leaves the current value;
+                    null is treated as omitted. Rejected with 400 if not one of the enum values.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3629,7 +3755,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 94 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 97 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3696,6 +3822,14 @@ components:
         id: { type: string }
         project_id: { type: string }
         title: { type: string }
+        short_title:
+          type: string
+          description: |
+            A deterministically generated short label (<=60 chars, C1, wave 3 contract): the idea's
+            first sentence or clause, trimmed at a word boundary, with a common lead-in ("I want
+            to", "Build") dropped. `title`/`description` keep the full prompt; clients show
+            `short_title || title`. Generated on create, and backfilled the same way for
+            initiatives created before this field existed.
         description: { type: string }
         status: { $ref: "#/components/schemas/InitiativeStatus" }
         failure_reason:
@@ -3714,6 +3848,12 @@ components:
             The dedicated branch (`idea/<slug>`) this initiative's change sets commit to when
             `git.branch_per_initiative` is on. Set on the initiative's first apply and reused by
             every later one. Empty when the setting is off, or before a first apply has created it.
+        pr_url:
+          type: string
+          description: |
+            The pull request `POST .../initiatives/{id}/pr` opened for `git_branch`. Empty until a
+            PR exists; a repeat call is idempotent and returns this URL rather than opening a
+            second PR.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [id, title, description, status, created_at, updated_at]
@@ -3804,8 +3944,31 @@ components:
         verified_at:
           type: [string, "null"]
           format: date-time
+        evidence_tests:
+          type: array
+          description: |
+            Test-run evidence mapped to this requirement (C2, wave 3 contract): every test the
+            verification plan names for it, or that names its code, resolved against the most
+            recent parsed check result. Computed at read time from the "tests" check's output,
+            never persisted, so it reflects the last check run. Absent means no test is known to
+            cover this requirement yet, not that one failed.
+          items: { $ref: "#/components/schemas/EvidenceTest" }
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]
+
+    EvidenceTest:
+      type: object
+      title: EvidenceTest
+      description: One test-run result mapped to a requirement (C2, wave 3 contract).
+      properties:
+        name: { type: string }
+        status:
+          type: string
+          enum: [passed, failed]
+        change_set:
+          type: string
+          description: The `human_id` (e.g. `CHG-2`) of the change set this result came from.
+      required: [name, status, change_set]
 
     Assertion:
       type: object
@@ -4131,8 +4294,20 @@ components:
         estimate: { type: string }
         produced_by_run: { type: string }
         superseded_by: { type: string }
+        requirement_ids:
+          type: array
+          items: { type: string }
+          description: |
+            The requirement ids this task implements (N:M, review A4 #3/#4). Computed at read
+            time from the task's `implements` graph edges; always an array, never `null`.
+        depends_on:
+          type: array
+          items: { type: string }
+          description: |
+            The task ids this task depends on. Computed at read time from the task's `depends_on`
+            graph edges; always an array, never `null`.
         created_at: { type: string, format: date-time }
-      required: [id, initiative_id, code, title, statement, status, priority, created_at]
+      required: [id, initiative_id, code, title, statement, status, priority, requirement_ids, depends_on, created_at]
 
     ChangeSetStatus:
       type: string
@@ -4291,6 +4466,13 @@ components:
             8 KB. Omitted (never an empty string) on a `succeeded`, `pending` or `running`
             operation. Before this field existed, a failed execute left the running card with
             nothing to show and the only record of why was a line in daemon.log.
+        stage:
+          type: string
+          description: |
+            The engine's current step (C3, wave 3 contract), e.g. "Writing the PRD", "Reviewing
+            the plan (cycle 2)", "Agent running TASK-2", "Running checks". Set by a callback as
+            the engine moves between steps; simply stops changing once the operation reaches a
+            terminal status. The CLI's wait loop prints it in place of a bare "still working…".
         created_at: { type: string, format: date-time }
         finished_at:
           type: [string, "null"]
@@ -4551,6 +4733,96 @@ components:
           items: { type: string }
       required: [category, items]
 
+    TimelineRef:
+      type: object
+      title: TimelineRef
+      description: Points a TimelineEntry at the entity it is about.
+      properties:
+        type: { type: string, description: "e.g. `change_set`, `decision`, `operation`, `initiative`." }
+        id: { type: string }
+      required: [type, id]
+
+    TimelineEntry:
+      type: object
+      title: TimelineEntry
+      description: One human-language line of an initiative's timeline (C1, wave 3 contract).
+      properties:
+        at: { type: string, format: date-time }
+        kind:
+          type: string
+          enum:
+            - change_set_applied
+            - change_set_rejected
+            - change_set_denied
+            - change_set_reverted
+            - run_failed
+            - run_stopped
+            - decision_changed
+            - stale
+            - phase_completed
+        title: { type: string }
+        detail: { type: string }
+        ref: { $ref: "#/components/schemas/TimelineRef" }
+      required: [at, kind, title, ref]
+
+    PhaseCost:
+      type: object
+      title: PhaseCost
+      description: One workflow phase's model-call spend and time (C3, wave 3 contract).
+      properties:
+        phase: { type: string, description: "The workflow stage key, e.g. `product_definition`, `review`." }
+        usd: { type: number }
+        seconds: { type: number }
+        calls: { type: integer }
+      required: [phase, usd, seconds, calls]
+
+    AgentCost:
+      type: object
+      title: AgentCost
+      description: The coding-agent run summary (C3, wave 3 contract).
+      properties:
+        runs: { type: integer }
+        seconds: { type: number }
+        usd:
+          type: [number, "null"]
+          description: |
+            Null ("agent spend not measured") unless every counted run's cost could be parsed
+            from the agent's own output.
+        note:
+          type: string
+          description: Set alongside a null `usd`, e.g. "agent spend not measured".
+      required: [runs, seconds, usd]
+
+    InitiativeCosts:
+      type: object
+      title: InitiativeCosts
+      description: The `GET .../costs` response (C3, wave 3 contract).
+      properties:
+        total_usd: { type: number }
+        by_phase:
+          type: array
+          items: { $ref: "#/components/schemas/PhaseCost" }
+        agent: { $ref: "#/components/schemas/AgentCost" }
+      required: [total_usd, by_phase, agent]
+
+    QueueItem:
+      type: object
+      title: QueueItem
+      description: One cross-initiative "needs you" row (D-b, wave 3 contract).
+      properties:
+        initiative_id: { type: string }
+        short_title: { type: string }
+        kind:
+          type: string
+          description: "e.g. `decision`, `review`, `conflict`, `denial`, `stale`, `verify`."
+        label: { type: string }
+        rank:
+          type: integer
+          format: int64
+          description: Sort key, ascending — lower is more urgent. Blocking items first, then by age.
+        href: { type: string, description: "A client-side route, e.g. `#/i/<id>/build`." }
+      required: [initiative_id, short_title, kind, label, rank, href]
+
     TraceItem:
       type: object
       title: TraceItem
@@ -4757,13 +5029,23 @@ components:
         git_commit:
           type: boolean
           description: Whether applied change sets are committed to git.
+        git_allow_default_branch:
+          type: boolean
+          description: harness.yaml `git.allow_default_branch` (review C4, adopted #2; wave 3 contract).
+        git_branch_per_initiative:
+          type: boolean
+          description: harness.yaml `git.branch_per_initiative`.
+        review_rigor:
+          type: string
+          enum: [auto, quick, standard, thorough]
+          description: harness.yaml `review.rigor`; `auto` when unset.
         demo:
           type: boolean
           description: True when no real provider is configured or reachable, so output will be synthetic.
         providers:
           type: array
           items: { $ref: "#/components/schemas/ProviderSummary" }
-      required: [default_model, git_commit, demo, providers]
+      required: [default_model, git_commit, git_allow_default_branch, git_branch_per_initiative, review_rigor, demo, providers]
 
     ExecutorKind:
       type: string

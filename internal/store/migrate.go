@@ -650,6 +650,28 @@ DELETE FROM secret_allowlist
 DROP INDEX IF EXISTS idx_secret_allowlist_fingerprint;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint_path ON secret_allowlist(fingerprint, path);
 `,
+	// 31: wave 3 (surfaces) -- C1 short titles, C3 cost/stage attribution
+	// (ICP round).
+	//
+	//   - initiatives.short_title: a deterministic, generated short label
+	//     (domain.GenerateShortTitle), backfilled lazily by GetInitiative/
+	//     ListInitiatives for rows written before this column existed.
+	//   - runs.initiative_id / runs.stage: attribute a model or agent run to
+	//     the initiative and workflow stage that produced it, so per-initiative
+	//     per-phase cost/time (GET .../costs) can be computed by joining
+	//     run_manifests back to runs -- previously runs carried neither, and a
+	//     run could not be attributed to an initiative at all.
+	//   - operations.stage: the engine's current step ("Writing the PRD",
+	//     "Agent running TASK-2", ...), set by a callback as the engine moves
+	//     between steps, so the CLI's wait loop can print it instead of a bare
+	//     "still working...".
+	`
+ALTER TABLE initiatives ADD COLUMN short_title TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN initiative_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN stage TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN note TEXT NOT NULL DEFAULT '';
+ALTER TABLE operations ADD COLUMN stage TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -675,10 +675,13 @@ type ChangeGroup struct {
 	Items    []string `json:"items"`
 }
 
-// BuildChanged summarizes events since sinceSeq into grouped, narrated items
-// (§7). The raw event timeline is served separately via /activity.
-func BuildChanged(ctx context.Context, db *store.DB, sinceSeq int64, limit int) (Changed, error) {
-	events, err := db.ListEvents(ctx, sinceSeq, limit)
+// BuildChanged summarizes an initiative's events since sinceSeq into grouped,
+// narrated items (§7), scoped to initiativeID throughout (C1/JTBD 6: this used
+// to read the whole project's events with no initiative filter at all, so one
+// initiative's What Changed could report another's counts). The raw event
+// timeline is served separately via /activity.
+func BuildChanged(ctx context.Context, db *store.DB, initiativeID string, sinceSeq int64, limit int) (Changed, error) {
+	events, err := db.ListEventsForInitiative(ctx, initiativeID, sinceSeq, limit)
 	if err != nil {
 		return Changed{}, err
 	}
