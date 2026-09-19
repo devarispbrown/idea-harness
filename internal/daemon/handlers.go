@@ -1505,6 +1505,13 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "task_ids must name exactly 2 tasks")
 		return
 	}
+	// H4: refuse a self-merge before even looking the tasks up -- task_ids:
+	// [A, A] used to pass both existence guards and then DeleteTask(A)
+	// deleted the survivor, leaving a null response.
+	if body.TaskIDs[0] == body.TaskIDs[1] {
+		writeError(w, http.StatusBadRequest, "task_ids must name two distinct tasks")
+		return
+	}
 	keep, err := pr.db.GetTask(r.Context(), body.TaskIDs[0])
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[0])
@@ -1524,65 +1531,23 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	// Union the requirements each task implements.
-	reqIDs, err := s.taskRequirementIDs(ctx, pr, ini.ID, keep.ID, merge.ID)
+	// H4: the union/concat/rewire/delete below is now MergeTasks, ONE store
+	// transaction that also runs the cycle check against the FINAL graph
+	// before writing anything (a failure partway, or a concurrent request,
+	// used to leave a half-merged plan; there was also no cycle check at
+	// all, so A->B->C plus merging (A, C) could silently create A->B->A).
+	updated, err := pr.db.MergeTasks(r.Context(), ini.ID, keep.ID, merge.ID)
 	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := pr.db.ReplaceTaskRequirements(ctx, ini.ID, keep.ID, reqIDs); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Concatenate the statements.
-	statement := strings.TrimSpace(keep.Statement)
-	if s2 := strings.TrimSpace(merge.Statement); s2 != "" {
-		if statement != "" {
-			statement += "\n\n"
-		}
-		statement += s2
-	}
-	if err := pr.db.UpdateTask(ctx, ini.ID, keep.ID, keep.Title, statement, keep.Priority, keep.Estimate); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Rewire dependencies: the survivor inherits both tasks' outgoing
-	// depends_on (minus references to each other and itself), and anything
-	// that depended on the merged task now depends on the survivor instead.
-	outgoing, err := s.unionTaskDeps(ctx, pr, ini.ID, keep.ID, merge.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := pr.db.ReplaceTaskDependencies(ctx, ini.ID, keep.ID, outgoing); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", merge.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	for _, e := range dependents {
-		if e.EdgeType != domain.EdgeDependsOn || e.FromID == keep.ID {
-			continue
-		}
-		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, []string{keep.ID}); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSelfMerge):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, store.ErrMergeCycle):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
 			s.writeErr(w, http.StatusInternalServerError, err)
-			return
 		}
-	}
-
-	// DeleteTask cascades every remaining edge naming the merged task (its
-	// own outgoing edges, and the now-superseded incoming ones just rewired).
-	if err := pr.db.DeleteTask(ctx, ini.ID, merge.ID); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	updated, _ := pr.db.GetTask(ctx, keep.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1674,16 +1639,19 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", task.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 
-	created := make([]*domain.Task, 0, len(body.Tasks))
-	for _, spec := range body.Tasks {
-		if strings.TrimSpace(spec.Title) == "" {
-			writeError(w, http.StatusBadRequest, "each replacement task needs a title")
+	// M4: validate and resolve EVERY replacement task before any write. The
+	// old handler validated a spec's title and resolved its
+	// requirement_ids inside the same loop that created tasks one at a
+	// time, so an invalid second (or third...) spec returned 400 after the
+	// first replacement was already created and the original not yet
+	// deleted -- a half-applied split, the same bug this branch had already
+	// fixed for PATCH.
+	specs := make([]store.SplitTaskSpec, 0, len(body.Tasks))
+	for i, spec := range body.Tasks {
+		title := strings.TrimSpace(spec.Title)
+		if title == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d needs a title", i+1))
 			return
 		}
 		reqIDs := originalReqs
@@ -1694,33 +1662,26 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		nt := &domain.Task{
-			InitiativeID: ini.ID,
-			Title:        pr.redactor.RedactString(strings.TrimSpace(spec.Title)),
-			Statement:    pr.redactor.RedactString(spec.Statement),
-			Priority:     task.Priority,
-		}
-		if err := pr.db.CreateTaskMulti(ctx, nt, reqIDs, originalDeps); err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
+		// M4: requirement_ids: [] (explicitly empty, non-nil) must not
+		// silently produce a task with no requirement -- "Added tasks take
+		// a requirement" -- and neither may originalReqs being empty (the
+		// original itself had none).
+		if len(reqIDs) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d (%q) needs at least one requirement", i+1, title))
 			return
 		}
-		created = append(created, nt)
+		specs = append(specs, store.SplitTaskSpec{
+			Title:          pr.redactor.RedactString(title),
+			Statement:      pr.redactor.RedactString(spec.Statement),
+			Priority:       task.Priority,
+			RequirementIDs: reqIDs,
+		})
 	}
 
-	newIDs := make([]string, len(created))
-	for i, nt := range created {
-		newIDs[i] = nt.ID
-	}
-	for _, e := range dependents {
-		if e.EdgeType != domain.EdgeDependsOn || e.FromID == task.ID {
-			continue
-		}
-		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, newIDs); err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	if err := pr.db.DeleteTask(ctx, ini.ID, task.ID); err != nil {
+	// M4: every replacement's creation, the dependent rewiring, and the
+	// original's deletion now run inside SplitTask's one transaction.
+	created, err := pr.db.SplitTask(ctx, ini.ID, task.ID, specs, originalDeps)
+	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
