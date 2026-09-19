@@ -156,14 +156,70 @@ func TestBuildGuidanceNeverSaysReadyToBuildOverAFreshFailure(t *testing.T) {
 		t.Fatalf("a successful latest change set should not trigger the failure path, got %q", nm.Action)
 	}
 
-	// Only the LATEST (last in the ascending-by-created_at slice) matters: an
-	// earlier rejection followed by a successful retry is not a fresh failure.
-	recovered := []domain.ChangeSet{
-		{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetRejected},
-		{ID: "cs-2", HumanID: "CHG-2", Status: domain.ChangeSetApplied},
+	// Only the task's own LATEST change set matters: an earlier rejection
+	// followed by a successful retry (same task) is not a fresh failure. Per
+	// review M7, this reduction (LatestChangeSetsPerActiveTask) is the
+	// caller's job, not BuildGuidance's -- so this constructs the input the
+	// way the real caller (handlers.go) does, rather than handing
+	// BuildGuidance raw, unreduced history directly.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sameTaskHistory := []domain.ChangeSet{
+		{ID: "cs-1", HumanID: "CHG-1", TaskID: "task-1", Status: domain.ChangeSetRejected, CreatedAt: base},
+		{ID: "cs-2", HumanID: "CHG-2", TaskID: "task-1", Status: domain.ChangeSetApplied, CreatedAt: base.Add(time.Hour)},
 	}
-	if nm := BuildGuidance(ini, u, recovered); !strings.Contains(nm.Action, "Execution plan approved") {
+	activeTask := []domain.Task{{ID: "task-1", Status: domain.TaskProposed}}
+	reduced := LatestChangeSetsPerActiveTask(sameTaskHistory, activeTask)
+	if nm := BuildGuidance(ini, u, reduced); !strings.Contains(nm.Action, "Execution plan approved") {
 		t.Fatalf("a later successful change set should supersede an earlier rejection, got %q", nm.Action)
+	}
+}
+
+// TestLatestChangeSetsPerActiveTaskExcludesCancelledOrDeletedTasks and
+// TestLatestChangeSetsPerActiveTaskDoesNotHideOneTasksRejectionBehindAnothers
+// are review M7's own two bugs: guidance used to look only at the globally
+// last change set, so a rejected change set on one task was hidden the
+// moment ANY other task's change set was created afterward, and stayed
+// "stuck" forever once its own task was cancelled or deleted.
+func TestLatestChangeSetsPerActiveTaskExcludesCancelledOrDeletedTasks(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	changeSets := []domain.ChangeSet{
+		{ID: "cs-1", HumanID: "CHG-1", TaskID: "task-1", Status: domain.ChangeSetRejected, CreatedAt: base},
+	}
+	// task-1 was cancelled after CHG-1 was rejected: its rejection must no
+	// longer be reported (there is nothing left to "resolve" on a task that
+	// no longer exists as active work).
+	tasks := []domain.Task{{ID: "task-1", Status: domain.TaskCancelled}}
+	got := LatestChangeSetsPerActiveTask(changeSets, tasks)
+	if len(got) != 0 {
+		t.Fatalf("expected no change sets for a cancelled task, got %+v", got)
+	}
+
+	// A task not present at all (deleted) is excluded the same way.
+	got2 := LatestChangeSetsPerActiveTask(changeSets, nil)
+	if len(got2) != 0 {
+		t.Fatalf("expected no change sets for a deleted task, got %+v", got2)
+	}
+}
+
+func TestLatestChangeSetsPerActiveTaskDoesNotHideOneTasksRejectionBehindAnothers(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	changeSets := []domain.ChangeSet{
+		// TASK-2's change set is rejected...
+		{ID: "cs-2", HumanID: "CHG-2", TaskID: "task-2", Status: domain.ChangeSetRejected, CreatedAt: base},
+		// ...but a LATER change set on a completely different, healthy task
+		// (task-3) must not hide it.
+		{ID: "cs-3", HumanID: "CHG-3", TaskID: "task-3", Status: domain.ChangeSetApplied, CreatedAt: base.Add(time.Hour)},
+	}
+	tasks := []domain.Task{
+		{ID: "task-2", Status: domain.TaskProposed},
+		{ID: "task-3", Status: domain.TaskProposed},
+	}
+	reduced := LatestChangeSetsPerActiveTask(changeSets, tasks)
+
+	ini := domain.Initiative{Status: domain.InitiativePlanApproved}
+	nm := BuildGuidance(ini, Understanding{}, reduced)
+	if !strings.Contains(nm.Why, "CHG-2") {
+		t.Fatalf("expected guidance to still report CHG-2's rejection despite a later change set on another task, got %+v", nm)
 	}
 }
 

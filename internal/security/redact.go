@@ -21,27 +21,177 @@ import (
 type credentialPattern struct {
 	re   *regexp.Regexp
 	kind string
+	// valid, when non-nil, additionally filters this pattern's matches
+	// (review H5): RE2 (Go's regexp engine) has no lookahead/lookbehind, so
+	// checks like "not immediately followed by a call's `(`" or "not an
+	// identifier/member-access shape" cannot live in the regexp itself and
+	// are validated here against the full content and the match's index
+	// slice instead. nil means every regex match is valid, unchanged from
+	// before this field existed.
+	valid func(content string, idx []int) bool
+}
+
+// validMatches returns p's matches within content that also satisfy p.valid
+// (every regex match, when p.valid is nil).
+func (p credentialPattern) validMatches(content string) [][]int {
+	all := p.re.FindAllStringSubmatchIndex(content, -1)
+	if p.valid == nil {
+		return all
+	}
+	out := make([][]int, 0, len(all))
+	for _, idx := range all {
+		if p.valid(content, idx) {
+			out = append(out, idx)
+		}
+	}
+	return out
+}
+
+// replaceValid redacts p's valid matches in s with [REDACTED], leaving any
+// regex match that failed p.valid untouched.
+func (p credentialPattern) replaceValid(s string) string {
+	matches := p.validMatches(s)
+	if len(matches) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, idx := range matches {
+		b.WriteString(s[last:idx[0]])
+		b.WriteString(redacted)
+		last = idx[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// capturedGroupBounds returns the start/end byte offsets, within the string
+// idx was computed against, of the capturing group that actually
+// participated in the match -- mirroring capturedValue, but returning
+// offsets rather than the substring, so a validator can inspect what comes
+// immediately before or after it.
+func capturedGroupBounds(idx []int) (start, end int) {
+	for g := 1; g*2+1 < len(idx); g++ {
+		if idx[g*2] >= 0 {
+			return idx[g*2], idx[g*2+1]
+		}
+	}
+	return idx[0], idx[1]
+}
+
+// identifierWordRe matches one identifier-shaped word: letters, digits and
+// underscores, starting with a letter or underscore -- the shape of a single
+// variable/property name or SCREAMING_SNAKE constant (`token`, `API_KEY`,
+// `X`).
+var identifierWordRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// hasIdentifierStructure reports whether a single (non-dotted) token has an
+// internal structure that marks it as a NAME rather than arbitrary token
+// data: camelCase (a lowercase-to-uppercase transition, `authToken`) or
+// snake_case (an underscore, `token_from_somewhere`). A flat run of
+// same-case letters with neither -- `abcdefghijklmnop` -- reads as
+// plausible secret data, not a name, and is not rejected on shape alone.
+func hasIdentifierStructure(value string) bool {
+	if strings.Contains(value, "_") {
+		return true
+	}
+	for i := 1; i < len(value); i++ {
+		if value[i-1] >= 'a' && value[i-1] <= 'z' && value[i] >= 'A' && value[i] <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeIdentifierReference reports whether an unquoted assignment value
+// reads as a variable/property reference rather than a literal secret
+// (review H5).
+//
+// A value containing a digit is never treated as a reference: real
+// identifiers occasionally contain one, but a value that's otherwise
+// reference-shaped AND carries a digit reads as data, and this heuristic
+// errs toward not rejecting a possible real secret.
+//
+// A single (non-dotted) token is a reference when it has camelCase or
+// snake_case structure (hasIdentifierStructure): `authToken`,
+// `hashedPassword`, `token_from_somewhere`, `API_KEY_FROM_ENV`.
+//
+// A dotted value is a reference when EVERY segment is itself
+// identifier-shaped: `process.env.X`, `settings.API_KEY_FROM_ENV`,
+// `req.headers.authorization`. This is deliberately broader than the
+// single-token case -- it does not also require camelCase/snake_case
+// structure per segment -- because a receiver.property chain's segments are
+// typically plain lowercase words with no such structure of their own. The
+// trade-off: a plain-word dotted literal with no digit (`xyz.abc.def.ghi`)
+// is also read as a reference and not flagged. That is the safer direction
+// for a shape-only heuristic that cannot otherwise tell a property chain
+// from a dot-delimited secret apart, and it is what keeps a real
+// member-access expression like `req.headers.authorization` from being
+// rejected as a credential.
+func looksLikeIdentifierReference(value string) bool {
+	if strings.ContainsAny(value, "0123456789") {
+		return false
+	}
+	if !strings.Contains(value, ".") {
+		return identifierWordRe.MatchString(value) && hasIdentifierStructure(value)
+	}
+	for _, seg := range strings.Split(value, ".") {
+		if seg == "" || !identifierWordRe.MatchString(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+// credentialAssignmentGroups is the group index (within
+// FindAllStringSubmatchIndex's idx slice) of the credential-assignment
+// pattern's UNQUOTED alternative -- its third capturing group. idx[6] is
+// that group's start offset ([0:2] is the whole match, [2:4] group 1,
+// [4:6] group 2, [6:8] group 3).
+const credentialAssignmentUnquotedGroup = 6
+
+// validCredentialAssignmentValue is credentialCatalog's validator for the
+// generic "credential assignment" pattern (review H5). A quoted value
+// (groups 1/2) already carries its own evidence of being a literal -- a
+// quote is not something an identifier or a function call produces -- and
+// is rejected only for `$`-interpolation (`"${API_KEY}"`, a reference, not a
+// literal). An unquoted value (group 3) additionally must not be a call
+// (immediately followed by `(`) or read as an identifier/member-access
+// reference (looksLikeIdentifierReference).
+func validCredentialAssignmentValue(content string, idx []int) bool {
+	start, end := capturedGroupBounds(idx)
+	value := content[start:end]
+	if value == "" || strings.HasPrefix(value, "$") {
+		return false
+	}
+	if len(idx) <= credentialAssignmentUnquotedGroup || idx[credentialAssignmentUnquotedGroup] < 0 {
+		return true // quoted (group 1 or 2): already checked for "$" above.
+	}
+	if end < len(content) && content[end] == '(' {
+		return false // a call: generate_csrf_token(), getToken()
+	}
+	return !looksLikeIdentifierReference(value)
 }
 
 // credentialCatalog is the redaction and detection catalog (§48). Order
 // matters only for readability; all matches are replaced with [REDACTED].
 var credentialCatalog = []credentialPattern{
 	// PEM private keys (multiline).
-	{regexp.MustCompile(`(?s)(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----)`), "PEM private key"},
+	{re: regexp.MustCompile(`(?s)(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----)`), kind: "PEM private key"},
 	// JWTs (three base64url segments).
-	{regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b`), "JWT"},
+	{re: regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b`), kind: "JWT"},
 	// AWS access key id.
-	{regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), "AWS access key ID"},
+	{re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), kind: "AWS access key ID"},
 	// GitHub personal access token (classic + fine-grained) and OAuth tokens.
-	{regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), "GitHub personal access token"},
-	{regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), "GitHub fine-grained personal access token"},
-	{regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), "GitHub token"},
+	{re: regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), kind: "GitHub personal access token"},
+	{re: regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), kind: "GitHub fine-grained personal access token"},
+	{re: regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), kind: "GitHub token"},
 	// GitLab personal access token.
-	{regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), "GitLab personal access token"},
+	{re: regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), kind: "GitLab personal access token"},
 	// Google API key.
-	{regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), "Google API key"},
+	{re: regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), kind: "Google API key"},
 	// npm access token.
-	{regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), "npm access token"},
+	{re: regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), kind: "npm access token"},
 	// Anthropic, OpenAI and other `sk-` keys.
 	//
 	// Shaped as "a few short vendor segments, then a long alphanumeric run",
@@ -70,35 +220,44 @@ var credentialCatalog = []credentialPattern{
 	//
 	// 1. A known provider prefix. The prefix is the evidence, so the body is
 	//    plain base64url with no further constraint.
-	{regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), "OpenAI/Anthropic API key"},
+	{re: regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), kind: "OpenAI/Anthropic API key"},
 	// 2. The legacy flat OpenAI key: "sk-" and one unbroken alphanumeric run.
-	{regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), "OpenAI API key"},
+	{re: regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), kind: "OpenAI API key"},
 	// 3. Any other "sk-" token whose body carries an uppercase letter. That is
 	//    what separates a key from the false positive the previous widening hit
 	//    -- an ordinary URL slug like
 	//    sk-decomposition-of-matrices-and-linear-algebra is lowercase and
 	//    hyphenated, and never carries one.
-	{regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), "API key"},
+	{re: regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), kind: "API key"},
 	// Stripe live secret key.
-	{regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), "Stripe secret key"},
+	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key"},
 	// Slack tokens (bot, app, refresh, signing, user).
-	{regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), "Slack token"},
+	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token"},
 	// Generic Bearer token.
-	{regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), "bearer token"},
+	{re: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), kind: "bearer token"},
+	// URL userinfo credentials (review H5): scheme://user:PASSWORD@host, e.g.
+	// postgres://admin:hunter2345@db. The username is unconstrained (any
+	// run with no ':'/'/'/'@'/whitespace); the password is 3+ characters
+	// excluding '/'/'@'/whitespace, tolerating a short example password.
+	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]+:([^\s/@]{3,})@`), kind: "URL userinfo credential"},
 	// AWS secret access key (review M3): its own env-var name, since the
 	// generic credential-assignment rule below requires the keyword
 	// (api_key/secret/password/token) to sit immediately before the
 	// separator, and "ACCESS_KEY" -- not one of those words -- comes between
 	// "SECRET" and "=" in AWS_SECRET_ACCESS_KEY. AWS secret keys are 40
 	// base64-ish characters; 30+ tolerates a truncated/rotated example.
-	{regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), "AWS secret access key"},
-	// Generic credential assignment in text/JSON/shell/URLs (review M3):
-	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., and similar.
+	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key"},
+	// Generic credential assignment in text/JSON/shell/URLs (review M3, H5):
+	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., pwd = "...",
+	// SECRET_KEY = "...", and similar.
 	//
 	// [A-Za-z0-9_]* (not \b) before the keyword, so it matches inside a
 	// snake_case or SCREAMING_CASE identifier -- DB_PASSWORD, client_secret,
 	// AWS_SECRET_ACCESS_KEY's own "_SECRET_" segment elsewhere -- where "_" is
 	// a word character and \b never fires between it and the keyword.
+	// `secret` optionally takes a `_key`/`_value` (or `-key`/`-value`) suffix
+	// (review H5), so SECRET_KEY = "..." and client_secret_value = "..." both
+	// match; `pwd` joins `password`/`passwd` as a keyword.
 	//
 	// ["']? right after the keyword (before \s*[:=]) consumes a JSON key's
 	// closing quote -- "password": -- which \s*[:=] alone cannot skip over.
@@ -106,14 +265,26 @@ var credentialCatalog = []credentialPattern{
 	// The value itself is one of three shapes: double-quoted, single-quoted
 	// (either may contain almost anything 8+ characters long -- a quote is
 	// itself the evidence of a literal), or, with no quote at all, a run of
-	// 8+ characters that excludes whitespace, quotes, parens, braces,
-	// brackets, commas and '.': the punctuation an identifier, member access,
-	// or function CALL uses and a bare secret literal does not. That is what
-	// keeps `token = getenv(...)` and `const token = req.headers...` from
-	// matching -- "getenv" stops at "(" (6 chars, under the 8-char floor) and
-	// "req" stops at "." (3 chars) -- while still matching an unquoted
-	// shell/env-style assignment like DB_PASSWORD=hunter2345.
-	{regexp.MustCompile(`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret|passw(?:or)?d|token)["']?\s*[:=]\s*(?:"([^"\n]{8,})"|'([^'\n]{8,})'|([^\s"'(){}\[\],.]{8,}))`), "credential assignment"},
+	// 8+ characters excluding whitespace, quotes, parens, braces, brackets,
+	// commas and ';' -- the punctuation a function CALL's argument list or a
+	// statement terminator uses (without excluding ';', "authToken;" carried
+	// the semicolon into the candidate value and defeated the
+	// identifier-shape check below). Unlike the original version of this
+	// pattern, '.' is NOT excluded here: a real secret can legitimately
+	// contain one (a JWT-shaped value, a dot-delimited token). Excluding
+	// calls, `$`-interpolation and identifier/member-access shapes
+	// (`getenv(...)`, `${API_KEY}`, `req.headers.token`,
+	// `settings.API_KEY_FROM_ENV`) is instead done by
+	// validCredentialAssignmentValue, in Go, after the match: RE2 has no
+	// lookahead to express "not followed by `(`" in the regexp itself, and no
+	// regexp alone can tell a member-access chain from a dot-delimited
+	// secret (see looksLikeIdentifierReference's doc comment for that
+	// trade-off).
+	{
+		re:    regexp.MustCompile(`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret(?:[_-]?(?:key|value))?|passw(?:or)?d|pwd|token)["']?\s*[:=]\s*(?:"([^"\n]{8,})"|'([^'\n]{8,})'|([^\s"'(){}\[\],;]{8,}))`),
+		kind:  "credential assignment",
+		valid: validCredentialAssignmentValue,
+	},
 }
 
 const redacted = "[REDACTED]"
@@ -143,15 +314,55 @@ func FingerprintWithKey(key []byte, value string) string {
 }
 
 // maskValue returns a masked preview of a secret value for display for a
-// human dispositioning a finding (review H3): the first 4 and last 4
-// characters are kept, the rest collapsed to a single ellipsis (e.g.
-// "sk-p…Xy9z"). A value of 8 characters or fewer is masked entirely, so a
-// short secret's preview never reveals enough characters to reconstruct it.
+// human dispositioning a finding (review H1): at most min(4, len/4)
+// characters are kept on each side, the rest collapsed to a single ellipsis
+// (e.g. "sk-p…Xy9z"). Nothing is revealed at all for a value under 16
+// characters -- the old floor of 8 revealed 4+4 of a 9-character value
+// (`abcdefghi` -> `abcd…fghi`, 8 of 9 characters back in the clear), and
+// short passwords are exactly the common case a human is dispositioning
+// here.
 func maskValue(v string) string {
-	if len(v) <= 8 {
-		return strings.Repeat("*", len(v))
+	n := len(v)
+	if n < 16 {
+		return strings.Repeat("*", n)
 	}
-	return v[:4] + "…" + v[len(v)-4:]
+	reveal := n / 4
+	if reveal > 4 {
+		reveal = 4
+	}
+	return v[:reveal] + "…" + v[n-reveal:]
+}
+
+// maskAllOnLine returns line with EVERY credential this Redactor (and the
+// pattern catalog) can find replaced by that match's own masked preview
+// (review H1): a finding's MaskedLine used to mask only its own value, so
+// `DB_PASSWORD=hunter2345 API_TOKEN=zzzzzzzzqqqq` came back as
+// `DB_PASSWORD=hunter2345 API_TOKEN=zzzz…qqqq` -- the first secret in the
+// clear. r may be nil (no known project values; pattern matches are still
+// masked).
+func maskAllOnLine(line string, r *Redactor) string {
+	if r != nil {
+		for _, v := range r.known {
+			if v == "" {
+				continue
+			}
+			line = strings.ReplaceAll(line, v, maskValue(v))
+		}
+	}
+	for _, p := range credentialCatalog {
+		line = p.re.ReplaceAllStringFunc(line, func(m string) string {
+			idx := p.re.FindStringSubmatchIndex(m)
+			if idx == nil {
+				return m
+			}
+			value := capturedValue(m, idx)
+			if value == "" {
+				return m
+			}
+			return strings.Replace(m, value, maskValue(value), 1)
+		})
+	}
+	return line
 }
 
 // lineTextAt returns the full line of s containing byte offset pos (no
@@ -277,7 +488,7 @@ func (r *Redactor) RedactString(s string) string {
 		s = strings.ReplaceAll(s, v, redacted)
 	}
 	for _, p := range credentialCatalog {
-		s = p.re.ReplaceAllString(s, redacted)
+		s = p.replaceValid(s)
 	}
 	return s
 }
@@ -294,7 +505,7 @@ func (r *Redactor) ContainsCredential(s string) bool {
 		}
 	}
 	for _, p := range credentialCatalog {
-		if p.re.MatchString(s) {
+		if len(p.validMatches(s)) > 0 {
 			return true
 		}
 	}
@@ -330,7 +541,7 @@ func (r *Redactor) FindKnownInFile(path, content string) []CredentialFinding {
 				Fingerprint: r.fingerprint(v),
 				Overridable: false,
 				Preview:     preview,
-				MaskedLine:  strings.ReplaceAll(lineTextAt(content, pos), v, preview),
+				MaskedLine:  maskAllOnLine(lineTextAt(content, pos), r),
 			})
 			start = pos + len(v)
 		}
@@ -346,7 +557,7 @@ func (r *Redactor) FindKnownInFile(path, content string) []CredentialFinding {
 func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding {
 	var out []CredentialFinding
 	for _, p := range credentialCatalog {
-		for _, idx := range p.re.FindAllStringSubmatchIndex(content, -1) {
+		for _, idx := range p.validMatches(content) {
 			value := capturedValue(content, idx)
 			preview := maskValue(value)
 			out = append(out, CredentialFinding{
@@ -356,7 +567,7 @@ func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding 
 				Fingerprint: r.fingerprint(value),
 				Overridable: true,
 				Preview:     preview,
-				MaskedLine:  strings.ReplaceAll(lineTextAt(content, idx[0]), value, preview),
+				MaskedLine:  maskAllOnLine(lineTextAt(content, idx[0]), r),
 			})
 		}
 	}
@@ -374,8 +585,8 @@ func Redact(s string) string {
 // hard rejection signal (§45) rather than a redaction.
 func FindCredential(s string) string {
 	for _, p := range credentialCatalog {
-		if m := p.re.FindString(s); m != "" {
-			return m
+		if matches := p.validMatches(s); len(matches) > 0 {
+			return s[matches[0][0]:matches[0][1]]
 		}
 	}
 	return ""

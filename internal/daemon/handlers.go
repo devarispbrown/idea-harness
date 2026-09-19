@@ -186,7 +186,14 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	// nil -- an initiative with no change sets yet (or a store hiccup) must
 	// not turn "recommended next move" into a 500; it just gets the old,
 	// change-set-agnostic guidance.
-	recentChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	//
+	// M7: reduced to the latest change set per ACTIVE task before being
+	// handed to BuildGuidance, not the raw list -- see
+	// LatestChangeSetsPerActiveTask's and latestChangeSetOutcome's doc
+	// comments for why passing the raw list was wrong.
+	allChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	tasks, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	recentChangeSets := projection.LatestChangeSetsPerActiveTask(allChangeSets, tasks)
 	g := projection.BuildGuidance(ini, u, recentChangeSets)
 
 	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
@@ -882,11 +889,50 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// matchRecommendationOption maps a decision's free-text Recommendation onto
+// one of its Options for accept-recommendations (review M3): the
+// single-resolve path (handleResolveDecision) already refuses, via offers(),
+// to record an answer that is not one of a decision's options, and
+// batch-accepting recommendations must not silently bypass that guard just
+// because there is no human present to notice. An exact match wins
+// outright; otherwise a UNIQUE case-insensitive, whitespace-trimmed match is
+// used (the common case: the model's own recommendation text drifts in
+// casing/whitespace from the option list it produced in the same response);
+// anything else -- no match, or more than one -- is not resolved
+// automatically.
+func matchRecommendationOption(options []string, recommendation string) (string, bool) {
+	for _, o := range options {
+		if o == recommendation {
+			return o, true
+		}
+	}
+	norm := strings.ToLower(strings.TrimSpace(recommendation))
+	match, count := "", 0
+	for _, o := range options {
+		if strings.ToLower(strings.TrimSpace(o)) == norm {
+			match = o
+			count++
+		}
+	}
+	if count == 1 {
+		return match, true
+	}
+	return "", false
+}
+
 // handleAcceptRecommendations resolves every open decision on an initiative
 // with its own recommendation, actor human (review B4, adopted #8): the "53
 // things need your judgment" problem the ICP round found, answered in one
 // call instead of one click per decision. A decision with no recommendation
 // (the model raised it without one) is left open and named in `skipped`.
+//
+// M3: when a decision has Options, the recommendation must map onto one of
+// them (matchRecommendationOption) -- recording it verbatim regardless
+// would record a choice the decision never offered, exactly what the
+// single-resolve path's offers() guard exists to prevent. And a decision
+// that a CONCURRENT single-resolve call answers between this handler's own
+// ListDecisions snapshot and its ResolveDecision call is treated as
+// skipped, not a 500 that aborts every decision after it in the loop.
 func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
@@ -904,17 +950,49 @@ func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Requ
 		if d.Status != domain.DecisionOpen {
 			continue
 		}
-		if strings.TrimSpace(d.Recommendation) == "" {
-			skipped = append(skipped, d.Code)
-			continue
-		}
-		if err := pr.db.ResolveDecision(r.Context(), d.ID, d.Recommendation, store.HumanActor); err != nil {
+		didResolve, err := s.acceptOneRecommendation(r.Context(), pr, d)
+		if err != nil {
 			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		resolved = append(resolved, d.Code)
+		if didResolve {
+			resolved = append(resolved, d.Code)
+		} else {
+			skipped = append(skipped, d.Code)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": resolved, "skipped": skipped})
+}
+
+// acceptOneRecommendation resolves one decision (already known Open as of
+// the caller's snapshot) with its own recommendation, for
+// handleAcceptRecommendations (review M3). Returns (true, nil) when
+// resolved, (false, nil) when skipped -- no recommendation, a recommendation
+// that maps to no unique option, or a decision a CONCURRENT request already
+// resolved between the caller's snapshot and this call (ResolveDecision then
+// fails with "not open"; re-checked here via GetDecision rather than treated
+// as a hard failure that would abort the rest of the batch) -- and a non-nil
+// error only for a genuine store failure.
+func (s *Server) acceptOneRecommendation(ctx context.Context, pr *projectRuntime, d domain.Decision) (bool, error) {
+	rec := strings.TrimSpace(d.Recommendation)
+	if rec == "" {
+		return false, nil
+	}
+	resolution := rec
+	if len(d.Options) > 0 {
+		matched, ok := matchRecommendationOption(d.Options, rec)
+		if !ok {
+			return false, nil
+		}
+		resolution = matched
+	}
+	if err := pr.db.ResolveDecision(ctx, d.ID, resolution, store.HumanActor); err != nil {
+		if cur, gerr := pr.db.GetDecision(ctx, d.ID); gerr == nil && cur.Status != domain.DecisionOpen {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // handleTriage returns the ranked "what needs your judgment first" view
@@ -1209,6 +1287,9 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -1357,6 +1438,9 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1439,7 +1523,8 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
 	if updated != nil {
-		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -1450,6 +1535,9 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1485,6 +1573,9 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1507,6 +1598,9 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -1537,6 +1631,12 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check, wouldCycle, and the write against
+	// every other Plan-editing endpoint on this same initiative -- two
+	// concurrent set-depends_on requests (A->B and B->A) each used to pass
+	// wouldCycle against the graph as it stood before either write landed,
+	// and together create a cycle.
+	defer pr.lockPlanEdit(ini.ID)()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1546,14 +1646,24 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
+	// DependsOn is a pointer (review low-priority item): {} or a misspelled
+	// field name decodes to a nil field, which must be refused rather than
+	// silently treated as depends_on: [] and clearing every existing
+	// dependency. An explicitly empty array, {"depends_on": []}, decodes to
+	// a non-nil pointer to an empty slice and is still the legitimate "make
+	// this task depend on nothing" request the doc comment above describes.
 	var body struct {
-		DependsOn []string `json:"depends_on"`
+		DependsOn *[]string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, body.DependsOn)
+	if body.DependsOn == nil {
+		writeError(w, http.StatusBadRequest, "depends_on is required (use [] to clear all dependencies)")
+		return
+	}
+	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, *body.DependsOn)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
@@ -1571,13 +1681,22 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "that dependency would create a cycle: "+cycle)
 		return
 	}
-	if err := pr.db.ReplaceTaskDependencies(r.Context(), ini.ID, task.ID, depIDs); err != nil {
+	// M5: SetTaskDependencies re-checks for a cycle INSIDE the same
+	// transaction as the write, defense-in-depth beyond the pre-check above
+	// and lockPlanEdit's serialization (for any path to this write that
+	// isn't the pre-check's own wouldCycle call).
+	if err := pr.db.SetTaskDependencies(r.Context(), ini.ID, task.ID, depIDs); err != nil {
+		if errors.Is(err, store.ErrDependsOnCycle) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
 	if updated != nil {
-		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -1621,11 +1740,21 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard checks and MergeTasks's own cycle check
+	// against every other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	var body struct {
 		TaskIDs []string `json:"task_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.TaskIDs) != 2 {
 		writeError(w, http.StatusBadRequest, "task_ids must name exactly 2 tasks")
+		return
+	}
+	// H4: refuse a self-merge before even looking the tasks up -- task_ids:
+	// [A, A] used to pass both existence guards and then DeleteTask(A)
+	// deleted the survivor, leaving a null response.
+	if body.TaskIDs[0] == body.TaskIDs[1] {
+		writeError(w, http.StatusBadRequest, "task_ids must name two distinct tasks")
 		return
 	}
 	keep, err := pr.db.GetTask(r.Context(), body.TaskIDs[0])
@@ -1647,67 +1776,26 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	// Union the requirements each task implements.
-	reqIDs, err := s.taskRequirementIDs(ctx, pr, ini.ID, keep.ID, merge.ID)
+	// H4: the union/concat/rewire/delete below is now MergeTasks, ONE store
+	// transaction that also runs the cycle check against the FINAL graph
+	// before writing anything (a failure partway, or a concurrent request,
+	// used to leave a half-merged plan; there was also no cycle check at
+	// all, so A->B->C plus merging (A, C) could silently create A->B->A).
+	updated, err := pr.db.MergeTasks(r.Context(), ini.ID, keep.ID, merge.ID)
 	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := pr.db.ReplaceTaskRequirements(ctx, ini.ID, keep.ID, reqIDs); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Concatenate the statements.
-	statement := strings.TrimSpace(keep.Statement)
-	if s2 := strings.TrimSpace(merge.Statement); s2 != "" {
-		if statement != "" {
-			statement += "\n\n"
-		}
-		statement += s2
-	}
-	if err := pr.db.UpdateTask(ctx, ini.ID, keep.ID, keep.Title, statement, keep.Priority, keep.Estimate); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Rewire dependencies: the survivor inherits both tasks' outgoing
-	// depends_on (minus references to each other and itself), and anything
-	// that depended on the merged task now depends on the survivor instead.
-	outgoing, err := s.unionTaskDeps(ctx, pr, ini.ID, keep.ID, merge.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := pr.db.ReplaceTaskDependencies(ctx, ini.ID, keep.ID, outgoing); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", merge.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	for _, e := range dependents {
-		if e.EdgeType != domain.EdgeDependsOn || e.FromID == keep.ID {
-			continue
-		}
-		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, []string{keep.ID}); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSelfMerge):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, store.ErrMergeCycle):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
 			s.writeErr(w, http.StatusInternalServerError, err)
-			return
 		}
-	}
-
-	// DeleteTask cascades every remaining edge naming the merged task (its
-	// own outgoing edges, and the now-superseded incoming ones just rewired).
-	if err := pr.db.DeleteTask(ctx, ini.ID, merge.ID); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	updated, _ := pr.db.GetTask(ctx, keep.ID)
 	if updated != nil {
-		updated.RequirementIDs, updated.DependsOn, _ = pr.db.TaskEdges(ctx, ini.ID, updated.ID)
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -1768,6 +1856,9 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	defer pr.lockPlanEdit(ini.ID)()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1800,16 +1891,19 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	dependents, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "task", task.ID)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 
-	created := make([]*domain.Task, 0, len(body.Tasks))
-	for _, spec := range body.Tasks {
-		if strings.TrimSpace(spec.Title) == "" {
-			writeError(w, http.StatusBadRequest, "each replacement task needs a title")
+	// M4: validate and resolve EVERY replacement task before any write. The
+	// old handler validated a spec's title and resolved its
+	// requirement_ids inside the same loop that created tasks one at a
+	// time, so an invalid second (or third...) spec returned 400 after the
+	// first replacement was already created and the original not yet
+	// deleted -- a half-applied split, the same bug this branch had already
+	// fixed for PATCH.
+	specs := make([]store.SplitTaskSpec, 0, len(body.Tasks))
+	for i, spec := range body.Tasks {
+		title := strings.TrimSpace(spec.Title)
+		if title == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d needs a title", i+1))
 			return
 		}
 		reqIDs := originalReqs
@@ -1820,36 +1914,36 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		nt := &domain.Task{
-			InitiativeID: ini.ID,
-			Title:        pr.redactor.RedactString(strings.TrimSpace(spec.Title)),
-			Statement:    pr.redactor.RedactString(spec.Statement),
-			Priority:     task.Priority,
-		}
-		if err := pr.db.CreateTaskMulti(ctx, nt, reqIDs, originalDeps); err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
+		// M4: requirement_ids: [] (explicitly empty, non-nil) must not
+		// silently produce a task with no requirement -- "Added tasks take
+		// a requirement" -- and neither may originalReqs being empty (the
+		// original itself had none).
+		if len(reqIDs) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d (%q) needs at least one requirement", i+1, title))
 			return
 		}
-		nt.RequirementIDs, nt.DependsOn = nonNilStrings(reqIDs), nonNilStrings(originalDeps)
-		created = append(created, nt)
+		specs = append(specs, store.SplitTaskSpec{
+			Title:          pr.redactor.RedactString(title),
+			Statement:      pr.redactor.RedactString(spec.Statement),
+			Priority:       task.Priority,
+			RequirementIDs: reqIDs,
+		})
 	}
 
-	newIDs := make([]string, len(created))
-	for i, nt := range created {
-		newIDs[i] = nt.ID
+	// M4: every replacement's creation, the dependent rewiring, and the
+	// original's deletion now run inside SplitTask's one transaction.
+	created, err := pr.db.SplitTask(ctx, ini.ID, task.ID, specs, originalDeps)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
-	for _, e := range dependents {
-		if e.EdgeType != domain.EdgeDependsOn || e.FromID == task.ID {
-			continue
-		}
-		if err := pr.db.AddTaskDependencies(ctx, ini.ID, e.FromID, newIDs); err != nil {
+	for _, nt := range created {
+		reqs, deps, err := pr.db.TaskEdges(ctx, ini.ID, nt.ID)
+		if err != nil {
 			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-	}
-	if err := pr.db.DeleteTask(ctx, ini.ID, task.ID); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err)
-		return
+		nt.RequirementIDs, nt.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
 	}
 	writeJSON(w, http.StatusOK, created)
 }

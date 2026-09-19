@@ -248,6 +248,60 @@ func TestCreatePRUsesOwnerColonBranchForAFork(t *testing.T) {
 	}
 }
 
+// TestCreatePRHandlesGHRepoForkCloneLayout is review M6: `gh repo fork
+// --clone` sets origin to the FORK and upstream to the PARENT, with no
+// per-branch remote config at all. pushRemote correctly still pushes to
+// origin (the fork owns the push), but --head must be given the
+// "owner:branch" form because the actual base repository is upstream (the
+// parent), not origin: comparing the fork's owner against origin's OWN
+// owner (trivially equal, since origin IS the fork) used to never trigger
+// the owner prefix, so gh resolved the bare branch name against the parent
+// and found nothing.
+func TestCreatePRHandlesGHRepoForkCloneLayout(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	forkRemote := t.TempDir()
+	if out, err := gitCmd(t, forkRemote, "init", "-q", "--bare").CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	gitOut(t, repo, "remote", "add", "origin", forkRemote)
+	// origin's fetch URL is github.com-shaped (read by remoteOwner); its
+	// push URL is the real local bare repo, so the push below succeeds for
+	// real -- the same split-URL trick TestCreatePRUsesOwnerColonBranchForAFork
+	// uses.
+	gitOut(t, repo, "remote", "set-url", "origin", "git@github.com:fork-owner/repo.git")
+	gitOut(t, repo, "remote", "set-url", "--push", "origin", forkRemote)
+	// upstream is the parent -- read-only here (never pushed to), exactly
+	// what `gh repo fork --clone` sets up.
+	gitOut(t, repo, "remote", "add", "upstream", "git@github.com:upstream-owner/repo.git")
+	gitOut(t, repo, "checkout", "-q", "-b", "idea/add-rate-limiting")
+	// Deliberately NO `git config branch.<name>.remote`: gh repo fork
+	// --clone never sets one, so pushRemote falls back to "origin".
+
+	argsPath := filepath.Join(t.TempDir(), "args")
+	prevGH := GHBinPath
+	GHBinPath = writeFakeGH(t, argsPath, `[]`, 0)
+	t.Cleanup(func() { GHBinPath = prevGH })
+
+	if _, err := CreatePR(t.Context(), repo, PRRequest{Branch: "idea/add-rate-limiting", Title: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify against the real bare repo directly (origin's FETCH url is a
+	// fake github.com address for owner parsing; only its PUSH url is the
+	// real local bare repo).
+	if got := gitOut(t, forkRemote, "show-ref", "--heads", "idea/add-rate-limiting"); got == "" {
+		t.Error("branch was not pushed to origin (the fork)")
+	}
+
+	argsRaw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argsRaw), "--head\nfork-owner:idea/add-rate-limiting") {
+		t.Errorf("gh args do not use the owner:branch form for the gh-repo-fork-clone layout:\n%s", string(argsRaw))
+	}
+}
+
 func TestCreatePRReportsMissingGH(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	prevGH := GHBinPath
