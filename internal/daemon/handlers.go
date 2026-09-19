@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -915,42 +917,161 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// optionRefRe matches a recommendation that names an option by position
+// instead of by text: "Option B", "Choice 2", "option #3", with optional
+// surrounding punctuation ("(B)", "2.", "B:"). Group 1 is the letter or
+// number. Used by matchRecommendationOption's index-reference path (review
+// #2, ICP re-run: the model's recommendation prose never matched an option
+// verbatim, so accept-recommendations skipped every decision that had
+// options).
+var optionRefRe = regexp.MustCompile(`(?i)^\(?(?:option|choice)\b\s*#?\s*([a-z]|[0-9]+)\b\)?\s*[.:)\-–—]?\s*.*$`)
+
+// bareIndexRe matches a recommendation that is NOTHING BUT a letter or number
+// reference ("B", "2", "(b)", "3.") -- accepted only when the option-keyword
+// form above didn't match, and only as the entire trimmed string, so an
+// option whose real text happens to be a single word is never misread as an
+// index.
+var bareIndexRe = regexp.MustCompile(`(?i)^\(?([a-z]|[0-9]+)\)?[.:]?$`)
+
+// optionIndexFromRef resolves a letter ("a".."z") or 1-based number token to
+// a 0-based index into an n-long options list, or (-1, false) if it names
+// nothing in range.
+func optionIndexFromRef(token string, n int) (int, bool) {
+	if len(token) == 1 && unicode.IsLetter(rune(token[0])) {
+		idx := int(unicode.ToUpper(rune(token[0])) - 'A')
+		if idx >= 0 && idx < n {
+			return idx, true
+		}
+		return -1, false
+	}
+	num, err := strconv.Atoi(token)
+	if err != nil {
+		return -1, false
+	}
+	idx := num - 1 // options are named 1-based ("Option 1") in prose.
+	if idx >= 0 && idx < n {
+		return idx, true
+	}
+	return -1, false
+}
+
+// normalizeForMatch folds recommendation/option text for a loose comparison:
+// lowercased, trimmed, internal whitespace collapsed, and every rune that is
+// neither a letter, digit nor space dropped -- so "Use Postgres." and "use
+// postgres" (or "use, postgres!") compare equal.
+func normalizeForMatch(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastSpace = false
+		case unicode.IsSpace(r):
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		default:
+			// Punctuation is dropped, not replaced by a space, so "don't" and
+			// "dont" compare equal along with "Use Postgres." and "use postgres".
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // matchRecommendationOption maps a decision's free-text Recommendation onto
-// one of its Options for accept-recommendations (review M3): the
-// single-resolve path (handleResolveDecision) already refuses, via offers(),
-// to record an answer that is not one of a decision's options, and
-// batch-accepting recommendations must not silently bypass that guard just
-// because there is no human present to notice. An exact match wins
-// outright; otherwise a UNIQUE case-insensitive, whitespace-trimmed match is
-// used (the common case: the model's own recommendation text drifts in
-// casing/whitespace from the option list it produced in the same response);
-// anything else -- no match, or more than one -- is not resolved
-// automatically.
-func matchRecommendationOption(options []string, recommendation string) (string, bool) {
+// one of its Options for accept-recommendations (review M3, and its ICP
+// re-run follow-up review #2): the single-resolve path (handleResolveDecision)
+// already refuses, via offers(), to record an answer that is not one of a
+// decision's options, and batch-accepting recommendations must not silently
+// bypass that guard just because there is no human present to notice.
+//
+// Tried in order, the first that resolves uniquely wins:
+//  1. An exact, verbatim match.
+//  2. An "Option B" / "Choice 2" / "(3)" style reference naming an option by
+//     position (optionRefRe) -- what the schema now asks the model to prefer.
+//  3. A bare letter/number ("B", "2") naming an option by position, when
+//     nothing else in the recommendation could itself be prose.
+//  4. Case/whitespace/punctuation-normalized equality (the common case: the
+//     model's own recommendation text drifts in casing/whitespace/punctuation
+//     from the option list it produced in the same response).
+//  5. One option containing the other after the same normalization -- the
+//     recommendation restates an option with extra framing ("I'd go with
+//     using Postgres for this" containing option "Use Postgres"), or an
+//     option is itself a prefix of a longer recommendation.
+//
+// Anything else -- no candidate at any step, or more than one -- is not
+// resolved automatically; reason explains why (empty when ok is true).
+func matchRecommendationOption(options []string, recommendation string) (matched string, ok bool, reason string) {
+	rec := strings.TrimSpace(recommendation)
+	if rec == "" {
+		return "", false, "no recommendation was given"
+	}
 	for _, o := range options {
-		if o == recommendation {
-			return o, true
+		if o == rec {
+			return o, true, ""
 		}
 	}
-	norm := strings.ToLower(strings.TrimSpace(recommendation))
-	match, count := "", 0
-	for _, o := range options {
-		if strings.ToLower(strings.TrimSpace(o)) == norm {
-			match = o
-			count++
+	if m := optionRefRe.FindStringSubmatch(rec); m != nil {
+		if idx, ok := optionIndexFromRef(m[1], len(options)); ok {
+			return options[idx], true, ""
 		}
 	}
-	if count == 1 {
-		return match, true
+	if m := bareIndexRe.FindStringSubmatch(rec); m != nil {
+		if idx, ok := optionIndexFromRef(m[1], len(options)); ok {
+			return options[idx], true, ""
+		}
 	}
-	return "", false
+	normRec := normalizeForMatch(rec)
+	var exact []string
+	for _, o := range options {
+		if normalizeForMatch(o) == normRec {
+			exact = append(exact, o)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], true, ""
+	}
+	if len(exact) > 1 {
+		return "", false, "the recommendation matches more than one option once case/punctuation is ignored"
+	}
+	var contained []string
+	for _, o := range options {
+		no := normalizeForMatch(o)
+		if no == "" || normRec == "" {
+			continue
+		}
+		if strings.Contains(normRec, no) || strings.Contains(no, normRec) {
+			contained = append(contained, o)
+		}
+	}
+	if len(contained) == 1 {
+		return contained[0], true, ""
+	}
+	if len(contained) > 1 {
+		return "", false, "the recommendation is ambiguous between more than one option"
+	}
+	return "", false, "the recommendation does not match any option"
+}
+
+// skippedDecision names one decision handleAcceptRecommendations left open,
+// and why -- so a human (or the UI) can tell "no recommendation was given"
+// apart from "the recommendation didn't match any option" apart from "this
+// was resolved by someone else while the batch ran" (review #2, ICP re-run:
+// the endpoint used to return skipped as bare codes with no reason at all).
+type skippedDecision struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
 }
 
 // handleAcceptRecommendations resolves every open decision on an initiative
 // with its own recommendation, actor human (review B4, adopted #8): the "53
 // things need your judgment" problem the ICP round found, answered in one
 // call instead of one click per decision. A decision with no recommendation
-// (the model raised it without one) is left open and named in `skipped`.
+// (the model raised it without one) is left open and named in `skipped`,
+// with a reason.
 //
 // M3: when a decision has Options, the recommendation must map onto one of
 // them (matchRecommendationOption) -- recording it verbatim regardless
@@ -971,12 +1092,12 @@ func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resolved := []string{}
-	skipped := []string{}
+	skipped := []skippedDecision{}
 	for _, d := range decs {
 		if d.Status != domain.DecisionOpen {
 			continue
 		}
-		didResolve, err := s.acceptOneRecommendation(r.Context(), pr, d)
+		didResolve, reason, err := s.acceptOneRecommendation(r.Context(), pr, d)
 		if err != nil {
 			s.writeErr(w, http.StatusInternalServerError, err)
 			return
@@ -984,7 +1105,7 @@ func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Requ
 		if didResolve {
 			resolved = append(resolved, d.Code)
 		} else {
-			skipped = append(skipped, d.Code)
+			skipped = append(skipped, skippedDecision{Code: d.Code, Reason: reason})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": resolved, "skipped": skipped})
@@ -992,33 +1113,33 @@ func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Requ
 
 // acceptOneRecommendation resolves one decision (already known Open as of
 // the caller's snapshot) with its own recommendation, for
-// handleAcceptRecommendations (review M3). Returns (true, nil) when
-// resolved, (false, nil) when skipped -- no recommendation, a recommendation
-// that maps to no unique option, or a decision a CONCURRENT request already
-// resolved between the caller's snapshot and this call (ResolveDecision then
-// fails with "not open"; re-checked here via GetDecision rather than treated
-// as a hard failure that would abort the rest of the batch) -- and a non-nil
-// error only for a genuine store failure.
-func (s *Server) acceptOneRecommendation(ctx context.Context, pr *projectRuntime, d domain.Decision) (bool, error) {
+// handleAcceptRecommendations (review M3). Returns (true, "", nil) when
+// resolved; (false, reason, nil) when skipped -- no recommendation, a
+// recommendation that maps to no unique option, or a decision a CONCURRENT
+// request already resolved between the caller's snapshot and this call
+// (ResolveDecision then fails with "not open"; re-checked here via
+// GetDecision rather than treated as a hard failure that would abort the
+// rest of the batch) -- and a non-nil error only for a genuine store failure.
+func (s *Server) acceptOneRecommendation(ctx context.Context, pr *projectRuntime, d domain.Decision) (bool, string, error) {
 	rec := strings.TrimSpace(d.Recommendation)
 	if rec == "" {
-		return false, nil
+		return false, "no recommendation was given", nil
 	}
 	resolution := rec
 	if len(d.Options) > 0 {
-		matched, ok := matchRecommendationOption(d.Options, rec)
+		matched, ok, reason := matchRecommendationOption(d.Options, rec)
 		if !ok {
-			return false, nil
+			return false, reason, nil
 		}
 		resolution = matched
 	}
 	if err := pr.db.ResolveDecision(ctx, d.ID, resolution, store.HumanActor); err != nil {
 		if cur, gerr := pr.db.GetDecision(ctx, d.ID); gerr == nil && cur.Status != domain.DecisionOpen {
-			return false, nil
+			return false, "resolved by someone else while this request ran", nil
 		}
-		return false, err
+		return false, "", err
 	}
-	return true, nil
+	return true, "", nil
 }
 
 // handleTriage returns the ranked "what needs your judgment first" view
@@ -2032,7 +2153,17 @@ func (s *Server) taskDependents(ctx context.Context, pr *projectRuntime, initiat
 	return out, nil
 }
 
-// resolveTaskRefs resolves task references (title, code, or id) to task ids.
+// resolveTaskRefs resolves task references (title, code, or id) to task ids,
+// as documented (docs/api.md's depends-on entry: "titles, codes, or ids").
+// Matched by exact id FIRST -- an id is never run through the
+// title/whitespace-folding normalization below, so a task whose id happens to
+// collide with another task's normalized title/code (astronomically unlikely,
+// but exact-id is unambiguous regardless) always resolves to itself -- then
+// falls back to a normalized title/code match. Before this, a task's own id
+// was never in byNorm at all: depends_on documented "titles, codes, or ids"
+// but only the first two worked, so `idea task depends-on <task-id>` (or any
+// caller passing ids, the least ambiguous ref a client could use) failed with
+// "unknown task" for every id (review #3, ICP re-run).
 func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -2042,14 +2173,19 @@ func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initia
 		return nil, err
 	}
 	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	byID := make(map[string]string, len(tasks))
 	byNorm := map[string]string{}
 	for _, t := range tasks {
+		byID[t.ID] = t.ID
 		byNorm[norm(t.Title)] = t.ID
 		byNorm[norm(t.Code)] = t.ID
 	}
 	var out []string
 	for _, ref := range refs {
-		id, ok := byNorm[norm(ref)]
+		id, ok := byID[ref]
+		if !ok {
+			id, ok = byNorm[norm(ref)]
+		}
 		if !ok {
 			return nil, fmt.Errorf("depends_on references an unknown task %q", ref)
 		}

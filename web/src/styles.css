@@ -383,6 +383,14 @@ button.ghost {
   font-size: 0.9rem;
 }
 
+/* "Accept all recommendations" skip reasons (review #2, ICP re-run): each
+   skipped decision's code and WHY, not just a bare count. */
+.accept-recommendations-skipped {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-body);
+}
+
 .field-label {
   display: block;
   font-size: 0.8rem;
@@ -2030,6 +2038,11 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .cs-diff-remove { color: var(--failing-fg); background: var(--failing-pill); }
 .cs-diff-context { color: var(--text-body); }
 .cs-patch-note { margin: 0 0 6px; padding: 0 12px; }
+/* A denied change set's diff carries masked stand-in content, never the raw
+   secret -- distinct styling so this reads as "withheld", not as an ordinary
+   empty/short diff (review: secret-sweep diff visibility). */
+.cs-patch-note-redacted { color: var(--failing-fg); font-weight: 600; }
+.cs-file-content-redacted { background: var(--failing-pill); }
 .cs-actions { display: flex; gap: 7px; margin-top: 10px; }
 .cs-green { background: #16a34a; color: #fff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .cs-secondary { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 11px; font-size: 12px; color: var(--text-body); cursor: pointer; }

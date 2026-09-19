@@ -85,8 +85,8 @@ Top-level fields:
 | `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
 | `executor.image` | container image for the non-internal kinds | `alpine:3.20` |
 | `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
-| `check.image` | image holding the project toolchain for the build/test checks | — |
-| `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — the check is recorded `not_applicable` |
+| `check.image` | image holding the project toolchain for the build/test checks | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check fails closed (see "Check auto-detection" below) |
+| `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `git.allow_default_branch` | let commit-on-apply commit while the repository's default branch is checked out | `false` |
@@ -95,6 +95,37 @@ Top-level fields:
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: re-approving re-runs the reviewer, and after the first block the deny gate refuses outright | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
+
+### Check auto-detection
+
+Leaving `check.image`, `build_cmd` and `test_cmd` unset does not necessarily
+mean the deterministic build/test checks are skipped. Each is derived from
+the project's own toolchain markers when — and only when — exactly one
+toolchain is unambiguously recognized; a project with more than one
+recognized marker, or none at all, falls back to the old fail-closed
+behavior (no sandbox image → the check is rejected rather than run on the
+host; no command → `not_applicable`). A configured value always wins: none of
+this is ever consulted when the corresponding field is already set.
+
+`check.image` is derived from, in order: `.nvmrc` or `package.json`'s
+`engines.node` (Node), `go.mod`'s `go`/`toolchain` directive (Go), or
+`.python-version` (Python).
+
+`build_cmd`/`test_cmd` are derived per toolchain marker:
+
+| Marker | `build_cmd` | `test_cmd` |
+|---|---|---|
+| `go.mod` | `go build ./...` | `go test ./...` |
+| `package.json` (`scripts.build`/`scripts.test`) | `<pm> run build` | `<pm> test` |
+| `pyproject.toml` | — (no unambiguous build step) | `pytest` |
+| `Cargo.toml` | `cargo build` | `cargo test` |
+
+`<pm>` is `pnpm` (with `pnpm-lock.yaml`), `yarn` (with `yarn.lock`), or `npm`
+otherwise. A detected command is shown on the check's finding, prefixed
+"`build_cmd`/`test_cmd` not configured; detected `<command>` from `<marker>`",
+so it is never mistaken for a command you configured yourself — and it is
+always overridable: set `build_cmd`/`test_cmd` (or `check.image`) explicitly
+in `harness.yaml` and detection is never consulted for that field again.
 
 `demo.block_review_cycles` exists because the demo provider was a happy-path
 oracle. Its reviewer returned zero findings unconditionally, so the review loop

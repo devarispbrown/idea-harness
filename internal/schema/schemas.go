@@ -78,7 +78,10 @@ const PRD = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }
@@ -153,7 +156,10 @@ const Architecture = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }
@@ -189,7 +195,10 @@ const ProductDesign = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }

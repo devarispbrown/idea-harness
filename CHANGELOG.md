@@ -565,6 +565,62 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   showing the last step it was on forever after. `GET .../costs`' `by_phase` is now ordered by the
   pipeline's own step order, not alphabetically by raw stage key.
 
+### Fixed — ICP re-run follow-up
+
+- **A secret-sweep denial left the diff viewer with nothing to show.** A
+  change set the secret sweep denied never had its raw file content persisted
+  (by design — the raw store must never carry a rejected secret value), which
+  left `GET …/change-sets/{id}/diff` reporting the content as an opaque,
+  0-byte "unreadable" for every file, even after a human dispositioned the
+  finding `not_a_secret`. It now persists a MASKED stand-in instead (every
+  detected secret span replaced, never the raw value), served with
+  `redacted: true` and an honest note — "content withheld because it
+  contained a secret; showing masked" — instead of a blank file. The
+  `not_a_secret` override itself already worked end to end (a re-execute of
+  the identical content passes the sweep); it is now also proven by a
+  dedicated regression test.
+- **`POST …/decisions/accept-recommendations` skipped nearly every decision
+  with options**, because the model's recommendation prose almost never
+  matched an option verbatim. The matcher now also accepts a
+  case/whitespace/punctuation-tolerant match, one text containing the other,
+  and a positional reference ("Option B", "Choice 2", a bare letter or
+  number) — choosing only when exactly one option matches, otherwise leaving
+  the decision open. `skipped` is now a list of `{code, reason}` (was a bare
+  code list), naming why each one was left open. The PRD/architecture/
+  product-design decision schemas now also instruct the model to answer with
+  an option's exact text or its index.
+- **`depends_on` rejected a task's own id**, accepting only its title or code
+  despite being documented as taking "titles, codes, or ids" — the resolver's
+  lookup table was built from title and code alone. A task id now resolves
+  first (exact match), before falling back to a normalized title/code match.
+- **"Plan approved" was re-recorded on every build cycle.** The execute/
+  apply/revert claim mechanism releases an initiative back to the status it
+  found it in (`SetInitiativeStatus`, an unconditional write), which
+  round-trips an already-`plan_approved` initiative through
+  `plan_approved → running → plan_approved` on every single execute — and
+  each release wrote its own timeline milestone. The timeline now collapses
+  a release back to the SAME phase the initiative already occupied; a
+  genuine change of phase still shows.
+- **An unconfigured build/test check reported `not_applicable` even for an
+  obvious, single-toolchain project.** `build_cmd`/`test_cmd` are now derived
+  from the project's own toolchain markers when left unconfigured and exactly
+  one toolchain is unambiguously recognized — `go.mod` → `go build ./...` /
+  `go test ./...`, `package.json` `scripts.build`/`scripts.test` → `<pm> run
+  build` / `<pm> test`, `pyproject.toml` → `pytest`, `Cargo.toml` → `cargo
+  build` / `cargo test` — mirroring the existing `check.image` detection. The
+  detected command is shown on the check's finding, labeled "detected" and
+  naming the marker it came from, and always overridable by setting
+  `build_cmd`/`test_cmd` explicitly. See "Check auto-detection" in
+  [`docs/configuration.md`](docs/configuration.md).
+- **The implementer could generate code in the wrong language for the
+  project.** Nothing in the implementation brief — the implementer's entire
+  prompt — said what stack the project was already in, or that files must be
+  written to disk rather than pasted in a chat response. The brief now always
+  carries the project's detected stack (or an explicit "new project"/
+  "stack could not be detected" note) and a hard instruction to write files,
+  not paste code, regardless of what the planner model itself chose to
+  include.
+
 ## [0.5.1] - 2026-09-18
 
 ### Added
