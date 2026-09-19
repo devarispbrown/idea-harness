@@ -891,7 +891,10 @@ func TestReopenDecisionMarksDependentsStaleAndImpactShowsThem(t *testing.T) {
 }
 
 // TestClearStaleItemsForInitiativeOnRevisePlan proves the clearing half of
-// review A4 #5: re-planning clears the stale state.
+// review A4 #5: re-planning clears the stale state -- narrowed by review M5
+// to task/change-set marks only. A requirement mark survives revise-plan,
+// since regenerating the plan does not re-verify the requirement itself
+// against the decision that changed.
 func TestClearStaleItemsForInitiativeOnRevisePlan(t *testing.T) {
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
@@ -940,7 +943,9 @@ func TestClearStaleItemsForInitiativeOnRevisePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("expected revise-plan to clear stale items, got %+v", items)
+	// review M5: revise-plan must clear task/change-set marks but leave a
+	// requirement mark active.
+	if len(items) != 1 || items[0].TargetType != "requirement" {
+		t.Fatalf("expected only the requirement's stale mark to survive revise-plan, got %+v", items)
 	}
 }

@@ -226,8 +226,23 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		g.StaleItems = refs
-		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. Run `idea revise-plan` and review before continuing, or acknowledge the items.",
-			g.Why, len(items), strings.Join(codes, ", "))
+		// review M5: `idea revise-plan` refuses once any change set holds work
+		// (workflow.changeSetsHoldingWork), so telling the user to run it here
+		// would just send them at a guaranteed refusal. Point at what is
+		// actually available instead: acknowledge the stale items, or re-run
+		// the affected tasks so their change sets are regenerated fresh.
+		advice := "Run `idea revise-plan` and review before continuing, or acknowledge the items."
+		if cses, err := pr.db.ListChangeSets(r.Context(), ini.ID); err == nil {
+			for _, cs := range cses {
+				if cs.Status.HoldsWork() {
+					advice = "`idea revise-plan` is unavailable once a change set holds work; " +
+						"acknowledge the items, or re-run the affected tasks so their change sets are regenerated."
+					break
+				}
+			}
+		}
+		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. %s",
+			g.Why, len(items), strings.Join(codes, ", "), advice)
 	}
 
 	writeJSON(w, http.StatusOK, g)
