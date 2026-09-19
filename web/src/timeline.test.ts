@@ -3,6 +3,7 @@ import {
   describeTimelineEntry,
   groupByDay,
   relativeTime,
+  timelineEntryHref,
   timelineKindLabel,
   type TimelineEntry,
 } from "./timeline";
@@ -78,20 +79,54 @@ describe("describeTimelineEntry", () => {
   });
 });
 
+// localDayKey mirrors dayKey's own local-time bucketing, so this test's
+// expectations are correct under whatever time zone it actually runs in
+// (never hard-coded to UTC, which is the bug being pinned).
+function localDayKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 describe("groupByDay", () => {
-  it("buckets entries by calendar day, preserving newest-first order", () => {
+  it("buckets entries by calendar day in local time, preserving newest-first order", () => {
+    // Constructed in local time (not UTC "Z" strings): dayKey must bucket by
+    // the viewer's own calendar day, so the test's own expectation is
+    // derived the same way rather than assuming UTC (review Low fix).
+    const day1Late = new Date(2026, 8, 18, 12, 0, 0);
+    const day1Early = new Date(2026, 8, 18, 9, 0, 0);
+    const day0 = new Date(2026, 8, 17, 12, 0, 0);
     const entries = [
-      entry({ at: "2026-09-18T12:00:00Z", title: "a" }),
-      entry({ at: "2026-09-18T09:00:00Z", title: "b" }),
-      entry({ at: "2026-09-17T12:00:00Z", title: "c" }),
+      entry({ at: day1Late.toISOString(), title: "a" }),
+      entry({ at: day1Early.toISOString(), title: "b" }),
+      entry({ at: day0.toISOString(), title: "c" }),
     ];
     const groups = groupByDay(entries);
-    expect(groups.map((g) => g.day)).toEqual(["2026-09-18", "2026-09-17"]);
+    expect(groups.map((g) => g.day)).toEqual([localDayKey(day1Late), localDayKey(day0)]);
     expect(groups[0].entries.map((e) => e.title)).toEqual(["a", "b"]);
     expect(groups[1].entries.map((e) => e.title)).toEqual(["c"]);
   });
 
   it("returns an empty list for no entries", () => {
     expect(groupByDay([])).toEqual([]);
+  });
+});
+
+describe("timelineEntryHref (review Low fix: the ref was never linked)", () => {
+  it("links a change_set ref to the Build page", () => {
+    expect(timelineEntryHref("ini-1", { type: "change_set", id: "CHG-1" })).toBe("#/i/ini-1/build");
+  });
+
+  it("links a decision ref to that decision's discussion", () => {
+    expect(timelineEntryHref("ini-1", { type: "decision", id: "dec-1" })).toBe("#/i/ini-1/decision/dec-1");
+  });
+
+  it("is null for a ref type with no page of its own", () => {
+    expect(timelineEntryHref("ini-1", { type: "operation", id: "op-1" })).toBeNull();
+  });
+
+  it("is null with no ref at all", () => {
+    expect(timelineEntryHref("ini-1", undefined)).toBeNull();
   });
 });

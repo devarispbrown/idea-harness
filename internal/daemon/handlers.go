@@ -290,8 +290,12 @@ func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M1, review fix: a per-initiative cursor ("ui:<iniID>"), not the single
+	// project-wide "ui" cursor. Marking initiative A seen used to advance the
+	// one shared cursor past initiative B's own lower, still-unseen sequence
+	// numbers, hiding B's changes the next time its own What Changed loaded.
 	since := int64(0)
-	cursor, err := pr.db.GetReadCursor(r.Context(), "ui")
+	cursor, err := pr.db.GetReadCursor(r.Context(), seenCursorKey(ini.ID))
 	if err == nil {
 		since = cursor
 	}
@@ -386,9 +390,24 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// handleMarkSeen writes the project's "ui" read cursor to the sequence the
-// client actually rendered (echoed from /changed's `through`), so What Changed
-// clears exactly what was shown and never events that arrived mid-read.
+// seenCursorKey is the read-cursor key for one initiative's What Changed
+// "seen" mark (M1, review fix): "ui:<iniID>", never the bare project-wide
+// "ui" key handleMarkSeen still writes for a caller that sends no
+// initiative_id at all.
+func seenCursorKey(initiativeID string) string {
+	return "ui:" + initiativeID
+}
+
+// handleMarkSeen writes a read cursor to the sequence the client actually
+// rendered (echoed from /changed's `through`), so What Changed clears
+// exactly what was shown and never events that arrived mid-read.
+//
+// initiative_id (M1, review fix) scopes the cursor to that one initiative
+// ("ui:<iniID>") -- required to fix the bug where marking one initiative
+// seen silently advanced a single project-wide cursor past another
+// initiative's own lower, still-unseen sequence numbers. Optional and
+// backward compatible: a caller that sends none (the project-wide "ui" key)
+// keeps behaving exactly as before.
 func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -396,7 +415,8 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Through int64 `json:"through"`
+		Through      int64  `json:"through"`
+		InitiativeID string `json:"initiative_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Through < 0 {
 		writeError(w, http.StatusBadRequest, "through must be a non-negative integer")
@@ -410,7 +430,11 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	if body.Through > maxSeq {
 		body.Through = maxSeq
 	}
-	if err := pr.db.SetReadCursor(r.Context(), "ui", body.Through); err != nil {
+	key := "ui"
+	if body.InitiativeID != "" {
+		key = seenCursorKey(body.InitiativeID)
+	}
+	if err := pr.db.SetReadCursor(r.Context(), key, body.Through); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -466,17 +490,19 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	initiativeID := r.PathValue("id")
 	// `note` (D-a, wave 3 contract) steers this one retry: joins the framing
 	// prompt that restarts the pipeline and is recorded on that run. Decoded
-	// leniently like `fresh` on /execute -- an old caller that never sends it
-	// must keep working unchanged, and a caller that sends only `note` should
-	// not silently have it read as "model": "" and rejected as if it never
-	// sent one.
+	// leniently like `fresh` on /execute (M4, review fix: this used to reject
+	// `{"note":"x"}` with 400 "model is required" even though this very
+	// comment already promised the lenient decode) -- an old caller that
+	// never sends a body at all must keep working unchanged (an absent model
+	// falls back to the initiative's configured default, same as before),
+	// and a caller that sends only `note` must not have it read as
+	// "model": "" and rejected as if it never sent one.
 	var body struct {
 		Model string `json:"model"`
 		Note  string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Model) == "" {
-		writeError(w, http.StatusBadRequest, "model is required")
-		return
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
 	}
 	opID, err := s.rt.RetryInitiativeWithNote(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model), body.Note)
 	if err != nil {
@@ -2758,13 +2784,21 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// reported the whole-initiative gate and never mentioned REQ-99. The name is
 	// resolved inside RunVerificationGate, alongside the state check, so the two
 	// refusals have one precedence rather than depending on which field was set.
-	status, coverage, err := s.rt.RunVerificationGateConfirmingTests(
+	status, coverage, confirmResult, err := s.rt.RunVerificationGateConfirmingTests(
 		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note, body.ConfirmPassingTests)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "coverage": coverage})
+	resp := map[string]any{"status": status, "coverage": coverage}
+	// confirmed/skipped (C3/H2, wire contract addition) are present only when
+	// confirm_passing_tests was requested -- an ordinary pass/fail/waive call
+	// never touches them, so its response shape is unchanged.
+	if confirmResult != nil {
+		resp["confirmed"] = confirmResult.Confirmed
+		resp["skipped"] = confirmResult.Skipped
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleNext returns the deterministic next step for an initiative (§52).

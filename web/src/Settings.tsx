@@ -60,11 +60,25 @@ interface ProvidersView {
 // invisible standing exception.
 interface SecretAllowlistEntry {
   id: string;
-  fingerprint_prefix: string;
+  // M8, review fix: the backend actually sends `fingerprint` -- the full
+  // per-project HMAC, not a pre-truncated `fingerprint_prefix` as
+  // docs/openapi.yaml documents the eventual contract to be. Read the field
+  // that is really there and truncate for display client-side below, rather
+  // than reading a field that has never once been sent (rendered as
+  // "(…)" ). May be superseded once the secret-masking work elsewhere
+  // makes the backend send a real prefix instead.
+  fingerprint: string;
   kind: string;
   path: string;
   actor: string;
   created_at: string;
+}
+
+// allowlistFingerprintPrefix (M8, review fix) is the short, non-identifying
+// slice of the full HMAC shown next to a "not a secret" exemption -- enough
+// to recognize which one it is, never the full value.
+function allowlistFingerprintPrefix(fingerprint: string): string {
+  return (fingerprint || "").slice(0, 12);
 }
 
 const REVIEW_RIGOR_OPTIONS: { value: string; label: string; explanation: string }[] = [
@@ -996,7 +1010,7 @@ export default function Settings({ projectId }: { projectId: string }) {
               <li key={e.id} className="w3-allowlist-row">
                 <div>
                   <strong>{e.kind}</strong>{" "}
-                  <span className="muted">({e.fingerprint_prefix}…)</span>
+                  <span className="muted">({allowlistFingerprintPrefix(e.fingerprint)}…)</span>
                   <div className="muted">{e.path}</div>
                   <div className="muted">
                     {e.actor} · {new Date(e.created_at).toLocaleString()}

@@ -1292,3 +1292,50 @@ func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestIsGoTestCommand pins which test_cmd strings checkCommand re-runs with
+// `-json` (C1/C2, review fix: prefer go test's own structured output over
+// scraping `-v` text). Only a literal `go test ...` invocation qualifies --
+// a wrapper or a different runner that merely mentions "go test" in passing
+// must not be rewritten.
+func TestIsGoTestCommand(t *testing.T) {
+	cases := map[string]bool{
+		"go test ./...":                    true,
+		"go test -race ./...":              true,
+		"go test -v ./... -run TestFoo":    true,
+		"gotestsum -- ./...":               false,
+		"make test":                        false,
+		"echo 'go test ./...' && go build": false,
+		"":                                 false,
+		"go build ./...":                   false,
+	}
+	for cmd, want := range cases {
+		if got := isGoTestCommand(cmd); got != want {
+			t.Errorf("isGoTestCommand(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+// TestTruncateOutputN mutation-checks the cap boundary and the "tests"
+// category's much larger cap (review C1 fix: "parse before truncating" --
+// the old fixed 2000-byte cap silently cut a real suite's output mid-test).
+func TestTruncateOutputN(t *testing.T) {
+	if got := truncateOutputN("short", 2000); got != "short" {
+		t.Errorf("under the cap must be returned unchanged, got %q", got)
+	}
+	long := strings.Repeat("x", 2001)
+	got := truncateOutputN(long, 2000)
+	wantLen := 2000 + len("…") // "…" is a multi-byte rune
+	if len(got) != wantLen || !strings.HasSuffix(got, "…") {
+		t.Errorf("over the cap must be cut to exactly the cap plus an ellipsis, got len=%d (want %d) suffix=%q", len(got), wantLen, got[max(0, len(got)-3):])
+	}
+	if truncateOutput(long) != got {
+		t.Error("truncateOutput must be truncateOutputN at the general 2000-byte cap")
+	}
+	// The tests-only cap is far larger: a realistic suite's full -v output
+	// (well under 2 MiB) must survive completely untruncated.
+	realistic := strings.Repeat("=== RUN TestX\n--- PASS: TestX (0.00s)\n", 5000) // ~190KB
+	if truncateOutputN(realistic, testsOutputCap) != realistic {
+		t.Error("a realistic test suite's output must not be truncated at the tests-only cap")
+	}
+}

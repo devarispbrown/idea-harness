@@ -71,9 +71,15 @@ export function totalPhaseSeconds(byPhase: CostByPhase[]): number {
 // measured". Omits the agent segment entirely when there is no agent
 // activity yet (0 runs) rather than printing "agent: not measured" for an
 // initiative that simply hasn't executed anything.
+//
+// The time figure includes the agent's own seconds (review Low fix: "web
+// vs CLI cost mismatch" -- `idea status`'s cliCosts.summary() sums every
+// phase's seconds PLUS the agent's; this used to sum only the phases, so
+// the same initiative read a shorter elapsed time here than at the CLI).
 export function costLine(costs: CostsView): string {
   const money = formatUsd(costs.total_usd ?? null);
-  const time = formatDuration(totalPhaseSeconds(costs.by_phase ?? []));
+  const agentSeconds = costs.agent?.seconds ?? 0;
+  const time = formatDuration(totalPhaseSeconds(costs.by_phase ?? []) + agentSeconds);
   const parts = [money, time];
   if (costs.agent && costs.agent.runs > 0) {
     parts.push(`agent: ${formatUsd(costs.agent.usd)}`);

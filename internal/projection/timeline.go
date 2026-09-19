@@ -84,10 +84,19 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 			if !strings.HasSuffix(ev.Operation, "->"+string(domain.ChangeSetRejected)) {
 				continue
 			}
-			detail := denialDetail(findingsFor(ev.ChangeSetID))
+			findings := findingsFor(ev.ChangeSetID)
+			detail := denialDetail(findings)
+			// "denied" is reserved for a genuine system block (M3, review fix):
+			// a plain check failure (build/tests) is orchestrator-actor too but
+			// carries no DenyCode, so it now reads "rejected" like a human
+			// reject would, not "denied" -- and the restart-reconcile sweep
+			// (runtime.go, an interrupted run recovering with no findings of
+			// its own) is named for what it is instead of reading as either.
 			kind, verb := "change_set_rejected", "rejected"
-			if ev.Actor == store.ActorOrchestrator {
+			if hasSystemDenyCode(findings) {
 				kind, verb = "change_set_denied", "denied"
+			} else if detail == "" && ev.Actor == store.ActorOrchestrator {
+				detail = "interrupted by a restart"
 			}
 			title := ev.HumanID + " " + verb
 			if detail != "" {
@@ -148,6 +157,19 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 		return nil, err
 	}
 	for _, ev := range statusEvents {
+		// M3, review fix: "->running" is a resume, not a completed phase (it
+		// duplicated nothing, but read as a milestone it is not); "->failed"
+		// is already reported once as a run_failed entry from the operations
+		// loop above, and a second phase_completed entry for the same event
+		// is a plain duplicate.
+		to := ev.Operation
+		if i := strings.LastIndex(ev.Operation, "->"); i >= 0 {
+			to = ev.Operation[i+2:]
+		}
+		switch domain.InitiativeStatus(to) {
+		case domain.InitiativeRunning, domain.InitiativeFailed:
+			continue
+		}
 		out = append(out, domain.TimelineEntry{
 			At: ev.At, Kind: "phase_completed", Title: humanizePhaseTransition(ev.Operation),
 			Ref: domain.TimelineRef{Type: "initiative", ID: initiativeID},
@@ -257,6 +279,23 @@ func patchFileCount(findings []domain.Finding) int {
 		}
 	}
 	return 0
+}
+
+// hasSystemDenyCode reports whether any of a change set's findings carries a
+// machine-readable DenyCode (H3/M3, review fix): the signal that this
+// rejection is a genuine system block (a secret, PII, a path escape, host
+// exec, a blob mismatch, an unresolved blocking review finding) rather than
+// a plain human reject or a plain check failure (build/tests findings never
+// carry a Code, only a category and a severity) -- and rather than the
+// restart-reconcile sweep's bare status transition, which writes no findings
+// at all.
+func hasSystemDenyCode(findings []domain.Finding) bool {
+	for _, f := range findings {
+		if f.Code != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // denialDetail names why a change set was rejected or denied, from its own

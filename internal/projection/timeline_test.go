@@ -86,9 +86,14 @@ func TestBuildTimelineScoping(t *testing.T) {
 	}
 }
 
-// TestBuildTimelineDeniedVsRejected pins the actor-based distinction (C1):
-// a system-deny rejection (orchestrator actor) reads "denied"; a human
-// reviewer's reject verdict reads "rejected".
+// TestBuildTimelineDeniedVsRejected pins the DenyCode-based distinction (M3,
+// review fix): "denied" is reserved for a genuine system block -- a finding
+// that actually carries a DenyCode (secret_sweep, host_exec, ...) -- never
+// merely because the orchestrator was the actor. A plain check failure
+// (build/tests -- orchestrator actor, but no DenyCode on its finding) and
+// the restart-reconcile sweep (orchestrator actor, no findings at all) both
+// read "rejected", same as a human reviewer's reject verdict; the review's
+// own complaint was that all three used to read "denied" too.
 func TestBuildTimelineDeniedVsRejected(t *testing.T) {
 	db := openProjTestDB(t)
 	ctx := context.Background()
@@ -101,15 +106,55 @@ func TestBuildTimelineDeniedVsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// System deny: checks_running -> rejected, orchestrator actor.
+	// A genuine system deny: checks_running -> rejected, orchestrator actor,
+	// AND a finding carrying a real DenyCode.
 	denied := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d"}
 	if err := db.CreateChangeSet(ctx, denied); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: ini.ID, TargetType: "change_set", TargetID: denied.ID,
+		Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "secret_sweep", Code: domain.DenyCodeSecretSweep, Finding: "credential detected",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.TransitionChangeSet(ctx, denied.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.TransitionChangeSet(ctx, denied.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain check failure (M3's own bug): orchestrator actor, a finding
+	// exists (a failing "tests" check), but it carries no DenyCode.
+	checkFailed := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d3"}
+	if err := db.CreateChangeSet(ctx, checkFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: ini.ID, TargetType: "change_set", TargetID: checkFailed.ID,
+		Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+		Category: "tests", Finding: "tests pass — FAIL", Disposition: domain.DispositionRejected,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, checkFailed.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, checkFailed.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restart-reconcile sweep: orchestrator actor, no findings at all.
+	interrupted := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d4"}
+	if err := db.CreateChangeSet(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, interrupted.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TransitionChangeSet(ctx, interrupted.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,16 +178,74 @@ func TestBuildTimelineDeniedVsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	kindByCS := map[string]string{}
+	detailByCS := map[string]string{}
 	for _, e := range entries {
 		if e.Ref.Type == "change_set" {
 			kindByCS[e.Ref.ID] = e.Kind
+			detailByCS[e.Ref.ID] = e.Title
 		}
 	}
 	if kindByCS[denied.ID] != "change_set_denied" {
 		t.Errorf("system-deny reject: kind = %q, want change_set_denied", kindByCS[denied.ID])
 	}
+	if kindByCS[checkFailed.ID] != "change_set_rejected" {
+		t.Errorf("plain check failure: kind = %q, want change_set_rejected (never denied)", kindByCS[checkFailed.ID])
+	}
+	if kindByCS[interrupted.ID] != "change_set_rejected" {
+		t.Errorf("restart-reconcile: kind = %q, want change_set_rejected (never denied)", kindByCS[interrupted.ID])
+	}
+	if !contains(detailByCS[interrupted.ID], "interrupted") {
+		t.Errorf("restart-reconcile title = %q, want it to mention the interruption", detailByCS[interrupted.ID])
+	}
 	if kindByCS[rejected.ID] != "change_set_rejected" {
 		t.Errorf("human reject: kind = %q, want change_set_rejected", kindByCS[rejected.ID])
+	}
+}
+
+// TestBuildTimelinePhaseCompletedSkipsResumeAndFailed pins M3's second fix:
+// "->running" (a resume, not a milestone) and "->failed" (already reported
+// once as run_failed) never produce their own phase_completed entry.
+func TestBuildTimelinePhaseCompletedSkipsResumeAndFailed(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativeApproved, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativeRunning, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativeFailed, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := BuildTimeline(ctx, db, ini.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind != "phase_completed" {
+			continue
+		}
+		if contains(e.Title, "resumed") {
+			t.Errorf("a ->running transition must not produce a phase_completed entry: %+v", e)
+		}
+		if contains(e.Title, "Workflow failed") {
+			t.Errorf("a ->failed transition must not produce a phase_completed entry (run_failed already reports it): %+v", e)
+		}
+	}
+	// The approved transition is still a real milestone and must survive.
+	sawApproved := false
+	for _, e := range entries {
+		if e.Kind == "phase_completed" && contains(e.Title, "approved") {
+			sawApproved = true
+		}
+	}
+	if !sawApproved {
+		t.Error("missing the PRD approved phase_completed entry")
 	}
 }
 
