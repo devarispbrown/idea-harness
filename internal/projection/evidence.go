@@ -8,6 +8,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/fsdiff"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -355,19 +356,34 @@ func requirementCodePattern(code string) *regexp.Regexp {
 }
 
 // ComputeEvidenceTests maps each of an initiative's requirements to the
-// test-run evidence that covers it (C2, wave 3 contract): tests named for its
-// code in the verification plan's hooks, or else any parsed test whose name
-// contains the requirement's code on a word boundary, resolved against the
-// most recent parsed result for that test name among the initiative's
-// ELIGIBLE change sets (eligibleChangeSets) -- never a rejected, reverted, or
-// task-superseded attempt, and never a check that did not itself exit 0
-// (Disposition == DispositionRejected covers a non-zero exit, a timeout, and
-// a sandbox that could not launch; only those three write a "tests" finding
-// without an observation-level pass, so this predicate is exact, not
-// heuristic). A test the plan names that is missing from that finding's
-// parsed output counts as failed, never as silently absent (C1 fix: a plan
-// naming [TestA, TestB] where only TestA's line survived must not read as
-// "both passed").
+// test-run evidence that covers it (C2, wave 3 contract), tried in order
+// until one produces names:
+//
+//  1. Tests named for its code in the verification plan's hooks
+//     (mappedTestsByRequirement).
+//  2. Any parsed test whose name contains the requirement's code on a word
+//     boundary.
+//  3. Test functions found in test/spec files touched by the change set
+//     implementing a task that `implements` this requirement (taskDerivedTests,
+//     ICP re-run defect #3 bullet (b)) -- because a real test's name almost
+//     never contains the requirement's code ("TestRateLimiterAllowsWithinBudget"
+//     for a per-key-rate-limiting requirement has no "REQ-5" in it anywhere),
+//     so (2) alone left every requirement unmapped on a real run despite tests
+//     passing. Only counted when that change set is applied and its OWN check
+//     passed.
+//
+// Every tier is resolved against the most recent parsed result for that test
+// name among the initiative's ELIGIBLE change sets (eligibleChangeSets) --
+// never a rejected, reverted, or task-superseded attempt, and never a check
+// that did not itself exit 0 (Disposition == DispositionRejected covers a
+// non-zero exit, a timeout, and a sandbox that could not launch; only those
+// three write a "tests" finding without an observation-level pass, so this
+// predicate is exact, not heuristic). A test named by tier (1) or (3) that is
+// missing from that finding's parsed output counts as failed, never as
+// silently absent (C1 fix: a plan naming [TestA, TestB] where only TestA's
+// line survived must not read as "both passed") -- tier (2) can never
+// produce a "missing" name by construction (it only ever matches a name
+// already known to have run).
 func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, initiativeID string) (map[string][]domain.EvidenceTest, error) {
 	requirements, err := db.ListRequirements(ctx, initiativeID)
 	if err != nil {
@@ -398,6 +414,10 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 		}
 		byName[name] = resultRef{status: status, changeSet: changeSet}
 	}
+	// checkPassed records which eligible change sets' OWN tests check itself
+	// exited 0 (ICP re-run defect #3 bullet (b): "only when the check run
+	// passed and the change set is applied" gates taskDerivedTests below).
+	checkPassed := map[string]bool{}
 	for _, cs := range changeSets {
 		if !eligible[cs.ID] {
 			continue
@@ -431,6 +451,7 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 		if latestTests.Disposition == domain.DispositionRejected {
 			continue
 		}
+		checkPassed[cs.ID] = true
 		for _, r := range ParseTestOutput(latestTests.Evidence) {
 			record(r.Name, r.Status, cs.HumanID)
 		}
@@ -447,11 +468,18 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			continue
 		}
 		names := hookTests[normalizeRequirementCode(req.Code)]
-		fromPlan := len(names) > 0
-		if !fromPlan {
-			if req.Code == "" {
-				continue
-			}
+		// sourced is true for a mapping this function can vouch actually
+		// names real, intended tests for this requirement (the plan's own
+		// hooks, or a task's own change set) -- as opposed to the loose
+		// name-substring fallback below, which can only ever produce names
+		// already known to have run (they come from allNames, itself built
+		// from byName's keys) and so can never itself produce a "missing"
+		// entry. A sourced mapping's test missing from byName counts as
+		// failed, never silently dropped (C1 fix): a plan or a task naming
+		// [TestA, TestB] where only TestA's line survived must not read as
+		// "both passed".
+		sourced := len(names) > 0
+		if !sourced && req.Code != "" {
 			pattern := requirementCodePattern(req.Code)
 			for _, n := range allNames {
 				if pattern.MatchString(n) {
@@ -460,7 +488,23 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			}
 		}
 		if len(names) == 0 {
-			continue
+			// ICP re-run defect #3 bullet (b): a real test's NAME almost
+			// never contains the requirement's code, so the fallback above
+			// found nothing on 11 requirements even though 15 tests just
+			// passed. Fall back to the task→requirement edge instead: tests
+			// added or changed by the change set that implements the task
+			// wired to this requirement, but ONLY when that change set is
+			// applied and its own check passed -- never a guess at what the
+			// task was FOR, always what it actually shipped and verified.
+			taskNames, err := taskDerivedTests(ctx, db, blobs, initiativeID, changeSets, eligible, checkPassed, req.ID)
+			if err != nil {
+				return nil, err
+			}
+			if len(taskNames) == 0 {
+				continue
+			}
+			names = taskNames
+			sourced = true
 		}
 		seen := map[string]bool{}
 		var evidence []domain.EvidenceTest
@@ -471,10 +515,11 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			seen[name] = true
 			r, ok := byName[name]
 			if !ok {
-				if fromPlan {
-					// The plan names this test, but no eligible check run
-					// produced it: missing is failing, never silently
-					// dropped (C1 fix).
+				if sourced {
+					// The plan (or the implementing task's own change set)
+					// names this test, but no eligible check run produced
+					// it: missing is failing, never silently dropped (C1
+					// fix).
 					evidence = append(evidence, domain.EvidenceTest{Name: name, Status: "failed"})
 				}
 				continue
@@ -486,6 +531,97 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 		}
 	}
 	return out, nil
+}
+
+// testFilePattern recognizes a test/spec file by name (Go, JS/TS, and the
+// generic "test" infix), for taskDerivedTests below: a file this shape,
+// touched (added or modified) by a change set, is assumed to carry the test
+// functions that change set contributes.
+var testFilePattern = regexp.MustCompile(`(?i)(_test\.go$|\.(spec|test)\.[jt]sx?$)`)
+
+// goTestFuncPattern extracts a Go test function's name from a `func TestXxx(`
+// declaration line.
+var goTestFuncPattern = regexp.MustCompile(`(?m)^func\s+(Test[A-Za-z0-9_]*)\s*\(`)
+
+// extractTestFuncNames returns every Go test function name declared in
+// content. Only Go is understood today (the codebase this ships in is Go);
+// JS/TS/pytest test files are still recognized by testFilePattern for
+// "touched by this change set" purposes, but their individual test names are
+// not extracted, since `it(...)`/`describe(...)` names are runtime strings,
+// not declarations a static regex can safely pull out.
+func extractTestFuncNames(content string) []string {
+	var names []string
+	for _, m := range goTestFuncPattern.FindAllStringSubmatch(content, -1) {
+		names = append(names, m[1])
+	}
+	return names
+}
+
+// taskDerivedTests returns the names of test functions found in test/spec
+// files that the change set implementing requirementID's task touched (ICP
+// re-run defect #3 bullet (b)): a task→requirement `implements` edge, then
+// that task's own eligible (applied, latest-attempt), check-passed change
+// set's added/modified test files -- never a test name coincidentally
+// containing the requirement's code, which real test names almost never do.
+func taskDerivedTests(ctx context.Context, db *store.DB, blobs *blob.Store, initiativeID string,
+	changeSets []domain.ChangeSet, eligible, checkPassed map[string]bool, requirementID string) ([]string, error) {
+	if blobs == nil {
+		return nil, nil
+	}
+	edges, err := db.ListGraphEdgesTo(ctx, initiativeID, "requirement", requirementID)
+	if err != nil {
+		return nil, err
+	}
+	taskIDs := map[string]bool{}
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeImplements && e.FromType == "task" {
+			taskIDs[e.FromID] = true
+		}
+	}
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	var names []string
+	for _, cs := range changeSets {
+		if !eligible[cs.ID] || !checkPassed[cs.ID] || !taskIDs[cs.TaskID] {
+			continue
+		}
+		patch, err := decodePatch(blobs, cs.PatchDigest)
+		if err != nil || patch == nil {
+			continue // best-effort: an unreadable patch just contributes nothing
+		}
+		for _, fc := range patch.Files {
+			if fc.IsDelete() || !testFilePattern.MatchString(fc.Path) {
+				continue
+			}
+			content, err := blobs.Get(fc.Digest)
+			if err != nil {
+				continue
+			}
+			names = append(names, extractTestFuncNames(string(content))...)
+		}
+	}
+	return names, nil
+}
+
+// decodePatch reads and decodes a change set's patch manifest from the blob
+// store, best-effort (nil, nil when there is nothing to read). Mirrors
+// workflow.Engine.loadPatch; duplicated rather than shared because
+// internal/projection is a read-model layer independent of the engine (see
+// normalizeRequirementCode's doc comment for the same constraint).
+func decodePatch(blobs *blob.Store, patchDigest string) (*fsdiff.Patch, error) {
+	if patchDigest == "" || blobs == nil {
+		return nil, nil
+	}
+	data, err := blobs.Get(patchDigest)
+	if err != nil {
+		return nil, nil //nolint:nilerr // best-effort: unreadable patch contributes nothing
+	}
+	var p fsdiff.Patch
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, nil //nolint:nilerr // best-effort: malformed patch contributes nothing
+	}
+	return &p, nil
 }
 
 // AllTestsPassed reports whether ev is non-empty and every entry passed --
