@@ -543,21 +543,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// blocks, but it still surfaces to the reviewer as a non-blocking "sensitive
 	// area" finding -- the same signals that used to hard-reject on a bare word
 	// match now just flag the change set for a closer look.
-	if len(signals) > 0 {
-		if err := e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       cs.ID,
-			Severity:       domain.SeverityMedium,
-			Confidence:     domain.ConfidenceHigh,
-			Category:       "sensitive_area",
-			Finding:        "sensitive area: " + detectedRiskNames(signals),
-			Evidence:       "deterministic marker scan of the produced patch",
-			Impact:         "advisory only; look closer before approving",
-			Recommendation: "review the change for real secrets or unsafe handling before approving",
-		}); err != nil {
-			return domain.ChangeSet{}, err
-		}
+	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, cs.ID, signals, "deterministic marker scan of the produced patch"); err != nil {
+		return domain.ChangeSet{}, err
 	}
 
 	// A real credential sweep gates rejection now, not a bare vocabulary word
@@ -1431,6 +1418,40 @@ func detectedRiskNames(signals []domain.RiskSignal) string {
 	return strings.Join(names, ", ")
 }
 
+// createSensitiveAreaFinding creates at most one "sensitive_area" finding per
+// change set (review low-priority item). Execute's own sweep and the
+// apply-time re-sweep both call this for the same change set (and a retried
+// apply calls the latter again), and without this check a change set could
+// accumulate several near-identical advisory findings restating the same
+// signals -- noise on top of noise, on a finding that is already advisory
+// and never blocks anything.
+func (e *Engine) createSensitiveAreaFinding(ctx context.Context, initiativeID, targetID string, signals []domain.RiskSignal, evidence string) error {
+	if len(signals) == 0 {
+		return nil
+	}
+	existing, err := e.db.ListFindingsByTarget(ctx, "change_set", targetID)
+	if err != nil {
+		return err
+	}
+	for _, f := range existing {
+		if f.Category == "sensitive_area" {
+			return nil
+		}
+	}
+	return e.db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID:   initiativeID,
+		TargetType:     "change_set",
+		TargetID:       targetID,
+		Severity:       domain.SeverityMedium,
+		Confidence:     domain.ConfidenceHigh,
+		Category:       "sensitive_area",
+		Finding:        "sensitive area: " + detectedRiskNames(signals),
+		Evidence:       evidence,
+		Impact:         "advisory only; look closer before approving",
+		Recommendation: "review the change for real secrets or unsafe handling before approving",
+	})
+}
+
 // ApplyChangeSet applies an approved change set: approved→applying→applied.
 // It writes the orchestrator-computed diff into the canonical workspace via
 // atomic per-file temp+rename, capturing the pre-image into the journal so
@@ -1470,21 +1491,8 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return err
 	}
 	credMatches := filterAllowlisted(e.scanBlobsForCredentials(patch.Files), allowlist)
-	if len(signals) > 0 {
-		if err := e.db.CreateFinding(ctx, &domain.Finding{
-			InitiativeID:   cs.InitiativeID,
-			TargetType:     "change_set",
-			TargetID:       changeSetID,
-			Severity:       domain.SeverityMedium,
-			Confidence:     domain.ConfidenceHigh,
-			Category:       "sensitive_area",
-			Finding:        "sensitive area: " + detectedRiskNames(signals),
-			Evidence:       "deterministic marker re-scan of the persisted patch",
-			Impact:         "advisory only; look closer before applying again",
-			Recommendation: "review the change for real secrets or unsafe handling",
-		}); err != nil {
-			return err
-		}
+	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, changeSetID, signals, "deterministic marker re-scan of the persisted patch"); err != nil {
+		return err
 	}
 	if len(credMatches) > 0 || hasBlockingRiskSignal(signals) {
 		for _, m := range credMatches {
