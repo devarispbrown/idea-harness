@@ -11,6 +11,56 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **`idea executors setup` honors the positional kind.** `idea executors setup
+  omp --yes` silently ignored the positional argument and configured
+  `hermes`, with no error and nothing in `--help` explaining that `--kind` was
+  the only way to choose. The positional and `--kind` are now both accepted
+  (a disagreement between them is refused), and `idea help` / `docs/cli.md`
+  show `executors setup [<kind>]`.
+- **A retired/unavailable model 404s with a clear, actionable error.**
+  `gemini-2.5-flash` and `gemini-2.5-pro` return 404 "no longer available to
+  new users" and have been removed from the bundled catalog (they were kept,
+  deprioritized, by an earlier fix, which was not enough — an ICP walkthrough
+  still hit exactly this 404). Every provider's 404 now names the model and
+  says how to change it (`idea model set <provider>/<model>`, or Settings →
+  Providers) instead of a bare `status 404`.
+- **Hermes declares the model's context window explicitly, instead of
+  guessing.** `hermes` + `openai/gpt-4.1-mini` failed deterministically, every
+  run: Hermes Agent refuses to start below 64,000 tokens of context, every
+  provider here is wired into Hermes as an explicit `custom_provider` (see
+  `hermescfg.go`), and without a declared `model.context_length` Hermes's own
+  auto-detection has the least to go on and guessed under its floor for this
+  model — even though gpt-4.1-mini's real window is roughly 1M tokens. The
+  generated config now sets `model.context_length` from a verified figure
+  (`internal/model/catalog.go`'s `ModelContextWindows`, checked against
+  OpenAI's own docs, for `gpt-4.1`/`gpt-4.1-mini`/`gpt-4o`/`gpt-4o-mini`/
+  `o3-mini`) or a conservative per-provider default for everything else
+  (`contextWindowFallback`; Ollama is left to Hermes's own — reliable, for a
+  local server — auto-detection, since a blanket default there could
+  overstate a small local model's real context). This fixed the root cause
+  rather than the symptom, so `idea executors setup`, the Build page, and
+  `idea execute` no longer refuse the combination — it gets the same
+  "untested, run `--smoke`" advisory as any other unverified model. The
+  small, data-driven known-incompatible table (`internal/executor/compat.go`)
+  used to name gpt-4.1-mini as a refused combination; it is now empty and
+  stays in place for the next combination that turns out to be genuinely,
+  unfixably incompatible rather than the same shape of bug.
+  See `docs/agents.md`, "Hermes declares the model's context window
+  explicitly" and "Known executor/model compatibility".
+- **`idea retry` resumes after the last completed phase instead of restarting
+  framing from scratch.** A provider failure mid-PRD-authoring, followed by
+  `idea retry`, used to re-run framing and research unconditionally even
+  though both had already succeeded — re-asking framing's clarifying
+  questions and re-running research for no reason, which looked, from the
+  outside, like the human's prior answers had been discarded. Retry now
+  checks which of the idea-brief/research-brief/PRD artifacts already exist
+  and resumes right after the last one, so an already-succeeded phase is
+  never redone and decisions/questions already on the initiative reach
+  product definition exactly as before. Transient provider errors (429/500/
+  502/503/504/529, "overloaded", "rate limit", …) were already retried with
+  backoff inside the model call itself before this fix, including 503 — that
+  half of the ICP finding did not reproduce, and is now pinned by a test that
+  drives a real 503 through the HTTP transport.
 - **The secret sweep no longer blocks on a bare word.** `password`, `token`,
   `secret`, `auth` and similar vocabulary markers used to hard-reject a change
   set anywhere they appeared in a patch, with no file or line and no way past

@@ -140,8 +140,8 @@ func commands() []command {
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, maxPositional: 1, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
 			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool},
-		}, subsAreRequired: true, run: cmdExecutors, inHelp: true},
-		{usage: "executors setup", summary: "wire a coding agent (hermes|omp)", inHelp: true},
+		}, subsAreRequired: true, maxPositional: 1, run: cmdExecutors, inHelp: true},
+		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp, default hermes (or --kind)", inHelp: true},
 		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},

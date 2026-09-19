@@ -144,7 +144,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 		// is why its failures were diagnosable and the other two were not. It
 		// now shares the same helper so all three behave identically, including
 		// when the body is not JSON (the map decode used to drop it silently).
-		return Response{}, httpError("gemini", resp)
+		return Response{}, httpError("gemini", req.Model, resp)
 	}
 	var parsed geminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
