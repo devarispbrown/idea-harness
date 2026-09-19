@@ -439,6 +439,14 @@ type FileChange struct {
 	// modified or deleted file. Apply refuses when the workspace file no longer
 	// matches it, rather than overwriting an edit made after the agent ran.
 	BaseDigest string `json:"base_digest,omitempty"`
+	// RedactedDigest is the digest of this file's post-image content with every
+	// detected secret span masked, persisted INSTEAD of the raw bytes when the
+	// secret sweep denied the change set (Digest above still names the real
+	// content's hash, but that hash is never resolvable in the blob store for a
+	// denied change set -- only the masked bytes were ever written, so the raw
+	// value never reaches the raw store). Empty whenever the raw content was
+	// persisted normally. Review: secret-sweep diff visibility.
+	RedactedDigest string `json:"redacted_digest,omitempty"`
 }
 
 // IsDelete reports whether this change removes the file at Path.

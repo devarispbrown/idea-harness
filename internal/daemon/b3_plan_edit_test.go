@@ -261,8 +261,8 @@ func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
 	b := mustCreateTask(t, pr, iniID, "B", req.ID, []string{a.ID}) // B depends on A
 
 	// Now try to make A depend on B, which would create A -> B -> A.
-	// depends_on takes titles/codes (matching handleAddTask's own contract),
-	// not raw ids.
+	// depends_on takes titles, codes, OR ids (docs/api.md) -- this leg uses the
+	// code, TestSetTaskDependsOnAcceptsTaskID below covers the id form.
 	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + a.ID + "/depends-on"
 	resp := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+b.Code+`"]}`)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -274,6 +274,39 @@ func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
 	resp2 := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+c.Code+`"]}`)
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected a valid depends_on to succeed, got %d: %s", resp2.StatusCode, errorBody(t, resp2))
+	}
+}
+
+// TestSetTaskDependsOnAcceptsTaskID is defect #3 from the ICP re-run:
+// docs/api.md documents depends-on as taking "titles, codes, or ids", but
+// resolveTaskRefs's lookup table (byNorm) was built from title and code only
+// -- a task's own id, the least ambiguous reference a caller could send, was
+// refused with "unknown task". Also proves a cycle is still caught when the
+// offending edge is named by id rather than code (review #3).
+func TestSetTaskDependsOnAcceptsTaskID(t *testing.T) {
+	ts, token, projectID, iniID, pr := b3Fixture(t)
+	req := mustCreateRequirement(t, pr, iniID)
+	a := mustCreateTask(t, pr, iniID, "A", req.ID, nil)
+	b := mustCreateTask(t, pr, iniID, "B", req.ID, nil)
+
+	url := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + a.ID + "/depends-on"
+	resp := doReq(t, http.MethodPost, url, token, "", `{"depends_on":["`+b.ID+`"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected a task id to resolve, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	var updated struct {
+		DependsOn []string `json:"depends_on"`
+	}
+	decode(t, resp, &updated)
+	if len(updated.DependsOn) != 1 || updated.DependsOn[0] != b.ID {
+		t.Fatalf("depends_on = %v, want [%s]", updated.DependsOn, b.ID)
+	}
+
+	// A cycle named by id (B -> A, closing A -> B -> A) is still refused.
+	urlB := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID + "/tasks/" + b.ID + "/depends-on"
+	respCycle := doReq(t, http.MethodPost, urlB, token, "", `{"depends_on":["`+a.ID+`"]}`)
+	if respCycle.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a cycle named by id, got %d: %s", respCycle.StatusCode, errorBody(t, respCycle))
 	}
 }
 

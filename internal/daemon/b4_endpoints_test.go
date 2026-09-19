@@ -37,8 +37,8 @@ func TestAcceptRecommendationsResolvesEveryOpenDecision(t *testing.T) {
 		t.Fatalf("accept-recommendations: %d: %s", resp.StatusCode, errorBody(t, resp))
 	}
 	var body struct {
-		Resolved []string `json:"resolved"`
-		Skipped  []string `json:"skipped"`
+		Resolved []string          `json:"resolved"`
+		Skipped  []skippedDecision `json:"skipped"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -47,8 +47,11 @@ func TestAcceptRecommendationsResolvesEveryOpenDecision(t *testing.T) {
 	if len(body.Resolved) != 1 || body.Resolved[0] != withRec.Code {
 		t.Fatalf("resolved = %v, want [%s]", body.Resolved, withRec.Code)
 	}
-	if len(body.Skipped) != 1 || body.Skipped[0] != noRec.Code {
+	if len(body.Skipped) != 1 || body.Skipped[0].Code != noRec.Code {
 		t.Fatalf("skipped = %v, want [%s]", body.Skipped, noRec.Code)
+	}
+	if body.Skipped[0].Reason == "" {
+		t.Error("expected a non-empty skip reason for the no-recommendation decision")
 	}
 
 	got, err := pr.db.GetDecision(t.Context(), withRec.ID)
@@ -99,15 +102,18 @@ func TestAcceptRecommendationsSkipsRecommendationNotInOptions(t *testing.T) {
 		t.Fatalf("accept-recommendations: %d: %s", resp.StatusCode, errorBody(t, resp))
 	}
 	var body struct {
-		Resolved []string `json:"resolved"`
-		Skipped  []string `json:"skipped"`
+		Resolved []string          `json:"resolved"`
+		Skipped  []skippedDecision `json:"skipped"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if len(body.Skipped) != 1 || body.Skipped[0] != bogus.Code {
+	if len(body.Skipped) != 1 || body.Skipped[0].Code != bogus.Code {
 		t.Fatalf("skipped = %v, want [%s]", body.Skipped, bogus.Code)
+	}
+	if body.Skipped[0].Reason == "" {
+		t.Error("expected a non-empty skip reason for the unmatched recommendation")
 	}
 	if len(body.Resolved) != 1 || body.Resolved[0] != caseDrift.Code {
 		t.Fatalf("resolved = %v, want [%s]", body.Resolved, caseDrift.Code)
@@ -157,7 +163,7 @@ func TestAcceptOneRecommendationTreatsConcurrentlyResolvedAsSkipped(t *testing.T
 	}
 
 	srv := NewServer(rt)
-	didResolve, err := srv.acceptOneRecommendation(t.Context(), pr, stale)
+	didResolve, _, err := srv.acceptOneRecommendation(t.Context(), pr, stale)
 	if err != nil {
 		t.Fatalf("expected the race to be treated as skipped, not an error: %v", err)
 	}
@@ -171,6 +177,54 @@ func TestAcceptOneRecommendationTreatsConcurrentlyResolvedAsSkipped(t *testing.T
 	}
 	if got.Resolution != "a human's own answer" {
 		t.Fatalf("the concurrent resolve's own answer must survive untouched: %+v", got)
+	}
+}
+
+// TestMatchRecommendationOptionTolerantForms is the ICP re-run defect #2
+// follow-up: the model's recommendation prose almost never matched an option
+// verbatim, so accept-recommendations silently skipped every decision that
+// had options. The matcher now tolerates the shapes a model actually
+// produces -- case/whitespace/punctuation drift, one text containing the
+// other, and a positional reference ("Option B", a bare letter or number) --
+// while still refusing anything genuinely ambiguous or unrelated.
+func TestMatchRecommendationOptionTolerantForms(t *testing.T) {
+	options := []string{"Use Postgres", "Use SQLite", "Use MySQL"}
+	cases := []struct {
+		name    string
+		options []string
+		rec     string
+		want    string
+		wantOK  bool
+	}{
+		{"exact", options, "Use Postgres", "Use Postgres", true},
+		{"case and whitespace drift", options, "  use postgres  ", "Use Postgres", true},
+		{"punctuation drift", options, "Use Postgres.", "Use Postgres", true},
+		{"option keyword and letter", options, "Option A", "Use Postgres", true},
+		{"option keyword, number, and trailing prose", options, "Option 2 - it's simplest for now", "Use SQLite", true},
+		{"choice keyword lowercase", options, "choice c", "Use MySQL", true},
+		{"bare letter", options, "B", "Use SQLite", true},
+		{"bare number with punctuation", options, "(3)", "Use MySQL", true},
+		{"option text contains extra framing", options, "I'd go with Use Postgres for this one", "Use Postgres", true},
+		{"option is a prefix of the recommendation", []string{"Postgres"}, "Postgres, for its JSON support", "Postgres", true},
+		{"word that merely starts with the keyword is not an index reference", options, "Optional support for MySQL later", "", false},
+		{"unrelated prose", options, "GoDaddy", "", false},
+		{"out of range index", options, "Option 9", "", false},
+		{"empty recommendation", options, "", "", false},
+		{"ambiguous after normalization", []string{"Use it", "use it!"}, "USE IT", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok, reason := matchRecommendationOption(c.options, c.rec)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (reason=%q, got=%q)", ok, c.wantOK, reason, got)
+			}
+			if ok && got != c.want {
+				t.Fatalf("matched = %q, want %q", got, c.want)
+			}
+			if !ok && reason == "" {
+				t.Error("expected a non-empty reason when ok is false")
+			}
+		})
 	}
 }
 
