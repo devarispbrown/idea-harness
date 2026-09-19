@@ -1151,6 +1151,27 @@ func (db *DB) ListFindingsByInitiative(ctx context.Context, initiativeID string)
 	return scanFindings(rows)
 }
 
+// GetFinding returns one finding by id (ICP re-run defect #2: used to warn a
+// human dispositioning a finding "rejected" when it carries a system deny
+// code and so will NOT clear the approval bar, per Finding.ResolvesBlocking).
+func (db *DB) GetFinding(ctx context.Context, id string) (*domain.Finding, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
+		FROM findings WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	found, err := scanFindings(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, &NotFoundError{Kind: "finding", Ref: id}
+	}
+	return &found[0], nil
+}
+
 func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
 	out := make([]domain.Finding, 0)
 	for rows.Next() {

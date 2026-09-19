@@ -25,7 +25,7 @@ func TestRedactPatterns(t *testing.T) {
 		"sk-abcdefghijklmnopqrstuvwxyz123456",
 		"-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnopqrstuvwxyz",
-		"token=abcdefghijklmnop",
+		"token=k3jQ9zPmT7xR2wLn",
 		"sk_live_4eC39HqLyjWDarjtT1zdp7dc",
 		"xoxb-123456789012-123456789012-abcdefghijklmnop",
 	}
@@ -212,10 +212,10 @@ func TestMaskedPreviewNeverCarriesTheRawValue(t *testing.T) {
 func TestMaskValueMasksShortValuesEntirely(t *testing.T) {
 	for _, v := range []string{
 		"a",
-		"abcdefgh",         // 8: the old floor
-		"hunter2345",       // 10: review's own example (`hunt…2345` used to leak)
-		"abcdefghi",        // 9: the boundary where the old leak started
-		"abcdefghijklmno",  // 15: one under the new floor
+		"abcdefgh",        // 8: the old floor
+		"hunter2345",      // 10: review's own example (`hunt…2345` used to leak)
+		"abcdefghi",       // 9: the boundary where the old leak started
+		"abcdefghijklmno", // 15: one under the new floor
 	} {
 		got := maskValue(v)
 		if got != strings.Repeat("*", len(v)) {
@@ -256,10 +256,10 @@ func TestMaskValueRevealsAtMostQuarterPerSide(t *testing.T) {
 // TestMaskedLineMasksEveryMatchOnTheLine is review H1: MaskedLine used to
 // mask only the finding's own value, leaving a second secret on the same
 // line in the clear. Probing with
-// `DB_PASSWORD=hunter2345 API_TOKEN=zzzzzzzzqqqq` used to give
+// `DB_PASSWORD=hunter2345 API_TOKEN=kX9mPqT4wZ2vLf8N` used to give
 // `DB_PASSWORD=hunter2345 API_TOKEN=zzzz…qqqq` -- the first secret intact.
 func TestMaskedLineMasksEveryMatchOnTheLine(t *testing.T) {
-	content := "DB_PASSWORD=hunter2345 API_TOKEN=zzzzzzzzqqqq\n"
+	content := "DB_PASSWORD=hunter2345 API_TOKEN=kX9mPqT4wZ2vLf8N\n"
 	matches := FindCredentialsInFile("a.env", content)
 	if len(matches) < 2 {
 		t.Fatalf("expected at least 2 matches on the line, got %d: %+v", len(matches), matches)
@@ -268,7 +268,7 @@ func TestMaskedLineMasksEveryMatchOnTheLine(t *testing.T) {
 		if strings.Contains(m.MaskedLine, "hunter2345") {
 			t.Fatalf("MaskedLine still leaks the first secret: %q", m.MaskedLine)
 		}
-		if strings.Contains(m.MaskedLine, "zzzzzzzzqqqq") {
+		if strings.Contains(m.MaskedLine, "kX9mPqT4wZ2vLf8N") {
 			t.Fatalf("MaskedLine still leaks the second secret: %q", m.MaskedLine)
 		}
 	}

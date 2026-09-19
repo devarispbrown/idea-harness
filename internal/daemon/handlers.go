@@ -254,8 +254,50 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. %s",
 			g.Why, len(items), strings.Join(codes, ", "), advice)
 	}
+	// ICP re-run defect #5: changeSetFailureWhy (BuildGuidance, no store
+	// access) can only say "a check or the review found a problem it would
+	// not pass" for a rejected change set -- true, but not what a human
+	// needs to act. When the rejection is a secret_sweep denial, name the
+	// actual cause here, where the findings are available: which file (or
+	// "in the output of <check>") and kind of secret, and the "not a secret"
+	// disposition route when the match is overridable.
+	for _, cs := range allChangeSets {
+		if cs.Status != domain.ChangeSetRejected || g.Action != "Resolve "+cs.HumanID {
+			continue
+		}
+		findings, ferr := pr.db.ListFindingsByTarget(r.Context(), "change_set", cs.ID)
+		if ferr != nil {
+			break
+		}
+		if detail := secretSweepGuidanceDetail(findings); detail != "" {
+			g.Why += " " + detail
+		}
+		break
+	}
 
 	writeJSON(w, http.StatusOK, g)
+}
+
+// secretSweepGuidanceDetail names the actual cause a rejected change set's
+// generic guidance ("a check or the review found a problem it would not
+// pass") otherwise leaves unsaid (ICP re-run defect #5): the secret sweep's
+// own finding already names path:line (or "in the output of <check>") and
+// the kind of secret, never the value itself, and an overridable
+// (pattern-shaped) match still has the not_a_secret route out. Returns "" --
+// leaving the generic message alone -- when the change set was not rejected
+// by the secret sweep at all (a failing build/test check, say).
+func secretSweepGuidanceDetail(findings []domain.Finding) string {
+	for _, f := range findings {
+		if f.Category != "secret_sweep" || f.Code != domain.DenyCodeSecretSweep {
+			continue
+		}
+		detail := fmt.Sprintf("The secret sweep denied it: %s.", f.Finding)
+		if f.SecretOverridable {
+			detail += " If this is not really a secret, `idea reviews` lets you disposition it \"not a secret\" to allow it."
+		}
+		return detail
+	}
+	return ""
 }
 
 // staleItemLabel resolves a human-readable label for a stale item, best-effort
@@ -2879,11 +2921,27 @@ func (s *Server) handleFindingDisposition(w http.ResponseWriter, r *http.Request
 		return
 	}
 	disp := domain.Disposition(body.Disposition)
-	if err := pr.db.SetFindingDisposition(r.Context(), r.PathValue("id"), disp, store.HumanActor); err != nil {
+	findingID := r.PathValue("id")
+	if err := pr.db.SetFindingDisposition(r.Context(), findingID, disp, store.HumanActor); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "dispositioned"})
+	resp := map[string]string{"status": "dispositioned"}
+	// rejected resolves a reviewer's own judgment call (Code == "") the same
+	// as fixed/accepted_risk (Finding.ResolvesBlocking, ICP re-run defect
+	// #2), but a finding carrying a system deny code still blocks
+	// afterward -- "system deny beats human approve" -- so a 200 here would
+	// otherwise say nothing about that (the ICP re-run's own reported
+	// "returns 200 with no warning"). Best-effort: a failed re-read must not
+	// turn a successful disposition into an error response.
+	if disp == domain.DispositionRejected {
+		if f, err := pr.db.GetFinding(r.Context(), findingID); err == nil && f.Code != "" {
+			resp["warning"] = fmt.Sprintf(
+				"this finding carries system deny code %q; rejected does not clear it -- only fixing the underlying problem does",
+				f.Code)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleFindingNote records a free-text human note on a finding ("discuss").

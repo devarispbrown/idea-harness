@@ -6,6 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -164,6 +166,9 @@ func validCredentialAssignmentValue(content string, idx []int) bool {
 	if value == "" || strings.HasPrefix(value, "$") {
 		return false
 	}
+	if looksLikeTemplatePlaceholder(value) {
+		return false
+	}
 	if len(idx) <= credentialAssignmentUnquotedGroup || idx[credentialAssignmentUnquotedGroup] < 0 {
 		return true // quoted (group 1 or 2): already checked for "$" above.
 	}
@@ -173,6 +178,220 @@ func validCredentialAssignmentValue(content string, idx []int) bool {
 	return !looksLikeIdentifierReference(value)
 }
 
+// placeholderWords are case-insensitive substrings that mark an assigned
+// value as a placeholder rather than a real secret (ICP re-run defect #1):
+// "example", "test", "dummy", "fake", "placeholder", "changeme", "xxx". Scoped
+// to the GENERIC "credential assignment" pattern only (validGenericAssignment)
+// -- never a provider-specific format -- because a real, documented example
+// key can legitimately carry one of these words (AWS's own
+// "AKIAIOSFODNN7EXAMPLE"/"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" docs
+// literals, which this catalog's AWS-specific patterns must keep matching).
+var placeholderWords = []string{"example", "test", "dummy", "fake", "placeholder", "changeme", "xxx"}
+
+// containsPlaceholderWord reports whether value contains one of
+// placeholderWords, case-insensitively.
+func containsPlaceholderWord(value string) bool {
+	lower := strings.ToLower(value)
+	for _, w := range placeholderWords {
+		if strings.Contains(lower, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholderRunLen is the minimum length of a run of one repeated character
+// that marks a value a placeholder body -- "sk_live_...0000", "...1111",
+// "...2222" (the ICP re-run's own reported Stripe-shaped example keys), or an
+// all-"x" stand-in.
+const placeholderRunLen = 4
+
+// hasLongRun reports whether value contains a run of n or more identical
+// consecutive bytes.
+func hasLongRun(value string, n int) bool {
+	if len(value) < n {
+		return false
+	}
+	run := 1
+	for i := 1; i < len(value); i++ {
+		if value[i] == value[i-1] {
+			run++
+			if run >= n {
+				return true
+			}
+		} else {
+			run = 1
+		}
+	}
+	return false
+}
+
+// isSequentialFill reports whether value is essentially ONE long ascending or
+// descending run of consecutive byte values (>= 6 characters, and covering at
+// least 70% of value's own length) -- "abcdefghijklmnop", "0123456789876543".
+// Deliberately majority-of-value, not "contains any 4+ run": a great many
+// existing, legitimately-realistic test/example secrets embed a short
+// sequential fragment (AKIA1234567890ABCDEF, the alphabet tail of a
+// hand-written base64-shaped fixture) without the value AS A WHOLE being a
+// sequential filler, and a substring-only check flagged those as placeholders
+// too. Scoped to the generic assignment pattern only, the same as
+// containsPlaceholderWord, for the same reason.
+func isSequentialFill(value string) bool {
+	const minRun = 6
+	if len(value) < minRun {
+		return false
+	}
+	best := 1
+	asc, desc := 1, 1
+	for i := 1; i < len(value); i++ {
+		switch {
+		case value[i] == value[i-1]+1:
+			asc++
+			desc = 1
+		case value[i] == value[i-1]-1:
+			desc++
+			asc = 1
+		default:
+			asc, desc = 1, 1
+		}
+		if asc > best {
+			best = asc
+		}
+		if desc > best {
+			best = desc
+		}
+	}
+	return best >= minRun && float64(best)/float64(len(value)) >= 0.7
+}
+
+// placeholderEntropyThreshold is the minimum Shannon entropy per character a
+// value must have to read as plausibly-random secret data. A real generated
+// token (base64/hex/alphanumeric) comfortably clears this; a low-variety
+// filler like "aaaabbbbcccc" or "passwordpassword" does not.
+const placeholderEntropyThreshold = 2.5
+
+// shannonEntropyPerChar returns value's Shannon entropy in bits per
+// character.
+func shannonEntropyPerChar(value string) float64 {
+	if len(value) == 0 {
+		return 0
+	}
+	freq := make(map[rune]int)
+	for _, r := range value {
+		freq[r]++
+	}
+	n := float64(len(value))
+	var h float64
+	for _, c := range freq {
+		p := float64(c) / n
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+// maxPlaceholderShapeLen bounds isPlaceholderShape to short, flat token
+// values. A PEM block or JWT's capture group is the whole (long, multi-part)
+// match, where a repeated-character run or a low aggregate entropy score is
+// not a meaningful signal either way; those patterns simply never apply this
+// check (see credentialCatalog).
+const maxPlaceholderShapeLen = 200
+
+// isPlaceholderShape reports whether value has the SHAPE of a placeholder --
+// a long run of one repeated character, or overall entropy too low to
+// plausibly be generated secret data -- independent of vocabulary. Applied to
+// every flat-token pattern in credentialCatalog (validFlatTokenValue), not
+// just the generic assignment rule, so a provider-specific format with an
+// obviously-fake body (the Stripe-shaped "sk_live_...0000" example) is also
+// excluded.
+func isPlaceholderShape(value string) bool {
+	if value == "" || len(value) > maxPlaceholderShapeLen {
+		return false
+	}
+	if hasLongRun(value, placeholderRunLen) {
+		return true
+	}
+	return shannonEntropyPerChar(value) < placeholderEntropyThreshold
+}
+
+// looksLikeTemplatePlaceholder reports whether value is a comment/template
+// placeholder rather than a literal -- "<secret>", "<id>:<secret>",
+// "${API_KEY}", "{{ secret }}" -- which must never match as a credential
+// (ICP re-run defect #1).
+func looksLikeTemplatePlaceholder(value string) bool {
+	if strings.Contains(value, "${") || strings.Contains(value, "{{") {
+		return true
+	}
+	if strings.HasPrefix(value, "<") {
+		return true
+	}
+	return strings.Contains(value, "<") && strings.Contains(value, ">")
+}
+
+// validGenericAssignment is credentialCatalog's validator for the generic
+// "credential assignment" pattern: validCredentialAssignmentValue's existing
+// call-vs-literal-vs-reference checks, plus the placeholder/low-entropy and
+// test-fixture-path handling from the ICP re-run's defect #1. A match that
+// fails this never becomes a finding at all (not even advisory) -- it reads
+// as a placeholder, not a possible false positive worth showing a reviewer.
+func validGenericAssignment(content string, idx []int) bool {
+	if !validCredentialAssignmentValue(content, idx) {
+		return false
+	}
+	start, end := capturedGroupBounds(idx)
+	value := content[start:end]
+	if containsPlaceholderWord(value) {
+		return false
+	}
+	if isSequentialFill(value) {
+		return false
+	}
+	return !isPlaceholderShape(value)
+}
+
+// validFlatTokenValue is credentialCatalog's validator for every
+// provider-specific, single-flat-token pattern (AWS/GitHub/GitLab/Google/npm/
+// OpenAI-Anthropic/Stripe/Slack): only the placeholder-SHAPE check applies
+// (isPlaceholderShape) -- never the vocabulary word list or the sequential-fill
+// check, both of which are scoped to the generic assignment rule alone (see
+// their doc comments for why: a real documented example key, or a
+// hand-written realistic-looking test fixture, can otherwise trip either
+// one).
+func validFlatTokenValue(content string, idx []int) bool {
+	start, end := capturedGroupBounds(idx)
+	return !isPlaceholderShape(content[start:end])
+}
+
+// isTestFixturePath reports whether path looks like test or fixture code
+// (ICP re-run defect #1): a Go test file, a `.spec.`/`.test.` file, or a path
+// under a test/tests/testdata/fixtures/__tests__ directory. Used to downgrade
+// a generic "credential assignment" match to advisory (non-blocking, still
+// visible) in test/fixture code, where a `"secret": "..."` field in a fixture
+// or a `X-API-Key: <id>:<secret>` doc comment is common and is not a real
+// credential -- while a provider-specific format or a configured secret value
+// still blocks there exactly as anywhere else.
+func isTestFixturePath(path string) bool {
+	p := filepath.ToSlash(path)
+	base := filepath.Base(p)
+	if strings.HasSuffix(base, "_test.go") {
+		return true
+	}
+	if strings.Contains(base, ".spec.") || strings.Contains(base, ".test.") {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		switch seg {
+		case "test", "tests", "testdata", "fixtures", "__tests__":
+			return true
+		}
+	}
+	return false
+}
+
+// genericAssignmentKind is credentialCatalog's kind string for the generic
+// "credential assignment" pattern -- the ONLY category a test/fixture path
+// downgrades to advisory (see isTestFixturePath and FindPatternsInFile).
+const genericAssignmentKind = "credential assignment"
+
 // credentialCatalog is the redaction and detection catalog (§48). Order
 // matters only for readability; all matches are replaced with [REDACTED].
 var credentialCatalog = []credentialPattern{
@@ -181,17 +400,17 @@ var credentialCatalog = []credentialPattern{
 	// JWTs (three base64url segments).
 	{re: regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b`), kind: "JWT"},
 	// AWS access key id.
-	{re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), kind: "AWS access key ID"},
+	{re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), kind: "AWS access key ID", valid: validFlatTokenValue},
 	// GitHub personal access token (classic + fine-grained) and OAuth tokens.
-	{re: regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), kind: "GitHub personal access token"},
-	{re: regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), kind: "GitHub fine-grained personal access token"},
-	{re: regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), kind: "GitHub token"},
+	{re: regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), kind: "GitHub personal access token", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), kind: "GitHub fine-grained personal access token", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), kind: "GitHub token", valid: validFlatTokenValue},
 	// GitLab personal access token.
-	{re: regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), kind: "GitLab personal access token"},
+	{re: regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), kind: "GitLab personal access token", valid: validFlatTokenValue},
 	// Google API key.
-	{re: regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), kind: "Google API key"},
+	{re: regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), kind: "Google API key", valid: validFlatTokenValue},
 	// npm access token.
-	{re: regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), kind: "npm access token"},
+	{re: regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), kind: "npm access token", valid: validFlatTokenValue},
 	// Anthropic, OpenAI and other `sk-` keys.
 	//
 	// Shaped as "a few short vendor segments, then a long alphanumeric run",
@@ -220,19 +439,19 @@ var credentialCatalog = []credentialPattern{
 	//
 	// 1. A known provider prefix. The prefix is the evidence, so the body is
 	//    plain base64url with no further constraint.
-	{re: regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), kind: "OpenAI/Anthropic API key"},
+	{re: regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), kind: "OpenAI/Anthropic API key", valid: validFlatTokenValue},
 	// 2. The legacy flat OpenAI key: "sk-" and one unbroken alphanumeric run.
-	{re: regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), kind: "OpenAI API key"},
+	{re: regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), kind: "OpenAI API key", valid: validFlatTokenValue},
 	// 3. Any other "sk-" token whose body carries an uppercase letter. That is
 	//    what separates a key from the false positive the previous widening hit
 	//    -- an ordinary URL slug like
 	//    sk-decomposition-of-matrices-and-linear-algebra is lowercase and
 	//    hyphenated, and never carries one.
-	{re: regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), kind: "API key"},
+	{re: regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), kind: "API key", valid: validFlatTokenValue},
 	// Stripe live secret key.
-	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key"},
+	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key", valid: validFlatTokenValue},
 	// Slack tokens (bot, app, refresh, signing, user).
-	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token"},
+	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token", valid: validFlatTokenValue},
 	// Generic Bearer token.
 	{re: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), kind: "bearer token"},
 	// URL userinfo credentials (review H5): scheme://user:PASSWORD@host, e.g.
@@ -246,7 +465,7 @@ var credentialCatalog = []credentialPattern{
 	// separator, and "ACCESS_KEY" -- not one of those words -- comes between
 	// "SECRET" and "=" in AWS_SECRET_ACCESS_KEY. AWS secret keys are 40
 	// base64-ish characters; 30+ tolerates a truncated/rotated example.
-	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key"},
+	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key", valid: validFlatTokenValue},
 	// Generic credential assignment in text/JSON/shell/URLs (review M3, H5):
 	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., pwd = "...",
 	// SECRET_KEY = "...", and similar.
@@ -282,8 +501,8 @@ var credentialCatalog = []credentialPattern{
 	// trade-off).
 	{
 		re:    regexp.MustCompile(`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret(?:[_-]?(?:key|value))?|passw(?:or)?d|pwd|token)["']?\s*[:=]\s*(?:"([^"\n]{8,})"|'([^'\n]{8,})'|([^\s"'(){}\[\],;]{8,}))`),
-		kind:  "credential assignment",
-		valid: validCredentialAssignmentValue,
+		kind:  genericAssignmentKind,
+		valid: validGenericAssignment,
 	},
 }
 
@@ -394,6 +613,13 @@ type CredentialFinding struct {
 	Overridable bool
 	Preview     string
 	MaskedLine  string
+	// Advisory marks a match downgraded to non-blocking (ICP re-run defect
+	// #1): a generic "credential assignment" match found in a test/fixture
+	// path (isTestFixturePath) -- never a provider-specific format or a
+	// configured secret value, and never outside a test/fixture path. The
+	// caller (workflow.Engine) is responsible for actually treating this as
+	// non-blocking; this field only carries the classification.
+	Advisory bool
 }
 
 // lineAt returns the 1-based line number of byte offset pos within s.
@@ -411,7 +637,7 @@ func lineAt(s string, pos int) int {
 func capturedValue(content string, idx []int) string {
 	for g := 1; g*2+1 < len(idx); g++ {
 		if idx[g*2] >= 0 {
-			return content[idx[g*2] : idx[g*2+1]]
+			return content[idx[g*2]:idx[g*2+1]]
 		}
 	}
 	return content[idx[0]:idx[1]]
@@ -568,6 +794,11 @@ func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding 
 				Overridable: true,
 				Preview:     preview,
 				MaskedLine:  maskAllOnLine(lineTextAt(content, idx[0]), r),
+				// Only the generic assignment rule ever downgrades to
+				// advisory, and only in a test/fixture path (ICP re-run
+				// defect #1): a provider-specific format or a configured
+				// secret value blocks everywhere, tests included.
+				Advisory: p.kind == genericAssignmentKind && isTestFixturePath(path),
 			})
 		}
 	}

@@ -375,3 +375,120 @@ func TestReopenDecisionMarksTaskAndAppliedChangeSetStale(t *testing.T) {
 		t.Fatalf("did not expect the draft (unapplied) change set to be marked stale, got %+v", items)
 	}
 }
+
+// TestReopenDecisionSkipsRemovedRequirement reproduces the ICP re-run's own
+// defect #4: "DEC-3's reopen marked only removed requirements (REQ-4,
+// REQ-13)". A requirement superseded by a PRD revision (SupersedeRequirements
+// marks it `removed`, it does not delete the row or its derived_from edge)
+// must never be surfaced as a dependent again -- a decision reopened after
+// several revise cycles must not read as if a long-dead requirement is what
+// still depends on it. Mutation-check: drop the liveReq filter in
+// decisionDependents, and this fails.
+func TestReopenDecisionSkipsRemovedRequirement(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "q?", Options: []string{"a", "b"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "a", "human"); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "r", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A PRD revision supersedes every active requirement (this is exactly
+	// what a revise cycle does): req is now `removed`, but its derived_from
+	// edge to dec is untouched.
+	if err := db.SupersedeRequirements(ctx, ini.ID, "run-x"); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := db.ListRequirements(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Status != domain.RequirementRemoved {
+		t.Fatalf("setup: expected the requirement removed, got %+v", reqs)
+	}
+
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("a removed requirement must not be marked stale on its old decision's reopen, got %+v", items)
+	}
+}
+
+// TestReopenDecisionMarksLiveRequirementNotARemovedOne pairs with the test
+// above: when ONE of two requirements citing a decision is removed and the
+// OTHER is still live, reopening the decision must mark only the live one.
+func TestReopenDecisionMarksLiveRequirementNotARemovedOne(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "q?", Options: []string{"a", "b"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "a", "human"); err != nil {
+		t.Fatal(err)
+	}
+	removed := &domain.Requirement{InitiativeID: ini.ID, Statement: "old", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, removed.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeRequirements(ctx, ini.ID, "run-x"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live requirement, wired to the same decision AFTER the supersede
+	// (mirroring a regenerated requirement in a later revise cycle).
+	live := &domain.Requirement{InitiativeID: ini.ID, Statement: "new", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, live.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, it := range items {
+		got[it.TargetType+":"+it.TargetID] = true
+	}
+	if !got["requirement:"+live.ID] {
+		t.Fatalf("expected the live requirement marked stale, got %+v", items)
+	}
+	if got["requirement:"+removed.ID] {
+		t.Fatalf("did not expect the removed requirement marked stale, got %+v", items)
+	}
+}
