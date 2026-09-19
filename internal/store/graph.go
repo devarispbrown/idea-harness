@@ -92,23 +92,45 @@ func scanGraphEdges(rows *sql.Rows) ([]domain.GraphEdge, error) {
 	return out, rows.Err()
 }
 
-// CreateTask inserts an execution-plan task and wires its `implements`
-// (task → requirement) and `depends_on` (task → task) edges in the same
-// transaction.
+// CreateTask inserts an execution-plan task and wires a single `implements`
+// (task → requirement) edge plus `depends_on` (task → task) edges in the same
+// transaction. A back-compat wrapper around CreateTaskMulti for the many
+// single-requirement call sites; new production code that may have more than
+// one requirement code should call CreateTaskMulti directly.
 func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirementID string, dependsOn []string) error {
-	return db.createTask(ctx, t, domain.EdgeImplements, implementsRequirementID, dependsOn)
+	var ids []string
+	if implementsRequirementID != "" {
+		ids = []string{implementsRequirementID}
+	}
+	return db.createTask(ctx, t, domain.EdgeImplements, ids, dependsOn)
+}
+
+// CreateTaskMulti inserts an execution-plan task and wires an `implements`
+// edge to each requirement it implements (N:M, review A4 #4: a task-level
+// requirement reference used to be a single free-text field matched against
+// exactly one Requirement.Code; a task may legitimately span several
+// requirements, and the planner should be able to say so). Duplicate or empty
+// ids are dropped rather than rejected -- the caller (runExecutionPlan / the
+// Plan-editing API) is responsible for surfacing an unresolved reference as
+// its own blocking finding before it ever reaches here.
+func (db *DB) CreateTaskMulti(ctx context.Context, t *domain.Task, implementsRequirementIDs []string, dependsOn []string) error {
+	return db.createTask(ctx, t, domain.EdgeImplements, implementsRequirementIDs, dependsOn)
 }
 
 // CreateVerificationTask creates a plan task whose purpose is verifying a
 // requirement, wired with a `verifies` edge (task → requirement).
 func (db *DB) CreateVerificationTask(ctx context.Context, t *domain.Task, requirementID string) error {
-	return db.createTask(ctx, t, domain.EdgeVerifies, requirementID, nil)
+	var ids []string
+	if requirementID != "" {
+		ids = []string{requirementID}
+	}
+	return db.createTask(ctx, t, domain.EdgeVerifies, ids, nil)
 }
 
 // createTask inserts a task (assigning code + position) and, when edgeType is
-// non-empty and targetID is set, wires that edge from the task to the target
-// requirement.
-func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetID string, dependsOn []string) error {
+// non-empty, wires that edge from the task to each non-empty, de-duplicated
+// id in targetIDs.
+func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetIDs []string, dependsOn []string) error {
 	if t.ID == "" {
 		t.ID = id.New()
 	}
@@ -145,8 +167,15 @@ func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.Ed
 			return err
 		}
 		var edges []EdgeToWrite
-		if edgeType != "" && targetID != "" {
-			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
+		if edgeType != "" {
+			seen := map[string]bool{}
+			for _, targetID := range targetIDs {
+				if targetID == "" || seen[targetID] {
+					continue
+				}
+				seen[targetID] = true
+				edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
+			}
 		}
 		for _, dep := range dependsOn {
 			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
@@ -172,6 +201,38 @@ func (db *DB) AddTaskDependencies(ctx context.Context, initiativeID, taskID stri
 		Actor:         ActorOrchestrator,
 		EventType:     "task.dependencies_added",
 	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}
+
+// ReplaceTaskRequirements replaces a task's `implements` edges with one per
+// requirement id given (N:M, review A4 #4). Used by the Plan-editing "add
+// task"/"update task" API so a task's requirement links can be set or
+// changed after creation. Requires at least one id -- callers must enforce
+// "at least one requirement when the plan is approved" before calling this;
+// it does not itself refuse an empty list.
+func (db *DB) ReplaceTaskRequirements(ctx context.Context, initiativeID, taskID string, requirementIDs []string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.requirements_replaced",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			DELETE FROM graph_edges
+			WHERE initiative_id = ? AND from_type = 'task' AND from_id = ? AND edge_type = ? AND to_type = 'requirement'`,
+			initiativeID, taskID, string(domain.EdgeImplements)); err != nil {
+			return err
+		}
+		var edges []EdgeToWrite
+		seen := map[string]bool{}
+		for _, rid := range requirementIDs {
+			if rid == "" || seen[rid] {
+				continue
+			}
+			seen[rid] = true
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: taskID, EdgeType: domain.EdgeImplements, ToType: "requirement", ToID: rid})
+		}
 		return db.wireEdges(tx, initiativeID, edges)
 	})
 }

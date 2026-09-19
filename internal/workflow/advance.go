@@ -192,6 +192,12 @@ func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (d
 	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator); err != nil {
 		return domain.InitiativeFailed, err
 	}
+	// Review A4 #5: re-planning clears staleness. The new plan is re-derived
+	// from the live (post-reopen) decision state, so whatever was stale about
+	// the discarded one no longer applies.
+	if err := e.db.ClearStaleItemsForInitiative(ctx, initiativeID, store.ActorOrchestrator); err != nil {
+		return domain.InitiativeFailed, err
+	}
 	if err := e.runExecutionPlan(ctx, initiativeID); err != nil {
 		if errors.Is(err, errUnresolvedDependencies) {
 			// plan_dependencies, not plan_review: only regenerating the plan
@@ -232,6 +238,11 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 	// an undisposed critical deterministic finding exists. A silent failure here
 	// wedges both, and the escape approve-plan's refusal names is this function.
 	if err := e.db.DispositionOpenFindings(ctx, initiativeID, domain.DispositionNotApplicable, store.ActorOrchestrator); err != nil {
+		return domain.InitiativeFailed, err
+	}
+	// Review A4 #5: re-planning clears staleness -- see the identical comment
+	// in ReopenPhase.
+	if err := e.db.ClearStaleItemsForInitiative(ctx, initiativeID, store.ActorOrchestrator); err != nil {
 		return domain.InitiativeFailed, err
 	}
 
@@ -302,10 +313,12 @@ func (e *Engine) createDesignDecision(ctx context.Context, initiativeID, roleNam
 
 func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error {
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
-	reqs, _ := e.db.ListRequirements(ctx, initiativeID)
-	decs, _ := e.db.ListDecisions(ctx, initiativeID)
+	allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	reqs := activeRequirements(allReqs)
+	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
+	decs := activeDecisions(allDecs)
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Produce a technical design that decomposes the PRD into components with clear responsibilities and tradeoffs. Raise an architecture Decision only for a genuine tradeoff."},
+		{Selector: "immutable_policy", Content: "Produce a technical design that decomposes the PRD into components with clear responsibilities and tradeoffs. Raise an architecture Decision only for a genuine tradeoff. A decided human decision is authoritative: do not propose or imply anything that contradicts it."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
@@ -330,10 +343,12 @@ func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error
 
 func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) error {
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
-	reqs, _ := e.db.ListRequirements(ctx, initiativeID)
-	decs, _ := e.db.ListDecisions(ctx, initiativeID)
+	allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	reqs := activeRequirements(allReqs)
+	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
+	decs := activeDecisions(allDecs)
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Produce a product design (flows, screens, interaction model) that traces every flow to a user goal or Requirement. Raise a design Decision only for a genuine interaction tradeoff."},
+		{Selector: "immutable_policy", Content: "Produce a product design (flows, screens, interaction model) that traces every flow to a user goal or Requirement. Raise a design Decision only for a genuine interaction tradeoff. A decided human decision is authoritative: do not propose or imply anything that contradicts it."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
@@ -357,7 +372,8 @@ func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) erro
 }
 
 func (e *Engine) runVerificationDesign(ctx context.Context, initiativeID string) error {
-	reqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	reqs := activeRequirements(allReqs)
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Produce a verification plan: for every requirement, name a concrete verification hook (test type, deterministic check, or manual gate) and the evidence it will produce. Prefer deterministic evidence over LLM judgment."},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
@@ -374,16 +390,22 @@ func (e *Engine) runVerificationDesign(ctx context.Context, initiativeID string)
 
 func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) error {
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
-	reqs, _ := e.db.ListRequirements(ctx, initiativeID)
-	decs, _ := e.db.ListDecisions(ctx, initiativeID)
+	allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	reqs := activeRequirements(allReqs)
+	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
+	decs := activeDecisions(allDecs)
 
+	// reqByCode resolves against ACTIVE requirements only (review A2): a task
+	// citing a superseded requirement's code must not resolve, the same way a
+	// code that never existed must not resolve -- both are unresolvable
+	// references now (review A4 #2/#4), not silently dropped.
 	reqByCode := map[string]string{}
 	for _, r := range reqs {
-		reqByCode[r.Code] = r.ID
+		reqByCode[NormalizeRequirementRef(r.Code)] = r.ID
 	}
 
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Decompose the converged design into an ordered, dependency-linked set of Tasks. Each Task implements exactly one Requirement (referenced by its code). Keep the dependency graph acyclic; list dependencies by task title."},
+		{Selector: "immutable_policy", Content: "Decompose the converged design into an ordered, dependency-linked set of Tasks. Each Task implements one or more Requirements (referenced by code). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
@@ -409,6 +431,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	}
 	titleToID := map[string]string{}
 	var pendings []pending
+	var unresolvedReqs []string
 	for _, t := range objSlice(obj["tasks"]) {
 		title := str(t["title"])
 		if title == "" {
@@ -422,22 +445,45 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 			Estimate:      str(t["estimate"]),
 			ProducedByRun: runID,
 		}
+
+		// N:M requirement resolution (review A4 #4): the model may name several
+		// requirement codes via `requirements`; `requirement` (singular) is kept
+		// for compatibility. Tolerant matching -- trim, case-insensitive, and a
+		// "REQ-3: title" form -- via NormalizeRequirementRef. A reference that
+		// still does not resolve fails loudly, exactly as an unresolved
+		// depends_on already does, rather than silently dropping the edge (the
+		// root cause: reqByCode[miss] used to be "", and createTask skipped
+		// wiring the edge on an empty target id with nothing recorded anywhere).
+		var reqIDs []string
+		seenReq := map[string]bool{}
+		for _, ref := range requirementRefs(t) {
+			id, ok := reqByCode[NormalizeRequirementRef(ref)]
+			if !ok {
+				unresolvedReqs = append(unresolvedReqs, ref)
+				continue
+			}
+			if !seenReq[id] {
+				seenReq[id] = true
+				reqIDs = append(reqIDs, id)
+			}
+		}
+
 		// Create without deps; edges are added in the second pass.
-		if err := e.db.CreateTask(ctx, task, reqByCode[str(t["requirement"])], nil); err != nil {
+		if err := e.db.CreateTaskMulti(ctx, task, reqIDs, nil); err != nil {
 			return err
 		}
 		titleToID[norm(title)] = task.ID
 		pendings = append(pendings, pending{task: task, depTitles: strSlice(t["depends_on"])})
 	}
 
-	var unresolved []string
+	var unresolvedDeps []string
 	for _, p := range pendings {
 		var depIDs []string
 		for _, depTitle := range p.depTitles {
 			if id, ok := titleToID[norm(depTitle)]; ok && id != p.task.ID {
 				depIDs = append(depIDs, id)
 			} else {
-				unresolved = append(unresolved, depTitle)
+				unresolvedDeps = append(unresolvedDeps, depTitle)
 			}
 		}
 		if err := e.db.AddTaskDependencies(ctx, initiativeID, p.task.ID, depIDs); err != nil {
@@ -445,7 +491,23 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 		}
 	}
 
-	if len(unresolved) > 0 {
+	if len(unresolvedReqs) > 0 {
+		if err := e.db.CreateFinding(ctx, &domain.Finding{
+			InitiativeID:   initiativeID,
+			TargetType:     PlanFindingTarget,
+			TargetID:       initiativeID,
+			Severity:       domain.SeverityHigh,
+			Confidence:     domain.ConfidenceHigh,
+			Category:       "plan_traceability",
+			Finding:        e.redact("unresolved requirement reference(s): " + strings.Join(unresolvedReqs, ", ")),
+			Evidence:       "a task's requirement reference did not match any active requirement code",
+			Impact:         "the task cannot be traced to a live requirement, and its edge was not wired",
+			Recommendation: "correct the requirement code(s) (it may cite a superseded requirement) and re-run the execution plan",
+		}); err != nil {
+			return err
+		}
+	}
+	if len(unresolvedDeps) > 0 {
 		if err := e.db.CreateFinding(ctx, &domain.Finding{
 			InitiativeID:   initiativeID,
 			TargetType:     PlanFindingTarget,
@@ -453,16 +515,49 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 			Severity:       domain.SeverityHigh,
 			Confidence:     domain.ConfidenceHigh,
 			Category:       "plan_dependency",
-			Finding:        e.redact("unresolved task dependency reference(s): " + strings.Join(unresolved, ", ")),
+			Finding:        e.redact("unresolved task dependency reference(s): " + strings.Join(unresolvedDeps, ", ")),
 			Evidence:       "a task's depends_on referenced a title that does not match any task",
 			Impact:         "the dependency graph is incomplete and cannot be executed safely",
 			Recommendation: "correct the dependency titles and re-run the execution plan",
 		}); err != nil {
 			return err
 		}
+	}
+	if len(unresolvedReqs) > 0 || len(unresolvedDeps) > 0 {
 		return errUnresolvedDependencies
 	}
 	return nil
+}
+
+// requirementRefs collects a task's raw requirement references from the
+// model's output: the plural `requirements` array (review A4 #4) plus the
+// singular `requirement` field kept for compatibility. Order is
+// requirement-first so a single-requirement plan (the common case, and every
+// existing scripted/demo response) behaves exactly as before.
+func requirementRefs(t map[string]any) []string {
+	var out []string
+	if s := strings.TrimSpace(str(t["requirement"])); s != "" {
+		out = append(out, s)
+	}
+	for _, s := range strSlice(t["requirements"]) {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// NormalizeRequirementRef normalizes a model- or human-supplied requirement
+// reference for tolerant matching against a Requirement.Code (review A4 #4):
+// trimmed, upper-cased, and a "REQ-3: title" form reduced to the code prefix
+// before the colon. Exported so the daemon's task-editing handlers (`add
+// task` / `update task`) apply the identical tolerance.
+func NormalizeRequirementRef(raw string) string {
+	s := strings.TrimSpace(raw)
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return strings.ToUpper(s)
 }
 
 // DeterministicPlanCheckRun is the ReviewRunID stamped on every finding
@@ -522,13 +617,26 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 }
 
 // deterministicPlanChecks runs plan-specific structural checks (§B4): acyclic
-// dependencies and every task traced to a requirement.
+// dependencies, every task traced to a requirement, no task or plan text
+// citing a superseded requirement code (review A2 #3, blocking), and no task
+// whose own words contradict a decided decision's resolution more than they
+// agree with it (review A2 #3, advisory only -- keyword overlap is a
+// heuristic, not a semantic check, and is documented as such on the finding).
 func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID string) []domain.Finding {
 	var out []domain.Finding
 	tasks, err := e.db.ListTasks(ctx, initiativeID)
 	if err != nil {
 		return out
 	}
+
+	allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+	var supersededCodes []string
+	for _, r := range allReqs {
+		if r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+			supersededCodes = append(supersededCodes, r.Code)
+		}
+	}
+	decs, _ := e.db.ListDecisions(ctx, initiativeID)
 
 	deps := map[string][]string{}
 	for _, t := range tasks {
@@ -552,6 +660,34 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 				Recommendation: "trace the task to a requirement",
 			})
 		}
+
+		combined := t.Title + " " + t.Statement
+		for _, code := range supersededCodes {
+			if mentionsCode(combined, code) {
+				out = append(out, domain.Finding{
+					Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+					Category:       "plan_traceability",
+					Finding:        fmt.Sprintf("%s cites superseded requirement %s", t.Code, code),
+					Evidence:       combined,
+					Impact:         "the plan is built in part on a requirement that no longer applies",
+					Recommendation: "remove the reference or re-plan against the active requirement",
+				})
+			}
+		}
+
+		for _, d := range decs {
+			if contradictsDecision(combined, d) {
+				out = append(out, domain.Finding{
+					Severity: domain.SeverityMedium, Confidence: domain.ConfidenceLow,
+					Category:       "plan_traceability",
+					Finding:        fmt.Sprintf("%s may contradict decided %s", t.Code, d.Code),
+					Evidence:       combined,
+					Impact:         "heuristic keyword match against a rejected option of the decision; verify manually",
+					Recommendation: fmt.Sprintf("confirm the task aligns with %s's resolution", d.Code),
+					Note:           "heuristic: keyword overlap only, not a semantic check",
+				})
+			}
+		}
 	}
 	if cycle := detectCycle(deps); cycle != "" {
 		out = append(out, domain.Finding{
@@ -563,6 +699,83 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 		})
 	}
 	return out
+}
+
+// mentionsCode reports whether text references code as a whole token, so
+// "REQ-2" does not match inside "REQ-20" or "XREQ-2". Deliberately simple
+// (byte-level, case-folded): a code has a fixed, narrow alphabet, so this
+// needs no general tokenizer.
+func mentionsCode(text, code string) bool {
+	if code == "" {
+		return false
+	}
+	upper := strings.ToUpper(text)
+	codeUpper := strings.ToUpper(code)
+	isWordByte := func(b byte) bool {
+		return b == '-' || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+	}
+	for start := 0; ; {
+		i := strings.Index(upper[start:], codeUpper)
+		if i < 0 {
+			return false
+		}
+		matchStart := start + i
+		matchEnd := matchStart + len(codeUpper)
+		before := byte(0)
+		if matchStart > 0 {
+			before = upper[matchStart-1]
+		}
+		after := byte(0)
+		if matchEnd < len(upper) {
+			after = upper[matchEnd]
+		}
+		if !isWordByte(before) && !isWordByte(after) {
+			return true
+		}
+		start = matchStart + 1
+	}
+}
+
+// contradictsDecision is a deliberately simple heuristic (review A2 #3: "the
+// resolution keyword check is advisory only"): a task's own words overlap
+// more with a REJECTED option of a decided decision than with the option
+// actually chosen. Keyword overlap proves nothing about semantics -- a task
+// can legitimately mention a rejected alternative to explain why it was not
+// used -- which is why every finding this produces is advisory (medium/low),
+// never blocking, and carries a Note saying so.
+func contradictsDecision(taskText string, d domain.Decision) bool {
+	if d.Status != domain.DecisionDecided || strings.TrimSpace(d.Resolution) == "" {
+		return false
+	}
+	taskTokens := tokenize(taskText)
+	if len(taskTokens) == 0 {
+		return false
+	}
+	taskSet := make(map[string]bool, len(taskTokens))
+	for _, tok := range taskTokens {
+		taskSet[tok] = true
+	}
+	resolutionOverlap := overlapCount(taskSet, tokenize(d.Resolution))
+	for _, opt := range d.Options {
+		if normalizeJudgment(opt) == normalizeJudgment(d.Resolution) {
+			continue // the chosen option itself, not a rejected one
+		}
+		if n := overlapCount(taskSet, tokenize(opt)); n > 0 && n > resolutionOverlap {
+			return true
+		}
+	}
+	return false
+}
+
+// overlapCount counts how many tokens appear in both set and tokens.
+func overlapCount(set map[string]bool, tokens []string) int {
+	n := 0
+	for _, t := range tokens {
+		if set[t] {
+			n++
+		}
+	}
+	return n
 }
 
 func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string) ([]domain.Finding, error) {

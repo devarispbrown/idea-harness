@@ -429,6 +429,24 @@ type VerificationEvidence struct {
 	CreatedAt      time.Time          `json:"created_at"`
 }
 
+// StaleItem marks a graph node whose validity is in question because a
+// decided decision it (transitively) depends on stopped being decided after
+// the node was produced or applied (§26, review A4 #5: "impact is true").
+// TargetType is one of "requirement", "task" or "change_set". Cleared either
+// by re-planning (which re-derives the plan from the live decision state) or
+// by an explicit human acknowledgement.
+type StaleItem struct {
+	ID           string     `json:"id"`
+	InitiativeID string     `json:"initiative_id"`
+	TargetType   string     `json:"target_type"`
+	TargetID     string     `json:"target_id"`
+	Reason       string     `json:"reason"`
+	DecisionID   string     `json:"decision_id,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ClearedAt    *time.Time `json:"cleared_at,omitempty"`
+	ClearedBy    string     `json:"cleared_by,omitempty"`
+}
+
 // CriterionKey returns the stable key for the i-th acceptance criterion of a
 // requirement. The thin slice treats every criterion as mandatory and keys
 // evidence by requirement + index (§70, review B4).

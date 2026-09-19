@@ -728,8 +728,20 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 
 // ReopenDecision returns a decided decision to open and clears its resolution,
 // so the human can choose again. Dissent is preserved (never erased, §8).
+//
+// Review A4 #5 ("impact is true"): a decided decision is authoritative only
+// while it stays decided. The moment it is reopened, whatever was built on it
+// -- the requirements that cite it, their tasks, and the applied change sets
+// for those tasks -- is marked stale, so `impact decision DEC-n` and
+// `/guidance` can say so instead of "no dependents found". This covers both
+// "reopened" and "re-resolved with a different answer", since the latter is
+// only reachable through this reopen in the current API.
 func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) error {
-	return db.Apply(ctx, Event{
+	dec, err := db.GetDecision(ctx, decisionID)
+	if err != nil {
+		return err
+	}
+	if err := db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
 		Actor:         actor,
@@ -745,7 +757,10 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 				fmt.Errorf("decision %s is not decided", decisionID))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return db.markDecisionDependentsStale(ctx, dec.InitiativeID, dec.ID, dec.Code)
 }
 
 // SetDecisionRecommendation overwrites a decision's recommendation with a

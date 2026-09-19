@@ -242,14 +242,15 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
-| GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
+| GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). When a decision it depends on was reopened, adds a `stale_items` list and a sentence in `why` naming the count and the decision, plus the re-plan/review path (review A4 #5). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/impact-counts?nodes=` | Dependent counts per graph node, for badging the UI without a query per node. `nodes` is **required**: a comma-separated list of `type:id` pairs, where `id` is the graph node id the read endpoints return, not the human code — `decision:<id>,requirement:<id>`. Missing, malformed, or more than 200 entries is `400`. |
+| POST | `/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack` | Acknowledge one stale item, clearing it (review A4 #5). Re-planning clears every stale item for the initiative at once instead. |
 | GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
 | GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
 | POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
-| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
+| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. A task's change sets are query-linked (not edge-linked) and are included as synthetic dependents; `staleness` is `"stale"` when the node carries an active review-A4 stale mark, else `"obsolete"`/`"revalidate"` by edge type. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff: requirements as added vs. removed, decisions as open/decided/superseded, read from the graph rather than by diffing rendered markdown. Not a source diff — that is `/change-sets/{id}/diff`. |
 | GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
@@ -260,8 +261,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). |
-| POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `depends_on[]`). |
-| PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority or estimate. |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `requirement_ids[]`, `depends_on[]`). A task implements one or more requirements, N:M (review A4 #3/#4): `implements` and `requirement_ids` are merged and tolerantly resolved by code or id; at least one is required. |
+| PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority, estimate, or (via `requirement_ids[]`, which replaces the links entirely and requires at least one) its requirements. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Delete a task. |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel` | Cancel a running task. |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/reorder` | Reorder the plan from `{"task_ids": [...]}`. |
@@ -280,7 +281,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
-| POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. |
+| POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. Also marks stale (review A4 #5) the requirements that cite it, their tasks, and the applied change sets for those tasks — see `stale_items` on `/guidance` and `staleness` on `/impact`. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions. |
