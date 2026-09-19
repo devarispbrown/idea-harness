@@ -789,11 +789,50 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// matchRecommendationOption maps a decision's free-text Recommendation onto
+// one of its Options for accept-recommendations (review M3): the
+// single-resolve path (handleResolveDecision) already refuses, via offers(),
+// to record an answer that is not one of a decision's options, and
+// batch-accepting recommendations must not silently bypass that guard just
+// because there is no human present to notice. An exact match wins
+// outright; otherwise a UNIQUE case-insensitive, whitespace-trimmed match is
+// used (the common case: the model's own recommendation text drifts in
+// casing/whitespace from the option list it produced in the same response);
+// anything else -- no match, or more than one -- is not resolved
+// automatically.
+func matchRecommendationOption(options []string, recommendation string) (string, bool) {
+	for _, o := range options {
+		if o == recommendation {
+			return o, true
+		}
+	}
+	norm := strings.ToLower(strings.TrimSpace(recommendation))
+	match, count := "", 0
+	for _, o := range options {
+		if strings.ToLower(strings.TrimSpace(o)) == norm {
+			match = o
+			count++
+		}
+	}
+	if count == 1 {
+		return match, true
+	}
+	return "", false
+}
+
 // handleAcceptRecommendations resolves every open decision on an initiative
 // with its own recommendation, actor human (review B4, adopted #8): the "53
 // things need your judgment" problem the ICP round found, answered in one
 // call instead of one click per decision. A decision with no recommendation
 // (the model raised it without one) is left open and named in `skipped`.
+//
+// M3: when a decision has Options, the recommendation must map onto one of
+// them (matchRecommendationOption) -- recording it verbatim regardless
+// would record a choice the decision never offered, exactly what the
+// single-resolve path's offers() guard exists to prevent. And a decision
+// that a CONCURRENT single-resolve call answers between this handler's own
+// ListDecisions snapshot and its ResolveDecision call is treated as
+// skipped, not a 500 that aborts every decision after it in the loop.
 func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Request) {
 	pr, ini, err := s.initiative(r)
 	if err != nil {
@@ -811,17 +850,49 @@ func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Requ
 		if d.Status != domain.DecisionOpen {
 			continue
 		}
-		if strings.TrimSpace(d.Recommendation) == "" {
-			skipped = append(skipped, d.Code)
-			continue
-		}
-		if err := pr.db.ResolveDecision(r.Context(), d.ID, d.Recommendation, store.HumanActor); err != nil {
+		didResolve, err := s.acceptOneRecommendation(r.Context(), pr, d)
+		if err != nil {
 			s.writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		resolved = append(resolved, d.Code)
+		if didResolve {
+			resolved = append(resolved, d.Code)
+		} else {
+			skipped = append(skipped, d.Code)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": resolved, "skipped": skipped})
+}
+
+// acceptOneRecommendation resolves one decision (already known Open as of
+// the caller's snapshot) with its own recommendation, for
+// handleAcceptRecommendations (review M3). Returns (true, nil) when
+// resolved, (false, nil) when skipped -- no recommendation, a recommendation
+// that maps to no unique option, or a decision a CONCURRENT request already
+// resolved between the caller's snapshot and this call (ResolveDecision then
+// fails with "not open"; re-checked here via GetDecision rather than treated
+// as a hard failure that would abort the rest of the batch) -- and a non-nil
+// error only for a genuine store failure.
+func (s *Server) acceptOneRecommendation(ctx context.Context, pr *projectRuntime, d domain.Decision) (bool, error) {
+	rec := strings.TrimSpace(d.Recommendation)
+	if rec == "" {
+		return false, nil
+	}
+	resolution := rec
+	if len(d.Options) > 0 {
+		matched, ok := matchRecommendationOption(d.Options, rec)
+		if !ok {
+			return false, nil
+		}
+		resolution = matched
+	}
+	if err := pr.db.ResolveDecision(ctx, d.ID, resolution, store.HumanActor); err != nil {
+		if cur, gerr := pr.db.GetDecision(ctx, d.ID); gerr == nil && cur.Status != domain.DecisionOpen {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // handleTriage returns the ranked "what needs your judgment first" view
