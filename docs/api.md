@@ -303,7 +303,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
-| POST | `/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations` | Resolve every OPEN decision with its own `recommendation`, actor `human`, in one call. A decision with no recommendation is left open and named in `skipped` (review B4). |
+| POST | `/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations` | Resolve every OPEN decision with its own `recommendation`, actor `human`, in one call. When a decision has `options`, the recommendation must map onto exactly one of them (verbatim, an "Option B"/letter/index reference, or a case/whitespace/punctuation-tolerant match); a decision left unresolved is named in `skipped` with a `reason` (review B4, review #2). |
 | GET | `/projects/{projectId}/initiatives/{id}/triage` | The top 3 open decisions/questions/blocking findings by impact (blocking, then severity, then dependents count), labelled `priority`; the rest `optional` (review B4). |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. Also marks stale (review A4 #5) the requirements that cite it, their tasks, and the applied change sets for those tasks — see `stale_items` on `/guidance` and `staleness` on `/impact`. |

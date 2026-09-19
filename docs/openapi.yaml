@@ -2229,9 +2229,11 @@ paths:
       summary: Resolve every open decision with its recommendation (review B4)
       description: |
         Answers the ICP round's "53 things need your judgment" in one call: every OPEN decision
-        on the initiative is resolved with its own `recommendation`, actor `human`. A decision the
-        model raised with no recommendation is left open and named in `skipped` rather than
-        resolved with an empty string.
+        on the initiative is resolved with its own `recommendation`, actor `human`. When a decision
+        has `options`, the recommendation must map onto exactly one of them -- verbatim, an "Option
+        B"/letter/index reference, or a case/whitespace/punctuation-tolerant match -- or it is left
+        open and named in `skipped` with a `reason`, along with a decision the model raised with no
+        recommendation at all.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -2247,8 +2249,18 @@ paths:
                     description: Codes of the decisions resolved.
                   skipped:
                     type: array
-                    items: { type: string }
-                    description: Codes of open decisions left open because they had no recommendation.
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, description: The decision's code. }
+                        reason:
+                          type: string
+                          description: |
+                            Why it was left open: no recommendation was given, the recommendation
+                            did not match any option (or matched more than one), or it was resolved
+                            by a concurrent request while this call was running.
+                      required: [code, reason]
+                    description: Open decisions left open, and why.
                 required: [resolved, skipped]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -4453,9 +4465,13 @@ components:
       description: |
         One file of a change set, for per-file display (`workflow.StructuredFile`). `content` is
         redacted at this display surface; the raw store keeps the unredacted bytes so apply and
-        revert round-trip byte-for-byte. A deleted file carries no content, and content is also
-        absent (with `size` 0) when the produced bytes were never persisted - a change set rejected
-        by the secret sweep, for example. The post-image digest is deliberately not exposed.
+        revert round-trip byte-for-byte. A deleted file carries no content. When a change set is
+        rejected by the secret sweep, the produced bytes are never persisted to the raw store -- but
+        a MASKED stand-in is (`redacted: true`), so the diff viewer still has something honest to
+        show instead of an empty, indistinguishable-from-broken file. `content` is genuinely absent
+        (`size` 0, `redacted` false) only when neither the raw nor the masked bytes could be found
+        (e.g. a patch persisted before this field existed). The post-image digest is deliberately not
+        exposed.
       properties:
         path: { type: string }
         change_type:
@@ -4467,7 +4483,15 @@ components:
           description: Byte length of the stored content, 0 when no content is available.
         content:
           type: string
-          description: Redacted file content; empty for a deletion.
+          description: |
+            Redacted file content; empty for a deletion. Masked stand-in content, never the file's
+            real bytes, when `redacted` is true.
+        redacted:
+          type: boolean
+          description: |
+            True when `content` holds masked content instead of the file's real post-image bytes,
+            because the secret sweep denied this change set and the raw bytes were never persisted --
+            only their masked form was. Omitted (false) otherwise.
         patch:
           type: string
           description: |
@@ -4476,14 +4500,16 @@ components:
             (` ` context, `-` removed, `+` added), three lines of context. An added file is one hunk
             `@@ -0,0 +1,N @@`; a deleted file is `@@ -1,N +0,0 @@`. The base comes from the raw blob
             store after apply, or from the workspace file before apply - only while that file still
-            matches the recorded base digest. Omitted when there is no change to show, or when
-            `patch_note` explains why there is no diff.
+            matches the recorded base digest. Omitted when there is no change to show, when `redacted`
+            is true (masked content is never diffed against a real base), or when `patch_note`
+            explains why there is no diff.
         patch_note:
           type: string
           description: |
             Why `patch` is absent although the file changed: binary, too large to diff, content not
-            kept, or the base no longer recoverable because the workspace file was edited after the
-            agent ran. Clients show it and fall back to `content`.
+            kept, the content is masked (`redacted: true`), or the base no longer recoverable because
+            the workspace file was edited after the agent ran. Clients show it and fall back to
+            `content`.
       required: [path, change_type, size, content]
 
     OperationStatus:

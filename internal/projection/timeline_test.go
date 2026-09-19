@@ -249,6 +249,76 @@ func TestBuildTimelinePhaseCompletedSkipsResumeAndFailed(t *testing.T) {
 	}
 }
 
+// TestBuildTimelinePlanApprovedNotDuplicatedAcrossBuildCycles is defect #4
+// from the ICP re-run: the execute/apply/revert claim mechanism
+// (ClaimInitiativeRunning, then SetInitiativeStatus back to priorStatus)
+// round-trips an initiative through plan_approved -> running -> plan_approved
+// on every build cycle even though the plan itself never changed, and each
+// release used to write its own initiative.status_changed event -- one
+// "Plan approved" timeline entry per cycle instead of once. Reproduces that
+// exact round trip three times and asserts exactly one survives.
+func TestBuildTimelinePlanApprovedNotDuplicatedAcrossBuildCycles(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativeApproved, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativePlanApproved, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	// Three build cycles: claim running for execute, then release back to the
+	// SAME plan_approved status -- the plan never changed in between.
+	for i := 0; i < 3; i++ {
+		if err := db.ClaimInitiativeRunning(ctx, ini.ID, domain.InitiativePlanApproved); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativePlanApproved, store.ActorOrchestrator); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := BuildTimeline(ctx, db, ini.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planApproved := 0
+	for _, e := range entries {
+		if e.Kind == "phase_completed" && e.Title == "Plan approved" {
+			planApproved++
+		}
+	}
+	if planApproved != 1 {
+		t.Fatalf(`"Plan approved" appeared %d times across 3 build cycles, want exactly 1: %+v`, planApproved, entries)
+	}
+
+	// A genuinely NEW plan_approved after a real intervening phase (a human
+	// judgment interruption) is still shown -- this is not a blanket "only
+	// the first ever" collapse, only a collapse of a no-op release.
+	if err := db.NeedsHumanJudgment(ctx, ini.ID, domain.JudgmentPlanReview, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetInitiativeStatus(ctx, ini.ID, domain.InitiativePlanApproved, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = BuildTimeline(ctx, db, ini.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planApproved = 0
+	for _, e := range entries {
+		if e.Kind == "phase_completed" && e.Title == "Plan approved" {
+			planApproved++
+		}
+	}
+	if planApproved != 2 {
+		t.Fatalf(`"Plan approved" appeared %d times after a real intervening phase, want 2: %+v`, planApproved, entries)
+	}
+}
+
 // TestBuildTimelineDecisionAndRunFailed pins decision_changed and run_failed
 // entries.
 func TestBuildTimelineDecisionAndRunFailed(t *testing.T) {

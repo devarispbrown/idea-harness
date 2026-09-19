@@ -49,9 +49,15 @@ export default function DefinePage({
   // endpoint yet) -- distinct from "loaded, empty", so the fallback flat
   // rendering below only kicks in when triage is genuinely unavailable.
   const [triage, setTriage] = useState<TriageItemLike[] | null>(null);
-  // B4: "Accept all recommendations" -- resolved/skipped counts from the
-  // last call, shown until the next load replaces them.
-  const [acceptResult, setAcceptResult] = useState<{ resolved: number; skipped: number } | null>(null);
+  // B4: "Accept all recommendations" -- resolved count and skipped
+  // code+reason pairs from the last call, shown until the next load replaces
+  // them. Reasons (review #2, ICP re-run) let a human see WHY a decision
+  // with options was left open -- no recommendation, no unique match, or a
+  // race with a concurrent resolve -- instead of a bare, uninformative count.
+  const [acceptResult, setAcceptResult] = useState<{
+    resolved: number;
+    skipped: { code: string; reason: string }[];
+  } | null>(null);
   const [acceptError, setAcceptError] = useState("");
 
   const load = useCallback(async () => {
@@ -153,11 +159,11 @@ export default function DefinePage({
     setAcceptError("");
     setAcceptResult(null);
     try {
-      const res = await post<{ resolved: string[]; skipped: string[] }>(
-        resource(projectId, initiativeId, "decisions/accept-recommendations"),
-        {},
-      );
-      setAcceptResult({ resolved: (res.resolved ?? []).length, skipped: (res.skipped ?? []).length });
+      const res = await post<{
+        resolved: string[];
+        skipped: { code: string; reason: string }[];
+      }>(resource(projectId, initiativeId, "decisions/accept-recommendations"), {});
+      setAcceptResult({ resolved: (res.resolved ?? []).length, skipped: res.skipped ?? [] });
       await load();
     } catch (e) {
       setAcceptError(e instanceof Error ? e.message : String(e));
@@ -248,10 +254,21 @@ export default function DefinePage({
         </div>
       )}
       {acceptResult && (
-        <p className="ok-text">
-          Resolved {acceptResult.resolved}, skipped {acceptResult.skipped}
-          {acceptResult.skipped > 0 ? " (no recommendation to accept)." : "."}
-        </p>
+        <div className="ok-text">
+          <p>
+            Resolved {acceptResult.resolved}, skipped {acceptResult.skipped.length}
+            {acceptResult.skipped.length > 0 ? ":" : "."}
+          </p>
+          {acceptResult.skipped.length > 0 && (
+            <ul className="accept-recommendations-skipped">
+              {acceptResult.skipped.map((s) => (
+                <li key={s.code}>
+                  {s.code}: {s.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
       {acceptError && <p className="error">{acceptError}</p>}
       <div className="judgment-list">

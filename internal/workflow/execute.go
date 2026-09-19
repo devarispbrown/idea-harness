@@ -171,10 +171,24 @@ func (e *Engine) taskHasAppliedChangeSet(ctx context.Context, taskID string) (bo
 // runPlanner runs the engineering_lead planner to produce an implementation brief
 // for a task, returned as rendered text for the implementer (§50). The brief is a
 // durable Run (role engineering_lead, stage implementation_brief) via runModel.
+//
+// The rendered brief is what the implementer's ENTIRE prompt is (req.Brief goes
+// to the coding agent CLI verbatim, executor.ompArgs/hermesArgs) -- so the
+// detected stack and a hard "write files, don't paste code" instruction are
+// appended here, by the orchestrator, rather than left to the planner model's
+// own judgment to include or not (review #6, ICP re-run: the implementer
+// generated Python for a Go project because nothing in its brief said what
+// stack it was working in at all, or even that it was joining an existing
+// project rather than starting from nothing).
 func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domain.Task) (string, error) {
+	stack := detectStack(e.workspaceRoot)
+	scale := projectScaleOf(ctx, e.workspaceRoot)
+	projectContext := proportionateContext(scale, stack, projectConventions(e.workspaceRoot))
+
 	_, obj, err := e.runModel(ctx, initiativeID, StageImplementationBrief, RoleEngineeringLead, "implementation_brief", schema.ImplementationBrief,
 		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Produce a short implementation brief for the task."},
+			{Selector: "immutable_policy", Content: "Produce a short implementation brief for the task, for an implementer who will write directly into this project's existing files. Name concrete files to add or change, in the project's own detected stack -- never propose a different language or framework than the one the project already uses."},
+			{Selector: "project_scale", Content: projectContext},
 			{Selector: "task", Content: task.Statement},
 		},
 		"Task:\n"+task.Statement,
@@ -195,6 +209,16 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 	if req := str(obj["target_requirement"]); req != "" {
 		b.WriteString("Target requirement: " + req + "\n")
 	}
+	// Deterministic, orchestrator-authored -- always present regardless of
+	// what the planner model chose to say.
+	if len(stack) > 0 {
+		fmt.Fprintf(&b, "Project stack (detected): %s. Write this task's code in this stack; never introduce a different language or framework.\n", strings.Join(stack, ", "))
+	} else if scale.Files == 0 {
+		b.WriteString("This is a new project with no existing code yet: choose a stack appropriate to the task and be consistent about it.\n")
+	} else {
+		b.WriteString("This project's stack could not be auto-detected from its root-level files: match whatever language/framework its existing files already use; do not introduce a new one.\n")
+	}
+	b.WriteString("Write your changes directly to files in the workspace. Do not paste code, diffs, or file contents in your chat response -- only files actually written to disk are collected as this task's change set.\n")
 	return b.String(), nil
 }
 
@@ -400,6 +424,17 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if !sweepBlocked {
 		if err := e.persistDiff(req.WorkRoot, files); err != nil {
 			return domain.ChangeSet{}, fmt.Errorf("workflow: execute: persist diff: %w", err)
+		}
+	} else {
+		// The raw bytes are never written (the whole point of the gate), but the
+		// human reviewing the denial still needs to see what was blocked -- with
+		// every detected secret span masked, never the raw value. Without this,
+		// the diff viewer had nothing at all to show for a denied change set, even
+		// after the human dispositioned the finding "not a secret" (review:
+		// secret-sweep diff visibility). Best-effort: a masking failure must not
+		// turn a correctly-denied change set into a hard error, so it only logs.
+		if err := e.persistRedactedDiff(req.WorkRoot, files); err != nil {
+			e.log.Warn("could not persist masked diff for denied change set", "error", err)
 		}
 	}
 	patchDigest, err := e.persistPatch(fsdiff.Patch{BaseSnapshotDigest: before.Digest(), Files: files})
@@ -674,6 +709,46 @@ func (e *Engine) persistDiff(workRoot string, files []domain.FileChange) error {
 	return nil
 }
 
+// persistRedactedDiff stores each produced file's content with every detected
+// secret span masked (never the raw value), keyed by the digest of the MASKED
+// bytes, and records that digest on the FileChange as RedactedDigest -- so a
+// change set the secret sweep denies still has something honest to show in
+// the diff viewer instead of nothing at all. files is mutated in place: it is
+// the same slice that goes on to be persisted as the patch manifest, so the
+// RedactedDigest set here survives on the record the diff endpoint reads back.
+func (e *Engine) persistRedactedDiff(workRoot string, files []domain.FileChange) error {
+	if e.contentBlobs() == nil {
+		return fmt.Errorf("workflow: no blob store")
+	}
+	for i, fc := range files {
+		if fc.IsDelete() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(workRoot, filepath.FromSlash(fc.Path)))
+		if err != nil {
+			return fmt.Errorf("read %q: %w", fc.Path, err)
+		}
+		masked := e.redactOrFallback(string(data))
+		digest, err := e.contentBlobs().Put([]byte(masked))
+		if err != nil {
+			return fmt.Errorf("persist masked %q: %w", fc.Path, err)
+		}
+		files[i].RedactedDigest = digest
+	}
+	return nil
+}
+
+// redactOrFallback masks known secret values and every credential-pattern
+// match in s, using the engine's per-project redactor when one is configured
+// and the package-level (unkeyed) fallback otherwise -- the same pattern
+// RenderPatch and StructuredDiff already use at their display surface.
+func (e *Engine) redactOrFallback(s string) string {
+	if e.redactor != nil {
+		return e.redactor.RedactString(s)
+	}
+	return security.Redact(s)
+}
+
 // persistPatch stores the patch manifest JSON and returns its content digest.
 func (e *Engine) persistPatch(patch fsdiff.Patch) (string, error) {
 	data, err := json.Marshal(patch)
@@ -889,6 +964,12 @@ func (e *Engine) renderDiffText(files []domain.FileChange) string {
 		}
 		content, err := e.contentBlobs().Get(fc.Digest)
 		if err != nil {
+			if fc.RedactedDigest != "" {
+				if masked, merr := e.contentBlobs().Get(fc.RedactedDigest); merr == nil {
+					fmt.Fprintf(&b, "--- %s (content withheld because it contained a secret; showing masked) ---\n%s\n", fc.Path, string(masked))
+					continue
+				}
+			}
 			fmt.Fprintf(&b, "%s (unreadable)\n", fc.Path)
 			continue
 		}
@@ -955,6 +1036,12 @@ type StructuredFile struct {
 	// base can no longer be recovered. The UI shows it and falls back to
 	// Content.
 	PatchNote string `json:"patch_note,omitempty"`
+	// Redacted is true when Content holds MASKED content instead of the file's
+	// real post-image bytes, because the secret sweep denied this change set
+	// and the raw bytes were never persisted -- only their masked form was.
+	// The UI shows a distinct, honest note instead of treating this like an
+	// ordinary (or missing) diff. Review: secret-sweep diff visibility.
+	Redacted bool `json:"redacted,omitempty"`
 
 	// contentKept is whether the post-image was read from the store; an empty
 	// file that was kept is not the same as content that never was.
@@ -1001,6 +1088,12 @@ func (e *Engine) baseContent(fc domain.FileChange) (string, bool) {
 // (Size is 0 when the content was never persisted, e.g. after the secret
 // sweep).
 func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note string) {
+	if sf.Redacted {
+		// Diffing masked content against a real base would show a wall of
+		// spurious changes (or, worse, read as though the base itself changed) --
+		// so this is display-only content, not a diff, and says so.
+		return "", "content withheld because it contained a secret; showing masked"
+	}
 	newContent := sf.Content
 	if fc.IsDelete() {
 		newContent = ""
@@ -1032,9 +1125,13 @@ func (e *Engine) patchFor(fc domain.FileChange, sf StructuredFile) (patch, note 
 }
 
 // StructuredDiff renders a change set as a per-file list (path + kind + redacted
-// content). Deleted files carry no content. Content is omitted (Size 0) when a
-// file's bytes were never persisted — e.g. a change set rejected by the secret
-// sweep skips persistDiff, so its produced bytes are intentionally absent. A
+// content). Deleted files carry no content. A change set rejected by the
+// secret sweep never had its raw bytes persisted (persistDiff is skipped), but
+// carries a MASKED version instead (RedactedDigest, persistRedactedDiff) --
+// that is served here with Redacted=true rather than leaving Content empty,
+// so the human can see what was blocked. Content is genuinely absent (Size 0,
+// Redacted false) only when neither the raw nor the masked bytes could be
+// found -- e.g. a patch persisted before this fix, or a masking failure. A
 // patch-manifest read/decode failure yields an empty (non-nil) list so the
 // `files` wire field is always a JSON array; the read error is surfaced via
 // RenderPatch's "(patch unreadable: …)" in the sibling `patch` field.
@@ -1067,6 +1164,12 @@ func (e *Engine) StructuredDiff(cs *domain.ChangeSet) []StructuredFile {
 					raw = security.Redact(raw)
 				}
 				sf.Content = raw
+			} else if fc.RedactedDigest != "" {
+				if masked, merr := e.contentBlobs().Get(fc.RedactedDigest); merr == nil {
+					sf.Redacted = true
+					sf.Content = string(masked)
+					sf.Size = len(masked)
+				}
 			}
 		}
 		sf.Patch, sf.PatchNote = e.patchFor(fc, sf)
@@ -1234,9 +1337,15 @@ func (e *Engine) runDeterministicChecks(ctx context.Context, cs *domain.ChangeSe
 		}
 	}
 
+	// Detected once per call, from the canonical workspace (the same root
+	// detectToolchainImage reads), never the ephemeral work root: a project's
+	// toolchain markers live in the real checkout, and workRoot is a fresh
+	// copy per run that may not even exist yet the first time this runs
+	// (review #5, ICP re-run).
+	detectedBuild, detectedTest := detectCheckCommands(e.workspaceRoot)
 	appendFinding(e.checkPatchApplies(cs, files))
-	appendFinding(e.checkCommand(ctx, cs, workRoot, "build", "build_cmd", "build/type-check passes", e.cfg.BuildCmd))
-	appendFinding(e.checkCommand(ctx, cs, workRoot, "tests", "test_cmd", "tests pass", e.cfg.TestCmd))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "build", "build_cmd", "build/type-check passes", e.cfg.BuildCmd, detectedBuild))
+	appendFinding(e.checkCommand(ctx, cs, workRoot, "tests", "test_cmd", "tests pass", e.cfg.TestCmd, detectedTest))
 	return out, blocked
 }
 
@@ -1281,16 +1390,18 @@ func (e *Engine) checkPatchApplies(cs *domain.ChangeSet, files []domain.FileChan
 	}
 }
 
-// checkCommand runs a config-supplied build/test command in the isolated work
-// root and reports pass/fail. A missing command is not_applicable, never a
-// fabricated pass.
+// checkCommand runs a build/test command -- config-supplied, or, when none is
+// configured, auto-detected from the project's own toolchain markers
+// (detected, review #5, ICP re-run) -- in the isolated work root and reports
+// pass/fail. Only when NEITHER is available is the check recorded
+// not_applicable; a fabricated pass never happens either way.
 // configKey is the harness.yaml field name, which is NOT derivable from the
 // category: the category is "tests" (its value is pinned by the /checks
 // endpoint and by execute_test.go) while the field is `test_cmd`. Deriving one
 // from the other printed `set tests_cmd in harness.yaml`, and following that
 // advice literally makes `idea config validate` exit 1 with
 // `additional properties 'tests_cmd' not allowed`.
-func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoot, category, configKey, description, cmd string) domain.Finding {
+func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoot, category, configKey, description, cmd string, detected detectedCommand) domain.Finding {
 	base := domain.Finding{
 		InitiativeID: cs.InitiativeID,
 		TargetType:   "change_set",
@@ -1298,14 +1409,20 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		Confidence:   domain.ConfidenceHigh,
 		Category:     category,
 	}
+	cmdNote := ""
 	if cmd == "" {
-		base.Severity = domain.SeverityObservation
-		base.Finding = description + " — not applicable"
-		base.Evidence = "no " + category + " command configured"
-		base.Impact = "deterministic check skipped"
-		base.Recommendation = "set " + configKey + " in harness.yaml (top level)"
-		base.Disposition = domain.DispositionNotApplicable
-		return base
+		if detected.Cmd == "" {
+			base.Severity = domain.SeverityObservation
+			base.Finding = description + " — not applicable"
+			base.Evidence = "no " + category + " command configured"
+			base.Impact = "deterministic check skipped"
+			base.Recommendation = "set " + configKey + " in harness.yaml (top level)"
+			base.Disposition = domain.DispositionNotApplicable
+			return base
+		}
+		cmd = detected.Cmd
+		cmdNote = configKey + " not configured; detected `" + cmd + "` from " + detected.Source +
+			" (set " + configKey + " in harness.yaml to override)"
 	}
 
 	// Fail closed: the build/test command executes the agent's code, so it must
@@ -1361,12 +1478,17 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	})
 	// imagePrefix shows the image every non-skipped finding below carries
 	// (review C5: "show the derived image in the check finding"), and notes
-	// when it was derived rather than configured.
+	// when it was derived rather than configured. cmdNote does the same for a
+	// detected command (review #5): a human reading a "detected" finding must
+	// not have to guess what command actually ran or where it came from.
 	imagePrefix := "image: " + image
 	if imageNote != "" {
 		imagePrefix += " (" + imageNote + ")"
 	}
 	imagePrefix += "\n"
+	if cmdNote != "" {
+		imagePrefix += cmdNote + "\n"
+	}
 	if runErr != nil {
 		// Docker unavailable or launch failed → fail closed, never host-exec.
 		base.Severity = domain.SeverityHigh
