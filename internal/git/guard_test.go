@@ -58,7 +58,7 @@ func TestPreCommitGuardAllowsTheDefaultBranch(t *testing.T) {
 }
 
 func TestDefaultBranchGuardRefusesTheDefaultBranch(t *testing.T) {
-	for _, name := range []string{"main", "master", "trunk", "develop"} {
+	for _, name := range []string{"main", "master"} {
 		t.Run(name, func(t *testing.T) {
 			repo := initRepoOnBranch(t, name)
 			reason, err := DefaultBranchGuardReason(t.Context(), repo, false)
@@ -73,6 +73,28 @@ func TestDefaultBranchGuardRefusesTheDefaultBranch(t *testing.T) {
 			}
 			if !strings.Contains(reason, "allow_default_branch") {
 				t.Errorf("reason %q does not name the override", reason)
+			}
+		})
+	}
+}
+
+// TestDefaultBranchGuardDoesNotGuessTrunkOrDevelop is the review low-priority
+// item: "trunk" and "develop" are no longer guessed as default-branch names
+// when origin/HEAD cannot be resolved. Guessing "develop" in particular used
+// to block a git-flow repository's own default branch -- one with no
+// `origin/HEAD` configured (a purely local clone) -- with no way around it
+// short of `git.allow_default_branch`, for a name this tool invented no
+// convention for.
+func TestDefaultBranchGuardDoesNotGuessTrunkOrDevelop(t *testing.T) {
+	for _, name := range []string{"trunk", "develop"} {
+		t.Run(name, func(t *testing.T) {
+			repo := initRepoOnBranch(t, name)
+			reason, err := DefaultBranchGuardReason(t.Context(), repo, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want none: %q is no longer guessed as a default branch name", reason, name)
 			}
 		})
 	}
@@ -113,11 +135,15 @@ func TestDefaultBranchGuardHonoursOriginHEADOverMainMaster(t *testing.T) {
 	}
 }
 
-// TestDefaultBranchGuardHonoursInitDefaultBranchConfig is the low-priority
-// item: when origin/HEAD is missing, git's own init.defaultBranch config (if
-// set) names the default branch, rather than only ever guessing
-// main/master/trunk/develop.
-func TestDefaultBranchGuardHonoursInitDefaultBranchConfig(t *testing.T) {
+// TestDefaultBranchGuardIgnoresInitDefaultBranchConfig is the review
+// low-priority item, reversed from its earlier form: `init.defaultBranch`
+// is no longer consulted at all. That git config is normally set GLOBALLY
+// (describing what a future `git init` should name a brand-new
+// repository's branch), not a declaration about THIS repository's actual
+// default -- honoring it could refuse commits to an arbitrarily-named
+// branch that happens to match the user's global git config, with no
+// connection to this repository at all.
+func TestDefaultBranchGuardIgnoresInitDefaultBranchConfig(t *testing.T) {
 	repo := initRepoOnBranch(t, "development")
 	gitOut(t, repo, "config", "init.defaultBranch", "development")
 
@@ -125,19 +151,8 @@ func TestDefaultBranchGuardHonoursInitDefaultBranchConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reason == "" {
-		t.Fatal("want development refused: init.defaultBranch names it, got no refusal")
-	}
-
-	// A branch that is neither origin/HEAD's target nor init.defaultBranch's
-	// value, and not one of the bare guesses either, must NOT be refused.
-	gitOut(t, repo, "checkout", "-q", "-b", "feature")
-	reason, err = DefaultBranchGuardReason(t.Context(), repo, false)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if reason != "" {
-		t.Errorf("reason = %q, want none: feature is not the configured default", reason)
+		t.Fatalf("reason = %q, want none: init.defaultBranch is no longer consulted", reason)
 	}
 }
 

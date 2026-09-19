@@ -1694,18 +1694,24 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		return "", "not committed because " + reason, nil
 	}
 
+	var branchWarning string
 	if e.cfg.Git.BranchPerInitiative {
 		ini, iniErr := e.db.GetInitiative(ctx, cs.InitiativeID)
 		if iniErr != nil {
 			return "", "not committed: could not look up the initiative's branch: " + iniErr.Error(), nil
 		}
-		branch, reason, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths)
+		branch, reason, warning, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths)
 		if brErr != nil {
 			return "", "not committed: could not switch to the initiative's branch: " + brErr.Error(), nil
 		}
 		if reason != "" {
 			return "", "not committed: " + reason, nil
 		}
+		// H6: the branch was created from current HEAD rather than the
+		// resolved default branch (HEAD wasn't at the default's commit).
+		// The change set still applies and commits; the caller surfaces
+		// this as the change set's git_commit_warning below.
+		branchWarning = warning
 		if branch != "" && branch != ini.GitBranch {
 			if setErr := e.db.SetInitiativeGitBranch(ctx, cs.InitiativeID, branch, store.ActorOrchestrator); setErr != nil {
 				return "", "checked out " + branch + " but could not record it on the initiative: " + setErr.Error(), nil
@@ -1734,7 +1740,7 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 	}
 	message := fmt.Sprintf("%s: %s", cs.HumanID, sanitizeCommitTitle(title))
 	sha, err = git.Commit(ctx, e.workspaceRoot, paths, message)
-	return sha, "", err
+	return sha, branchWarning, err
 }
 
 // sanitizeCommitTitle collapses newlines and strips leading dashes from a task

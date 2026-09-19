@@ -50,22 +50,33 @@ func CreatePR(ctx context.Context, workTree string, req PRRequest) (string, erro
 	if out, err := runGit(ctx, workTree, sanitizedPushEnv(), "push", "-u", remote, req.Branch); err != nil {
 		return "", fmt.Errorf("git: push %s %s: %w: %s", remote, req.Branch, err, strings.TrimSpace(out))
 	}
-	// gh's --head wants "owner:branch" when the branch lives on a fork (a
-	// remote other than the base repository's own "origin") rather than a
-	// plain branch name, which gh would otherwise resolve against the base
-	// repository and fail to find (review M7). This only works out the box
-	// for github.com remotes; a non-GitHub host (or a remote URL gh/git
+	// gh's --head wants "owner:branch" when the branch lives on a fork --
+	// a remote whose owner differs from the BASE repository's -- rather than
+	// a plain branch name, which gh would otherwise resolve against the base
+	// repository and fail to find (review M7, M6). This only works out the
+	// box for github.com remotes; a non-GitHub host (or a remote URL gh/git
 	// cannot parse an owner from) falls back to the plain branch name, which
 	// is correct whenever the push remote and the base repository are the
 	// same host+owner, and otherwise is a known limitation documented in
 	// docs/cli.md.
+	//
+	// The base repository is "upstream" when that remote exists, else
+	// "origin" (review M6): `gh repo fork --clone` sets origin to the FORK
+	// and upstream to the PARENT, with no per-branch remote config at all,
+	// so pushRemote() above correctly returns "origin" (the fork actually
+	// does need the push) -- but comparing that against origin's own owner
+	// as "the base" always found them equal (both are the fork) and never
+	// prefixed --head, so gh resolved the bare branch name against upstream
+	// (its own default base-repo choice in a fork clone) and found nothing.
 	head := req.Branch
-	if remote != "origin" {
-		if forkOwner, oerr := remoteOwner(ctx, workTree, remote); oerr == nil && forkOwner != "" {
-			baseOwner, _ := remoteOwner(ctx, workTree, "origin")
-			if baseOwner == "" || !strings.EqualFold(baseOwner, forkOwner) {
-				head = forkOwner + ":" + req.Branch
-			}
+	baseRemote := "origin"
+	if remoteExists(ctx, workTree, "upstream") {
+		baseRemote = "upstream"
+	}
+	if forkOwner, oerr := remoteOwner(ctx, workTree, remote); oerr == nil && forkOwner != "" {
+		baseOwner, _ := remoteOwner(ctx, workTree, baseRemote)
+		if baseOwner == "" || !strings.EqualFold(baseOwner, forkOwner) {
+			head = forkOwner + ":" + req.Branch
 		}
 	}
 	args := []string{"pr", "create", "--head", head,
@@ -99,6 +110,14 @@ func pushRemote(ctx context.Context, workTree, branch string) (string, error) {
 		return "", fmt.Errorf("git: config branch.%s.remote: %w: %s", branch, err, strings.TrimSpace(out))
 	}
 	return "origin", nil
+}
+
+// remoteExists reports whether a remote named name is configured (review
+// M6: used to detect the `gh repo fork --clone` layout, where "upstream" is
+// the parent repository and "origin" is the fork).
+func remoteExists(ctx context.Context, workTree, name string) bool {
+	_, err := runGit(ctx, workTree, sanitizedEnv(), "remote", "get-url", name)
+	return err == nil
 }
 
 // remoteOwner extracts the "owner" segment from a GitHub remote URL (any of
