@@ -214,6 +214,87 @@ func TestListEventsForInitiativeScoping(t *testing.T) {
 	}
 }
 
+// TestListEventsForInitiativeCoversEveryAggregateType pins M2, review fix:
+// requirements.superseded and assertions.superseded record their bulk event
+// with aggregate_id = the INITIATIVE id (not any one requirement/assertion
+// row), so the per-row subquery alone never matched it; and
+// verification_evidence, stale_item, context_doc and doc_comment events were
+// not covered by any clause at all. Every one of them must now come back,
+// still correctly scoped to the initiative that owns it.
+func TestListEventsForInitiativeCoversEveryAggregateType(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	other := &domain.Initiative{Title: "other", Description: "o"}
+	if err := db.CreateInitiative(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+
+	req := &domain.Requirement{InitiativeID: ini.ID, Code: "REQ-1", Statement: "s", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeRequirements(ctx, ini.ID, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	assertion := &domain.Assertion{InitiativeID: ini.ID, Type: domain.AssertionFact, Statement: "s"}
+	if err := db.CreateAssertion(ctx, assertion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeAssertions(ctx, ini.ID, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	ev := &domain.VerificationEvidence{
+		InitiativeID: ini.ID, RequirementID: req.ID, CriterionKey: domain.CriterionKey(req.ID, 0),
+		Kind: domain.VerificationAcceptance, Status: domain.VerificationPass, VerifiedBy: HumanActor,
+	}
+	if err := db.CreateVerificationEvidence(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	doc := &domain.ContextDoc{InitiativeID: ini.ID, Kind: "prd", Title: "t", Digest: "d", Format: "text"}
+	if err := db.CreateContextDoc(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	comment := &domain.DocComment{InitiativeID: ini.ID, ArtifactVersionID: "v1", Text: "note"}
+	if err := db.CreateDocComment(ctx, comment); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := db.ListEventsForInitiative(ctx, ini.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, e := range events {
+		seen[e.EventType] = true
+	}
+	for _, want := range []string{
+		"requirements.superseded", "assertions.superseded",
+		"verification_evidence.created", "context_doc.created", "doc_comment.created",
+	} {
+		if !seen[want] {
+			t.Errorf("missing %q in the initiative's scoped event list: %+v", want, events)
+		}
+	}
+
+	// None of it leaks to a different initiative.
+	otherEvents, err := db.ListEventsForInitiative(ctx, other.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range otherEvents {
+		if seen[e.EventType] && (e.EventType == "requirements.superseded" || e.EventType == "assertions.superseded" ||
+			e.EventType == "verification_evidence.created" || e.EventType == "context_doc.created" || e.EventType == "doc_comment.created") {
+			t.Errorf("a different initiative's scoped event list leaked %q: %+v", e.EventType, e)
+		}
+	}
+}
+
 // TestSetOperationStage pins C3's stage callback: it updates the RUNNING
 // operation for an initiative, and is a harmless no-op when there is none.
 func TestSetOperationStage(t *testing.T) {

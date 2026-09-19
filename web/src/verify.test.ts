@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allEvidencePassed,
+  confirmableRequirementCodes,
   evidenceSummary,
   hasBuiltSomething,
   hasConfirmableEvidence,
@@ -136,17 +137,17 @@ describe("evidenceSummary (task 7)", () => {
   });
 });
 
-describe("hasConfirmableEvidence (task 7)", () => {
-  it("is true when an active requirement has all-passing evidence", () => {
+describe("hasConfirmableEvidence (task 7 / C3, H4)", () => {
+  it("is true when an approved requirement has all-passing evidence", () => {
     expect(
       hasConfirmableEvidence([
-        { status: "pending", evidence_tests: [{ name: "test_a", status: "passed" }] },
+        { status: "approved", evidence_tests: [{ name: "test_a", status: "passed" }] },
       ]),
     ).toBe(true);
   });
 
   it("is false when nothing has evidence", () => {
-    expect(hasConfirmableEvidence([{ status: "pending" }])).toBe(false);
+    expect(hasConfirmableEvidence([{ status: "approved" }])).toBe(false);
   });
 
   it("is false when the only confirmable requirement is already verified", () => {
@@ -166,11 +167,23 @@ describe("hasConfirmableEvidence (task 7)", () => {
     ).toBe(false);
   });
 
+  // H4: the queue (and this button) used to also offer draft/failed
+  // requirements -- the backend never confirms them, so offering to do so
+  // was a lie the click would silently no-op on.
+  it("is false for draft or failed requirements, even with all-passing evidence", () => {
+    expect(
+      hasConfirmableEvidence([
+        { status: "draft", evidence_tests: [{ name: "test_a", status: "passed" }] },
+        { status: "failed", evidence_tests: [{ name: "test_b", status: "passed" }] },
+      ]),
+    ).toBe(false);
+  });
+
   it("is false when evidence exists but not all of it passed", () => {
     expect(
       hasConfirmableEvidence([
         {
-          status: "pending",
+          status: "approved",
           evidence_tests: [
             { name: "test_a", status: "passed" },
             { name: "test_b", status: "failed" },
@@ -178,5 +191,22 @@ describe("hasConfirmableEvidence (task 7)", () => {
         },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("confirmableRequirementCodes (H1)", () => {
+  it("lists only the approved, all-passing requirements' codes", () => {
+    expect(
+      confirmableRequirementCodes([
+        { code: "REQ-1", status: "approved", evidence_tests: [{ name: "a", status: "passed" }] },
+        { code: "REQ-2", status: "approved", evidence_tests: [{ name: "b", status: "failed" }] },
+        { code: "REQ-3", status: "verified", evidence_tests: [{ name: "c", status: "passed" }] },
+        { code: "REQ-4", status: "draft", evidence_tests: [{ name: "d", status: "passed" }] },
+      ]),
+    ).toEqual(["REQ-1"]);
+  });
+
+  it("is empty when nothing is confirmable", () => {
+    expect(confirmableRequirementCodes([{ code: "REQ-1", status: "draft" }])).toEqual([]);
   });
 });

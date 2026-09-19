@@ -281,8 +281,19 @@ export default function App() {
   // render or poll -- ProductHome reads the PREVIOUS value before this
   // effect ever runs, since it can only be on Home while currentInitiativeId
   // is empty.
+  //
+  // M7, review fix: ALSO stamps again on cleanup (leaving this initiative,
+  // whether by navigating away or unmounting), with a fresh timestamp. The
+  // entry-only stamp meant everything that happened DURING a visit -- the
+  // user's own actions, a run finishing while they watched -- still counted
+  // as "new" the next time they came back, because the stored cursor was
+  // frozen at the moment they walked in. Leaving updates it to "everything
+  // up to when I looked away", so only what happened after that shows next.
   useEffect(() => {
     if (currentInitiativeId) setLastVisit(currentInitiativeId, new Date().toISOString());
+    return () => {
+      if (currentInitiativeId) setLastVisit(currentInitiativeId, new Date().toISOString());
+    };
   }, [currentInitiativeId]);
 
   // Poll for freshness (SSE live-update arrives with the running-state work).

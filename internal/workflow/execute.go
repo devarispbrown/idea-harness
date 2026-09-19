@@ -1338,13 +1338,24 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// A "tests" check run as a literal `go test` invocation is re-run with
+	// `-json` appended (C1/C2, review fix): `go test`'s own test2json stream
+	// gives an exact Package/Test identity per result instead of one scraped
+	// from `-v` text, which is what let two same-named tests in different
+	// packages collide. Build keeps its own command untouched -- this is
+	// scoped to the tests evidence path only.
+	runCmd := cmd
+	if category == "tests" && isGoTestCommand(cmd) {
+		runCmd = cmd + " -json"
+	}
+
 	// Run inside an isolated container (no network, read-only root, dropped
 	// capabilities) with only the work root mounted.
 	sandbox := executor.NewContainerSandbox(image)
 	stdout, stderr, exitCode, runErr := sandbox.Run(checkCtx, executor.RunOptions{
 		WorkRoot: workRoot,
 		RepoRoot: e.workspaceRoot, // read-only /repo mount so checks can read the real project
-		Cmd:      []string{"sh", "-c", cmd},
+		Cmd:      []string{"sh", "-c", runCmd},
 	})
 	// imagePrefix shows the image every non-skipped finding below carries
 	// (review C5: "show the derived image in the check finding"), and notes
@@ -1366,15 +1377,25 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 		return base
 	}
 	out := stdout + stderr
+	// cap is the byte cap applied to this check's stored evidence. "tests"
+	// gets a far larger cap than the general 2000 bytes (review C1 fix:
+	// "parse before truncating output" -- truncating a real suite's output
+	// at 2000 bytes silently dropped tests the plan named, which
+	// confirm_passing_tests then read as "never ran" rather than "failed").
+	// Build and every other check keep the original, tighter cap.
+	outputCap := 2000
+	if category == "tests" {
+		outputCap = testsOutputCap
+	}
 	if exitCode != 0 {
 		base.Severity = domain.SeverityHigh
 		base.Finding = description + " — FAIL"
 		base.Disposition = domain.DispositionRejected // review M5: a rejected change set's findings are closed, not left open
 		if checkCtx.Err() == context.DeadlineExceeded {
-			base.Evidence = imagePrefix + fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutput(out))
+			base.Evidence = imagePrefix + fmt.Sprintf("timed out after %s\n%s", timeout, truncateOutputN(out, outputCap))
 			base.Recommendation = "the " + category + " command hung; fix it or raise check_timeout_seconds"
 		} else {
-			base.Evidence = imagePrefix + fmt.Sprintf("exit code %d\n%s", exitCode, truncateOutput(out))
+			base.Evidence = imagePrefix + fmt.Sprintf("exit code %d\n%s", exitCode, truncateOutputN(out, outputCap))
 			base.Recommendation = "fix the failure and re-execute"
 		}
 		base.Impact = "deterministic check failed"
@@ -1382,15 +1403,35 @@ func (e *Engine) checkCommand(ctx context.Context, cs *domain.ChangeSet, workRoo
 	}
 	base.Severity = domain.SeverityObservation
 	base.Finding = description + " — pass"
-	base.Evidence = imagePrefix + truncateOutput(out)
+	base.Evidence = imagePrefix + truncateOutputN(out, outputCap)
 	base.Impact = "deterministic check passed"
 	return base
 }
 
-// truncateOutput caps command output for findings.
+// testsOutputCap is the byte cap for a "tests" check's stored evidence --
+// see the comment above its use in checkCommand.
+const testsOutputCap = 2 << 20 // 2 MiB
+
+// isGoTestCommand reports whether cmd is a literal `go test ...` invocation
+// (its first two whitespace-separated fields), the case checkCommand
+// appends `-json` for (review C1/C2 fix). A wrapper script or a different
+// test runner that merely contains the substring "go test" elsewhere is
+// deliberately not matched.
+func isGoTestCommand(cmd string) bool {
+	fields := strings.Fields(cmd)
+	return len(fields) >= 2 && fields[0] == "go" && fields[1] == "test"
+}
+
+// truncateOutput caps command output for findings at the general 2000-byte
+// limit.
 func truncateOutput(s string) string {
-	if len(s) > 2000 {
-		return s[:2000] + "…"
+	return truncateOutputN(s, 2000)
+}
+
+// truncateOutputN is truncateOutput with an explicit cap.
+func truncateOutputN(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
 	}
 	return s
 }

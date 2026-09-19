@@ -327,3 +327,49 @@ func TestMarkSeenHandler(t *testing.T) {
 		t.Fatalf("read cursor = %d, want 1", seq)
 	}
 }
+
+// TestMarkSeenIsPerInitiative pins M1, review fix: marking one initiative
+// seen (via initiative_id) must never advance another initiative's own
+// cursor -- the bug was a single project-wide "ui" cursor shared by every
+// initiative's What Changed, so acknowledging initiative A's changes hid
+// initiative B's still-unseen ones.
+func TestMarkSeenIsPerInitiative(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniA := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iniB := &domain.Initiative{Title: "b", Description: "b"}
+	if err := pr.db.CreateInitiative(t.Context(), iniB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark iniA seen through a high sequence number.
+	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects/"+projectID+"/seen", token, "",
+		`{"through":1000000,"initiative_id":"`+iniA+`"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mark seen: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	seqA, err := pr.db.GetReadCursor(t.Context(), "ui:"+iniA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// GetReadCursor returns 0, nil for a scope with no row at all -- that
+	// (not an error) is what "untouched" looks like here.
+	if seqB, err := pr.db.GetReadCursor(t.Context(), "ui:"+iniB.ID); err != nil || seqB != 0 {
+		t.Fatalf("iniB's cursor = %d, err = %v; want 0, nil -- marking iniA seen must not create or advance one", seqB, err)
+	}
+	if seqProject, err := pr.db.GetReadCursor(t.Context(), "ui"); err != nil || seqProject != 0 {
+		t.Fatalf("project-wide \"ui\" cursor = %d, err = %v; want 0, nil -- untouched by an initiative-scoped mark-seen call", seqProject, err)
+	}
+	maxSeq, err := pr.db.MaxEventSeq(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seqA != maxSeq {
+		t.Fatalf("iniA's cursor = %d, want clamped to the max existing seq %d", seqA, maxSeq)
+	}
+}

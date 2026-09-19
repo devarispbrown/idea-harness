@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -10,38 +11,169 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
-// TestResult is one parsed test outcome, keyed by name (C2, wave 3 contract).
+// TestResult is one parsed test outcome (C2, wave 3 contract). Package is a
+// best-effort grouping key (a Go import path, from `go test -json`'s own
+// Package field or a `-v` output's trailing "ok/FAIL <pkg>" summary line) --
+// "" when the format carries no such notion (TAP, pytest, jest). It
+// disambiguates two same-named tests in different packages; the exposed
+// evidence (domain.EvidenceTest) never carries it, only Name.
 type TestResult struct {
-	Name   string
-	Status string // "passed" | "failed"
+	Package string
+	Name    string
+	Status  string // "passed" | "failed"
 }
 
 var (
-	tapLine     = regexp.MustCompile(`^\s*(not ok|ok)\s+\d+\s*(?:-\s*)?(.+?)\s*(#.*)?$`)
-	goTestLine  = regexp.MustCompile(`^\s*--- (PASS|FAIL): (\S+)`)
-	pytestLine  = regexp.MustCompile(`^(\S+)\s+(PASSED|FAILED)\b`)
-	jestLine    = regexp.MustCompile(`^\s*[✓✔✗✕✘]\s+(.+?)(?:\s*\(\d+(?:\.\d+)?\s*m?s\))?\s*$`)
-	jestFailSet = map[rune]bool{'✗': true, '✕': true, '✘': true}
+	tapLine = regexp.MustCompile(`^\s*(not ok|ok)\s+(\d+)(?:\s+(.*))?$`)
+	// tapDirective recognizes a trailing TAP directive ("# SKIP ...", "# TODO
+	// ..."), stripped from the test's name. Anything else after a '#' is part
+	// of the name (review Low fix: "a TAP name containing # gets truncated").
+	tapDirective = regexp.MustCompile(`(?i)\s*#\s*(SKIP|TODO)\b.*$`)
+	goRunLine    = regexp.MustCompile(`^===\s+RUN\s+(\S+)`)
+	goTestLine   = regexp.MustCompile(`^\s*--- (PASS|FAIL): (\S+)`)
+	// goPkgSummary matches `go test`'s own per-package trailer ("ok
+	// <pkg> <time>" / "FAIL <pkg> <time>"), used only to learn which package
+	// the preceding --- PASS/FAIL lines belonged to; it is never itself
+	// recorded as a result.
+	goPkgSummary = regexp.MustCompile(`^(ok|FAIL)\s+(\S+)\s`)
+	pytestLine   = regexp.MustCompile(`^(\S+)\s+(PASSED|FAILED|ERROR)\b`)
+	jestLine     = regexp.MustCompile(`^\s*[✓✔✗✕✘]\s+(.+?)(?:\s*\(\d+(?:\.\d+)?\s*m?s\))?\s*$`)
+	jestFailSet  = map[rune]bool{'✗': true, '✕': true, '✘': true}
 )
 
 // ParseTestOutput parses a test check's raw console output into per-test
-// results, best-effort (C2, wave 3 contract): node --test's TAP output, `go
-// test -v`, `pytest -v`, and jest-style ✓/✗ lines. Unrecognized lines are
-// ignored. A test name that appears more than once keeps its LAST result (a
-// rerun or a later summary line wins over an earlier one).
+// results, best-effort (C2, wave 3 contract). Two shapes are understood:
+//
+//   - `go test -json`'s newline-delimited JSON event stream (detected when
+//     the first non-blank line looks like a JSON object) -- preferred
+//     whenever the check command can produce it (see execute.go's
+//     checkCommand), because it carries an exact Package/Test identity
+//     instead of one scraped from text.
+//   - Free text: node --test's TAP output, `go test -v`, `pytest -v`, and
+//     jest-style ✓/✗ lines. Unrecognized lines are ignored.
+//
+// A test name that appears more than once (a genuine rerun, a name reused
+// across packages, or an agent's own test printing a line that mimics the
+// format) keeps its most severe outcome: any "failed" observation for a key
+// is sticky and can never be overwritten back to "passed" by a later line,
+// in either format (C2: "an agent-printed fake --- PASS cannot flip a real
+// FAIL").
 func ParseTestOutput(output string) []TestResult {
-	byName := map[string]string{}
-	order := make([]string, 0)
-	record := func(name, status string) {
+	if looksLikeGoTestJSON(output) {
+		return parseGoTestJSON(output)
+	}
+	return parseTestOutputText(output)
+}
+
+// looksLikeGoTestJSON reports whether output is (or starts as) a `go test
+// -json` event stream: its first non-blank line is a JSON object.
+func looksLikeGoTestJSON(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return strings.HasPrefix(line, "{")
+	}
+	return false
+}
+
+// goTestEvent is one line of `go test -json`'s test2json event stream. Only
+// the fields ParseTestOutput needs are kept.
+type goTestEvent struct {
+	Action  string `json:"Action"`
+	Package string `json:"Package"`
+	Test    string `json:"Test"`
+}
+
+// parseGoTestJSON parses a `go test -json` stream: only "pass"/"fail" events
+// naming a specific Test count as a result (a package-level pass/fail with no
+// Test, or any "run"/"output"/"start"/"pause"/"cont" event, is ignored) --
+// nothing here is inferred from an "output" event's free-text payload, so
+// text an agent's own test prints to stdout cannot forge an event that never
+// happened the way it could scraping `-v` text directly.
+func parseGoTestJSON(output string) []TestResult {
+	type key struct{ pkg, name string }
+	byKey := map[key]string{}
+	order := make([]key, 0)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev goTestEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		if ev.Test == "" {
+			continue
+		}
+		var status string
+		switch ev.Action {
+		case "pass":
+			status = "passed"
+		case "fail":
+			status = "failed"
+		default:
+			continue
+		}
+		k := key{ev.Package, ev.Test}
+		prev, ok := byKey[k]
+		if !ok {
+			order = append(order, k)
+			byKey[k] = status
+			continue
+		}
+		if prev != "failed" && status == "failed" {
+			byKey[k] = "failed"
+		}
+	}
+	out := make([]TestResult, 0, len(order))
+	for _, k := range order {
+		out = append(out, TestResult{Package: k.pkg, Name: k.name, Status: byKey[k]})
+	}
+	return out
+}
+
+// parseTestOutputText parses the free-text formats (TAP, `go test -v`,
+// pytest, jest). Go results are held in `pending` until a package boundary
+// (a summary "ok"/"FAIL <pkg>" line) or end of input assigns them a package;
+// a plain non-verbose `go test` run (no `=== RUN` markers, no per-package
+// trailer visible in the captured slice) still works, just with an empty
+// package.
+func parseTestOutputText(output string) []TestResult {
+	type key struct{ pkg, name string }
+	byKey := map[key]string{}
+	order := make([]key, 0)
+	upsert := func(pkg, name, status string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return
 		}
-		if _, ok := byName[name]; !ok {
-			order = append(order, name)
+		k := key{pkg, name}
+		prev, ok := byKey[k]
+		if !ok {
+			order = append(order, k)
+			byKey[k] = status
+			return
 		}
-		byName[name] = status
+		if prev != "failed" && status == "failed" {
+			byKey[k] = "failed" // sticky fail (C2 fix): never overwritten back to passed
+		}
 	}
+
+	type pendingResult struct{ name, status string }
+	pending := make([]pendingResult, 0)
+	flushPending := func(pkg string) {
+		for _, p := range pending {
+			upsert(pkg, p.name, p.status)
+		}
+		pending = pending[:0]
+	}
+
+	ranTests := map[string]bool{}
+	sawAnyRun := false
+
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimRight(line, "\r")
 		trimmed := strings.TrimSpace(line)
@@ -51,28 +183,52 @@ func ParseTestOutput(output string) []TestResult {
 		switch {
 		case tapLine.MatchString(line):
 			m := tapLine.FindStringSubmatch(line)
-			if strings.Contains(strings.ToUpper(m[3]), "SKIP") {
-				continue
+			desc := strings.TrimSpace(m[3])
+			desc = strings.TrimPrefix(desc, "- ")
+			if loc := tapDirective.FindStringIndex(desc); loc != nil {
+				if strings.Contains(strings.ToUpper(desc[loc[0]:]), "SKIP") {
+					continue // a SKIP directive is neither a pass nor a fail
+				}
+				desc = strings.TrimSpace(desc[:loc[0]])
 			}
 			status := "passed"
 			if m[1] == "not ok" {
 				status = "failed"
 			}
-			record(m[2], status)
+			upsert("", desc, status)
+		case goRunLine.MatchString(line):
+			m := goRunLine.FindStringSubmatch(line)
+			sawAnyRun = true
+			ranTests[strings.TrimSpace(m[1])] = true
+		case goPkgSummary.MatchString(trimmed):
+			m := goPkgSummary.FindStringSubmatch(trimmed)
+			flushPending(m[2])
 		case goTestLine.MatchString(line):
 			m := goTestLine.FindStringSubmatch(line)
+			name := m[2]
+			// Once real `=== RUN` markers are present (verbose mode), a
+			// result for a name whose own start marker never appeared is
+			// suspect -- e.g. a running test printing a fabricated
+			// "--- PASS: SomeOtherTest" line of its own (C2 fix). A
+			// non-verbose run (no markers at all, Go's own default for a
+			// passing suite) is left alone: sawAnyRun stays false, so real
+			// failures are never dropped for lacking a marker that
+			// non-verbose output never prints for anyone.
+			if sawAnyRun && !ranTests[name] {
+				continue
+			}
 			status := "passed"
 			if m[1] == "FAIL" {
 				status = "failed"
 			}
-			record(m[2], status)
+			pending = append(pending, pendingResult{name: name, status: status})
 		case pytestLine.MatchString(line):
 			m := pytestLine.FindStringSubmatch(line)
 			status := "passed"
-			if m[2] == "FAILED" {
-				status = "failed"
+			if m[2] != "PASSED" {
+				status = "failed" // FAILED or ERROR: never a pass (review Low fix)
 			}
-			record(m[1], status)
+			upsert("", m[1], status)
 		case jestLine.MatchString(line):
 			r := []rune(trimmed)
 			status := "passed"
@@ -80,12 +236,14 @@ func ParseTestOutput(output string) []TestResult {
 				status = "failed"
 			}
 			m := jestLine.FindStringSubmatch(line)
-			record(m[1], status)
+			upsert("", m[1], status)
 		}
 	}
+	flushPending("") // any Go results with no trailing package summary in this slice
+
 	out := make([]TestResult, 0, len(order))
-	for _, name := range order {
-		out = append(out, TestResult{Name: name, Status: byName[name]})
+	for _, k := range order {
+		out = append(out, TestResult{Package: k.pkg, Name: k.name, Status: byKey[k]})
 	}
 	return out
 }
@@ -93,8 +251,10 @@ func ParseTestOutput(output string) []TestResult {
 // hookTestsLine recovers a verification hook's requirement ref and named
 // tests from renderVerificationPlan's rendered markdown
 // ("- **REQ-3** → check (evidence) [tests: a, b]") -- the artifact's only
-// persisted form; the raw model JSON is not kept (see render.go).
-var hookTestsLine = regexp.MustCompile(`^-\s+\*\*(.+?)\*\*.*\[tests:\s*(.+?)\]`)
+// persisted form; the raw model JSON is not kept (see render.go). The tests
+// capture is greedy and anchored to the end of the line, so a name
+// containing "]" is not cut at its first bracket (review Low fix).
+var hookTestsLine = regexp.MustCompile(`^-\s+\*\*(.+?)\*\*.*\[tests:\s*(.+)\]\s*$`)
 
 // mappedTestsByRequirement parses the initiative's latest verification_plan
 // artifact for each hook's named tests, keyed by normalized requirement ref.
@@ -149,11 +309,65 @@ func normalizeRequirementCode(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
 }
 
+// eligibleChangeSets returns the change set ids whose test-check evidence may
+// count toward any requirement (C1, review fix): the latest change set of
+// each task, and only when that change set is applied and not reverted (a
+// status other than "applied" -- rejected, reverted, superseded, still
+// running -- means the task's most current attempt has nothing landed, so an
+// EARLIER applied attempt for the same task must not resurrect old evidence
+// either). A change set with no task id (never expected, but never trusted)
+// is its own singleton group rather than merged with every other taskless
+// row.
+func eligibleChangeSets(changeSets []domain.ChangeSet) map[string]bool {
+	type latest struct {
+		cs  domain.ChangeSet
+		set bool
+	}
+	byTask := map[string]latest{}
+	for _, cs := range changeSets {
+		key := cs.TaskID
+		if key == "" {
+			key = "cs:" + cs.ID
+		}
+		// ListChangeSets orders by created_at ASC with no secondary key, so
+		// two change sets created in the same millisecond tie on CreatedAt
+		// alone; `!Before` rather than strict `After` makes the later one in
+		// iteration order (the actual later attempt) win the tie.
+		cur := byTask[key]
+		if !cur.set || !cs.CreatedAt.Before(cur.cs.CreatedAt) {
+			byTask[key] = latest{cs: cs, set: true}
+		}
+	}
+	out := map[string]bool{}
+	for _, l := range byTask {
+		if l.cs.Status == domain.ChangeSetApplied {
+			out[l.cs.ID] = true
+		}
+	}
+	return out
+}
+
+// requirementCodePattern caches a per-code, word-boundary regexp for the
+// fallback name match below (review C1 fix: a plain substring let REQ-1 pick
+// up REQ-10..REQ-19's tests).
+func requirementCodePattern(code string) *regexp.Regexp {
+	return regexp.MustCompile(`\b` + regexp.QuoteMeta(code) + `\b`)
+}
+
 // ComputeEvidenceTests maps each of an initiative's requirements to the
 // test-run evidence that covers it (C2, wave 3 contract): tests named for its
 // code in the verification plan's hooks, or else any parsed test whose name
-// contains the requirement's code, resolved against the most recent parsed
-// result for that test name across the initiative's change sets.
+// contains the requirement's code on a word boundary, resolved against the
+// most recent parsed result for that test name among the initiative's
+// ELIGIBLE change sets (eligibleChangeSets) -- never a rejected, reverted, or
+// task-superseded attempt, and never a check that did not itself exit 0
+// (Disposition == DispositionRejected covers a non-zero exit, a timeout, and
+// a sandbox that could not launch; only those three write a "tests" finding
+// without an observation-level pass, so this predicate is exact, not
+// heuristic). A test the plan names that is missing from that finding's
+// parsed output counts as failed, never as silently absent (C1 fix: a plan
+// naming [TestA, TestB] where only TestA's line survived must not read as
+// "both passed").
 func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, initiativeID string) (map[string][]domain.EvidenceTest, error) {
 	requirements, err := db.ListRequirements(ctx, initiativeID)
 	if err != nil {
@@ -163,30 +377,62 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 	if err != nil {
 		return nil, err
 	}
+	eligible := eligibleChangeSets(changeSets)
 
-	// Most recent parsed result per test name, oldest change set first so a
-	// later one overwrites an earlier one for the same name.
+	// Most recent parsed result per test name, oldest eligible change set
+	// first so a later one overwrites an earlier one for the same name --
+	// except a sticky fail, which no later pass can overwrite (C2 fix).
 	type resultRef struct {
 		status    string
 		changeSet string
 	}
 	byName := map[string]resultRef{}
 	allNames := make([]string, 0)
+	record := func(name, status, changeSet string) {
+		if prev, ok := byName[name]; ok {
+			if prev.status == "failed" {
+				return // sticky fail
+			}
+		} else {
+			allNames = append(allNames, name)
+		}
+		byName[name] = resultRef{status: status, changeSet: changeSet}
+	}
 	for _, cs := range changeSets {
+		if !eligible[cs.ID] {
+			continue
+		}
 		findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range findings {
+		// The latest "tests" finding for this change set (execute.go appends
+		// at most one per run, but "latest" is the documented rule -- C1).
+		var latestTests *domain.Finding
+		for i := range findings {
+			f := &findings[i]
 			if f.Category != "tests" {
 				continue
 			}
-			for _, r := range ParseTestOutput(f.Evidence) {
-				if _, ok := byName[r.Name]; !ok {
-					allNames = append(allNames, r.Name)
-				}
-				byName[r.Name] = resultRef{status: r.Status, changeSet: cs.HumanID}
+			if latestTests == nil || f.CreatedAt.After(latestTests.CreatedAt) {
+				latestTests = f
 			}
+		}
+		if latestTests == nil {
+			continue
+		}
+		// Only a check that itself exited 0 contributes a pass (C1/C2: "a
+		// check run that exited non-zero -- nothing counts as passed").
+		// DispositionRejected is set exactly on a non-zero exit, a timeout,
+		// or a sandbox that never launched; every other case (a genuine
+		// pass, or "not applicable" when no test command is configured, at
+		// which point there is no test output to parse anyway) is fine to
+		// parse.
+		if latestTests.Disposition == domain.DispositionRejected {
+			continue
+		}
+		for _, r := range ParseTestOutput(latestTests.Evidence) {
+			record(r.Name, r.Status, cs.HumanID)
 		}
 	}
 
@@ -201,9 +447,14 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			continue
 		}
 		names := hookTests[normalizeRequirementCode(req.Code)]
-		if len(names) == 0 {
+		fromPlan := len(names) > 0
+		if !fromPlan {
+			if req.Code == "" {
+				continue
+			}
+			pattern := requirementCodePattern(req.Code)
 			for _, n := range allNames {
-				if req.Code != "" && strings.Contains(n, req.Code) {
+				if pattern.MatchString(n) {
 					names = append(names, n)
 				}
 			}
@@ -220,6 +471,12 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			seen[name] = true
 			r, ok := byName[name]
 			if !ok {
+				if fromPlan {
+					// The plan names this test, but no eligible check run
+					// produced it: missing is failing, never silently
+					// dropped (C1 fix).
+					evidence = append(evidence, domain.EvidenceTest{Name: name, Status: "failed"})
+				}
 				continue
 			}
 			evidence = append(evidence, domain.EvidenceTest{Name: name, Status: r.status, ChangeSet: r.changeSet})

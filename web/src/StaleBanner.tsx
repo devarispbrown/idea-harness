@@ -18,7 +18,12 @@ export default function StaleBanner({
   if (items.length === 0) return null;
 
   return (
-    <div className="w3-stale-banner" role="alert">
+    // review Low fix: role="status" (a polite, non-interrupting live
+    // region), not role="alert" -- this banner is a persistent, ongoing
+    // notice that can sit on screen through many later state changes, not a
+    // one-off urgent condition that should seize focus/announcement every
+    // time its item count changes.
+    <div className="w3-stale-banner" role="status">
       <div className="w3-stale-banner-head">
         <span>{staleBannerText(items)}</span>
         <button className="w3-stale-banner-toggle" onClick={() => setExpanded((v) => !v)}>

@@ -61,7 +61,11 @@ export default function DecisionPage({
   };
   const markSeen = async () => {
     if (changed) {
-      await post(`/projects/${projectId}/seen`, { through: changed.through });
+      // initiative_id (M1, review fix) scopes the seen cursor to this
+      // initiative -- without it, marking one initiative seen advanced a
+      // single project-wide cursor past every other initiative's own
+      // still-unseen events too.
+      await post(`/projects/${projectId}/seen`, { through: changed.through, initiative_id: initiativeId });
       await load();
     }
   };
