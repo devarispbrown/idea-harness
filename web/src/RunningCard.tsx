@@ -5,7 +5,7 @@ import {
   type NextTask,
   type PartialWork,
   resolveRunningTask,
-  runningTitle,
+  stageOrTitle,
   stoppedMessage,
 } from "./buildLogic";
 import { shouldStickToBottom } from "./agentOutput";
@@ -23,6 +23,10 @@ interface Operation {
   task_id?: string;
   task_human_id?: string;
   task_title?: string;
+  // stage (task 8, C3 wire contract): the step running now, e.g. "Writing
+  // the PRD", "Reviewing the plan, cycle 2", "Agent running TASK-2" --
+  // optional so this still works against a daemon that hasn't shipped it.
+  stage?: string;
 }
 
 const OP_LABEL: Record<string, string> = {
@@ -265,7 +269,7 @@ export default function RunningCard({
       <div className="running-row">
         <span className="pill-spinner" aria-hidden="true" />
         <div className="running-body">
-          <div className="running-title">{runningTitle(op.type, OP_LABEL, task)}</div>
+          <div className="running-title">{stageOrTitle(op.stage, op.type, OP_LABEL, task)}</div>
           <div className="running-sub" aria-hidden="true">
             Running for {fmtElapsed(now - Date.parse(op.created_at))} · you can leave this page
           </div>

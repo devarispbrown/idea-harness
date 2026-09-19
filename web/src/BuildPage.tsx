@@ -3,23 +3,33 @@ import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import {
+  advisoryBacklogLabel,
   appliedOutcomeLabel,
   approveErrorMessage,
   buildFailure,
   buildHeaderMeta,
+  canOverrideSecret,
   conflictCause,
   sortFindingsForCard,
   diffChangeTypeLabel,
   errMessage,
+  executeRequestBody,
   findingCategoryLabel,
+  gitPrErrorMessage,
   hasNoFilesChanged,
   isOperationInFlight,
   isWholeFileRewrite,
   noDiffMessage,
+  notASecretConfirmCopy,
+  partitionAdvisory,
   patchLines,
+  prOverallLabel,
+  prOverallState,
+  revertRefusalMessage,
   runButtonState,
   type NextTask,
   type PartialWork,
+  type PRChecksResultLike,
 } from "./buildLogic";
 
 interface Task {
@@ -46,6 +56,13 @@ interface ChangeSet {
   // made this change set. The running card showed it live and disappeared
   // with it when the run finished.
   agent_output?: string;
+  // git_commit_warning (review C4, task 3): set instead of a commit sha when
+  // git_commit is on but the commit-on-apply guard refused (detached HEAD, a
+  // rebase/merge/cherry-pick in progress, or the default branch without
+  // git.allow_default_branch). The change set still applied; only the commit
+  // was skipped. Absent from a daemon that hasn't shipped it, or when
+  // nothing was skipped.
+  git_commit_warning?: string;
 }
 interface Finding {
   id: string;
@@ -58,6 +75,21 @@ interface Finding {
   code?: string;
   target_type: string;
   target_id: string;
+  // Secret-sweep fields (review H3, task 1) -- set only on a secret_sweep
+  // finding raised from a per-file credential match. Optional so a finding
+  // from an older daemon, or of any other category, renders exactly as
+  // before.
+  secret_path?: string;
+  secret_kind?: string;
+  secret_preview?: string;
+  secret_overridable?: boolean;
+  // advisory (review B1/B2, task 2): never blocks approval, whatever the
+  // severity. path/in_diff are the self-report that can produce it; the page
+  // only needs `advisory` itself to decide where a finding renders.
+  advisory?: boolean;
+  path?: string;
+  in_diff?: boolean;
+  note?: string;
 }
 interface DiffFile {
   path: string;
@@ -88,6 +120,13 @@ interface Initiative {
   // from, straight off guidance -- omitted (never null) when nothing is
   // kept, the same "omit rather than emit null" contract as next_task.
   partial_work?: PartialWork;
+  // git_branch / pr_url (review C4 piece 3, task 3): the initiative's
+  // dedicated branch, set on first apply once git.branch_per_initiative is
+  // on, and the PR url once `idea pr` / POST .../pr has opened one. Both
+  // optional -- absent whatever the setting says before that first apply,
+  // or before a PR has been opened.
+  git_branch?: string;
+  pr_url?: string;
 }
 interface Operation {
   id: string;
@@ -145,6 +184,25 @@ export default function BuildPage({
   // silencing any other change set's card.
   const [csBusy, setCsBusy] = useState<Record<string, string>>({});
   const [csError, setCsError] = useState<Record<string, string>>({});
+  // runNote (task 5, D-a): the optional "Note to the agent" appended to the
+  // next execute's brief. One shared field -- the Run/Continue button, a
+  // denied change set's "Run the task again", and a rejected change set's
+  // "Run the task again" all start the SAME next task, so they share the
+  // same note rather than each keeping (and losing sync with) its own.
+  const [runNote, setRunNote] = useState("");
+  // Secret-sweep override state (task 1), keyed by finding id: `confirming`
+  // shows the explanation before the disposition is posted; `busy`/`error`
+  // guard the POST itself; `done` switches the card to "Run the task again"
+  // once the disposition is recorded.
+  const [secretConfirming, setSecretConfirming] = useState<Record<string, boolean>>({});
+  const [secretBusy, setSecretBusy] = useState<Record<string, boolean>>({});
+  const [secretError, setSecretError] = useState<Record<string, string>>({});
+  const [secretDone, setSecretDone] = useState<Record<string, boolean>>({});
+  // Git / PR state (task 3).
+  const [prBusy, setPrBusy] = useState(false);
+  const [prError, setPrError] = useState("");
+  const [prChecks, setPrChecks] = useState<PRChecksResultLike | null>(null);
+  const [prChecksError, setPrChecksError] = useState("");
 
   const load = useCallback(async () => {
     const [t, c, f, ex, ini, ops, guide] = await Promise.all([
@@ -177,6 +235,27 @@ export default function BuildPage({
         : null,
     );
     setOperations(ops ?? []);
+    // The PR's CI status (task 3) is only meaningful once a PR exists AND
+    // there is a change set to ask through (every change set of the
+    // initiative shares the same PR/result, per the contract) -- a 409 ("no
+    // gh" or "no PR yet") is expected rather than an error worth surfacing
+    // loudly every poll, so it's kept but shown quietly.
+    const anyChangeSet = c?.[0]?.id;
+    if (ini?.pr_url && anyChangeSet) {
+      try {
+        const checks = await get<PRChecksResultLike>(
+          `/projects/${projectId}/change-sets/${anyChangeSet}/pr-checks`,
+        );
+        setPrChecks(checks);
+        setPrChecksError("");
+      } catch (e) {
+        setPrChecks(null);
+        setPrChecksError(gitPrErrorMessage(errMessage(e)));
+      }
+    } else {
+      setPrChecks(null);
+      setPrChecksError("");
+    }
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -191,16 +270,22 @@ export default function BuildPage({
   // change set's own inline error, and always reloads after. Before this,
   // apply/revert/resolve had no try/catch at all -- a failure was a silent
   // dead click (E2).
-  const runAction = async (cs: ChangeSet, action: string, fn: () => Promise<void>) => {
+  const runAction = async (
+    cs: ChangeSet,
+    action: string,
+    fn: () => Promise<void>,
+    // formatError lets a caller pick the right rewrite for its own 409s --
+    // revert's refusal (task 4) already names files and advice and just
+    // needs the CLI-oriented prefix stripped, which is not what
+    // approveErrorMessage's "approval blocked" pattern is for.
+    formatError: (raw: string) => string = approveErrorMessage,
+  ) => {
     setCsBusy((b) => ({ ...b, [cs.id]: action }));
     setCsError((e) => ({ ...e, [cs.id]: "" }));
     try {
       await fn();
     } catch (e) {
-      // approveErrorMessage rewrites the workflow engine's raw "approval
-      // blocked: open HIGH finding: ..." refusal into plain language
-      // pointing at the finding -- it's a no-op for any other message.
-      setCsError((prev) => ({ ...prev, [cs.id]: approveErrorMessage(errMessage(e)) }));
+      setCsError((prev) => ({ ...prev, [cs.id]: formatError(errMessage(e)) }));
     } finally {
       setCsBusy((b) => {
         const next = { ...b };
@@ -230,10 +315,17 @@ export default function BuildPage({
       await post(`/projects/${projectId}/change-sets/${cs.id}/apply`, {});
     });
   const revert = (cs: ChangeSet) =>
-    runAction(cs, "revert", async () => {
-      await post(`/projects/${projectId}/change-sets/${cs.id}/revert`, {});
-      setRevertTarget(null);
-    });
+    runAction(
+      cs,
+      "revert",
+      async () => {
+        await post(`/projects/${projectId}/change-sets/${cs.id}/revert`, {});
+        setRevertTarget(null);
+      },
+      // task 4: the 409 already names the files and the advice -- just read
+      // it, don't run it through the "approval blocked" rewrite.
+      revertRefusalMessage,
+    );
   const resolveConflict = (cs: ChangeSet, resolution: string) =>
     runAction(cs, `resolve-${resolution}`, async () => {
       await post(`/projects/${projectId}/change-sets/${cs.id}/resolve-conflict`, { resolution });
@@ -257,8 +349,14 @@ export default function BuildPage({
     try {
       // One request: the daemon discards the kept files only once the run
       // is accepted. Deleting first and then being refused lost them.
-      await post(`/projects/${projectId}/initiatives/${initiativeId}/execute`, discardPartial ? { fresh: true } : {});
+      // task 5: whatever is in the shared "Note to the agent" field rides
+      // along, appended to the implementer's brief.
+      await post(
+        `/projects/${projectId}/initiatives/${initiativeId}/execute`,
+        executeRequestBody(discardPartial, runNote),
+      );
       setStartedTask(initiative?.next_task?.human_id ?? "the next task");
+      setRunNote("");
     } catch (e) {
       setRunError(errMessage(e));
     } finally {
@@ -270,6 +368,47 @@ export default function BuildPage({
   // "Start over" (C3): discards the stopped run's kept files first, so the
   // task runs from a clean workspace instead of resuming.
   const startOver = () => startExecute(true);
+
+  // ---- task 1: secret denial -----------------------------------------
+
+  const confirmNotASecret = (findingId: string) =>
+    setSecretConfirming((c) => ({ ...c, [findingId]: true }));
+  const cancelNotASecret = (findingId: string) =>
+    setSecretConfirming((c) => ({ ...c, [findingId]: false }));
+
+  // postNotASecret records the disposition (task 1): allowed at that exact
+  // file from then on, and offers "Run the task again" once it lands.
+  const postNotASecret = async (findingId: string) => {
+    setSecretBusy((b) => ({ ...b, [findingId]: true }));
+    setSecretError((e) => ({ ...e, [findingId]: "" }));
+    try {
+      await post(`/projects/${projectId}/findings/${findingId}/disposition`, {
+        disposition: "not_a_secret",
+      });
+      setSecretDone((d) => ({ ...d, [findingId]: true }));
+      setSecretConfirming((c) => ({ ...c, [findingId]: false }));
+    } catch (e) {
+      setSecretError((prev) => ({ ...prev, [findingId]: errMessage(e) }));
+    } finally {
+      setSecretBusy((b) => ({ ...b, [findingId]: false }));
+      await load();
+    }
+  };
+
+  // ---- task 3: git / PR -----------------------------------------------
+
+  const createPR = async () => {
+    setPrBusy(true);
+    setPrError("");
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/pr`, {});
+    } catch (e) {
+      setPrError(gitPrErrorMessage(errMessage(e)));
+    } finally {
+      setPrBusy(false);
+      await load();
+    }
+  };
 
   const toggleDiff = async (cs: ChangeSet) => {
     if (openDiff === cs.id) {
@@ -332,6 +471,57 @@ export default function BuildPage({
         meta={buildHeaderMeta(executorName)}
       />
 
+      {/* task 3: the initiative's dedicated branch and its PR, once
+          git.branch_per_initiative has created one. Absent (not just
+          disabled) until then, and until the setting is on -- there's
+          nothing here to show a project that isn't using it. */}
+      {initiative?.git_branch && (
+        <section className="git-pr-card">
+          <div className="git-pr-row">
+            <span className="git-pr-label">Branch</span>
+            <span className="git-pr-branch">{initiative.git_branch}</span>
+            {initiative.pr_url ? (
+              <a className="git-pr-link" href={initiative.pr_url} target="_blank" rel="noreferrer">
+                View pull request ↗
+              </a>
+            ) : (
+              <button className="cs-secondary" disabled={prBusy} onClick={createPR}>
+                {prBusy ? "Opening…" : "Create PR"}
+              </button>
+            )}
+          </div>
+          {prError && <p className="error">{prError}</p>}
+          {initiative.pr_url && prChecks && (
+            <>
+              <div className={`git-pr-status pill-${prOverallState(prChecks.overall)}`}>
+                {prOverallLabel(prChecks.overall)}
+              </div>
+              {prChecks.checks.length > 0 && (
+                <ul className="git-pr-checks">
+                  {prChecks.checks.map((c) => (
+                    <li key={c.name}>
+                      <span className="git-pr-check-name">{c.name}</span>
+                      <span className="git-pr-check-state">{c.state}</span>
+                      {c.link && (
+                        <a href={c.link} target="_blank" rel="noreferrer">
+                          ↗
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+          {/* task 3: "no gh" / "no pull request yet" read as readable
+              messages, not a raw 409 -- shown quietly since it's expected
+              until the PR exists or gh is installed. */}
+          {initiative.pr_url && !prChecks && prChecksError && (
+            <p className="muted">{prChecksError}</p>
+          )}
+        </section>
+      )}
+
       {failedExecute && (
         <FailedBanner
           projectId={projectId}
@@ -339,10 +529,14 @@ export default function BuildPage({
           title="Build failed"
           reason={failedExecute.error}
           onRetry={async () => {
+            // task 5: the shared "Note to the agent" field rides along here
+            // too -- read at click time, not baked in when the banner was
+            // rendered, so a note typed after the failure appeared is used.
             const res = await post<{ operation_id: string }>(
               `/projects/${projectId}/initiatives/${initiativeId}/execute`,
-              {},
+              executeRequestBody(false, runNote),
             );
+            setRunNote("");
             return res.operation_id;
           }}
         />
@@ -371,6 +565,21 @@ export default function BuildPage({
           )}
         </div>
       )}
+      {/* task 5 (D-a): an optional note appended to the implementer's brief
+          -- shared by the Run/Continue button above and by "Run the task
+          again" on a denied or rejected change set below, since all three
+          start the same next task. */}
+      {runState.visible && !runState.disabled && (
+        <div className="run-note-row">
+          <textarea
+            className="text-input run-note-input"
+            placeholder="Note to the agent (optional) — e.g. what to try differently this time"
+            value={runNote}
+            onChange={(e) => setRunNote(e.target.value)}
+            rows={2}
+          />
+        </div>
+      )}
       {droppedPartialNote && (
         <p className="muted run-next-reason">
           The stopped run's files were not kept — {droppedPartialNote}.
@@ -381,6 +590,15 @@ export default function BuildPage({
       {changeSets.map((cs) => {
         const deny = denyFor(cs);
         if (deny) {
+          const isSecret = deny.code === "secret_sweep";
+          // task 1: the button only ever renders when the backend itself
+          // says this exact finding is eligible -- a value drawn from the
+          // project's own configured secrets refuses the disposition
+          // outright, so there is nothing to offer for it.
+          const overridable = canOverrideSecret(deny);
+          const confirming = !!secretConfirming[deny.id];
+          const busy = !!secretBusy[deny.id];
+          const done = !!secretDone[deny.id];
           return (
             <section key={cs.id} className="deny-card">
               <div className="deny-head">
@@ -391,11 +609,11 @@ export default function BuildPage({
                 <span className="deny-code">{deny.code}</span>
               </div>
               <div className="deny-desc">
-                {deny.code === "secret_sweep" ? (
+                {isSecret ? (
                   <>
                     A deterministic boundary rejected this change set. It cannot be approved or
                     applied — system deny beats human approve. If the flagged value is not really a
-                    secret, mark that finding "not a secret" to allow it, then run the task again;
+                    secret, mark it "not a secret" below to allow it, then run the task again;
                     otherwise remove it and run the task again.
                   </>
                 ) : (
@@ -405,8 +623,76 @@ export default function BuildPage({
                   </>
                 )}
               </div>
+              {/* task 1: location and kind, not just the generic evidence
+                  blob -- what the ICP journey found missing: "no location and
+                  no way through". */}
+              {isSecret && (deny.secret_path || deny.secret_kind || deny.secret_preview) && (
+                <dl className="secret-detail">
+                  {deny.secret_path && (
+                    <div className="secret-detail-row">
+                      <dt>Location</dt>
+                      <dd className="secret-detail-mono">{deny.secret_path}</dd>
+                    </div>
+                  )}
+                  {deny.secret_kind && (
+                    <div className="secret-detail-row">
+                      <dt>Kind</dt>
+                      <dd>{deny.secret_kind}</dd>
+                    </div>
+                  )}
+                  {deny.secret_preview && (
+                    <div className="secret-detail-row">
+                      <dt>Value</dt>
+                      <dd className="secret-detail-mono">{deny.secret_preview}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
               {(deny.evidence || deny.category) && (
-                <div className="deny-evidence">{deny.evidence || deny.category}</div>
+                <div className="deny-evidence">
+                  {isSecret && deny.evidence ? (
+                    <>
+                      <div className="secret-detail-label">Masked line</div>
+                      {deny.evidence}
+                    </>
+                  ) : (
+                    deny.evidence || deny.category
+                  )}
+                </div>
+              )}
+              {isSecret && overridable && !done && (
+                <div className="secret-override">
+                  {!confirming ? (
+                    <button className="cs-secondary" onClick={() => confirmNotASecret(deny.id)}>
+                      Not a secret
+                    </button>
+                  ) : (
+                    <div className="secret-confirm">
+                      <p>{notASecretConfirmCopy(deny.secret_path)}</p>
+                      <div className="secret-confirm-actions">
+                        <button className="cs-danger" disabled={busy} onClick={() => postNotASecret(deny.id)}>
+                          {busy ? "Allowing…" : "Yes, allow this value"}
+                        </button>
+                        <button className="cs-secondary" disabled={busy} onClick={() => cancelNotASecret(deny.id)}>
+                          Cancel
+                        </button>
+                      </div>
+                      {secretError[deny.id] && <p className="error">{secretError[deny.id]}</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* task 1: "Run the task again" is always the way forward from
+                  a deny card -- after a not_a_secret disposition, after
+                  manually removing the value, or for any other deny code.
+                  Hidden only while the confirm step above is open, so the
+                  two actions don't compete for the click. */}
+              {!confirming && (
+                <div className="deny-actions">
+                  <button className="cs-green" disabled={runBusy} onClick={runNext}>
+                    {runBusy ? "Starting…" : "Run the task again"}
+                  </button>
+                </div>
               )}
             </section>
           );
@@ -419,7 +705,11 @@ export default function BuildPage({
         const csFindings = findings.filter(
           (f) => f.target_type === "change_set" && f.target_id === cs.id,
         );
-        const cause = conflictCause(csFindings);
+        // task 2: advisory findings never render as blockers, whatever their
+        // severity -- conflictCause and the "blocking" list both read
+        // blockingFindings, not the unpartitioned set.
+        const { blocking: blockingFindings, advisory: advisoryFindings } = partitionAdvisory(csFindings);
+        const cause = conflictCause(blockingFindings);
         // An agent that hit a 401 (or otherwise wrote nothing) is not
         // SHIPPED just because its executor/model both look real -- an
         // agent_output finding means the diff is genuinely empty, which
@@ -446,6 +736,13 @@ export default function BuildPage({
                 {openDiff === cs.id ? "Hide diff" : "View diff"}
               </button>
             </div>
+            {/* task 3: set instead of a commit sha when git_commit is on but
+                the commit-on-apply guard refused -- the change set still
+                applied, only the commit was skipped, which is easy to miss
+                without this. */}
+            {cs.git_commit_warning && (
+              <div className="cs-git-warning">{cs.git_commit_warning}</div>
+            )}
             {openDiff === cs.id && (
               <div className="cs-files">
                 {diffFiles.length === 0 ? (
@@ -511,9 +808,13 @@ export default function BuildPage({
                 <pre className="agent-output-pre">{cs.agent_output}</pre>
               </details>
             )}
-            {csFindings.length > 0 && (
+            {/* task 2: an advisory finding (a rigor cap, evidence outside the
+                diff, or unverified self-report) never renders as a blocker --
+                it's split into its own collapsed group below, whatever its
+                severity says. */}
+            {blockingFindings.length > 0 && (
               <div className="cs-conflict-findings">
-                {sortFindingsForCard(csFindings).map((f) => (
+                {sortFindingsForCard(blockingFindings).map((f) => (
                   <div key={f.id} className={`cs-conflict-finding cs-conflict-${f.category}`}>
                     <span className="cs-conflict-cat">{findingCategoryLabel(f.category)}</span>
                     <span className="cs-conflict-text">
@@ -535,6 +836,25 @@ export default function BuildPage({
                   </div>
                 ))}
               </div>
+            )}
+            {advisoryFindings.length > 0 && (
+              <details className="cs-backlog">
+                <summary>{advisoryBacklogLabel(advisoryFindings.length)}</summary>
+                <div className="cs-conflict-findings">
+                  {advisoryFindings.map((f) => (
+                    <div key={f.id} className={`cs-conflict-finding cs-conflict-${f.category}`}>
+                      <span className="cs-conflict-cat">{findingCategoryLabel(f.category)}</span>
+                      <span className="cs-conflict-text">
+                        {f.finding}
+                        {/* task 2: the backend's own note names the reason,
+                            e.g. "about code this change set did not touch". */}
+                        {f.note && <span className="cs-finding-rec">{f.note}</span>}
+                        {f.recommendation && <span className="cs-finding-rec">{f.recommendation}</span>}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </details>
             )}
             <div className="cs-actions">
               {cs.status === "review_required" && (
@@ -573,6 +893,15 @@ export default function BuildPage({
               {cs.status === "applied" && (
                 <button className="cs-danger" disabled={!!busyAction} onClick={() => setRevertTarget(cs)}>
                   Revert
+                </button>
+              )}
+              {/* task 5: a rejected change set used to be a dead end here --
+                  no action at all -- once the reviewer's own "Reject" verdict
+                  had been recorded. "Run the task again" (with the shared
+                  note field above) is the way back. */}
+              {cs.status === "rejected" && (
+                <button className="cs-green" disabled={runBusy} onClick={runNext}>
+                  {runBusy ? "Starting…" : "Run the task again"}
                 </button>
               )}
               {cs.status === "conflicted" &&
