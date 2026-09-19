@@ -13,13 +13,13 @@ import (
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.
-const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, created_at`
+const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at`
 
 // scanChangeSet scans one change_sets row into cs. createdMS receives the raw
 // unix-ms timestamp so the caller can convert it.
 func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64) error {
 	return row.Scan(&cs.ID, &cs.HumanID, &cs.InitiativeID, &cs.TaskID, &cs.BaseSnapshotID,
-		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, createdMS)
+		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS)
 }
 
 // CreateChangeSet inserts a change set, assigning its HumanID "CHG-N" from the
@@ -50,10 +50,10 @@ func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
 		}
 		_, err := tx.Exec(`
 			INSERT INTO change_sets
-				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			cs.ID, cs.HumanID, cs.InitiativeID, cs.TaskID, cs.BaseSnapshotID, cs.Status,
-			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.Model, cs.Executor, cs.AgentOutput, cs.CreatedAt.UnixMilli())
+			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.Model, cs.Executor, cs.AgentOutput, cs.GitCommitWarning, cs.CreatedAt.UnixMilli())
 		return err
 	})
 }
@@ -159,6 +159,28 @@ func (db *DB) SetChangeSetCommit(ctx context.Context, changeSetID, sha, actor st
 		EventType:     "change_set.commit_set",
 	}, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE change_sets SET git_commit_sha = ? WHERE id = ?`, sha, changeSetID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "change set %q not found", changeSetID)
+	})
+}
+
+// SetChangeSetGitWarning records why an applied change set was not committed
+// even though git_commit is on (review C4, adopted #2): a detached HEAD, a
+// rebase/merge/cherry-pick in progress, or the repository's default branch
+// without git.allow_default_branch.
+func (db *DB) SetChangeSetGitWarning(ctx context.Context, changeSetID, warning, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "change_set",
+		AggregateID:   changeSetID,
+		Actor:         actor,
+		EventType:     "change_set.git_commit_warning_set",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE change_sets SET git_commit_warning = ? WHERE id = ?`, warning, changeSetID)
 		if err != nil {
 			return err
 		}
