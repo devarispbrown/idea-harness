@@ -431,7 +431,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 	credMatches := filterAllowlisted(e.scanWorkRootForCredentials(req.WorkRoot, files), allowlist)
-	hasCredential := len(credMatches) > 0
+	// blockingMatches gates rejection; advisoryMatches (a generic
+	// "credential assignment" match found in a test/fixture path) never does
+	// (ICP re-run defect #1) but is still recorded once the change set
+	// exists, below.
+	blockingMatches, advisoryMatches := splitCredentialMatches(credMatches)
+	hasCredential := len(blockingMatches) > 0
 
 	// Persist each produced file's content and the patch manifest to the blob
 	// store, so apply/revert can reconstruct the diff from digests alone. Skip
@@ -512,7 +517,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			// sites.
 			checkOutputPath := "output of " + f.Category
 			rawMatches := filterAllowlisted(e.scanTextForCredentials(checkOutputPath, f.Evidence), allowlist)
-			rawCred := len(rawMatches) > 0
+			rawBlocking, rawAdvisory := splitCredentialMatches(rawMatches)
+			rawCred := len(rawBlocking) > 0
 			rawSignals := risk.RiskSignals(ctx, "", f.Evidence)
 			if rawCred || hasBlockingRiskSignal(rawSignals) {
 				f.Code = sweepDenyCode(rawCred)
@@ -532,7 +538,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			// SecretPath/SecretFingerprint/SecretOverridable/SecretPreview set so
 			// the finding is independently dispositionable (and allowlistable)
 			// the same way a file-content match is.
-			for _, m := range rawMatches {
+			for _, m := range rawBlocking {
 				if err := e.db.CreateFinding(ctx, &domain.Finding{
 					InitiativeID:      cs.InitiativeID,
 					TargetType:        "change_set",
@@ -552,6 +558,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 					SecretOverridable: m.Overridable,
 					SecretPreview:     m.Preview,
 				}); err != nil {
+					return domain.ChangeSet{}, err
+				}
+			}
+			for _, m := range rawAdvisory {
+				if err := e.createAdvisorySecretFinding(ctx, cs.InitiativeID, cs.ID, m); err != nil {
 					return domain.ChangeSet{}, err
 				}
 			}
@@ -626,17 +637,27 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		return domain.ChangeSet{}, err
 	}
 
+	// A generic "credential assignment" match in a test/fixture path is
+	// downgraded to advisory (ICP re-run defect #1): visible to the reviewer,
+	// never gating rejection, whatever else the change set does below.
+	for _, m := range advisoryMatches {
+		if err := e.createAdvisorySecretFinding(ctx, cs.InitiativeID, cs.ID, m); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	}
+
 	// A real credential sweep gates rejection now, not a bare vocabulary word
-	// (review D2/A1). credMatches was computed above from the work-root
+	// (review D2/A1). blockingMatches was computed above from the work-root
 	// content, BEFORE the raw store write, and already excludes any fingerprint
-	// a human dispositioned "not a secret" for this project.
+	// a human dispositioned "not a secret" for this project (and any
+	// test/fixture-path advisory match, split out above).
 	rejected := false
 	if checksBlocked || hasCredential || hasBlockingRiskSignal(signals) {
 		rejected = true
 		// One finding per match, each naming path:line and the kind of secret --
 		// never the value (full-platform review: secret leak) -- so the denial
 		// says where, instead of a bare "blocking risk signal detected".
-		for _, m := range credMatches {
+		for _, m := range blockingMatches {
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:      cs.InitiativeID,
 				TargetType:        "change_set",
@@ -900,6 +921,55 @@ func (e *Engine) scanBlobsForCredentials(files []domain.FileChange) []security.C
 			return "", false
 		}
 		return string(content), true
+	})
+}
+
+// splitCredentialMatches separates a credential scan's matches into the ones
+// that gate rejection (blocking) and the ones downgraded to advisory-only
+// (ICP re-run defect #1): a generic "credential assignment" match found in a
+// test/fixture path (security.CredentialFinding.Advisory) is shown to the
+// reviewer but never blocks -- a provider-specific format or a configured
+// secret value is never Advisory, so it always ends up in blocking, in a
+// test path or not.
+func splitCredentialMatches(matches []security.CredentialFinding) (blocking, advisory []security.CredentialFinding) {
+	for _, m := range matches {
+		if m.Advisory {
+			advisory = append(advisory, m)
+			continue
+		}
+		blocking = append(blocking, m)
+	}
+	return blocking, advisory
+}
+
+// createAdvisorySecretFinding records a non-blocking secret_sweep finding for
+// a match downgraded to advisory (ICP re-run defect #1): visible to the
+// reviewer -- Finding.Advisory makes review.EvaluateApproval and
+// denyReviewOpenBlocking skip it outright, whatever its severity -- and still
+// dispositionable not_a_secret like any other overridable pattern match.
+func (e *Engine) createAdvisorySecretFinding(ctx context.Context, initiativeID, targetID string, m security.CredentialFinding) error {
+	return e.db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID:   initiativeID,
+		TargetType:     "change_set",
+		TargetID:       targetID,
+		Severity:       domain.SeverityHigh,
+		Confidence:     domain.ConfidenceHigh,
+		Category:       "secret_sweep",
+		Finding:        fmt.Sprintf("%s: looks like %s (advisory: test/fixture code)", m.Path, m.Kind),
+		Evidence:       e.redact(secretSweepEvidence(m)),
+		Impact:         "shown for review; does not block a test/fixture-only match",
+		Recommendation: secretSweepRecommendation(m),
+		// Advisory (not a lower Severity alone) is what actually keeps this
+		// from blocking (review.EvaluateApproval / denyReviewOpenBlocking
+		// both skip an Advisory finding outright, §11/§15) -- Severity stays
+		// High so the reviewer still sees it as a real "looks like a secret"
+		// signal, just a non-gating one.
+		Advisory:          true,
+		SecretFingerprint: m.Fingerprint,
+		SecretKind:        m.Kind,
+		SecretPath:        m.Path,
+		SecretOverridable: m.Overridable,
+		SecretPreview:     m.Preview,
 	})
 }
 
@@ -1698,11 +1768,20 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		return err
 	}
 	credMatches := filterAllowlisted(e.scanBlobsForCredentials(patch.Files), allowlist)
+	blockingMatches, advisoryMatches := splitCredentialMatches(credMatches)
 	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, changeSetID, signals, "deterministic marker re-scan of the persisted patch"); err != nil {
 		return err
 	}
-	if len(credMatches) > 0 || hasBlockingRiskSignal(signals) {
-		for _, m := range credMatches {
+	// A test/fixture-path advisory match is recorded regardless of whether
+	// this apply otherwise proceeds (ICP re-run defect #1): visible, never
+	// gating.
+	for _, m := range advisoryMatches {
+		if err := e.createAdvisorySecretFinding(ctx, cs.InitiativeID, changeSetID, m); err != nil {
+			return err
+		}
+	}
+	if len(blockingMatches) > 0 || hasBlockingRiskSignal(signals) {
+		for _, m := range blockingMatches {
 			if err := e.db.CreateFinding(ctx, &domain.Finding{
 				InitiativeID:      cs.InitiativeID,
 				TargetType:        "change_set",
@@ -2318,14 +2397,16 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 		return err
 	}
 	for _, f := range findings {
-		// Mirror §11 EvaluateApproval: only fixed/accepted_risk resolve a blocking
-		// finding; deferred/duplicate/mitigate/not_applicable/rejected do NOT clear
-		// a system-deny (review: non-overridable means non-overridable).
+		// Mirror §11 EvaluateApproval via Finding.ResolvesBlocking (ICP re-run
+		// defect #2): fixed/accepted_risk always resolve; a human's rejected
+		// resolves too, but ONLY on a reviewer's own judgment call (no system
+		// deny code) -- deferred/duplicate/mitigate/not_applicable, and a
+		// SYSTEM-set rejected (a failing check, a deny-coded finding), do NOT
+		// clear a system-deny (review: non-overridable means non-overridable).
 		if f.Advisory {
 			continue
 		}
-		resolved := f.Disposition == domain.DispositionFixed || f.Disposition == domain.DispositionAcceptedRisk
-		if !resolved && f.Severity.Blocking() {
+		if !f.ResolvesBlocking() && f.Severity.Blocking() {
 			if f.Code == "" {
 				// A reviewer's judgment. A human may accept it, and until this
 				// message said so the only command `idea next` names was refused

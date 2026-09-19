@@ -922,17 +922,39 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			decIDByNorm[normalizeJudgment(question)] = id
 		}
 	}
+	// allDecisionsByNorm is a fallback lookup across EVERY decision already on
+	// record for the initiative -- not just the ones raised this cycle (ICP
+	// re-run defect #4). A requirement's `decision` reference can legitimately
+	// name a decision from an earlier cycle this cycle's PRD does not re-raise
+	// (a standing, already-decided choice) or restate with slightly different
+	// wording that still normalizes to a prior decision's own question text;
+	// decIDByNorm alone, keyed only to this cycle's `decisions[]`, missed that
+	// case entirely -- a requirement regenerated in a later revise cycle
+	// (REQ-19..29 after review rounds) never got wired to the earlier
+	// decision it still derives from, leaving that decision's reopen with "0
+	// stale items" and an empty /impact for a live requirement that plainly
+	// covered its subject. `decisions` was already loaded above (before this
+	// cycle's own decisions were created), so this costs no extra query.
+	allDecisionsByNorm := make(map[string]string, len(decisions))
+	for _, d := range decisions {
+		allDecisionsByNorm[normalizeJudgment(d.Question)] = d.ID
+	}
 	// Wire requirement→decision edges for requirements shaped by a decision,
 	// matched by the decision's exact question text (normalized), so an open
 	// decision's impact ("blocks N") is the set of requirements waiting on it.
 	if len(decisionRefByReqID) > 0 {
 		for reqID, ref := range decisionRefByReqID {
-			if decID, ok := decIDByNorm[normalizeJudgment(ref)]; ok {
+			norm := normalizeJudgment(ref)
+			decID, ok := decIDByNorm[norm]
+			if !ok {
+				decID, ok = allDecisionsByNorm[norm]
+			}
+			if ok {
 				if err := e.db.WireRequirementDerivedFromDecision(ctx, initiativeID, reqID, decID); err != nil {
 					return err
 				}
 			} else {
-				e.log.Debug("requirement decision reference did not match a raised decision; link skipped (best-effort)", "initiative", initiativeID, "requirement", reqID)
+				e.log.Debug("requirement decision reference did not match any known decision; link skipped (best-effort)", "initiative", initiativeID, "requirement", reqID)
 			}
 		}
 	}

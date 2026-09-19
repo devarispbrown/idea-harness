@@ -671,6 +671,76 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   not paste code, regardless of what the planner model itself chose to
   include.
 
+### Fixed — ICP re-run follow-up (API-key auth / rate-limiting run)
+
+- **The secret sweep blocked ordinary feature code.** A generic "credential
+  assignment" match — `"secret": "..."` in a `*_test.go` fixture, a comment
+  naming a header's shape (`// X-API-Key: <id>:<secret>`) — and three
+  example Stripe-shaped keys with obviously-fake bodies (`sk_live_...0000`,
+  `...1111`, `...2222`) in a `config.json` all blocked, and `not_a_secret`
+  only allowlists the exact (fingerprint, path) a human already saw, so it
+  could not help the next file. Three independent mechanisms now apply
+  (`internal/security`): a placeholder/low-entropy shape check (a 4+
+  identical-character run, or Shannon entropy under 2.5 bits/char) excludes
+  a match everywhere, for every provider-specific format as well as the
+  generic rule; a placeholder-word/sequential-fill check, scoped to the
+  generic rule only, excludes `example`/`test`/`dummy`/`fake`/`placeholder`/
+  `changeme`/`xxx` and a value that IS essentially one long sequential run;
+  and a generic-rule match in a `*_test.go`/`.spec.`/`.test.`/`test(s)`/
+  `testdata`/`fixtures`/`__tests__` path is downgraded to advisory (visible,
+  never blocking) rather than excluded outright. A comment/template
+  placeholder (`<secret>`, `<id>:<secret>`, `${...}`, `{{...}}`) never
+  matches at all. A provider-specific format or a configured secret value
+  still blocks unconditionally, test path or not — see
+  [`docs/security-model.md`](docs/security-model.md).
+- **Dispositioning a reviewer false positive `rejected` blocked approval
+  permanently.** Only `fixed`/`accepted_risk` cleared a blocking finding;
+  `rejected` — a human's own "this finding is wrong" judgment — did not, so
+  `approve --accept-findings` kept failing with a message recommending
+  itself. `Finding.ResolvesBlocking` now also resolves a blocking finding
+  when a HUMAN set `rejected` on a reviewer's own judgment call (no system
+  deny code) — `EvaluateApproval` and `denyReviewOpenBlocking` both use it.
+  A SYSTEM-set `rejected` (a failing build/test check, a secret_sweep or
+  other deny-coded finding) is unaffected and keeps blocking exactly as
+  before — "system deny beats human approve". `POST .../findings/{id}/
+  disposition` now also returns a `warning` when `rejected` was recorded on
+  a deny-coded finding that still blocks.
+- **`confirm_passing_tests` confirmed nothing on a real run: `evidence_tests`
+  null on all 11 requirements though checks ran `go test ./...` and passed
+  15 tests.** A real test's name almost never contains the requirement's
+  code, so the only fallback mapping (besides the verification plan's own
+  hooks) routinely mapped nothing. `ComputeEvidenceTests` now also maps a
+  requirement to the test functions found in test/spec files touched by the
+  applied, check-passed change set of a task that `implements` it (a
+  task→requirement edge, never a guess at what the task was for). The skip
+  reason for a genuinely unmapped requirement now says so — "no tests are
+  mapped to REQ-n; ..." — instead of the misleading "not every mapped test
+  passed", which reads as a test failure when nothing was ever mapped at
+  all.
+- **Reopening a decision could produce 0 stale items and an empty `/impact`
+  for a requirement that plainly covered its subject**, while surfacing only
+  requirements a later PRD revision had already superseded/removed. A
+  superseded requirement keeps its old `derived_from` edge forever
+  (`SupersedeRequirements` marks the row removed, it does not delete it or
+  its edges); `decisionDependents` never filtered by requirement liveness,
+  so a decision's reopen surfaced only long-dead requirements instead of
+  whatever live one now covers its subject — it now skips a removed/
+  superseded requirement, mirroring the filter `workflow.Impact` already
+  applied. Separately, the requirement→decision wiring now also matches a
+  requirement's `decision` reference against every decision on record for
+  the initiative, not just the ones raised in the same PRD cycle, so a
+  requirement regenerated in a later revise cycle that still names a
+  standing (already-decided, not re-raised) decision gets wired to it.
+- **Guidance for a change set the secret sweep denied said only "a check or
+  the review found a problem it would not pass"** — true, but not the actual
+  cause. `GET .../guidance` now names it when the rejection is a
+  `secret_sweep` denial: the file (or "in the output of `<check>`") and kind
+  of secret, never the value, plus the `not_a_secret` disposition route when
+  the match is overridable. Separately, timeline copy read "a API key" —
+  `indefiniteArticle` now picks "a"/"an" correctly across the secret-kind
+  catalog, including the acronyms a naive vowel-letter check gets wrong in
+  both directions ("an AWS ...", but "a URL ...").
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

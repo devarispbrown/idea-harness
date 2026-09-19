@@ -405,6 +405,13 @@ paths:
         status and the Understanding projection - counts of open decisions and open questions - so
         it never loads change sets and can never name one. Use `/next` when you want a command to
         execute; the two legitimately disagree.
+
+        The HANDLER wrapping the pure projection above does have store access, and uses it for
+        `why` sentences the projection alone cannot compose: `stale_items` (review A4 #5), and,
+        when the current change set was rejected by the secret sweep, the actual cause -- the file
+        (or "in the output of `<check>`") and kind of secret, never the value, plus the
+        not_a_secret disposition route when the match is overridable -- instead of only the
+        generic "a check or the review found a problem" (ICP re-run defect #5).
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -992,9 +999,12 @@ paths:
                     description: >-
                       Present only when `confirm_passing_tests` was sent: every candidate
                       requirement it looked at but did not confirm, and why (e.g. "no acceptance
-                      criteria", "not every mapped test passed", "the initiative has no applied
-                      change set yet"). A requirement that was never a candidate at all (already
-                      verified/failed/waived, draft, or removed) is not listed here.
+                      criteria", "not every mapped test passed", "no tests are mapped to
+                      <code>; ..." (ICP re-run defect #3 -- distinct from "not every mapped test
+                      passed": nothing was ever mapped, as opposed to a mapped test failing),
+                      "the initiative has no applied change set yet"). A requirement that was
+                      never a candidate at all (already verified/failed/waived, draft, or
+                      removed) is not listed here.
                     items:
                       type: object
                       properties:
@@ -2504,7 +2514,10 @@ paths:
       tags: [decisions]
       operationId: reopenDecision
       summary: Undo a resolution
-      description: Takes no body.
+      description: |
+        Takes no body. Also marks stale the LIVE requirements that cite this decision via a
+        `derived_from` edge (review A4 #5) -- never one a later PRD revision superseded or removed
+        (ICP re-run defect #4) -- their tasks, and the applied change sets for those tasks.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -2727,6 +2740,13 @@ paths:
         `SecretAllowlistEntry` for the finding's `secret_fingerprint` scoped to `secret_path`, so
         the secret sweep ignores that exact (fingerprint, path) pair from then on, at Execute,
         Apply, and the deterministic-check output sweep.
+
+        `rejected` means "the human judged this finding wrong" (ICP re-run defect #2): on a
+        finding with no system deny code -- the adversarial reviewer's own judgment call --
+        it resolves the approval bar exactly like `fixed`/`accepted_risk` does. It is always
+        recorded (200) regardless, but has no effect on approval for a finding that carries a
+        deny code, or one the system itself set to `rejected` (a failing build/test check); the
+        response then also carries `warning` naming the deny code that still applies.
       requestBody:
         required: true
         content:
@@ -2746,6 +2766,12 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: dispositioned }
+                  warning:
+                    type: string
+                    description: >-
+                      Present only when `disposition` was `rejected` and the finding still
+                      carries a system deny code (ICP re-run defect #2): names the code that
+                      still blocks approval, since a human's `rejected` does not clear one.
                 required: [status]
         "400":
           description: "`disposition is required`, the store's rejection of an unknown disposition, or `not_a_secret` on a finding that is not `secret_sweep`."
@@ -2988,7 +3014,10 @@ paths:
                     Only the reviewer's findings. A finding carrying a deny code — `secret_sweep`,
                     `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
                     dispositioned (a failing build check is `rejected`, not a judgment to accept
-                    away). The deny gate is re-run afterwards, so anything left alone still refuses.
+                    away). The deny gate is re-run afterwards, so anything left alone still refuses
+                    — except a finding a HUMAN already dispositioned `rejected` on their own, with
+                    no deny code: that resolves the gate too (ICP re-run defect #2), the same as if
+                    this call had signed it off as `accepted_risk`.
 
                     Ignored without `approved`.
               required: [verdict]
@@ -4007,10 +4036,13 @@ components:
           type: array
           description: |
             Test-run evidence mapped to this requirement (C2, wave 3 contract): every test the
-            verification plan names for it, or that names its code, resolved against the most
-            recent parsed check result. Computed at read time from the "tests" check's output,
-            never persisted, so it reflects the last check run. Absent means no test is known to
-            cover this requirement yet, not that one failed.
+            verification plan names for it, that names its code, or -- since a real test's name
+            almost never contains the requirement's code -- one found in a test file touched by
+            the applied, check-passed change set of a task that `implements` this requirement
+            (ICP re-run defect #3), resolved against the most recent parsed check result.
+            Computed at read time from the "tests" check's output, never persisted, so it
+            reflects the last check run. Absent means no test is known to cover this requirement
+            yet, not that one failed.
           items: { $ref: "#/components/schemas/EvidenceTest" }
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]

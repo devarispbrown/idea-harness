@@ -317,6 +317,44 @@ func hasSystemDenyCode(findings []domain.Finding) bool {
 	return false
 }
 
+// secretKindArticles maps a secret kind (security.credentialCatalog's fixed,
+// closed vocabulary of `Kind` strings) to its correct indefinite article
+// (ICP re-run defect #5: timeline copy said "a API key", which reads as a
+// grammar error the instant a human sees it). A naive first-letter-is-a-vowel
+// check gets acronyms wrong in both directions: "AWS" needs "an" (the vowel
+// SOUND of the spoken letter name), but "URL" needs "a" (spoken "you", a
+// consonant sound, despite the vowel letter) -- so known acronym kinds are
+// looked up here explicitly rather than guessed.
+var secretKindArticles = map[string]string{
+	"AWS access key ID":        "an",
+	"AWS secret access key":    "an",
+	"OpenAI/Anthropic API key": "an",
+	"OpenAI API key":           "an",
+	"API key":                  "an",
+	"npm access token":         "an",
+	"URL userinfo credential":  "a",
+	"JWT":                      "a",
+}
+
+// indefiniteArticle returns "a" or "an" for kind. Looks up secretKindArticles
+// first (the exact, closed vocabulary this ever actually sees); anything else
+// falls back to a plain first-letter vowel check, which is correct for every
+// non-acronym kind in the catalog ("PEM private key", "Stripe secret key",
+// "credential assignment", "configured secret value", ...).
+func indefiniteArticle(kind string) string {
+	if a, ok := secretKindArticles[kind]; ok {
+		return a
+	}
+	if kind == "" {
+		return "a"
+	}
+	switch kind[0] {
+	case 'A', 'E', 'I', 'O', 'U', 'a', 'e', 'i', 'o', 'u':
+		return "an"
+	}
+	return "a"
+}
+
 // denialDetail names why a change set was rejected or denied, from its own
 // findings: a secret_sweep finding's path:line kind ("a credential at
 // src/keys.js:14"), or else the first blocking finding's category. Returns ""
@@ -324,13 +362,11 @@ func hasSystemDenyCode(findings []domain.Finding) bool {
 func denialDetail(findings []domain.Finding) string {
 	for _, f := range findings {
 		if f.Code == domain.DenyCodeSecretSweep && f.SecretPath != "" {
-			kind := f.SecretKind
-			if kind == "" {
-				kind = "a credential"
-			} else {
-				kind = "a " + kind
+			label := f.SecretKind
+			if label == "" {
+				label = "credential"
 			}
-			return kind + " at " + f.SecretPath
+			return indefiniteArticle(label) + " " + label + " at " + f.SecretPath
 		}
 	}
 	for _, f := range findings {
