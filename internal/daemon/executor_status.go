@@ -222,5 +222,19 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 			"%s is not set in the daemon's environment or the project's .env; set it, then restart the daemon with idea daemon stop (the next command starts it again).",
 			provider.KeyEnv)
 	}
+	// Known-incompatible / untested model, same table `idea executors setup`
+	// and Execute's preflight check (docs/agents.md, "Known executor/model
+	// compatibility"): a known-bad pairing blocks the Build page's run button
+	// exactly as it would block `idea execute`; an untested one is a Note, same
+	// severity as "image not pulled yet" -- informational, not blocking.
+	if st.Problem == "" && modelHint != "" {
+		if compat := executor.CheckModelCompat(kind, modelHint); compat.Message != "" {
+			if compat.Blocked {
+				st.Problem = compat.Message
+			} else if st.Note == "" {
+				st.Note = compat.Message
+			}
+		}
+	}
 	return st
 }

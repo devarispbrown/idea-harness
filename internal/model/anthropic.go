@@ -138,7 +138,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Response{}, httpError("anthropic", resp)
+		return Response{}, httpError("anthropic", req.Model, resp)
 	}
 	var parsed anthropicResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {

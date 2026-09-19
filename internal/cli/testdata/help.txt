@@ -37,7 +37,7 @@ Commands:
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
-  executors setup      wire a coding agent (hermes|omp)
+  executors setup [<kind>] wire a coding agent: hermes|omp, default hermes (or --kind)
   watch                watch a run live
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config

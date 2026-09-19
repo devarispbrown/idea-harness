@@ -397,7 +397,20 @@ func cmdExecutors(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	// Flags come from the table's spec for `executors setup`; this used to be a
 	// hand-rolled loop, one of four that predated parseArgs.
-	kind := a.value("--kind")
+	//
+	// The kind can be given positionally (`executors setup omp`) or via --kind;
+	// `idea executors setup omp --yes` used to silently ignore the positional
+	// and default to hermes, because only a.value("--kind") was read. Both are
+	// accepted here, and a disagreement between them is refused rather than
+	// picking one silently.
+	positionalKind, flagKind := a.arg(0), a.value("--kind")
+	kind := positionalKind
+	if flagKind != "" {
+		if positionalKind != "" && positionalKind != flagKind {
+			return fmt.Errorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
+		}
+		kind = flagKind
+	}
 	if kind == "" {
 		kind = "hermes"
 	}
@@ -436,6 +449,17 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if model != "" {
 		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
 			return err
+		}
+		// Known-incompatible and untested combinations (docs/agents.md, "Known
+		// executor/model compatibility"): also checked before the pull. A known
+		// bad pairing (§ ICP walkthrough: hermes + gpt-4.1-mini failed every
+		// time) refuses outright; an untested one warns and points at --smoke,
+		// same as the model-warning above.
+		if compat := executor.CheckModelCompat(kind, model); compat.Message != "" {
+			if compat.Blocked {
+				return fmt.Errorf("%s", compat.Message)
+			}
+			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
 		}
 	}
 
