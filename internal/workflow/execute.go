@@ -723,6 +723,32 @@ func (e *Engine) scanForCredentials(files []domain.FileChange, read func(domain.
 		// the package-level FindCredentialsInFile's unkeyed fallback.
 		out = append(out, e.redactor.FindPatternsInFile(fc.Path, content)...)
 	}
+	return dedupeCredentialFindings(out)
+}
+
+// dedupeCredentialFindings collapses matches to at most one per (path, line,
+// fingerprint) (review low-priority item): the SAME value at the SAME
+// location can match more than one pattern in the catalog (or both a known
+// value and a pattern -- e.g. a configured secret whose value also happens
+// to look like an AWS key), and showing it twice is pure noise for the
+// reviewer. The first occurrence wins: FindKnownInFile's known-value matches
+// (Overridable=false) are always appended before FindPatternsInFile's, so a
+// known-value match is kept over a pattern match for the identical
+// (path, line, fingerprint) rather than the other way around.
+func dedupeCredentialFindings(matches []security.CredentialFinding) []security.CredentialFinding {
+	if len(matches) < 2 {
+		return matches
+	}
+	seen := make(map[string]bool, len(matches))
+	out := make([]security.CredentialFinding, 0, len(matches))
+	for _, m := range matches {
+		key := fmt.Sprintf("%s\x00%d\x00%s", m.Path, m.Line, m.Fingerprint)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, m)
+	}
 	return out
 }
 
@@ -752,7 +778,7 @@ func (e *Engine) scanTextForCredentials(path, content string) []security.Credent
 		out = append(out, e.redactor.FindKnownInFile(path, content)...)
 	}
 	out = append(out, e.redactor.FindPatternsInFile(path, content)...)
-	return out
+	return dedupeCredentialFindings(out)
 }
 
 // scanBlobsForCredentials is scanForCredentials reading each file's content
