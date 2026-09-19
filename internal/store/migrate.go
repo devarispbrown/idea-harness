@@ -605,6 +605,12 @@ ALTER TABLE change_sets ADD COLUMN git_commit_warning TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE initiatives ADD COLUMN git_branch TEXT NOT NULL DEFAULT '';
 `,
+	// 25: the pull request `idea pr` opened for the initiative's branch
+	// (review C4 piece 3), so a repeat `idea pr` is idempotent instead of
+	// opening a second PR for the same branch.
+	`
+ALTER TABLE initiatives ADD COLUMN pr_url TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

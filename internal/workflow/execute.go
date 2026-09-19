@@ -1742,6 +1742,110 @@ func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSe
 	return "", nil
 }
 
+// ErrNoInitiativeBranch is returned by CreatePR when the initiative has no
+// dedicated branch yet (git.branch_per_initiative has not created one --
+// either the setting is off, or the initiative has not been applied yet).
+var ErrNoInitiativeBranch = errors.New("workflow: this initiative has no dedicated branch yet; " +
+	"enable git.branch_per_initiative and apply a change set first")
+
+// CreatePR pushes an initiative's dedicated branch and opens a pull request
+// via `gh pr create` (review C4 piece 3), with a body built from the
+// initiative's title, description, change sets and verification progress.
+// Idempotent: a repeat call returns the already-recorded PR URL rather than
+// opening a second PR for the same branch.
+func (e *Engine) CreatePR(ctx context.Context, initiativeID string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ini, err := e.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	if ini.PRURL != "" {
+		return ini.PRURL, nil
+	}
+	if ini.GitBranch == "" {
+		return "", ErrNoInitiativeBranch
+	}
+	if e.workspaceRoot == "" {
+		return "", fmt.Errorf("workflow: no canonical workspace root configured")
+	}
+	body, err := e.prBody(ctx, ini)
+	if err != nil {
+		return "", err
+	}
+	url, err := git.CreatePR(ctx, e.workspaceRoot, git.PRRequest{
+		Branch: ini.GitBranch,
+		Title:  ini.Title,
+		Body:   body,
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := e.db.SetInitiativePRURL(ctx, initiativeID, url, store.ActorOrchestrator); err != nil {
+		return "", err
+	}
+	return url, nil
+}
+
+// prBody composes a pull request body from the initiative's own record: its
+// PRD summary (title + description), the change sets it produced, and how
+// many of its requirements are verified.
+func (e *Engine) prBody(ctx context.Context, ini domain.Initiative) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## %s\n\n", ini.Title)
+	if ini.Description != "" {
+		fmt.Fprintf(&b, "%s\n\n", ini.Description)
+	}
+	sets, err := e.db.ListChangeSets(ctx, ini.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(sets) > 0 {
+		b.WriteString("### Change sets\n\n")
+		for _, cs := range sets {
+			fmt.Fprintf(&b, "- `%s` — %s\n", cs.HumanID, cs.Status)
+		}
+		b.WriteString("\n")
+	}
+	reqs, err := e.db.ListRequirements(ctx, ini.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(reqs) > 0 {
+		verified := 0
+		for _, r := range reqs {
+			if r.VerifiedAt != nil {
+				verified++
+			}
+		}
+		fmt.Fprintf(&b, "### Verification\n\n%d/%d requirements verified.\n", verified, len(reqs))
+	}
+	return b.String(), nil
+}
+
+// ErrNoPR is returned by PRChecks when the initiative has no pull request yet.
+var ErrNoPR = errors.New("workflow: this initiative has no pull request yet; run `idea pr` first")
+
+// PRChecks reports the latest CI status of changeSetID's initiative's pull
+// request via `gh pr checks` (review C4 piece 3). Every change set of an
+// initiative shares the same PR, so this is the same result whichever of the
+// initiative's change sets it is asked through.
+func (e *Engine) PRChecks(ctx context.Context, changeSetID string) (git.PRChecksResult, error) {
+	cs, err := e.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return git.PRChecksResult{}, err
+	}
+	ini, err := e.db.GetInitiative(ctx, cs.InitiativeID)
+	if err != nil {
+		return git.PRChecksResult{}, err
+	}
+	if ini.PRURL == "" {
+		return git.PRChecksResult{}, ErrNoPR
+	}
+	return git.PRChecks(ctx, e.workspaceRoot, ini.GitBranch)
+}
+
 // ReviewChangeSet applies a human review verdict. "approved" runs the
 // adversarial reviewer and gates approval on its findings; "changes_requested"
 // and "rejected" apply the corresponding state transition.

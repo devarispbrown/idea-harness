@@ -2444,6 +2444,46 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 }
 
+// handleCreatePR pushes an initiative's dedicated branch (git.branch_per_initiative)
+// and opens a pull request via `gh pr create` (review C4 piece 3). Synchronous,
+// unlike apply/execute/revert: it touches only git/GitHub state, not the
+// workspace tree, so there is nothing here that needs a background operation
+// or a claim on the initiative. Idempotent: a repeat call answers the same
+// `pr_url` rather than opening a second PR.
+func (s *Server) handleCreatePR(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	_, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	url, err := s.rt.CreatePRForInitiative(r.Context(), projectID, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"pr_url": url})
+}
+
+// handlePRChecks reports the latest CI status of a change set's initiative's
+// pull request via `gh pr checks` (review C4 piece 3). Scoped by change set
+// id since that is where the CLI and UI show it, though every change set of
+// one initiative shares the same PR and so the same result.
+func (s *Server) handlePRChecks(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	_, cs, err := s.changeSet(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	res, err := s.rt.PRChecksForChangeSet(r.Context(), projectID, cs.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // handleRisk computes the deterministic risk profile for an initiative from its
 // produced patches.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {

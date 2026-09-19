@@ -83,6 +83,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/review", s.handleReviewChangeSet)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/apply", s.handleApplyChangeSet)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/revert", s.handleRevertChangeSet)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}/pr-checks", s.handlePRChecks)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/pr", s.handleCreatePR)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
 
 	// The initiative-scoped reads, on the nested path. These ten once answered
