@@ -185,6 +185,7 @@ type cliCosts struct {
 		Runs    int      `json:"runs"`
 		Seconds float64  `json:"seconds"`
 		USD     *float64 `json:"usd"`
+		Note    string   `json:"note"`
 	} `json:"agent"`
 	ByPhase []struct {
 		Seconds float64 `json:"seconds"`
@@ -192,16 +193,33 @@ type cliCosts struct {
 }
 
 // summary renders "spend: $0.1234 · time: 2m" for `idea status`. Time sums
-// every phase's seconds plus the agent's; spend is the total, which is null-
-// safe by construction (InitiativeCosts.TotalUSD only ever adds a measured
-// agent USD, never a null one).
+// every phase's seconds plus the agent's; TotalUSD is null-safe by
+// construction (InitiativeCosts.TotalUSD only ever adds a measured agent USD,
+// never a null one) -- but that made TotalUSD read as a genuine grand total
+// even when the coding agent actually ran and its own spend just could not be
+// parsed from its output (review defect #5: /costs correctly reported
+// agent.usd null with agent.note "agent spend not measured" for six real
+// Sonnet runs, and this command dropped both and printed a bare "spend:
+// $0.0032" -- the model-phase cost alone, with nothing to say the run's real
+// (larger) spend was not in it). When there were real agent runs and their
+// cost is not measured, the qualifier is now printed alongside the number,
+// every time -- not just when Note happens to be set, since a daemon budget
+// tighter than this one's is exactly when a silent undercount matters most.
 func (c cliCosts) summary() string {
 	seconds := c.Agent.Seconds
 	for _, p := range c.ByPhase {
 		seconds += p.Seconds
 	}
 	d := time.Duration(seconds * float64(time.Second)).Round(time.Second)
-	return fmt.Sprintf("spend: $%.4f · time: %s", c.TotalUSD, d)
+	spend := fmt.Sprintf("spend: $%.4f", c.TotalUSD)
+	if c.Agent.Runs > 0 && c.Agent.USD == nil {
+		note := c.Agent.Note
+		if note == "" {
+			note = "agent spend not measured"
+		}
+		spend = fmt.Sprintf("%s (model phases only; %s)", spend, note)
+	}
+	return fmt.Sprintf("%s · time: %s", spend, d)
 }
 
 // failedInitiativeExit makes `idea status` exit non-zero when it has just

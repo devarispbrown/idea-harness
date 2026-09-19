@@ -53,3 +53,63 @@ if wget -q -T 3 -O /dev/null http://example.com 2>/dev/null; then echo NETWORK_O
 		t.Errorf("inside.txt = %q, want %q", string(data), "ok\n")
 	}
 }
+
+// TestContainerSandboxGoTestExecutes is a regression test for review defect
+// #1: `go test` writes a compiled test binary to $TMPDIR/os.TempDir() and
+// then fork/execs it. With Docker's default `--tmpfs /tmp` (noexec), that
+// exec fails with "permission denied" even though compilation succeeded --
+// so `go test` could never pass inside the check sandbox. This runs a real
+// `go test` for a tiny module inside the sandbox and asserts it passes.
+// Skipped when Docker, the daemon, or a Go toolchain image is unavailable.
+func TestContainerSandboxGoTestExecutes(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker binary not available")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("docker daemon not running")
+	}
+	const image = "golang:1.25"
+	if err := exec.Command("docker", "image", "inspect", image).Run(); err != nil {
+		if err := exec.Command("docker", "pull", image).Run(); err != nil {
+			t.Skipf("go toolchain image %s not available and could not be pulled: %v", image, err)
+		}
+	}
+
+	work := t.TempDir()
+	writeFile(t, filepath.Join(work, "go.mod"), "module tmpexec\n\ngo 1.22\n")
+	writeFile(t, filepath.Join(work, "tmpexec_test.go"), `package tmpexec
+
+import "testing"
+
+func TestOK(t *testing.T) {
+	// A compiled test binary; the sandbox must be able to fork/exec it
+	// after writing it into $TMPDIR (review defect #1).
+}
+`)
+
+	s := NewContainerSandbox(image)
+	stdout, stderr, code, err := s.Run(t.Context(), RunOptions{
+		WorkRoot: work,
+		Cmd:      []string{"sh", "-c", "go test ./..."},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v (stderr=%s)", err, stderr)
+	}
+	out := stdout + stderr
+	if strings.Contains(out, "permission denied") {
+		t.Fatalf("go test hit a noexec /tmp: %s", out)
+	}
+	if code != 0 {
+		t.Fatalf("go test exit = %d, want 0; output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("expected passing test output, got:\n%s", out)
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}

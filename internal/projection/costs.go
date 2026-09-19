@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -100,6 +101,23 @@ func AgentCostFromRuns(ctx context.Context, db *store.DB, initiativeID string, s
 		if usd, ok := ParseAgentCostUSD(cs.AgentOutput); ok {
 			sum += usd
 			parsed++
+			continue
+		}
+		// review defect #5: /costs reported agent.usd null for six real Sonnet
+		// runs. Hermes/OMP do not reliably print an explicit "$" cost line, but
+		// when a run's own output DOES report its token counts (Hermes's
+		// documented usage-report fields are input_tokens/output_tokens, and
+		// several agents echo an OpenAI-shaped prompt_tokens/completion_tokens
+		// pair), that is enough to compute a real cost from the model catalog's
+		// own per-token pricing (model.CostUSD) -- the same table max_cost_usd
+		// enforcement already prices every model call against. This is an
+		// estimate (catalog list prices, not a provider-confirmed invoice) but
+		// a real one, not a guess, and it is the harness's own configured model
+		// for this run, not a value the agent's output could spoof its way into
+		// misreporting a HIGHER or lower model's price.
+		if in, outTok, ok := ParseAgentTokenUsage(cs.AgentOutput); ok && cs.Model != "" && cs.Model != "demo" {
+			sum += model.CostUSD(cs.Model, in, outTok)
+			parsed++
 		}
 	}
 	// Only report a total when every actual agent RUN's cost was recovered
@@ -153,6 +171,42 @@ func ParseAgentCostUSD(output string) (usd float64, ok bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// inputTokensPattern/outputTokensPattern match a coding agent's own reported
+// token counts (review defect #5), best-effort, in either of two shapes seen
+// in the wild: Hermes's documented usage-report field names
+// (input_tokens/output_tokens, whether JSON-quoted or printed as plain text)
+// and the OpenAI-style prompt_tokens/completion_tokens pair some agents echo
+// instead. Like agentCostPattern, the LAST match wins: a run may print an
+// incremental usage line per turn, and only the final (cumulative) one is
+// this run's real total.
+var (
+	inputTokensPattern  = regexp.MustCompile(`(?i)"?(?:input|prompt)[_ ]tokens"?\s*[:=]\s*([0-9]+)`)
+	outputTokensPattern = regexp.MustCompile(`(?i)"?(?:output|completion)[_ ]tokens"?\s*[:=]\s*([0-9]+)`)
+)
+
+// ParseAgentTokenUsage extracts input/output token counts from a coding
+// agent's own console output, best-effort (review defect #5). ok is true
+// only when BOTH counts are present: a bare total_tokens with no split
+// cannot be priced against a catalog with separate input/output rates
+// without guessing the split, and a guess that happened to look precise
+// would be worse than admitting the cost is not measured.
+func ParseAgentTokenUsage(output string) (inputTokens, outputTokens int64, ok bool) {
+	in := inputTokensPattern.FindAllStringSubmatch(output, -1)
+	out := outputTokensPattern.FindAllStringSubmatch(output, -1)
+	if len(in) == 0 || len(out) == 0 {
+		return 0, 0, false
+	}
+	inV, err := strconv.ParseInt(in[len(in)-1][1], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	outV, err := strconv.ParseInt(out[len(out)-1][1], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return inV, outV, true
 }
 
 func valueOr(p *float64, def float64) float64 {

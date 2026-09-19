@@ -82,6 +82,10 @@ type projectRuntime struct {
 	registry *model.Registry
 	engine   *workflow.Engine
 	redactor *security.Redactor
+	// cfgMTime is harness.yaml's mtime as of the last successful load
+	// (construction or ReloadProject), used to auto-reload a hand edit
+	// (review defect #4). Zero when the file did not exist at that time.
+	cfgMTime time.Time
 
 	// planEditMu guards planEditLocks itself (not the edits); planEditLocks
 	// holds one *sync.Mutex per initiative id, lazily created (review M5).
@@ -181,10 +185,25 @@ func (r *Runtime) CreateProject(ctx context.Context, rootPath string) (string, e
 // Construction is single-flight: r.mu is held across the whole build so two
 // concurrent first-opens cannot open two *store.DB handles for one project
 // (full-platform review: project-runtime race).
+//
+// Every HTTP handler resolves its project through here (Server.project), so
+// this is also the single choke point for maybeAutoReload: a cached project
+// whose harness.yaml has changed on disk since it was last loaded -- a hand
+// edit, e.g. to test_cmd -- is reloaded before its (possibly stale) runtime
+// is handed back (review defect #4).
 func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*projectRuntime, error) {
+	r.mu.Lock()
+	pr, ok := r.projects[projectID]
+	r.mu.Unlock()
+	if ok {
+		return r.maybeAutoReload(ctx, projectID, pr), nil
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Re-check under the lock: another goroutine may have finished building
+	// this project's runtime between the unlock above and here.
 	if pr, ok := r.projects[projectID]; ok {
 		return pr, nil
 	}
@@ -248,7 +267,10 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	engine.SetWorkspaceRoot(rec.RootPath)
 	engine.SetDotEnv(dotEnv)
 
-	pr := &projectRuntime{db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv, registry: registry, engine: engine, redactor: redactor}
+	pr = &projectRuntime{
+		db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv,
+		registry: registry, engine: engine, redactor: redactor, cfgMTime: harnessYAMLMTime(rec.RootPath),
+	}
 
 	r.projects[projectID] = pr
 
@@ -311,8 +333,56 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	pr.registry = registry
 	pr.blobs = blobs
 	pr.redactor = redactor
+	pr.cfgMTime = harnessYAMLMTime(pr.rootPath)
 	r.mu.Unlock()
 	return pr, nil
+}
+
+// harnessYAMLMTime returns harness.yaml's modification time under rootPath's
+// portable config directory, or the zero time if it cannot be stat'd (not
+// yet written, or a transient error) -- callers treat the zero time as "no
+// baseline to compare against" rather than an error.
+func harnessYAMLMTime(rootPath string) time.Time {
+	fi, err := os.Stat(filepath.Join(rootPath, config.Dir, "harness.yaml"))
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
+}
+
+// maybeAutoReload reloads pr's config when harness.yaml has changed on disk
+// since it was last loaded. Every HTTP handler resolves its project through
+// EnsureProject, which is this function's only caller, so this is the single
+// choke point that makes a hand edit -- e.g. to test_cmd -- take effect on
+// the next request rather than requiring a daemon restart (review defect
+// #4): before this, nothing ever re-read harness.yaml once a project's
+// runtime was cached, and ReloadProject only ever ran when the daemon itself
+// had just written the file (the provider/executor settings endpoints).
+//
+// Best-effort: a reload that cannot safely happen right now (an operation is
+// in flight -- ReloadProject's own guard) or that fails to load (e.g. the
+// file is mid-write and briefly invalid YAML) is logged and the previous,
+// still-valid config keeps serving this request; the next request tries
+// again. A passive background check must never turn an unrelated request
+// into a hard failure.
+func (r *Runtime) maybeAutoReload(ctx context.Context, projectID string, pr *projectRuntime) *projectRuntime {
+	mtime := harnessYAMLMTime(pr.rootPath)
+	if mtime.IsZero() {
+		return pr // no harness.yaml (yet) to compare against
+	}
+	r.mu.Lock()
+	stale := mtime.After(pr.cfgMTime)
+	r.mu.Unlock()
+	if !stale {
+		return pr
+	}
+	reloaded, err := r.ReloadProject(ctx, projectID)
+	if err != nil {
+		r.log.Warn("harness.yaml changed on disk but could not be reloaded automatically; serving the previous config until it can be",
+			"project", projectID, "error", err)
+		return pr
+	}
+	return reloaded
 }
 
 // Shutdown cancels every running operation and waits, until ctx expires, for

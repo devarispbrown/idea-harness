@@ -89,14 +89,26 @@ var ErrControlPlanePath = errors.New("fsdiff: path is part of the harness contro
 // Symlinks are rejected via Lstat (not followed) so an untrusted executor cannot
 // plant a symlink to a host file and induce the daemon to read it (review:
 // v1 security boundary). A missing root yields an empty manifest.
-func Snapshot(root string) (Manifest, error) {
-	var m Manifest
+//
+// DefaultIgnoredDirNames (node_modules, .git, .tools, vendor, and other
+// well-known caches/toolchains) are always excluded, on top of the harness's
+// own control-plane paths, regardless of any option passed. WithWorkspaceIgnore
+// and WithSanityCap add the workspace's own .gitignore and a hard file/byte
+// ceiling on top of that (review defect #2).
+func Snapshot(root string, opts ...SnapshotOption) (Manifest, error) {
+	var cfg snapshotConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	var cands []snapshotCandidate
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if rel, relErr := filepath.Rel(root, p); relErr == nil && rel != "." && isControlPlane(rel) {
+			rel, relErr := filepath.Rel(root, p)
+			if relErr == nil && rel != "." && (isControlPlane(rel) || isDefaultIgnoredDir(d.Name())) {
 				return fs.SkipDir
 			}
 			return nil
@@ -115,20 +127,69 @@ func Snapshot(root string) (Manifest, error) {
 			return err
 		}
 		// Re-Lstat before reading: never follow a swapped-in symlink.
-		if fi, err := os.Lstat(p); err != nil {
-			return err
-		} else if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-			return nil
-		}
-		data, err := os.ReadFile(p)
+		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		m = append(m, Entry{Path: filepath.ToSlash(rel), Digest: blob.Digest(data)})
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return nil
+		}
+		cands = append(cands, snapshotCandidate{rel: filepath.ToSlash(rel), path: p, size: fi.Size()})
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("fsdiff: snapshot %s: %w", root, err)
+	}
+
+	if cfg.workspaceRoot != "" {
+		relPaths := make([]string, len(cands))
+		for i, c := range cands {
+			relPaths[i] = c.rel
+		}
+		wi, wiErr := loadWorkspaceIgnore(cfg.workspaceRoot, relPaths)
+		if wiErr == nil {
+			filtered := cands[:0]
+			for _, c := range cands {
+				if !wi.Ignore(c.rel) {
+					filtered = append(filtered, c)
+				}
+			}
+			cands = filtered
+		}
+	}
+
+	if cfg.maxFiles > 0 && len(cands) > cfg.maxFiles {
+		return nil, &SnapshotTooLargeError{
+			Root: root, FileCount: len(cands), MaxFiles: cfg.maxFiles,
+			Examples: exampleList(cands, 5),
+		}
+	}
+	if cfg.maxBytes > 0 {
+		var total int64
+		for _, c := range cands {
+			total += c.size
+		}
+		if total > cfg.maxBytes {
+			return nil, &SnapshotTooLargeError{
+				Root: root, FileCount: len(cands), TotalBytes: total, MaxBytes: cfg.maxBytes,
+				Examples: exampleList(cands, 5),
+			}
+		}
+	}
+
+	m := make(Manifest, 0, len(cands))
+	for _, c := range cands {
+		data, err := os.ReadFile(c.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Removed between the walk and the read (e.g. a concurrent
+				// writer); treat as absent rather than failing the whole
+				// snapshot.
+				continue
+			}
+			return nil, fmt.Errorf("fsdiff: snapshot %s: %w", root, err)
+		}
+		m = append(m, Entry{Path: c.rel, Digest: blob.Digest(data)})
 	}
 	sort.Slice(m, func(i, j int) bool { return m[i].Path < m[j].Path })
 	return m, nil
