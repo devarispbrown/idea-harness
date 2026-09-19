@@ -842,6 +842,23 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		if err != nil {
 			return domain.InitiativeFailed, err
 		}
+
+		// C2: rigor only ever relaxes the ADVERSARIAL reviewer's findings.
+		// The deterministic checks (duplicate REQ code, missing/vague
+		// acceptance criteria) must always go through EvaluateApproval, at
+		// every rigor -- quick must never auto-approve a PRD that fails
+		// them just because it has few requirements.
+		//
+		// C1: when quick DOES accept the adversarial reviewer's findings,
+		// they must be marked Advisory=true before they are capped and
+		// persisted -- an unmarked finding here is a plain open blocker
+		// that the verify gate (hasOpenBlockingFindings) can never clear.
+		if rigor == RigorQuick {
+			for i := range advFindings {
+				advFindings[i].Advisory = true
+			}
+		}
+
 		all := append(detFindings, advFindings...)
 		all = capFindings(all, findingCap(rigor), rigor)
 
@@ -859,9 +876,15 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			}
 		}
 
+		// blocked now reflects only non-advisory blocking findings: at quick
+		// that is exactly the deterministic ones (the adversarial reviewer's
+		// were just marked Advisory above), and at standard/thorough it is
+		// any of them. Either way it must always go through the cycle/
+		// human-judgment path below -- there is no rigor level at which a
+		// failed deterministic check is auto-approved.
 		blocked, reason := review.EvaluateApproval(all)
-		if !blocked || rigor == RigorQuick {
-			if blocked {
+		if !blocked {
+			if rigor == RigorQuick && len(advFindings) > 0 {
 				// Quick converges in one pass and accepts with advisories
 				// (review B1): the findings stand, but do not gate approval,
 				// and are not falsely dispositioned "fixed" -- nothing was.

@@ -72,25 +72,56 @@ const RigorCapCategory = "review_rigor"
 // dropped count in a note"). When anything is dropped, an extra observation
 // finding is appended recording how many were dropped and at what rigor
 // level, rather than silently discarding review output.
+//
+// C3: a blocking finding (!Advisory && Severity.Blocking()) is NEVER dropped,
+// no matter how many there are relative to max -- an advisory finding must
+// never crowd out a real blocker, and the cap must not silently discard more
+// blockers than it admits to. Findings are ordered non-advisory before
+// advisory, then by severity (descending) within each group; because
+// Severity.Blocking() is exactly {critical, high} -- the two highest
+// severityRank values -- the non-advisory blocking findings always sort to
+// the very front of the non-advisory group, so they form a contiguous
+// prefix that capping-by-count naturally preserves. Only the remainder
+// (non-blocking, or advisory regardless of severity) is subject to the cap.
 func capFindings(findings []domain.Finding, max int, rigor RigorLevel) []domain.Finding {
-	if max <= 0 || len(findings) <= max {
-		return findings
-	}
 	sorted := make([]domain.Finding, len(findings))
 	copy(sorted, findings)
 	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Advisory != sorted[j].Advisory {
+			return !sorted[i].Advisory // non-advisory first
+		}
 		return severityRank[sorted[i].Severity] > severityRank[sorted[j].Severity]
 	})
-	kept := make([]domain.Finding, max)
-	copy(kept, sorted[:max])
-	dropped := len(findings) - max
+
+	mustKeep := 0
+	for _, f := range sorted {
+		if !f.Advisory && f.Severity.Blocking() {
+			mustKeep++
+			continue
+		}
+		break // blocking non-advisory findings are a contiguous prefix; see comment above
+	}
+
+	keep := max
+	if mustKeep > keep {
+		keep = mustKeep
+	}
+	if max <= 0 || keep >= len(sorted) {
+		return sorted
+	}
+
+	kept := make([]domain.Finding, keep, keep+1)
+	copy(kept, sorted[:keep])
+	dropped := len(sorted) - keep
 	kept = append(kept, domain.Finding{
 		Severity:   domain.SeverityObservation,
 		Confidence: domain.ConfidenceHigh,
 		Category:   RigorCapCategory,
-		Finding:    fmt.Sprintf("%d lower-severity finding(s) not shown", dropped),
-		Note:       fmt.Sprintf("review.rigor=%s caps this cycle at %d findings; the highest-severity ones are kept", rigor, max),
-		Advisory:   true,
+		Finding:    fmt.Sprintf("%d finding(s) not shown", dropped),
+		Note: fmt.Sprintf("review.rigor=%s caps this cycle at %d findings; blocking findings (critical/high, "+
+			"not advisory) are never dropped, and the rest are capped preferring non-advisory and higher "+
+			"severity", rigor, max),
+		Advisory: true,
 	})
 	return kept
 }
@@ -146,11 +177,17 @@ func projectScaleOf(ctx context.Context, workspace string) projectScale {
 }
 
 // changeSize is the size of the specific change under review (review B1): a
-// requirement count for the PRD/plan review, or a file count for the
-// change-set review -- whichever the caller has in hand.
+// requirement count for the PRD/plan review, or a file count (and, for the
+// change-set review, a changed-line count -- H3) for the change-set review --
+// whichever the caller has in hand.
 type changeSize struct {
 	Requirements int
 	Files        int
+	// Lines is the number of lines the change set's diff touched (review
+	// H3): a small file count can still hide a huge change (a 3-file,
+	// 10,000-line change on a 20-file repo calibrated to "quick" with file
+	// count alone), so line count also pushes calibration toward `thorough`.
+	Lines int
 }
 
 // calibrateRigor derives review.rigor: auto's effective level from project and
@@ -168,7 +205,7 @@ func calibrateRigor(configured RigorLevel, scale projectScale, chg changeSize) R
 	if configured != "" && configured != RigorAuto {
 		return configured
 	}
-	big := scale.Files > 200 || scale.LOC > 20000 || chg.Requirements > 15 || chg.Files > 15
+	big := scale.Files > 200 || scale.LOC > 20000 || chg.Requirements > 15 || chg.Files > 15 || chg.Lines > 500
 	// scale.Files > 0 is required: a zero scale means the workspace could not
 	// be measured (no workspace yet, a brand-new idea, a read error), which is
 	// unknown, not small, and must not default to the LEAST scrutiny.

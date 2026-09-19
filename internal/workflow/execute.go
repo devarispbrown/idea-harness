@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2186,23 +2188,23 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		if err := e.denyReviewOpenBlocking(ctx, changeSetID); err != nil {
 			return err
 		}
-		runID, findings, rigor, err := e.runChangeSetAdversarialReview(ctx, cs)
+		runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
 		if err != nil {
 			return err
 		}
-		if rigor == RigorQuick {
-			// Quick converges in one pass and accepts with advisories (review
-			// B1): the adversarial reviewer's own judgment no longer gates
-			// approval, though the findings are still recorded, honestly
-			// marked advisory rather than silently skipped. A system-deny
-			// finding (denyReviewOpenBlocking, above) is unaffected -- that is
-			// a security invariant, not a rigor knob.
-			for i := range findings {
-				if findings[i].Code == "" {
-					findings[i].Advisory = true
-				}
-			}
-		}
+		// H3: quick does NOT blanket-mark every finding advisory for a
+		// change-set review. Doing so used to let a critical/high finding
+		// IN THE DIFF through with no human step at all, on nothing more
+		// than the calibration heuristic ("<=3 files" on a small repo) --
+		// which was itself gameable, since it only counted files, never
+		// lines (see changeSetLines above). "Quick" for a change set means
+		// one pass and a smaller findings cap (findingCap, above); it does
+		// not mean critical/high stops blocking. A system-deny finding
+		// (denyReviewOpenBlocking, above) was never affected by rigor
+		// either way -- that is a security invariant, not a rigor knob.
+		// classifyDiffEvidence (B2) is the only thing that marks a
+		// change-set finding advisory, and it does so on diff-membership,
+		// not on rigor.
 		for i := range findings {
 			findings[i].InitiativeID = initiativeID
 			findings[i].TargetType = "change_set"
@@ -2312,11 +2314,19 @@ const ChangeSetReviewSchemaName = "change_set_review"
 // whether a blocking finding should still block (quick converges in one pass
 // and accepts with advisories instead).
 func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, RigorLevel, error) {
-	patch, _ := e.loadPatch(cs)
+	// H2: a patch that fails to load must fail the review, not silently
+	// review against an empty file set. An empty changeFiles set makes
+	// EVERY path-bearing finding "advisory" (see classifyDiffEvidence),
+	// which is the unsafe direction for a real blocker -- the comment this
+	// replaced called that "the safe direction"; it is not, for a deny.
+	patch, err := e.loadPatch(cs)
+	if err != nil {
+		return "", nil, "", err
+	}
 	changeFiles := changeSetFilePaths(patch)
 
 	scale := projectScaleOf(ctx, e.workspaceRoot)
-	chg := changeSize{Files: len(changeFiles)}
+	chg := changeSize{Files: len(changeFiles), Lines: e.changeSetLines(patch)}
 	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, chg)
 	conventions := projectConventions(e.workspaceRoot)
 
@@ -2345,45 +2355,125 @@ func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.C
 		return "", nil, "", err
 	}
 	for i := range findings {
-		classifyDiffEvidence(&findings[i], changeFiles)
+		classifyDiffEvidence(&findings[i], changeFiles, e.workspaceRoot)
 	}
 	findings = capFindings(findings, findingCap(rigor), rigor)
 	return runID, findings, rigor, nil
 }
 
-// changeSetFilePaths returns the set of file paths a change set's patch
-// touches, for review B2's deterministic "is this finding about a file the
-// change set actually touches" check. A nil/unreadable patch yields an empty
-// set (never a match), which is the safe direction: a finding that names a
-// path outside a set we could not determine is advisory, not silently
-// blocking.
+// changeSetLines estimates the number of lines a change set's diff touched
+// (review H3's change-size calibration input): the total line count of every
+// added/modified file's post-image content. fsdiff's patches are
+// content-addressed at the file level, not the line level, so this is an
+// upper bound on "added lines" rather than a precise line diff -- but it is
+// enough to catch what the review found: a small file count (3 files) hiding
+// a huge change (10,000 lines), which file count alone calibrated to
+// `quick`.
+func (e *Engine) changeSetLines(patch *fsdiff.Patch) int {
+	if patch == nil || e.contentBlobs() == nil {
+		return 0
+	}
+	lines := 0
+	for _, fc := range patch.Files {
+		if fc.IsDelete() {
+			continue
+		}
+		data, err := e.contentBlobs().Get(fc.Digest)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		lines += strings.Count(string(data), "\n") + 1
+	}
+	return lines
+}
+
+// changeSetFilePaths returns the set of normalized file paths a change set's
+// patch touches, for review B2's deterministic "is this finding about a file
+// the change set actually touches" check. A nil/unreadable patch yields an
+// empty set (never a match), which is the safe direction: a finding that
+// names a path outside a set we could not determine falls back to the
+// self-report rule (classifyDiffEvidence), not a silent demotion.
+//
+// Every path is run through normalizeFindingPath (H2) so it compares equal to
+// a reviewer-supplied path in a different but equivalent form.
 func changeSetFilePaths(patch *fsdiff.Patch) map[string]bool {
 	out := map[string]bool{}
 	if patch == nil {
 		return out
 	}
 	for _, fc := range patch.Files {
-		out[fc.Path] = true
+		if norm := normalizeFindingPath(fc.Path, ""); norm != "" {
+			out[norm] = true
+		}
 	}
 	return out
+}
+
+// normalizeFindingPath normalizes a path for the in-diff membership check
+// (review H2): the reviewer, the patch, and the workspace can each spell the
+// same file differently. It:
+//
+//   - strips a trailing ":N" line suffix ("src/a.go:42");
+//   - converts to slash-separated form;
+//   - strips a workspace-absolute prefix, when workspace is given and the
+//     path is rooted under it;
+//   - strips a leading "./", "a/" or "b/" (git-diff-style prefixes);
+//   - runs path.Clean.
+//
+// The comparison this feeds is case-sensitive: no case-folding is applied,
+// since normalizeFindingPath's job is structural equivalence, not
+// platform-specific case-insensitivity.
+func normalizeFindingPath(p, workspace string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(p, ":"); idx > 0 {
+		if _, err := strconv.Atoi(p[idx+1:]); err == nil {
+			p = p[:idx]
+		}
+	}
+	p = filepath.ToSlash(p)
+	if workspace != "" {
+		ws := filepath.ToSlash(workspace)
+		ws = strings.TrimSuffix(ws, "/")
+		if p == ws {
+			return ""
+		}
+		if strings.HasPrefix(p, ws+"/") {
+			p = strings.TrimPrefix(p, ws+"/")
+		}
+	}
+	p = strings.TrimPrefix(p, "./")
+	p = strings.TrimPrefix(p, "a/")
+	p = strings.TrimPrefix(p, "b/")
+	p = path.Clean(p)
+	if p == "." {
+		return ""
+	}
+	return p
 }
 
 // classifyDiffEvidence applies review B2's deterministic in-diff rule to one
 // change-set review finding, mutating it in place:
 //
-//   - Path given, and not one of the change set's files: Advisory, with a note
-//     that it is about code this change set did not touch. Path given AND a
-//     change-set file: left alone -- the deterministic check confirmed it.
-//   - Path omitted: the reviewer's own in_diff self-report decides Advisory
-//     instead, and the note says the finding's diff-membership is
-//     unverified -- self-report, not the deterministic path check.
-func classifyDiffEvidence(f *domain.Finding, changeFiles map[string]bool) {
+//   - Path given, and its normalized form (H2) is one of the change set's
+//     (also normalized) files: left alone -- the deterministic check
+//     confirmed it.
+//   - Path given, but it normalizes to no match: this does NOT prove the
+//     finding is out-of-diff -- an unanticipated spelling normalizeFindingPath
+//     doesn't yet strip looks identical to a genuinely out-of-diff path. H2:
+//     fall back to the self-report rule below rather than demoting a possible
+//     real blocker.
+//   - Path omitted (or unmatched, per above): the reviewer's own in_diff
+//     self-report decides Advisory instead, and the note says the finding's
+//     diff-membership is unverified -- self-report, not the deterministic
+//     path check.
+func classifyDiffEvidence(f *domain.Finding, changeFiles map[string]bool, workspace string) {
 	if f.Path != "" {
-		if !changeFiles[f.Path] {
-			f.Advisory = true
-			f.Note = appendNote(f.Note, "about code this change set did not touch")
+		if norm := normalizeFindingPath(f.Path, workspace); norm != "" && changeFiles[norm] {
+			return
 		}
-		return
 	}
 	f.Note = appendNote(f.Note, "unverified")
 	if !f.InDiff {
