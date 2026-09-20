@@ -849,7 +849,34 @@ func (db *DB) ListDecisionDiscussions(ctx context.Context, decisionID string) ([
 }
 
 // ResolveDecision records a human decision (immutable once resolved).
+//
+// ICP re-run defect H (third clause): quick rigor can auto-approve a plan (and
+// tasks can execute) while a decision is still open, so "resolving a decision
+// for the first time" is no longer guaranteed to happen before anything was
+// built on it -- unlike the ordinary flow, where a decision is expected to
+// resolve before the plan it feeds even exists. When something already
+// depends on this decision (a live requirement derived from it, that
+// requirement's tasks, their applied change sets), resolving it now is
+// exactly as consequential as ReopenDecision's "changed my mind" case, and
+// must mark the same dependents stale the same way -- otherwise a human's
+// answer given after plan approval (e.g. "keys in an env var") never
+// surfaces as "N items may be invalid" anywhere, and the tasks/change sets
+// built without it are never flagged for a second look.
 func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor string) error {
+	dec, err := db.GetDecision(ctx, decisionID)
+	if err != nil {
+		return err
+	}
+	// Discovery reads BEFORE the transaction starts -- see decisionDependents'
+	// own doc comment (db.sql is a single-connection handle; a pool read from
+	// inside an open transaction deadlocks against the transaction's own
+	// connection). Read against the PRE-resolve state; resolving is itself
+	// what makes these dependents newly worth flagging, whether or not any
+	// exist yet.
+	reqIDs, taskIDs, csIDs, err := db.decisionDependents(ctx, dec.InitiativeID, dec.ID)
+	if err != nil {
+		return err
+	}
 	return db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
@@ -866,7 +893,12 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 			return notFoundOrState(tx, "decisions", decisionID, "decision",
 				fmt.Errorf("decision %s is not open", decisionID))
 		}
-		return nil
+		// review M5's reasoning applies here too: marked in the SAME
+		// transaction as the resolve, so a crash between the two can never
+		// leave the decision resolved with nothing marked stale. A decision
+		// resolved before anything depends on it (the ordinary case) marks
+		// nothing -- markDependentsStaleTx no-ops on three empty lists.
+		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
 	})
 }
 

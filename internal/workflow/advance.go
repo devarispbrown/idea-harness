@@ -628,6 +628,22 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		all[i].Evidence = e.redact(all[i].Evidence)
 		all[i].Impact = e.redact(all[i].Impact)
 		all[i].Recommendation = e.redact(all[i].Recommendation)
+	}
+
+	// ICP re-run defect A: RevisePlan/ReopenPhase regenerate the plan and
+	// re-run this review from scratch -- a legitimate re-review that
+	// disposes prior OPEN findings as not_applicable (see their own doc
+	// comments) but leaves an already-dispositioned one exactly as the human
+	// left it, with no link to whatever the fresh pass raises. Carry a
+	// human's disposition forward onto its near-duplicate here too, so a
+	// finding the plan reviewer merely rewords does not re-litigate a
+	// judgment call already made. After redaction, so it compares
+	// like-for-like against prior findings (already redacted before they
+	// were persisted).
+	if err := e.inheritDispositionFromPrior(ctx, initiativeID, all); err != nil {
+		return domain.InitiativeFailed, err
+	}
+	for i := range all {
 		if err := e.db.CreateFinding(ctx, &all[i]); err != nil {
 			return domain.InitiativeFailed, err
 		}
