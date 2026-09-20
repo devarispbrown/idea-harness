@@ -29,8 +29,29 @@ type credentialPattern struct {
 	// identifier/member-access shape" cannot live in the regexp itself and
 	// are validated here against the full content and the match's index
 	// slice instead. nil means every regex match is valid, unchanged from
-	// before this field existed.
+	// before this field existed. Used for FINDING generation
+	// (FindPatternsInFile, ContainsCredential, FindCredential) -- deciding
+	// whether a match is worth surfacing to a reviewer, or a real enough
+	// signal to hard-reject on. Never REDACTION (see redactGate, RedactString,
+	// review C3): a value this rejects as a probable placeholder is exactly
+	// as capable of being a real secret that merely LOOKS like a placeholder
+	// (a Slack token whose numeric ID segments produced a 4-digit run by
+	// chance, a password containing "latest") as one that isn't, so it must
+	// still be masked before anything is ever persisted.
 	valid func(content string, idx []int) bool
+	// redactGate, when non-nil, additionally filters this pattern's matches
+	// for REDACTION only (RedactString, review C3): unlike valid, this must
+	// NEVER reject a match merely for looking like a placeholder (that's
+	// exactly the C3 regression -- redaction skipped on a "placeholder-
+	// shaped" match that was actually a real secret). Its only legitimate use
+	// is rejecting a match that isn't credential-shaped AT ALL -- a variable
+	// reference, a function call, template/interpolation syntax
+	// (validCredentialAssignmentValue, the generic assignment rule's own
+	// structural gate) -- where redacting it would mangle ordinary code or
+	// prose for no security benefit, not exclude a possible secret. nil means
+	// every regex match is unconditionally redacted, which is every pattern
+	// except the generic assignment rule.
+	redactGate func(content string, idx []int) bool
 }
 
 // validMatches returns p's matches within content that also satisfy p.valid
@@ -49,16 +70,24 @@ func (p credentialPattern) validMatches(content string) [][]int {
 	return out
 }
 
-// replaceValid redacts p's valid matches in s with [REDACTED], leaving any
-// regex match that failed p.valid untouched.
-func (p credentialPattern) replaceValid(s string) string {
-	matches := p.validMatches(s)
-	if len(matches) == 0 {
+// redact returns s with every one of p's regex matches replaced by
+// [REDACTED], filtered by p.redactGate when non-nil (review C3) -- NEVER by
+// p.valid, which gates findings, not redaction (see credentialPattern's doc
+// comments for why the two must stay separate).
+func (p credentialPattern) redact(s string) string {
+	if p.redactGate == nil {
+		return p.re.ReplaceAllString(s, redacted)
+	}
+	all := p.re.FindAllStringSubmatchIndex(s, -1)
+	if len(all) == 0 {
 		return s
 	}
 	var b strings.Builder
 	last := 0
-	for _, idx := range matches {
+	for _, idx := range all {
+		if !p.redactGate(s, idx) {
+			continue
+		}
 		b.WriteString(s[last:idx[0]])
 		b.WriteString(redacted)
 		last = idx[1]
@@ -178,23 +207,70 @@ func validCredentialAssignmentValue(content string, idx []int) bool {
 	return !looksLikeIdentifierReference(value)
 }
 
-// placeholderWords are case-insensitive substrings that mark an assigned
-// value as a placeholder rather than a real secret (ICP re-run defect #1):
-// "example", "test", "dummy", "fake", "placeholder", "changeme", "xxx". Scoped
-// to the GENERIC "credential assignment" pattern only (validGenericAssignment)
-// -- never a provider-specific format -- because a real, documented example
-// key can legitimately carry one of these words (AWS's own
+// placeholderWords are case-insensitive WHOLE WORDS/SEGMENTS (see
+// placeholderSegments) that mark an assigned value as a placeholder rather
+// than a real secret (ICP re-run defect #1): "example", "test", "dummy",
+// "fake", "placeholder", "changeme", "xxx". Scoped to the GENERIC "credential
+// assignment" pattern only (validGenericAssignment) -- never a
+// provider-specific format -- because a real, documented example key can
+// legitimately carry one of these words (AWS's own
 // "AKIAIOSFODNN7EXAMPLE"/"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" docs
 // literals, which this catalog's AWS-specific patterns must keep matching).
 var placeholderWords = []string{"example", "test", "dummy", "fake", "placeholder", "changeme", "xxx"}
 
+// placeholderSegments splits value into its alphabetic word segments: runs of
+// letters (a digit or any other non-letter byte ends a run), further split on
+// camelCase transitions (lower-to-upper, "latestProdPw" -> "latest", "Prod",
+// "Pw"). containsPlaceholderWord compares WHOLE segments, never substrings
+// (review C3 defect #1): containsPlaceholderWord used to do a bare
+// strings.Contains, so "test" silently suppressed "latest", "contest",
+// "greatest", "attestation" and "protest" as a side effect, and "xxx"
+// suppressed any value that merely contained it anywhere -- a real secret
+// with a coincidental "test"/"xxx" substring passed through RedactString
+// unmasked. A digit boundary (as in "changeme123", "test1234") still ends a
+// letter run without preventing that run from matching -- only what's on the
+// OTHER side of a placeholder word matters for the substring bug, so a
+// trailing digit run is left as its own segment (never itself a placeholder
+// word) while "changeme"/"test" match cleanly.
+func placeholderSegments(value string) []string {
+	var segments []string
+	splitCamel := func(word string) {
+		last := 0
+		for i := 1; i < len(word); i++ {
+			if word[i-1] >= 'a' && word[i-1] <= 'z' && word[i] >= 'A' && word[i] <= 'Z' {
+				segments = append(segments, word[last:i])
+				last = i
+			}
+		}
+		segments = append(segments, word[last:])
+	}
+	start := -1
+	isLetter := func(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
+	for i := 0; i <= len(value); i++ {
+		if i < len(value) && isLetter(value[i]) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			splitCamel(value[start:i])
+			start = -1
+		}
+	}
+	return segments
+}
+
 // containsPlaceholderWord reports whether value contains one of
-// placeholderWords, case-insensitively.
+// placeholderWords as a whole word/segment (placeholderSegments), never a
+// substring of a longer word.
 func containsPlaceholderWord(value string) bool {
-	lower := strings.ToLower(value)
-	for _, w := range placeholderWords {
-		if strings.Contains(lower, w) {
-			return true
+	for _, seg := range placeholderSegments(value) {
+		lower := strings.ToLower(seg)
+		for _, w := range placeholderWords {
+			if lower == w {
+				return true
+			}
 		}
 	}
 	return false
@@ -298,11 +374,29 @@ const maxPlaceholderShapeLen = 200
 
 // isPlaceholderShape reports whether value has the SHAPE of a placeholder --
 // a long run of one repeated character, or overall entropy too low to
-// plausibly be generated secret data -- independent of vocabulary. Applied to
-// every flat-token pattern in credentialCatalog (validFlatTokenValue), not
-// just the generic assignment rule, so a provider-specific format with an
-// obviously-fake body (the Stripe-shaped "sk_live_...0000" example) is also
-// excluded.
+// plausibly be generated secret data -- independent of vocabulary.
+//
+// Deliberately NEVER applied to a provider-prefixed pattern (review C3
+// defect #2: AWS/GitHub/GitLab/Google/npm/OpenAI-Anthropic/Stripe/Slack/
+// AWS_SECRET_ACCESS_KEY) -- an earlier version of this catalog ran every
+// such pattern through this check via a since-removed validFlatTokenValue
+// validator, on the theory that a provider-specific format with an
+// obviously-fake body (the Stripe-shaped "sk_live_...0000" example) should
+// also be excluded. Measured over 200k random well-formed keys per format,
+// that silently missed a REAL secret 1 in 68 times for Slack's xoxb- shape
+// (its long numeric ID segments make a 4-digit run likely by chance alone),
+// 1 in 3,200 for AWS, and 1 in 6,100-9,500 for the rest -- a run-length or
+// entropy heuristic is not reliable evidence on data this short, and the
+// vendor prefix IS already the evidence that a match is real (the same
+// reasoning containsPlaceholderWord's doc comment already gives for why the
+// vocabulary list is scoped to the generic rule alone). A human can still
+// disposition an individual pattern-shaped match "not a secret" via the
+// allowlist (CredentialFinding.Overridable) -- that per-match human judgment
+// replaces this heuristic's blanket, silent suppression for those formats.
+//
+// Still applied to the GENERIC "credential assignment" rule
+// (validGenericAssignment), which carries no vendor prefix of its own to
+// serve as evidence either way.
 func isPlaceholderShape(value string) bool {
 	if value == "" || len(value) > maxPlaceholderShapeLen {
 		return false
@@ -327,38 +421,63 @@ func looksLikeTemplatePlaceholder(value string) bool {
 	return strings.Contains(value, "<") && strings.Contains(value, ">")
 }
 
+// isLikelyPlaceholderValue reports whether value reads as a placeholder
+// rather than literal secret data: a comment/template placeholder
+// (looksLikeTemplatePlaceholder), a whole placeholder vocabulary word
+// (containsPlaceholderWord), a value that IS essentially one long sequential
+// run (isSequentialFill), or an overall placeholder shape (isPlaceholderShape:
+// a repeated-character run or low aggregate entropy). Shared by every GENERIC
+// pattern in the catalog -- one with no vendor prefix of its own to serve as
+// evidence -- so a documented example value in prose, a doc comment, or a
+// test fixture doesn't raise a finding at all (review H11, C3): the generic
+// "credential assignment" rule (validGenericAssignment) and, since neither
+// carries a distinctive prefix either, the generic Bearer-token and URL
+// userinfo-credential rules (validBearerOrDSNValue). NEVER applied to a
+// provider-prefixed pattern -- see isPlaceholderShape's doc comment for why.
+func isLikelyPlaceholderValue(value string) bool {
+	if looksLikeTemplatePlaceholder(value) {
+		return true
+	}
+	if containsPlaceholderWord(value) {
+		return true
+	}
+	if isSequentialFill(value) {
+		return true
+	}
+	return isPlaceholderShape(value)
+}
+
 // validGenericAssignment is credentialCatalog's validator for the generic
 // "credential assignment" pattern: validCredentialAssignmentValue's existing
-// call-vs-literal-vs-reference checks, plus the placeholder/low-entropy and
-// test-fixture-path handling from the ICP re-run's defect #1. A match that
-// fails this never becomes a finding at all (not even advisory) -- it reads
-// as a placeholder, not a possible false positive worth showing a reviewer.
+// call-vs-literal-vs-reference checks, plus isLikelyPlaceholderValue's
+// placeholder/low-entropy handling from the ICP re-run's defect #1. A match
+// that fails this never becomes a finding at all (not even advisory) -- it
+// reads as a placeholder, not a possible false positive worth showing a
+// reviewer.
 func validGenericAssignment(content string, idx []int) bool {
 	if !validCredentialAssignmentValue(content, idx) {
 		return false
 	}
 	start, end := capturedGroupBounds(idx)
-	value := content[start:end]
-	if containsPlaceholderWord(value) {
-		return false
-	}
-	if isSequentialFill(value) {
-		return false
-	}
-	return !isPlaceholderShape(value)
+	return !isLikelyPlaceholderValue(content[start:end])
 }
 
-// validFlatTokenValue is credentialCatalog's validator for every
-// provider-specific, single-flat-token pattern (AWS/GitHub/GitLab/Google/npm/
-// OpenAI-Anthropic/Stripe/Slack): only the placeholder-SHAPE check applies
-// (isPlaceholderShape) -- never the vocabulary word list or the sequential-fill
-// check, both of which are scoped to the generic assignment rule alone (see
-// their doc comments for why: a real documented example key, or a
-// hand-written realistic-looking test fixture, can otherwise trip either
-// one).
-func validFlatTokenValue(content string, idx []int) bool {
+// validBearerOrDSNValue is credentialCatalog's validator for the generic
+// Bearer-token and URL-userinfo-credential rules (review H11): neither
+// carries a vendor prefix of its own, so -- unlike the provider-specific
+// formats -- isLikelyPlaceholderValue's full placeholder/template/vocabulary/
+// shape gate applies, exactly as it does for the generic credential-
+// assignment rule. Before this, these two rules had NO validator at all: no
+// entropy, placeholder, template, or test-path gate, so
+// "Bearer YOUR_TOKEN_HERE_XXXXXXXXXX" and
+// "mysql://root:examplepass@127.0.0.1/db" raised critical BLOCKING findings
+// even in a *_test.go file. A real bearer token or DSN password -- realistic
+// entropy, no placeholder word, no template markup -- still matches and
+// still blocks, in a test path or not (see the isTestFixturePath downgrade
+// on FindPatternsInFile, which now also covers these two kinds).
+func validBearerOrDSNValue(content string, idx []int) bool {
 	start, end := capturedGroupBounds(idx)
-	return !isPlaceholderShape(content[start:end])
+	return !isLikelyPlaceholderValue(content[start:end])
 }
 
 // isTestFixturePath reports whether path looks like test or fixture code
@@ -388,9 +507,32 @@ func isTestFixturePath(path string) bool {
 }
 
 // genericAssignmentKind is credentialCatalog's kind string for the generic
-// "credential assignment" pattern -- the ONLY category a test/fixture path
-// downgrades to advisory (see isTestFixturePath and FindPatternsInFile).
+// "credential assignment" pattern.
 const genericAssignmentKind = "credential assignment"
+
+// bearerTokenKind and urlUserinfoCredentialKind are credentialCatalog's kind
+// strings for the two other GENERIC (no vendor prefix) patterns.
+const (
+	bearerTokenKind           = "bearer token"
+	urlUserinfoCredentialKind = "URL userinfo credential"
+)
+
+// advisoryInTestPathKinds is the set of credentialCatalog kinds that
+// downgrade to advisory in a test/fixture path (isTestFixturePath,
+// FindPatternsInFile) -- every GENERIC pattern with no vendor prefix of its
+// own, where a fixture's `"secret": "..."` field, a doc comment's
+// `X-API-Key: <id>:<secret>` shape, a test's `Bearer <fake-token>` header, or
+// a `mysql://user:pass@host` example DSN is common and is not a real
+// credential (review H11 extends this from the generic assignment rule alone
+// to bearer token and URL userinfo credential, which have the same "no
+// vendor prefix" shape). A provider-specific format or a configured secret
+// value is NEVER in this set: it keeps blocking in a test path exactly as
+// anywhere else.
+var advisoryInTestPathKinds = map[string]bool{
+	genericAssignmentKind:     true,
+	bearerTokenKind:           true,
+	urlUserinfoCredentialKind: true,
+}
 
 // credentialCatalog is the redaction and detection catalog (§48). Order
 // matters only for readability; all matches are replaced with [REDACTED].
@@ -400,17 +542,17 @@ var credentialCatalog = []credentialPattern{
 	// JWTs (three base64url segments).
 	{re: regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b`), kind: "JWT"},
 	// AWS access key id.
-	{re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), kind: "AWS access key ID", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`), kind: "AWS access key ID"},
 	// GitHub personal access token (classic + fine-grained) and OAuth tokens.
-	{re: regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), kind: "GitHub personal access token", valid: validFlatTokenValue},
-	{re: regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), kind: "GitHub fine-grained personal access token", valid: validFlatTokenValue},
-	{re: regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), kind: "GitHub token", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(ghp_[A-Za-z0-9]{20,})\b`), kind: "GitHub personal access token"},
+	{re: regexp.MustCompile(`\b(github_pat_[A-Za-z0-9_]{20,})\b`), kind: "GitHub fine-grained personal access token"},
+	{re: regexp.MustCompile(`\b(gh[ousr]_[A-Za-z0-9]{20,})\b`), kind: "GitHub token"},
 	// GitLab personal access token.
-	{re: regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), kind: "GitLab personal access token", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(glpat-[A-Za-z0-9_-]{20,})\b`), kind: "GitLab personal access token"},
 	// Google API key.
-	{re: regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), kind: "Google API key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{30,})\b`), kind: "Google API key"},
 	// npm access token.
-	{re: regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), kind: "npm access token", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(npm_[A-Za-z0-9]{30,})\b`), kind: "npm access token"},
 	// Anthropic, OpenAI and other `sk-` keys.
 	//
 	// Shaped as "a few short vendor segments, then a long alphanumeric run",
@@ -439,26 +581,33 @@ var credentialCatalog = []credentialPattern{
 	//
 	// 1. A known provider prefix. The prefix is the evidence, so the body is
 	//    plain base64url with no further constraint.
-	{re: regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), kind: "OpenAI/Anthropic API key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,})`), kind: "OpenAI/Anthropic API key"},
 	// 2. The legacy flat OpenAI key: "sk-" and one unbroken alphanumeric run.
-	{re: regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), kind: "OpenAI API key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(sk-[A-Za-z0-9]{20,})\b`), kind: "OpenAI API key"},
 	// 3. Any other "sk-" token whose body carries an uppercase letter. That is
 	//    what separates a key from the false positive the previous widening hit
 	//    -- an ordinary URL slug like
 	//    sk-decomposition-of-matrices-and-linear-algebra is lowercase and
 	//    hyphenated, and never carries one.
-	{re: regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), kind: "API key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(sk-[a-z0-9_-]{0,64}[A-Z][A-Za-z0-9_-]{10,})`), kind: "API key"},
 	// Stripe live secret key.
-	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key"},
 	// Slack tokens (bot, app, refresh, signing, user).
-	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token", valid: validFlatTokenValue},
-	// Generic Bearer token.
-	{re: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), kind: "bearer token"},
+	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token"},
+	// Generic Bearer token. No vendor prefix of its own (review H11), so it
+	// goes through the same placeholder/template gate as the generic
+	// assignment rule (validBearerOrDSNValue) -- otherwise
+	// "Bearer YOUR_TOKEN_HERE_XXXXXXXXXX" raises a critical BLOCKING finding
+	// even in a *_test.go file.
+	{re: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/-]{20,})\b`), kind: bearerTokenKind, valid: validBearerOrDSNValue},
 	// URL userinfo credentials (review H5): scheme://user:PASSWORD@host, e.g.
 	// postgres://admin:hunter2345@db. The username is unconstrained (any
 	// run with no ':'/'/'/'@'/whitespace); the password is 3+ characters
-	// excluding '/'/'@'/whitespace, tolerating a short example password.
-	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]+:([^\s/@]{3,})@`), kind: "URL userinfo credential"},
+	// excluding '/'/'@'/whitespace, tolerating a short example password. No
+	// vendor prefix of its own (review H11) -- same placeholder/template gate
+	// as bearer token above, otherwise "mysql://root:examplepass@127.0.0.1/db"
+	// raises a critical BLOCKING finding even in a *_test.go file.
+	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]+:([^\s/@]{3,})@`), kind: urlUserinfoCredentialKind, valid: validBearerOrDSNValue},
 	// AWS secret access key (review M3): its own env-var name, since the
 	// generic credential-assignment rule below requires the keyword
 	// (api_key/secret/password/token) to sit immediately before the
@@ -478,7 +627,7 @@ var credentialCatalog = []credentialPattern{
 	// produced no finding at all. Shell/env (`AWS_SECRET_ACCESS_KEY=...`) and
 	// YAML (`aws_secret_access_key: ...`) syntax have no quote there and are
 	// unaffected; this only widens what already matched.
-	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY["']?\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key", valid: validFlatTokenValue},
+	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY["']?\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key"},
 	// Generic credential assignment in text/JSON/shell/URLs (review M3, H5):
 	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., pwd = "...",
 	// SECRET_KEY = "...", and similar.
@@ -516,6 +665,14 @@ var credentialCatalog = []credentialPattern{
 		re:    regexp.MustCompile(`(?i)[A-Za-z0-9_]*(?:api[_-]?key|secret(?:[_-]?(?:key|value))?|passw(?:or)?d|pwd|token)["']?\s*[:=]\s*(?:"([^"\n]{8,})"|'([^'\n]{8,})'|([^\s"'(){}\[\],;]{8,}))`),
 		kind:  genericAssignmentKind,
 		valid: validGenericAssignment,
+		// redactGate (review C3): validCredentialAssignmentValue's structural
+		// call/reference/interpolation/template check only -- never
+		// validGenericAssignment's placeholder-vocabulary/entropy checks, so
+		// redaction still happens on a placeholder-shaped value (harmless:
+		// there's nothing real to protect) while a genuine non-credential
+		// match (`req.headers.authorization`, `getenv(...)`, `${API_KEY}`)
+		// is still left alone rather than mangled.
+		redactGate: validCredentialAssignmentValue,
 	},
 }
 
@@ -545,18 +702,33 @@ func FingerprintWithKey(key []byte, value string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// maskValueShortRevealLen is how much of each side maskValue reveals for a
+// value between 16 and maskValueLongThreshold-1 characters, inclusive
+// (review LOW): 1 character each side, "a couple" of characters total, never
+// the min(4, len/4) formula the longer tier uses.
+const maskValueShortRevealLen = 1
+
+// maskValueLongThreshold is the length at which maskValue switches from
+// maskValueShortRevealLen to the fuller min(4, len/4) reveal (review LOW).
+const maskValueLongThreshold = 24
+
 // maskValue returns a masked preview of a secret value for display for a
-// human dispositioning a finding (review H1): at most min(4, len/4)
-// characters are kept on each side, the rest collapsed to a single ellipsis
-// (e.g. "sk-p…Xy9z"). Nothing is revealed at all for a value under 16
-// characters -- the old floor of 8 revealed 4+4 of a 9-character value
-// (`abcdefghi` -> `abcd…fghi`, 8 of 9 characters back in the clear), and
-// short passwords are exactly the common case a human is dispositioning
-// here.
+// human dispositioning a finding (review H1, LOW). Nothing is revealed at
+// all for a value under 16 characters. Between 16 and 23 characters, only
+// maskValueShortRevealLen character is revealed on each side: the previous
+// min(4, len/4) formula revealed 4+4 of a 16-character secret --
+// `Hq7zR2mVx9LpQwEr` -> `Hq7z…QwEr`, 50% of it back in the clear, and a
+// 16-23 character secret (a short password, an API key body) is exactly the
+// common case a human is dispositioning here. At maskValueLongThreshold
+// characters and above, up to 4 characters are revealed on each side
+// (min(4, len/4)), e.g. "sk-p…Xy9z" for a long key.
 func maskValue(v string) string {
 	n := len(v)
 	if n < 16 {
 		return strings.Repeat("*", n)
+	}
+	if n < maskValueLongThreshold {
+		return v[:maskValueShortRevealLen] + "…" + v[n-maskValueShortRevealLen:]
 	}
 	reveal := n / 4
 	if reveal > 4 {
@@ -722,12 +894,32 @@ func (r *Redactor) Redact(content []byte) ([]byte, error) {
 }
 
 // RedactString redacts a string. It is safe to call concurrently.
+//
+// Every catalog pattern's regex match is redacted unconditionally UNLESS the
+// pattern defines its own narrow redactGate (review C3): this is the blob
+// store's own redactor (daemon/runtime.go), so anything it lets through
+// reaches persisted model artifacts, findings and agent output verbatim. A
+// prior version instead redacted only the matches that passed each pattern's
+// p.valid gate -- the same validity gate FindPatternsInFile/ContainsCredential
+// use to decide whether to raise a FINDING, which for most patterns includes
+// a placeholder-vocabulary/low-entropy check -- which meant a real secret
+// that merely LOOKED like a placeholder (a Slack token whose numeric ID
+// segments produced a 4-digit run by chance, a password containing "latest")
+// was never masked at all, not even silently: it passed through in the
+// clear. p.valid stays exactly where it belongs -- FindPatternsInFile,
+// ContainsCredential, FindCredential -- deciding whether a match is worth
+// surfacing to a reviewer or treating as a hard-reject signal, a question
+// entirely separate from "must this be masked before it's ever persisted".
+// redactGate is reserved for a narrower, non-placeholder structural check
+// (the generic assignment rule's own "is this actually credential-shaped at
+// all, or a variable reference/function call/template placeholder" gate) --
+// see credentialPattern's doc comment.
 func (r *Redactor) RedactString(s string) string {
 	for _, v := range r.known {
 		s = strings.ReplaceAll(s, v, redacted)
 	}
 	for _, p := range credentialCatalog {
-		s = p.replaceValid(s)
+		s = p.redact(s)
 	}
 	return s
 }
@@ -807,11 +999,14 @@ func (r *Redactor) FindPatternsInFile(path, content string) []CredentialFinding 
 				Overridable: true,
 				Preview:     preview,
 				MaskedLine:  maskAllOnLine(lineTextAt(content, idx[0]), r),
-				// Only the generic assignment rule ever downgrades to
-				// advisory, and only in a test/fixture path (ICP re-run
-				// defect #1): a provider-specific format or a configured
-				// secret value blocks everywhere, tests included.
-				Advisory: p.kind == genericAssignmentKind && isTestFixturePath(path),
+				// Only a GENERIC (no vendor prefix) pattern ever downgrades
+				// to advisory, and only in a test/fixture path (ICP re-run
+				// defect #1; review H11 extends the set from the generic
+				// assignment rule alone to bearer token and URL userinfo
+				// credential too): a provider-specific format or a
+				// configured secret value blocks everywhere, tests
+				// included.
+				Advisory: advisoryInTestPathKinds[p.kind] && isTestFixturePath(path),
 			})
 		}
 	}

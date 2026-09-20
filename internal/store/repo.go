@@ -642,6 +642,21 @@ func (db *DB) SupersedeRequirementsExcept(ctx context.Context, initiativeID, sup
 // (derived_from a decision, implements from a task, produced_by an earlier
 // run) instead of orphaning them the way supersede-and-recreate did on every
 // revise cycle. r.ID must already be set to the existing requirement's id.
+//
+// When the revision actually changes the statement or acceptance criteria of
+// a requirement that has already left draft (review C5) -- approved,
+// verified, failed or waived -- its status is reset to approved, verified_at
+// is cleared, and every verification_evidence row for it is deleted, all in
+// THIS SAME transaction. Without this, a requirement could report verified,
+// with surviving human evidence, for a statement that no longer exists: the
+// evidence was recorded against the OLD subject, and status/verified_at are
+// otherwise untouched by a code-matched revision even though the thing being
+// verified has changed underneath it. A revision that leaves the statement
+// and acceptance criteria byte-for-byte unchanged (e.g. only priority moved)
+// is not treated as re-opening verification. A still-draft requirement (an
+// in-progress PRD review cycle revising it before it has ever been approved)
+// is left in draft -- resetting it to approved here would let a mid-review
+// revision jump the requirement past the review gate it hasn't passed yet.
 func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) error {
 	return db.Apply(ctx, Event{
 		AggregateType: "requirement",
@@ -649,13 +664,38 @@ func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) erro
 		Actor:         ActorOrchestrator,
 		EventType:     "requirement.revised",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`
-			UPDATE requirements
-			SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?
-			WHERE id = ?`,
-			r.Statement, mustJSON(r.AcceptanceCriteria), r.Priority, r.ProducedByRun, r.ID)
-		if err != nil {
+		var curStatement, curCriteriaJSON string
+		var curStatus domain.RequirementStatus
+		if err := tx.QueryRow(`SELECT statement, acceptance_criteria_json, status FROM requirements WHERE id = ?`, r.ID).
+			Scan(&curStatement, &curCriteriaJSON, &curStatus); err != nil {
 			return err
+		}
+		newCriteriaJSON := mustJSON(r.AcceptanceCriteria)
+		subjectChanged := curStatement != r.Statement || curCriteriaJSON != newCriteriaJSON
+		reopenVerification := subjectChanged && curStatus != domain.RequirementDraft && curStatus != domain.RequirementRemoved
+
+		if reopenVerification {
+			_, err := tx.Exec(`
+				UPDATE requirements
+				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?,
+				    status = ?, verified_at = NULL
+				WHERE id = ?`,
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, domain.RequirementApproved, r.ID)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DELETE FROM verification_evidence WHERE requirement_id = ?`, r.ID); err != nil {
+				return err
+			}
+		} else {
+			_, err := tx.Exec(`
+				UPDATE requirements
+				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?
+				WHERE id = ?`,
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, r.ID)
+			if err != nil {
+				return err
+			}
 		}
 		if r.ProducedByRun == "" {
 			return nil
