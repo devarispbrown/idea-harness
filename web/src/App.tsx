@@ -275,22 +275,26 @@ export default function App() {
     };
   }, [projectId, currentInitiativeId, loadInitiativeData, loadWave3Data, forgetOutcome]);
 
-  // "Since you were last here" (C1): record this visit's start so, next time
-  // Home is viewed, entriesSince() can show what changed after this moment.
-  // Fires once per initiative actually opened (route change), not on every
-  // render or poll -- ProductHome reads the PREVIOUS value before this
-  // effect ever runs, since it can only be on Home while currentInitiativeId
-  // is empty.
+  // "Since you were last here" (C1): record this visit's end so, next time
+  // Home is viewed, entriesSince() can show what changed after that moment.
+  // ProductHome reads the cursor's PREVIOUS value before this effect ever
+  // runs, since it can only be on Home while currentInitiativeId is empty.
   //
-  // M7, review fix: ALSO stamps again on cleanup (leaving this initiative,
-  // whether by navigating away or unmounting), with a fresh timestamp. The
-  // entry-only stamp meant everything that happened DURING a visit -- the
-  // user's own actions, a run finishing while they watched -- still counted
-  // as "new" the next time they came back, because the stored cursor was
-  // frozen at the moment they walked in. Leaving updates it to "everything
-  // up to when I looked away", so only what happened after that shows next.
+  // M7, review fix: stamps on cleanup (leaving this initiative, whether by
+  // navigating away or unmounting), with a fresh timestamp, so everything
+  // that happened DURING a visit -- the user's own actions, a run finishing
+  // while they watched -- correctly counts as seen too.
+  //
+  // LOW fix (release-gate report): this used to ALSO stamp on entry, which
+  // consumed the unread cursor immediately on arrival, before anything had
+  // actually been shown. Opening an initiative and leaving a moment later --
+  // a misclick, a wrong initiative in a long list -- advanced the cursor to
+  // "now" regardless, so every entry between the previous visit and that
+  // instant was irrecoverably marked seen even though nothing was read. The
+  // exit-only stamp still records "everything up to when I looked away",
+  // whatever the visit's length, without that false-positive on a fast
+  // in-and-out.
   useEffect(() => {
-    if (currentInitiativeId) setLastVisit(currentInitiativeId, new Date().toISOString());
     return () => {
       if (currentInitiativeId) setLastVisit(currentInitiativeId, new Date().toISOString());
     };

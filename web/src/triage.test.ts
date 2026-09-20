@@ -73,6 +73,26 @@ describe("partitionByTriage", () => {
     const { needsYou, optional } = partitionByTriage(items, triage);
     expect(needsYou.length + optional.length).toBe(items.length);
   });
+
+  // LOW fix (release-gate report): partitionByTriage used to trust every
+  // `priority`-ranked triage row unconditionally -- groupTriage's own
+  // defensive top-3 cap had no production caller. A backend that ever marks
+  // a 4th item priority must not grow this page's "needs you" section past 3.
+  it("caps needsYou at 3, same as groupTriage, even with a 4th item all four callers agree is priority", () => {
+    const fourItems: Open[] = [
+      ...items,
+      { id: "q2", label: "question 2" },
+    ];
+    const triage = [
+      item("d1", "priority"),
+      item("f1", "priority"),
+      item("q1", "priority"),
+      item("q2", "priority"), // overflow: backend somehow marked a 4th priority
+    ];
+    const { needsYou, optional } = partitionByTriage(fourItems, triage);
+    expect(needsYou.map((i) => i.id)).toEqual(["d1", "f1", "q1"]);
+    expect(optional.map((i) => i.id)).toEqual(["q2"]);
+  });
 });
 
 describe("optionalLabel", () => {
