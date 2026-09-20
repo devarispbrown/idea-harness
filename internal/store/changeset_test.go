@@ -474,3 +474,63 @@ func TestAmbiguousChangeSetSurvivesAMissingInitiative(t *testing.T) {
 		}
 	}
 }
+
+// TestReconcileChangeSetsCrashMidReapply is H3's reproduction: a change set
+// applied once, was reverted, and a re-apply attempt crashed BEFORE its own
+// workspace_mutated journal row was ever written (still `applying`, only a
+// fresh empty-digest "prepared" row for this attempt exists). Reconciliation
+// must report:
+//   - PreImageDigest == "" -- no bytes were written by THIS attempt. Before
+//     the fix, the digest subquery ignored which attempt a row belonged to
+//     and picked the newest non-empty one regardless, inheriting the FIRST
+//     apply's committed digest -- so startup reconciliation believed a byte
+//     had been written and called RestoreWorkspace with a stale, wrong
+//     pre-image.
+//   - FromStatus == reverted -- this change set entered `applying` from
+//     `reverted`, not `approved`; recovering it to `approved` (the old
+//     hardcoded behavior) mislabels an already-once-applied-and-reverted
+//     change set.
+func TestReconcileChangeSetsCrashMidReapply(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	cs := newTestChangeSet(t, db, "ini-1")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, ""))
+	must(db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, ""))
+	must(db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, ""))
+
+	// First apply: fully committed.
+	must(db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetApproved, domain.ChangeSetApplying, ""))
+	must(db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: cs.ID, State: domain.ApplyPrepared}))
+	must(db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: cs.ID, State: domain.ApplyWorkspaceMutated, WorkspaceSnapshotDigest: "first-apply-digest"}))
+	must(db.MarkChangeSetApplied(ctx, cs.ID, "first-apply-digest", ""))
+
+	// Reverted.
+	must(db.MarkChangeSetReverted(ctx, cs.ID, ""))
+
+	// Re-apply begins, and crashes before its own mutation is recorded: only
+	// the attempt's own "prepared" (empty-digest) row exists.
+	must(db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetReverted, domain.ChangeSetApplying, ""))
+	must(db.AppendJournal(ctx, &domain.ApplyJournalEntry{ChangeSetID: cs.ID, State: domain.ApplyPrepared}))
+
+	rec, err := db.ReconcileChangeSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec) != 1 {
+		t.Fatalf("expected 1 recovery, got %d: %+v", len(rec), rec)
+	}
+	r := rec[0]
+	if r.PreImageDigest != "" {
+		t.Errorf("PreImageDigest = %q, want \"\" (this re-apply attempt wrote nothing yet; got the FIRST apply's stale digest)", r.PreImageDigest)
+	}
+	if r.FromStatus != domain.ChangeSetReverted {
+		t.Errorf("FromStatus = %q, want %q", r.FromStatus, domain.ChangeSetReverted)
+	}
+}

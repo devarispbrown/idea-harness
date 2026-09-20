@@ -351,12 +351,12 @@ func eligibleChangeSets(changeSets []domain.ChangeSet) map[string]bool {
 		if key == "" {
 			key = "cs:" + cs.ID
 		}
-		// ListChangeSets orders by created_at ASC with no secondary key, so
-		// two change sets created in the same millisecond tie on CreatedAt
-		// alone; `!Before` rather than strict `After` makes the later one in
-		// iteration order (the actual later attempt) win the tie.
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder, so
+		// this and every other "latest change set" reducer agree on which
+		// one wins a same-millisecond tie (ListChangeSets orders by
+		// created_at ASC with no secondary key).
 		cur := byTask[key]
-		if !cur.set || !cs.CreatedAt.Before(cur.cs.CreatedAt) {
+		if !cur.set || domain.NewerChangeSetInScanOrder(cs, cur.cs) {
 			byTask[key] = latest{cs: cs, set: true}
 		}
 	}
