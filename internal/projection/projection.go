@@ -553,7 +553,10 @@ func latestChangeSetWithStatus(recentChangeSets []domain.ChangeSet, wantStatuses
 		if !want[cs.Status] {
 			continue
 		}
-		if !found || cs.CreatedAt.After(latest.CreatedAt) {
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder
+		// (was strict After(), disagreeing with evidence eligibility's and
+		// /queue's "not before" tie-break on a same-millisecond pair).
+		if !found || domain.NewerChangeSetInScanOrder(cs, latest) {
 			latest = cs
 			found = true
 		}
@@ -590,7 +593,10 @@ func LatestChangeSetsPerActiveTask(changeSets []domain.ChangeSet, tasks []domain
 			continue
 		}
 		cur, ok := latestByTask[cs.TaskID]
-		if !ok || cs.CreatedAt.After(cur.CreatedAt) {
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder --
+		// see latestChangeSetWithStatus above for why this must not be its
+		// own, independently-diverging comparison.
+		if !ok || domain.NewerChangeSetInScanOrder(cs, cur) {
 			latestByTask[cs.TaskID] = cs
 		}
 	}

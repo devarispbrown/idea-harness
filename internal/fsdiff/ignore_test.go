@@ -146,6 +146,68 @@ func TestSnapshotSanityCapTotalBytes(t *testing.T) {
 	}
 }
 
+// TestSnapshotWorkspaceIgnoreKeepsTrackedFile is the regression test for C1: a
+// file that is TRACKED in the workspace but matches a .gitignore pattern
+// (force-added, or added before the pattern existed) must NOT be reported as
+// ignored by the after-run snapshot. seedWorkRoot's `git ls-files -co
+// --exclude-standard` always includes tracked files (git never excludes a
+// tracked path via --exclude-standard), so if the after-snapshot's ignore
+// check disagreed and excluded it, fsdiff.Diff would read the asymmetry as a
+// deletion of a file the agent never touched -- silently dropping (and, with
+// git_commit on, committing the removal of) the user's tracked file.
+func TestSnapshotWorkspaceIgnoreKeepsTrackedFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	workspace := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", workspace}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	// Tracked BEFORE the ignore pattern existed (the common real-world shape:
+	// config/local.yaml was committed, then *.log and config/*.yaml were
+	// added to .gitignore later without ever untracking it).
+	writeFile(t, workspace, "config/local.yaml", "x: 1\n")
+	writeFile(t, workspace, "main.go", "package main\n")
+	run("add", "-A")
+	run("commit", "-q", "-m", "init before gitignore")
+	writeFile(t, workspace, ".gitignore", "config/*.yaml\n*.log\n")
+	run("add", ".gitignore")
+	run("commit", "-q", "-m", "add gitignore")
+
+	// The work root mirrors what seedWorkRoot actually copies: `git ls-files
+	// -co --exclude-standard` includes config/local.yaml because it is
+	// tracked, regardless of the new pattern.
+	workRoot := t.TempDir()
+	writeFile(t, workRoot, "main.go", "package main\n")
+	writeFile(t, workRoot, "config/local.yaml", "x: 1\n") // untouched by the agent
+	writeFile(t, workRoot, "debug.log", "noise")           // untracked and ignored: still excluded
+
+	m, err := Snapshot(workRoot, WithWorkspaceIgnore(workspace))
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	paths := map[string]bool{}
+	for _, f := range m {
+		paths[f.Path] = true
+	}
+	if !paths["config/local.yaml"] {
+		t.Error("a tracked file matching .gitignore was excluded from the snapshot -- this reads as a phantom delete (C1)")
+	}
+	if !paths["main.go"] {
+		t.Error("main.go missing from snapshot")
+	}
+	if paths["debug.log"] {
+		t.Error("an untracked, genuinely ignored file (debug.log) was NOT excluded")
+	}
+}
+
 func asSnapshotTooLarge(err error, target **SnapshotTooLargeError) bool {
 	if e, ok := err.(*SnapshotTooLargeError); ok {
 		*target = e

@@ -414,6 +414,22 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 				"workflow: execute: %s never finished its adversarial review (likely cancelled mid-review) and is still awaiting one; "+
 					"run `idea review %s rerun` to finish reviewing it before running this task again", p.HumanID, p.HumanID)
 		}
+		// C4: a NoOp change set leaves its task `proposed` (not `done`,
+		// which would deadlock it forever -- see the switch below), so it
+		// looks re-pickable to nextReadyTask the instant it is created. The
+		// naive fix stops there and passes the rest of this suite, but lets
+		// a fresh Execute immediately re-pick the task and spend a second
+		// agent run while the first no-op change set is still sitting open
+		// (unreviewed, unapproved, or approved-but-not-yet-applied). Refuse
+		// until it reaches a terminal disposition: rejected, superseded (by
+		// this same loop, above, for changes_requested -- not reachable for
+		// a NoOp still awaiting review), applied, reverted or conflicted.
+		if p.NoOp && changeSetIsOpen(p.Status) {
+			return domain.ChangeSet{}, fmt.Errorf(
+				"workflow: execute: %s is a no-op change set for %s and is still %s; "+
+					"reject it, or approve and apply it, before running this task again",
+				p.HumanID, task.Code, strings.ReplaceAll(string(p.Status), "_", " "))
+		}
 	}
 
 	// Planner: engineering_lead produces an implementation brief the implementer
@@ -525,6 +541,28 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 		return domain.ChangeSet{}, err
 	}
+	// waitForCompletion succeeded: the agent's process has exited, and
+	// req.WorkRoot (a bind mount, not something Collect touches) already
+	// holds everything it will ever write, whatever happens next --
+	// Collect's own docker-rm cleanup, the snapshot/sweep, or CreateChangeSet
+	// below. Before this fix, capturePartial ran ONLY on the
+	// waitForCompletion-failed branch above; a Stop (or a bare Collect
+	// failure, or any ctx-bound call erroring on the way to CreateChangeSet)
+	// anywhere in the rest of this function returned with nothing captured,
+	// and the NEXT Execute's seedWorkRoot unconditionally
+	// os.RemoveAll(workRoot)s before copying in a fresh copy -- silently
+	// discarding exactly the files this exists to save. Deferred, so every
+	// return path below is covered without hand-picking each one; the flag
+	// skips it once CreateChangeSet actually succeeds, since the content is
+	// durably persisted from that point on (blob store + the change_set row
+	// itself, recoverable via ReconcileChangeSets if IT is then interrupted).
+	changeSetPersisted := false
+	defer func() {
+		if !changeSetPersisted {
+			e.capturePartial(ctx, initiativeID, task.ID, req.WorkRoot, before)
+		}
+	}()
+
 	// Read before Collect, which removes the container and its output with it.
 	// Hermes exits 0 even when every model call failed, so a clean exit that
 	// changed nothing is the common failure, and this is the only record of why.
@@ -625,6 +663,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
 		return domain.ChangeSet{}, err
 	}
+	// The work is now durably on the change set (and the blob store, above):
+	// capturePartial's on-disk fallback is no longer the only record of it.
+	changeSetPersisted = true
 	if err := e.db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetDraft, domain.ChangeSetChecksRunning, store.ActorOrchestrator); err != nil {
 		return domain.ChangeSet{}, err
 	}
@@ -866,14 +907,34 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}
 
-	if rejected {
+	switch {
+	case rejected:
 		// Re-open the task so a re-execute produces a fresh change set; leaving it
 		// done with only a rejected change set would permanently block its
 		// dependents (full-platform review: task-dependency deadlock).
 		if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskProposed); err != nil {
 			return domain.ChangeSet{}, err
 		}
-	} else {
+	case cs.NoOp:
+		// C4: domain.ChangeSet.ImplementsTask() is "applied AND !NoOp" -- an
+		// applied NoOp change set NEVER satisfies it. Marking the task done
+		// here, as the non-NoOp case below does, would deadlock it (and every
+		// dependent behind it) forever: nextReadyTask only re-picks
+		// ready/proposed tasks, taskDependenciesApplied requires an
+		// implementing change set from every predecessor, and there would be
+		// no way back short of editing the database directly (the exact
+		// defect this comment's sibling already guards against for the
+		// `rejected` case, above). Leave it proposed instead, same as
+		// rejected. This alone would let a fresh Execute immediately re-pick
+		// the task while THIS change set is still open (unreviewed/
+		// unapplied) -- the same-task guard at the top of Execute (see
+		// "still open" below) refuses that until the change set reaches a
+		// terminal disposition (rejected, superseded, applied, reverted or
+		// conflicted).
+		if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskProposed); err != nil {
+			return domain.ChangeSet{}, err
+		}
+	default:
 		// Mark done so a repeated Execute does not re-pick the same task and
 		// create a duplicate change set (it is now awaiting review/apply).
 		if err := e.db.SetTaskStatus(ctx, task.ID, domain.TaskDone); err != nil {
@@ -883,7 +944,22 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 
 	// Record the implementer run's provenance + success (review B7). modelSpec
 	// was already resolved above, when the change set itself was created.
-	if err := e.db.CreateRunManifest(ctx, &domain.RunManifest{
+	//
+	// context.WithoutCancel: by this point the agent has already run --
+	// real spend already incurred with the provider, whatever this run's
+	// cost accounting has counted against it -- and its change set already
+	// exists in the DB (CreateChangeSet, above). A Stop landing exactly here
+	// used to fail this write with the live, cancellable ctx: Execute
+	// returned an error, the deferred "on any error, if !agentSucceeded, mark
+	// the run failed" fired (via its own context.Background(), so IT always
+	// lands), and the result was a run left permanently `failed` with no
+	// manifest/cost record at all for an attempt that, in fact, completed and
+	// already produced a real change set -- the spend record lost even
+	// though the spend already happened. A fresh, uncancellable context
+	// mirrors MarkChangeSetApplied's own "cannot strand a fully-written
+	// [result]" reasoning a few calls away.
+	runCtx := context.WithoutCancel(ctx)
+	if err := e.db.CreateRunManifest(runCtx, &domain.RunManifest{
 		RunID:          agentRunID,
 		RequestedModel: modelSpec,
 		ActualModel:    modelSpec,
@@ -894,7 +970,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}); err != nil {
 		return domain.ChangeSet{}, err
 	}
-	if err := e.db.SetRunStatus(ctx, agentRunID, domain.RunSucceeded, "implementer"); err != nil {
+	if err := e.db.SetRunStatus(runCtx, agentRunID, domain.RunSucceeded, "implementer"); err != nil {
 		return domain.ChangeSet{}, err
 	}
 	agentSucceeded = true
@@ -1542,14 +1618,31 @@ func (e *Engine) loadManifest(digest string) (fsdiff.Manifest, error) {
 }
 
 // RestoreWorkspace restores the canonical workspace from a persisted pre-image
-// manifest digest. Used by startup reconciliation to unwind an interrupted apply.
-func (e *Engine) RestoreWorkspace(ctx context.Context, manifestDigest string) error {
+// manifest digest, for a change set stuck mid-apply. Used by startup
+// reconciliation to unwind an interrupted apply.
+//
+// H3: RevertChangeSet refuses to restore a pre-image over an edit made to the
+// workspace AFTER the mutation it is unwinding (fsdiff.StalePost) -- without
+// the same guard here, a crash-recovery restore could silently overwrite
+// whatever the user (or a later, successful operation) wrote to one of these
+// same paths between the crash and the next daemon startup. changeSetID
+// identifies the change set whose patch describes exactly the paths (and
+// post-image digests) this restore would otherwise blindly overwrite.
+func (e *Engine) RestoreWorkspace(ctx context.Context, changeSetID, manifestDigest string) error {
 	pre, err := e.loadManifest(manifestDigest)
 	if err != nil {
 		return err
 	}
 	if e.workspaceRoot == "" {
 		return fmt.Errorf("workflow: no canonical workspace root configured")
+	}
+	if cs, err := e.db.GetChangeSet(ctx, changeSetID); err == nil {
+		if patch, err := e.loadPatch(cs); err == nil {
+			if stale := fsdiff.StalePost(e.workspaceRoot, patch.Files); len(stale) > 0 {
+				return fmt.Errorf("workflow: refusing to restore %s: the workspace changed since the interrupted apply: %s",
+					cs.HumanID, strings.Join(stale, "; "))
+			}
+		}
 	}
 	return fsdiff.Restore(e.workspaceRoot, pre, e.contentBlobs().Get)
 }
@@ -1614,14 +1707,33 @@ func (e *Engine) refuseWhileAnotherChangeSetIsOpen(ctx context.Context, initiati
 		if cs.TaskID == taskID {
 			continue
 		}
-		switch cs.Status {
-		case domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, domain.ChangeSetApproved,
-			domain.ChangeSetApplying, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted:
+		if changeSetIsOpen(cs.Status) {
 			return fmt.Errorf("workflow: execute: %s is still %s; apply or reject it before running the next task, "+
 				"so the next task starts from its changes", cs.HumanID, strings.ReplaceAll(string(cs.Status), "_", " "))
 		}
 	}
 	return nil
+}
+
+// changeSetIsOpen reports whether a change set in this status is still
+// awaiting resolution -- review, approval or apply -- rather than at a
+// terminal disposition (draft is included for completeness; Execute holds
+// e.mu for its entire body, so no caller ever observes another in-progress
+// Execute's change set at draft between the two of them). Shared by
+// refuseWhileAnotherChangeSetIsOpen (another task's change set must be
+// resolved before this task may run) and Execute's own-task NoOp guard (C4:
+// a NoOp change set leaves its task `proposed`, not `done`, specifically so
+// it can be re-picked -- but only once ITS OWN change set stops being open,
+// or a fresh Execute would re-pick the task and spend a second agent run
+// while the first, unresolved, no-op change set is still sitting there).
+func changeSetIsOpen(status domain.ChangeSetStatus) bool {
+	switch status {
+	case domain.ChangeSetDraft, domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired,
+		domain.ChangeSetApproved, domain.ChangeSetApplying, domain.ChangeSetChangesRequested,
+		domain.ChangeSetConflicted:
+		return true
+	}
+	return false
 }
 
 // agentOutput returns the end of an external agent's own output, redacted, or
@@ -2207,6 +2319,22 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	if err := e.recordAutomatedEvidence(ctx, cs); err != nil {
 		return err
 	}
+	// H2: a successful apply implements the task -- Execute already marks a
+	// fresh (non-NoOp) change set's task done at creation time, so this is a
+	// no-op there, but it is the ONLY place that does so for a RE-apply of a
+	// previously reverted change set (fromStatus == Reverted, above).
+	// RevertChangeSet reopens the task to `proposed` on revert (ICP re-run
+	// defect E); before this, nothing ever moved it back to `done` on
+	// re-apply, so it stayed re-executable and a second Execute spent a
+	// phantom paid agent run on a task that was, in fact, already
+	// implemented again. cs.NoOp is invariant across apply/revert/re-apply,
+	// so this single check also correctly does nothing for a NoOp change
+	// set (C4): it must never count as done, applied or not.
+	if cs.TaskID != "" && !cs.NoOp {
+		if err := e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskDone); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2665,7 +2793,11 @@ func (e *Engine) mostRecentGitCommitWarning(ctx context.Context, initiativeID st
 		if cs.GitCommitWarning == "" {
 			continue
 		}
-		if latest == nil || cs.CreatedAt.After(latest.CreatedAt) {
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder,
+		// so this and every other "latest change set" reducer (evidence
+		// eligibility, /queue, /guidance) agree on which one wins a
+		// same-millisecond tie.
+		if latest == nil || domain.NewerChangeSetInScanOrder(*cs, *latest) {
 			latest = cs
 		}
 	}

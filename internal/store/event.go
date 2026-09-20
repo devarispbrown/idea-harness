@@ -129,7 +129,7 @@ func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, 
 			OR (e.aggregate_type = 'question' AND e.aggregate_id IN (SELECT id FROM questions WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'finding' AND e.aggregate_id IN (SELECT id FROM findings WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'change_set' AND e.aggregate_id IN (SELECT id FROM change_sets WHERE initiative_id = ?))
-			OR (e.aggregate_type = 'task' AND e.aggregate_id IN (SELECT id FROM tasks WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'task' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM tasks WHERE initiative_id = ?)))
 			OR (e.aggregate_type = 'verification_evidence' AND e.aggregate_id IN (SELECT id FROM verification_evidence WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'stale_item' AND e.aggregate_id IN (SELECT id FROM stale_marks WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'context_doc' AND e.aggregate_id IN (SELECT id FROM context_docs WHERE initiative_id = ?))
@@ -144,11 +144,18 @@ func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, 
 		// direct match catches that shape; the subquery still catches every
 		// per-row event. verification_evidence, stale_item, context_doc and
 		// doc_comment were not covered by any clause at all.
+		//
+		// MEDIUM fix: `task` gets the same direct-match escape hatch as
+		// assertion/requirement, for the identical reason -- SplitTask now
+		// records its own "task.split" event keyed on the INITIATIVE id
+		// (split.go), not the original task's id, because the original is
+		// deleted in the same transaction and a subquery-only match could
+		// never read an event keyed on a row that no longer exists.
 		sinceSeq, initiativeID,
 		initiativeID, initiativeID,
 		initiativeID, initiativeID,
 		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
-		initiativeID, initiativeID, initiativeID, initiativeID,
+		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
 		limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list events for initiative: %w", err)

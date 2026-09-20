@@ -490,9 +490,29 @@ type ChangeSetRecovery struct {
 	TaskID       string
 	// LatestJournalState is the most recent apply-journal state, or "" if none.
 	LatestJournalState domain.ApplyState
-	// PreImageDigest is the workspace pre-image to restore (workspace_mutated
-	// rows only); empty when no mutation was recorded.
+	// PreImageDigest is the workspace pre-image to restore, scoped to the
+	// CURRENT (interrupted) apply attempt only -- i.e. a workspace_mutated
+	// row recorded after the most recent "prepared" row for this change set
+	// (H3): apply_journal accumulates rows across every apply/revert/
+	// re-apply of a change set, never cleared, so picking merely the newest
+	// non-empty digest regardless of which attempt it belonged to let a
+	// re-apply crashed BEFORE its own mutation was recorded inherit the
+	// FIRST apply's committed digest instead of correctly reporting "no
+	// bytes written yet". Empty when no mutation was recorded for this
+	// attempt.
 	PreImageDigest string
+	// FromStatus is the status this change set transitioned FROM when it
+	// entered `applying`, recovered from the status_changed event (H3): both
+	// approved->applying (a fresh apply) and reverted->applying (a re-apply)
+	// are legal, and a crash-recovery that always assumes Approved
+	// mislabels an in-progress re-apply of an already-reverted change set as
+	// merely "approved" -- contradicting the reverted->applying edge added
+	// specifically for this recovery (changeset.go's legalChangeSetTransition)
+	// and CHANGELOG.md's documented promise that a failed re-apply recovers
+	// back to `reverted`, not `approved`. Empty (ChangeSetStatus("")) if no
+	// such event is found, in which case the caller falls back to Approved
+	// (the only possibility before re-apply existed).
+	FromStatus domain.ChangeSetStatus
 }
 
 // ReconcileChangeSets finds change sets stuck in applying/checks_running and
@@ -507,13 +527,41 @@ func (db *DB) ReconcileChangeSets(ctx context.Context) ([]ChangeSetRecovery, err
 		Actor:         ActorOrchestrator,
 		EventType:     "change_sets.reconciled",
 	}, func(tx *sql.Tx) error {
+		// The PreImageDigest subquery's boundary (innermost) picks out the
+		// START of the CURRENT apply attempt by its "prepared" journal row --
+		// identified by an EMPTY digest, not by its `state` column, because
+		// the recovery_required rewrite below (a second, idempotent
+		// reconcile pass after a restore itself failed/crashed) overwrites
+		// `state` on both the prepared and workspace_mutated rows for an
+		// applying change set, but never touches their digest column. Keying
+		// the boundary on `state = 'prepared'` looked right on a first pass
+		// and silently broke on a second one (H3): the boundary row could no
+		// longer be found at all, so COALESCE fell back to 0 and the
+		// pre-image digest reverted to being picked from the WHOLE history
+		// again -- the very re-apply-inherits-the-first-apply's-digest bug
+		// this exists to fix, just delayed one crash. Every apply/re-apply
+		// attempt appends exactly one empty-digest ("prepared") row before
+		// any mutation, so this boundary is stable across any number of
+		// reconcile passes.
 		rows, err := tx.Query(`
 			SELECT cs.id, cs.initiative_id, cs.status, cs.task_id,
 			       (SELECT j.state FROM apply_journal j WHERE j.change_set_id = cs.id ORDER BY j.rowid DESC LIMIT 1),
-			       (SELECT j.workspace_snapshot_digest FROM apply_journal j WHERE j.change_set_id = cs.id AND j.workspace_snapshot_digest != '' ORDER BY j.rowid DESC LIMIT 1)
+			       (SELECT j.workspace_snapshot_digest FROM apply_journal j
+			          WHERE j.change_set_id = cs.id
+			            AND j.workspace_snapshot_digest != ''
+			            AND j.rowid > COALESCE((
+			              SELECT MAX(p.rowid) FROM apply_journal p
+			              WHERE p.change_set_id = cs.id AND p.workspace_snapshot_digest = ''
+			            ), 0)
+			          ORDER BY j.rowid DESC LIMIT 1),
+			       (SELECT e.operation FROM events e
+			          WHERE e.aggregate_type = 'change_set' AND e.aggregate_id = cs.id
+			            AND e.event_type = 'change_set.status_changed' AND e.operation LIKE '%->' || ?
+			          ORDER BY e.seq DESC LIMIT 1)
 			FROM change_sets cs
 			WHERE cs.status IN (?, ?)
 			ORDER BY cs.rowid ASC`,
+			domain.ChangeSetApplying,
 			domain.ChangeSetApplying, domain.ChangeSetChecksRunning)
 		if err != nil {
 			return err
@@ -522,7 +570,8 @@ func (db *DB) ReconcileChangeSets(ctx context.Context) ([]ChangeSetRecovery, err
 			var r ChangeSetRecovery
 			var latest sql.NullString
 			var preDigest sql.NullString
-			if err := rows.Scan(&r.ChangeSetID, &r.InitiativeID, &r.Status, &r.TaskID, &latest, &preDigest); err != nil {
+			var fromOp sql.NullString
+			if err := rows.Scan(&r.ChangeSetID, &r.InitiativeID, &r.Status, &r.TaskID, &latest, &preDigest, &fromOp); err != nil {
 				rows.Close()
 				return err
 			}
@@ -531,6 +580,11 @@ func (db *DB) ReconcileChangeSets(ctx context.Context) ([]ChangeSetRecovery, err
 			}
 			if preDigest.Valid {
 				r.PreImageDigest = preDigest.String
+			}
+			if fromOp.Valid {
+				if from, ok := strings.CutSuffix(fromOp.String, "->"+string(domain.ChangeSetApplying)); ok {
+					r.FromStatus = domain.ChangeSetStatus(from)
+				}
 			}
 			out = append(out, r)
 		}
