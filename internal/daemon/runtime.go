@@ -579,11 +579,24 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 // optionally fails the initiative. It uses a fresh context so the durable status
 // write survives cancellation of the operation's own context.
 func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context.Context, pr *projectRuntime, runErr error, failInitiative bool) {
-	r.log.Error(logMsg, "initiative", initiativeID, "op", opID, "err", runErr)
 	sctx := context.Background()
 	status := domain.OperationFailed
 	if opCtx.Err() != nil {
 		status = domain.OperationCancelled
+	}
+	// Every user Stop takes this same path -- CancelOperation cancels opCtx,
+	// which unwinds the in-flight call as a plain `context canceled` error --
+	// and it was logged at Error alongside a real failure, so a normal click
+	// on Stop showed up as `level=ERROR msg="execute failed" err="context
+	// canceled"` in the daemon log. That reads as something having gone
+	// wrong; nothing did. A cancellation the user asked for is expected
+	// behaviour worth a line (an operator following the log should still see
+	// it happened), not an error worth paging over -- real failures (the
+	// OperationFailed branch) keep the Error level and the original message.
+	if status == domain.OperationCancelled {
+		r.log.Info("stopped by you", "initiative", initiativeID, "op", opID)
+	} else {
+		r.log.Error(logMsg, "initiative", initiativeID, "op", opID, "err", runErr)
 	}
 	_ = pr.db.SetOperationFailed(sctx, opID, status, operationErrorMessage(pr, runErr.Error()))
 

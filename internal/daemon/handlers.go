@@ -254,13 +254,28 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		// would just send them at a guaranteed refusal. Point at what is
 		// actually available instead: acknowledge the stale items, or re-run
 		// the affected tasks so their change sets are regenerated fresh.
-		advice := "Run `idea revise-plan` and review before continuing, or acknowledge the items."
-		if cses, err := pr.db.ListChangeSets(r.Context(), ini.ID); err == nil {
-			for _, cs := range cses {
-				if cs.Status.HoldsWork() {
-					advice = "`idea revise-plan` is unavailable once a change set holds work; " +
-						"acknowledge the items, or re-run the affected tasks so their change sets are regenerated."
-					break
+		//
+		// ICP re-run defect: this used to name `idea revise-plan` unconditionally,
+		// including on an initiative with no execution plan yet at all -- a PRD
+		// decision reopened while still `approved` marks its requirement stale
+		// immediately, before design or planning has even run. revise-plan
+		// itself refuses outright in every status but plan_approved and
+		// needs_human_judgment ("no plan to revise ... no execution plan exists
+		// yet"), so recommending it here sent the user straight at a guaranteed
+		// refusal -- and there is no change set to "re-run the affected tasks"
+		// of either, since tasks come from the same not-yet-generated plan.
+		var advice string
+		if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+			advice = "Acknowledge the items; they will be incorporated when the execution plan is generated."
+		} else {
+			advice = "Run `idea revise-plan` and review before continuing, or acknowledge the items."
+			if cses, err := pr.db.ListChangeSets(r.Context(), ini.ID); err == nil {
+				for _, cs := range cses {
+					if cs.Status.HoldsWork() {
+						advice = "`idea revise-plan` is unavailable once a change set holds work; " +
+							"acknowledge the items, or re-run the affected tasks so their change sets are regenerated."
+						break
+					}
 				}
 			}
 		}

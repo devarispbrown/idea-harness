@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -175,4 +176,302 @@ func cmdReopenPhase(a cmdArgs, stdout, stderr io.Writer) error {
 			"  `idea status` shows where it is", nerr)
 	}
 	return renderNextAction(step, stdout)
+}
+
+// ---------- the judgment loop: questions, decisions, triage ----------
+//
+// The four commands above escape needs_human_judgment at the initiative
+// level. The finer-grained loop underneath it -- individual open questions
+// and decisions -- had the same gap: `idea decisions` lists them, `idea
+// next`'s own guidance says "Resolve open decisions" and "Resolve open
+// questions" (projection.BuildGuidance), and nothing in this package could
+// act on either one. Answering a question or resolving a decision meant
+// reaching past the CLI into POST …/questions/{id}/answer or
+// …/decisions/{id}/resolve directly -- both routes existed, routed, and were
+// exercised only by the web UI and raw HTTP. Closed here alongside `idea
+// accept-recommendations` (the daemon's own batch escape, review B4 / #8)
+// and `idea triage` (its ranked view, same review): the whole loop -- see
+// what needs judgment, act on one item or all of them, check what is left --
+// is now reachable without leaving the CLI.
+
+// shortRef renders a stable, short form of a raw id for display. Questions
+// (unlike decisions/tasks/change sets) have no human code, only a content-hash
+// id, so `idea questions` prints this and `idea answer` accepts it back.
+func shortRef(id string) string {
+	const n = 8
+	if len(id) > n {
+		return id[:n]
+	}
+	return id
+}
+
+// resolveQuestionRef resolves a question reference -- a full id or an
+// unambiguous prefix of one, exactly what `idea questions` prints via
+// shortRef -- to its full id.
+func resolveQuestionRef(c *client, projectID, iniID, ref string) (string, error) {
+	var questions []cliQuestion
+	if err := c.do("GET", initiativeResource(projectID, iniID, "questions"), nil, &questions); err != nil {
+		return "", err
+	}
+	for _, q := range questions {
+		if q.ID == ref {
+			return q.ID, nil
+		}
+	}
+	var matches []string
+	for _, q := range questions {
+		if strings.HasPrefix(q.ID, ref) {
+			matches = append(matches, q.ID)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no question matching %q; `idea questions` lists them", ref)
+	default:
+		return "", fmt.Errorf("%q matches more than one question; use more of the id shown by `idea questions`", ref)
+	}
+}
+
+// cmdQuestions lists an initiative's questions -- the read half of the loop
+// `idea decisions` already covers for decisions.
+func cmdQuestions(a cmdArgs, stdout, stderr io.Writer) error {
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	var questions []cliQuestion
+	if err := c.do("GET", initiativeResource(projectID, iniID, "questions"), nil, &questions); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, questions)
+	}
+	if len(questions) == 0 {
+		fmt.Fprintln(stdout, muted("No questions yet."))
+		return nil
+	}
+	open := 0
+	for _, q := range questions {
+		if q.Status == "open" {
+			open++
+		}
+	}
+	fmt.Fprintln(stdout, heading("Questions")+muted(fmt.Sprintf("  (%d open)", open)))
+	for _, q := range questions {
+		marker := ok("✓ ")
+		if q.Status == "open" {
+			marker = warn("● ")
+		}
+		fmt.Fprintln(stdout, marker+code(shortRef(q.ID))+" "+q.Question)
+	}
+	return nil
+}
+
+// cmdAnswer answers an open question.
+func cmdAnswer(a cmdArgs, stdout, stderr io.Writer) error {
+	if len(a.positional) < 2 {
+		return fmt.Errorf(`usage: idea answer <question> "<answer>" [<initiative>]`)
+	}
+	ref, answer := a.positional[0], a.positional[1]
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional[2:])
+	if err != nil {
+		return err
+	}
+	qID, err := resolveQuestionRef(c, projectID, iniID, ref)
+	if err != nil {
+		return err
+	}
+	if err := c.do("POST", questionResource(projectID, qID, "answer"), map[string]string{"answer": answer}, nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ answered")+" "+code(shortRef(qID)))
+	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
+	return nil
+}
+
+// cmdResolve resolves an open decision, by option (a 1-based index into its
+// options, when it has any -- "idea decisions --json" or the web UI shows
+// them in that order) or free text for a decision with none.
+func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
+	if len(a.positional) < 2 {
+		return fmt.Errorf(`usage: idea resolve <decision> <option#>|"<resolution>" [<initiative>]`)
+	}
+	ref, resolution := a.positional[0], a.positional[1]
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional[2:])
+	if err != nil {
+		return err
+	}
+	var decs []cliDecision
+	if err := c.do("GET", initiativeResource(projectID, iniID, "decisions"), nil, &decs); err != nil {
+		return err
+	}
+	var target *cliDecision
+	for i := range decs {
+		if decs[i].ID == ref || decs[i].Code == ref {
+			target = &decs[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("no decision matching %q; `idea decisions` lists them", ref)
+	}
+	resolved := resolution
+	if len(target.Options) > 0 {
+		if n, convErr := strconv.Atoi(resolution); convErr == nil {
+			if n < 1 || n > len(target.Options) {
+				return fmt.Errorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
+					target.Code, len(target.Options), n)
+			}
+			resolved = target.Options[n-1]
+		}
+	}
+	if err := c.do("POST", decisionResource(projectID, target.ID, "resolve"), map[string]string{"resolution": resolved}, nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(target.Code)+" → "+resolved)
+	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
+	return nil
+}
+
+// cmdReopenDecision returns a resolved decision to open, so it can be
+// answered differently -- the CLI half of POST …/decisions/{id}/reopen,
+// which until now only the web UI could reach.
+func cmdReopenDecision(a cmdArgs, stdout, stderr io.Writer) error {
+	if len(a.positional) < 1 {
+		return fmt.Errorf("usage: idea reopen-decision <decision> [<initiative>]")
+	}
+	ref := a.positional[0]
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional[1:])
+	if err != nil {
+		return err
+	}
+	dID, err := resolveObjectID(c, projectID, iniID, "decision", ref)
+	if err != nil {
+		return err
+	}
+	if err := c.do("POST", decisionResource(projectID, dID, "reopen"), nil, nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ reopened")+" "+code(ref))
+	return nil
+}
+
+// cliAcceptRecommendationsResult mirrors POST .../decisions/accept-recommendations.
+type cliAcceptRecommendationsResult struct {
+	Resolved []string `json:"resolved"`
+	Skipped  []struct {
+		Code   string `json:"code"`
+		Reason string `json:"reason"`
+	} `json:"skipped"`
+}
+
+// cmdAcceptRecommendations resolves every open decision with its own
+// recommendation in one call (review B4, adopted #8's batch escape) -- until
+// now reachable only through raw HTTP.
+func cmdAcceptRecommendations(a cmdArgs, stdout, stderr io.Writer) error {
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	var out cliAcceptRecommendationsResult
+	if err := c.do("POST", initiativeResource(projectID, iniID, "decisions/accept-recommendations"), nil, &out); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, out)
+	}
+	if len(out.Resolved) == 0 && len(out.Skipped) == 0 {
+		fmt.Fprintln(stdout, muted("No open decisions."))
+		return nil
+	}
+	for _, c := range out.Resolved {
+		fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(c))
+	}
+	for _, sk := range out.Skipped {
+		fmt.Fprintln(stdout, warn("· skipped")+" "+code(sk.Code)+" "+muted("— "+sk.Reason))
+	}
+	return nil
+}
+
+// cliTriageItem mirrors one entry of GET .../triage (review B4, adopted #8).
+type cliTriageItem struct {
+	Type       string `json:"type"`
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	Blocking   bool   `json:"blocking"`
+	Severity   string `json:"severity,omitempty"`
+	Dependents int    `json:"dependents"`
+	Rank       string `json:"rank"`
+}
+
+// cmdTriage shows the ranked "what needs your judgment first" view: the top
+// items by impact (blocking, then severity, then dependents), the rest
+// labelled optional.
+func cmdTriage(a cmdArgs, stdout, stderr io.Writer) error {
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Items []cliTriageItem `json:"items"`
+	}
+	if err := c.do("GET", initiativeResource(projectID, iniID, "triage"), nil, &out); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, out.Items)
+	}
+	if len(out.Items) == 0 {
+		fmt.Fprintln(stdout, ok("Nothing needs your judgment."))
+		return nil
+	}
+	fmt.Fprintln(stdout, heading("Triage"))
+	printGroup := func(rank, label string) {
+		var items []cliTriageItem
+		for _, it := range out.Items {
+			if it.Rank == rank {
+				items = append(items, it)
+			}
+		}
+		if len(items) == 0 {
+			return
+		}
+		fmt.Fprintln(stdout, "  "+bold(label))
+		for _, it := range items {
+			marker := muted(it.Type)
+			if it.Blocking {
+				marker = errText("blocking " + it.Type)
+			}
+			fmt.Fprintf(stdout, "    %s [%s] %s\n", code(shortRef(it.ID)), marker, it.Label)
+		}
+	}
+	printGroup("priority", "Priority")
+	printGroup("optional", "Optional")
+	return nil
 }

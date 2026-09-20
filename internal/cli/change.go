@@ -84,8 +84,16 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
 	}
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		if err := waitIfRequested(a, c, projectID, iniID, opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
+		return nil
 	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil
@@ -317,11 +325,14 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the result.
+// runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the
+// result. `--wait` (item: long actions return a handle by default, `idea new`
+// is the one exception -- see waitIfRequested) blocks and streams progress
+// the same way `idea advance`/`idea execute --wait` do.
 func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea %s <id>", action)
+		return fmt.Errorf("usage: idea %s <id> [--wait]", action)
 	}
 	id := positional[0]
 	c, projectID, err := connect()
@@ -333,8 +344,17 @@ func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(id))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		// No initiative id in hand here (this resolves a change set, not an
+		// initiative) -- waitForOperation's use of it is best-effort only.
+		if err := waitIfRequested(a, c, projectID, "", opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
 	}
 	return nil
 }

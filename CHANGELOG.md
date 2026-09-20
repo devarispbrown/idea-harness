@@ -9,6 +9,99 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added — ICP re-run follow-up (round 4)
+
+- **The CLI judgment loop.** `internal/cli` had no caller for
+  `POST …/questions/{id}/answer` or `POST …/decisions/{id}/resolve` — an
+  evaluator had to reach past the CLI into raw HTTP to answer a question or
+  resolve a decision, though `idea decisions` lists them and guidance says
+  "Resolve open decisions". New commands: `idea questions` (lists them, with
+  a short id-prefix reference since questions have no human code),
+  `idea answer <question> "<answer>"`, `idea resolve <decision>
+  <option#>|"<resolution>"` (an option can be named by its 1-based index or by
+  free text), `idea reopen-decision <decision>` (the reopen route existed with
+  no CLI caller either), `idea accept-recommendations` (the daemon's own batch
+  escape, review B4/#8), and `idea triage` (its ranked view). Guidance's
+  "Resolve open decisions"/"Resolve open questions" now name the commands
+  that actually do it.
+- **`idea model` filtering.** The bare command printed every model of every
+  configured provider (~8k tokens on a real run) with no way to see less.
+  `idea model` now shows the current selection plus a curated set (5) of each
+  provider's models by default, with a hint naming the escapes:
+  `idea model list --all` (every model of every provider, the old behaviour)
+  and `idea model list <provider>` / `idea model --provider <name>` (one
+  provider in full).
+- **`--wait`, opt-in on `advance`/`execute`/`apply`/`revert`.** These return a
+  handle immediately while `idea new` blocks and streams progress by
+  default — a real inconsistency, but flipping `idea new`'s own default would
+  reopen the race its own doc comment describes fixing (the README's quick
+  start: the very next command used to see the initiative still `running`).
+  Both defaults stay; every long action now understands the same
+  `--wait`/`--no-wait` vocabulary (`idea new --wait` is accepted too, a no-op
+  restating its own default).
+
+### Fixed — ICP re-run follow-up (round 4)
+
+- **Architecture/design-stage decisions carried no provenance.** Resolving or
+  reopening one marked no dependent requirement/task/change-set stale, and
+  `/impact` reported "No dependents found" — on a real run, DEC-2..DEC-5 (all
+  raised in architecture/design) had empty provenance, and TASK-2 kept the
+  title "token-bucket" after the human chose "fixed-window". PRD-phase
+  decisions wire a requirement's own `decision` citation
+  (`runProductDefinition` / `WireRequirementDerivedFromDecision`);
+  architecture/design decisions (`createDesignDecision`) never wired anything.
+  The `Architecture`/`ProductDesign` schemas' decision items now carry an
+  optional `requirements` field (the Requirement code(s) the decision shapes),
+  and `createDesignDecision` wires `requirement --derived_from--> decision`
+  from it, deduplicated against edges already wired so a decision merged
+  across both phases is not double-wired (which would double-count it in
+  `/triage`'s dependents tally).
+- **A later design phase re-asked a question the human had already
+  answered.** On the same run, the human answered "API keys come from an
+  environment variable, never a file" in `define`; the architecture phase
+  re-asked essentially the same question as a fresh Decision (DEC-3) and
+  recommended a config file. `createDesignDecision` never consulted the
+  questions table at all (unlike `runProductDefinition`'s own
+  `createDecisionIfNew`) and matched existing decisions by exact normalized
+  text only, not the fuzzy `similarDecision` match the PRD phase uses. It now
+  checks answered questions first (a match is a no-op, recording the same
+  `question.reraised_answered` event `createQuestionIfNew` does, so the audit
+  trail shows the re-ask rather than nothing) and matches existing decisions
+  by `similarDecision`; a match against an already-DECIDED decision wires any
+  newly-cited requirements to it and returns rather than recording a
+  "dissent" against a human's own resolved choice. The architecture/product
+  design prompts now also receive the initiative's questions
+  (`renderQuestionsWithAnswers`, previously PRD-only) and are told not to
+  re-raise one that already exists, open or answered.
+- **Guidance recommended `idea revise-plan` before any plan existed.** A PRD
+  decision reopened while the initiative was still `approved` (no
+  design/plan phase run yet) marks its requirement stale immediately, and the
+  stale-items advice on `/guidance` named `idea revise-plan` unconditionally —
+  a command that refuses outright in that status ("no plan to revise ... no
+  execution plan exists yet"). The advice now only names `revise-plan` (or,
+  when a change set already holds work, explains why it is unavailable and
+  what to do instead — review M5, unchanged) once the initiative actually has
+  a plan (`plan_approved`/`needs_human_judgment`); before that it says the
+  stale items will be incorporated when the plan is generated.
+- **`idea pr` told you to enable a setting you had already enabled.** With
+  `git.branch_per_initiative` already on and no change set applied yet (so no
+  `GitCommitWarning` to name either), the error still said "enable
+  git.branch_per_initiative and apply a change set first" — review defect D's
+  fix for the *specific-reason* case still `%w`-wrapped the generic
+  `ErrNoInitiativeBranch` sentinel, which reproduces its full text regardless
+  of what came after it. Both the specific-reason and the plain "nothing
+  applied yet" cases now get their own message naming the actual missing
+  precondition (`noInitiativeBranchError`, `Unwrap`s to the same sentinel so
+  `errors.Is` classification is unchanged) instead of repeating "enable
+  git.branch_per_initiative".
+- **Every user Stop logged `level=ERROR msg="execute failed" err="context
+  canceled"`.** `CancelOperation`'s cancellation unwinds the in-flight call as
+  a plain `context canceled` error, and `failOperation` logged that at ERROR
+  alongside a genuine failure — so an ordinary click on Stop read like a
+  crash in the daemon log. A cancellation now logs "stopped by you" at INFO;
+  a real failure (the operation was not cancelled) still logs at ERROR with
+  its original message.
+
 ### Fixed
 
 - **`evidence_tests` mapped nothing on a real run despite 30 passing tests.**
