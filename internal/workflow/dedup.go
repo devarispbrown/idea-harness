@@ -1,8 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"unicode"
+
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // normalizeJudgment returns a canonical form for comparing decision questions
@@ -177,4 +181,84 @@ func similarDecision(aQuestion, bQuestion string, aOptions, bOptions []string) b
 		return false
 	}
 	return optionsSimilarity(aOptions, bOptions) >= sameSubjectOptionsThreshold
+}
+
+// findingDedupeThreshold is the token-Jaccard similarity (jaccardSimilarity's
+// own measure, applied to Finding.Finding text) at or above which a freshly
+// generated finding is treated as a near-duplicate of a PRIOR one for the
+// purpose of inheriting its human disposition (ICP re-run defect A).
+//
+// Looser than nearDuplicateThreshold (0.85, decisions/questions): there, text
+// is the ONLY signal two judgments are the same one reworded. Here, text
+// similarity is the CONFIRMING signal on top of three already-exact matches
+// (TargetType, normalized Path, Category) -- and a model's adversarial-review
+// prose varies more between runs than a PRD's decision/question wording does
+// (full sentences restructured, not just a synonym swapped), so demanding the
+// same 0.85 would miss real reworded duplicates that share the same
+// judgment's substance.
+const findingDedupeThreshold = 0.5
+
+// inheritDispositionFromPrior carries a human's disposition of a prior
+// finding forward onto its near-duplicate in a fresh review pass (ICP re-run
+// defect A). A change set is reviewed exactly once now (Execute, at the
+// moment its content is fixed), but a PRD revise cycle (Revise ->
+// runReviewLoop) and a plan regeneration (RevisePlan/ReopenPhase ->
+// runExecutionPlanReview) both legitimately re-review the same subject after
+// a human has already dispositioned an earlier finding about it -- and nothing
+// tells the fresh pass that a near-identical finding was already judged. A
+// human-rejected (or otherwise human-dispositioned) finding whose reworded
+// twin reappears must not silently escape that judgment call and re-block
+// approval on its own.
+//
+// A near-duplicate is: same TargetType, same (normalized) Path, same
+// Category, and similar Finding text (token Jaccard >= findingDedupeThreshold,
+// the same measure dedup.go uses for decisions/questions). Only a HUMAN's
+// disposition is inherited -- a system-set one (e.g. the bulk "fixed"
+// DispositionOpenFindings stamps on convergence, or a deny-coded secret_sweep
+// rejection) says nothing about whether THIS specific finding is a false
+// positive, and must never be copied onto an unrelated one.
+//
+// findings is mutated in place; it is not yet persisted (callers run this
+// before their own CreateFinding loop).
+func (e *Engine) inheritDispositionFromPrior(ctx context.Context, initiativeID string, findings []domain.Finding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	prior, err := e.db.ListFindingsByInitiative(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	var priorHuman []domain.Finding
+	for _, p := range prior {
+		if p.Disposition != "" && p.DispositionActor == store.HumanActor {
+			priorHuman = append(priorHuman, p)
+		}
+	}
+	if len(priorHuman) == 0 {
+		return nil
+	}
+	for i := range findings {
+		f := &findings[i]
+		for _, p := range priorHuman {
+			if p.TargetType != f.TargetType {
+				continue
+			}
+			if normalizeFindingPath(p.Path, "") != normalizeFindingPath(f.Path, "") {
+				continue
+			}
+			if p.Category != f.Category {
+				continue
+			}
+			if jaccardSimilarity(p.Finding, f.Finding) < findingDedupeThreshold {
+				continue
+			}
+			f.Disposition = p.Disposition
+			f.DispositionActor = p.DispositionActor
+			if f.Note == "" {
+				f.Note = "disposition inherited from " + p.ID + " (near-duplicate of a previously dispositioned finding)"
+			}
+			break
+		}
+	}
+	return nil
 }

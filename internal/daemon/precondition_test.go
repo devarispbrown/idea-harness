@@ -122,6 +122,47 @@ func TestExecuteRequiresAnApprovedPlan(t *testing.T) {
 	}
 }
 
+// TestExecuteRequiresAReadyTask is ICP re-run defect E: `idea execute` on a
+// plan_approved initiative with no ready task (every task done, cancelled, or
+// blocked on an unsatisfied dependency) used to print "✓ execute started" --
+// launching the async operation, which then failed in the background with
+// "no ready tasks ... (dependencies not satisfied)". The check is a cheap,
+// lock-free read (engine.NextReadyTask), so it belongs before the operation
+// launches, not only inside it.
+func TestExecuteRequiresAReadyTask(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Jump straight to plan_approved with no tasks at all -- a plan that has
+	// nothing left (or never had anything) to run.
+	if err := pr.db.SetInitiativeStatus(t.Context(), iniID, domain.InitiativePlanApproved, store.ActorOrchestrator); err != nil {
+		t.Fatal(err)
+	}
+	base := ts.URL + "/api/v1/projects/" + projectID
+
+	resp := doReq(t, http.MethodPost, base+"/initiatives/"+iniID+"/execute", token, "", "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("execute with no ready task = %d, want 409 (got %q)",
+			resp.StatusCode, readError(t, resp))
+	}
+	if msg := readError(t, resp); !strings.Contains(msg, "no ready tasks") {
+		t.Errorf("409 message %q does not say there is no ready task", msg)
+	}
+
+	// The initiative must not have been claimed `running` by the refused
+	// attempt -- a precondition refusal must leave it exactly as it was.
+	ini, err := pr.db.GetInitiative(t.Context(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status != domain.InitiativePlanApproved {
+		t.Errorf("a refused execute changed the initiative status to %q", ini.Status)
+	}
+}
+
 // TestPreconditionErrorMapsToConflict tests the invariant rather than one
 // handler: writeErr answers 409 for a PreconditionError regardless of the status
 // the handler passed. Testing only `advance` would test the sixth handler.

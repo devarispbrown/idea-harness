@@ -117,7 +117,7 @@ Top-level fields:
 | `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there. **Implies committing on its own** — setting this alone, with `git_commit` left `false`, is sufficient (review defect D) | `false` |
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
-| `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: re-approving re-runs the reviewer, and after the first block the deny gate refuses outright | `0` |
+| `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. The change-set review runs exactly once, when the change set is created (right after checks pass) — not again on `approve` — so this only ever drains at most one entry off the queue; a surplus is harmless. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: a plain `approve` only evaluates the findings the one review already persisted (it never calls the model again), and the deny gate refuses outright until a human dispositions them | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
 
 ### Check auto-detection
@@ -355,7 +355,8 @@ Effects, at every level:
   The adversarial reviewer's own findings are accepted as advisories (never falsely dispositioned
   "fixed"), but a deterministic finding still routes to `needs_human_judgment` exactly as it would at
   any other rigor. The change-set review is always effectively "one pass" (there is no automated
-  revise loop for it); at `quick` its cap is simply smaller, not its gate weaker.
+  revise loop for it, and no re-run on `approve` either — it runs exactly once, when the change set
+  is created); at `quick` its cap is simply smaller, not its gate weaker.
 - **Line count also feeds change-size calibration** for the change-set review, alongside file count:
   a diff estimated at more than roughly 500 changed lines counts as a "big" change (pushing toward
   `thorough`) even when it touches only a handful of files.
