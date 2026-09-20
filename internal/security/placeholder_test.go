@@ -99,48 +99,53 @@ func TestCommentPlaceholderNeverMatches(t *testing.T) {
 	}
 }
 
-// TestPlaceholderStripeKeysAreNotCredentials reproduces case 3 of defect #1:
-// three Stripe-shaped example keys with obviously-placeholder bodies (trailing
-// runs of the same digit) in a config.json -- not a test path -- must not be
-// treated as credentials at all, while a real-looking Stripe key with
-// realistic entropy still blocks.
-func TestPlaceholderStripeKeysAreNotCredentials(t *testing.T) {
-	placeholders := []string{
-		"sk_live_00000000000000000000",
+// TestStripeKeysAlwaysRaiseAFindingRegardlessOfShape is review C3's revision
+// of defect #1 case 3. An earlier version of this catalog ran a Stripe key's
+// value through the placeholder-SHAPE gate (isPlaceholderShape) and
+// suppressed the finding entirely for an obviously-placeholder body (a
+// trailing run of the same digit). Review C3 found that gate dangerously
+// unreliable when applied to a PROVIDER-PREFIXED format: a Monte-Carlo run
+// over 200k random well-formed Stripe-shaped keys missed a REAL secret 1 in
+// ~8,000-9,500 times purely by chance shape -- the "sk_live_" prefix is
+// already the evidence a match is real, so the shape gate no longer applies
+// to any provider-specific pattern. Both an obviously-placeholder key and a
+// real-looking one now raise a finding (Overridable: a human can dismiss an
+// obvious placeholder), in a test/fixture path or not (a provider-specific
+// format is never downgraded to advisory there either) -- and RedactString
+// masks both regardless of the finding.
+func TestStripeKeysAlwaysRaiseAFindingRegardlessOfShape(t *testing.T) {
+	keys := []string{
+		"sk_live_00000000000000000000", // obviously-placeholder body
 		"sk_live_11111111111111111111",
 		"sk_live_22222222222222222222",
+		"sk_live_4eC39HqLyjWDarjtT1zdp7dc", // realistic entropy
 	}
-	for _, key := range placeholders {
+	for _, key := range keys {
 		content := `{"stripe_key_example": "` + key + `"}`
-		if FindCredential(content) != "" {
-			t.Errorf("placeholder Stripe key %q was matched as a credential", key)
+		if FindCredential(content) == "" {
+			t.Errorf("Stripe key %q raised no finding at all", key)
 		}
-		matches := FindCredentialsInFile("config.json", content)
-		for _, m := range matches {
-			if m.Kind == "Stripe secret key" {
-				t.Errorf("placeholder Stripe key %q raised a Stripe secret key finding: %+v", key, m)
+		if got := Redact(content); got == content {
+			t.Errorf("Redact left Stripe key %q in place: %q", key, got)
+		}
+		for _, path := range []string{"config.json", "stripe_test.go"} {
+			matches := FindCredentialsInFile(path, content)
+			found := false
+			for _, m := range matches {
+				if m.Kind == "Stripe secret key" {
+					found = true
+					if !m.Overridable {
+						t.Errorf("Stripe key %q finding is not Overridable", key)
+					}
+					if m.Advisory {
+						t.Errorf("Stripe key %q in %q: Advisory = true, want false (provider formats always block)", key, path)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("expected a Stripe secret key match for %q in %q", key, path)
 			}
 		}
-	}
-
-	const real = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
-	if FindCredential(real) == "" {
-		t.Fatal("a real-looking Stripe key must still be detected")
-	}
-	// Still blocks even in a test/fixture path: provider-specific formats
-	// with realistic entropy are never downgraded to advisory.
-	matches := FindCredentialsInFile("stripe_test.go", `key := "`+real+`"`)
-	found := false
-	for _, m := range matches {
-		if m.Kind == "Stripe secret key" {
-			found = true
-			if m.Advisory {
-				t.Errorf("real-looking Stripe key in a test file: Advisory = true, want false (provider formats always block)")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("expected a Stripe secret key match in the test-path fixture")
 	}
 }
 

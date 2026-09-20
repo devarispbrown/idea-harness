@@ -74,34 +74,55 @@ func TestAWSSecretAccessKeyJSONForm(t *testing.T) {
 	}
 }
 
-// TestAWSSecretAccessKeyPlaceholdersStayQuiet pins the other half of defect
-// #4's fix: validFlatTokenValue's placeholder-SHAPE gate (isPlaceholderShape:
-// a long repeated-character run, or overall entropy too low to plausibly be
-// generated secret data) must keep rejecting an obvious placeholder body,
-// unaffected by widening the keyword match to also accept a JSON key's
-// closing quote. Every value here is 30+ characters and inside the pattern's
-// own [A-Za-z0-9/+=] charset, so each would otherwise reach the shape check.
-func TestAWSSecretAccessKeyPlaceholdersStayQuiet(t *testing.T) {
+// TestAWSSecretAccessKeyObviousPlaceholdersStillRaiseAFinding is review C3's
+// revision of defect #4's other half. An earlier version of this catalog ran
+// AWS_SECRET_ACCESS_KEY's value through validFlatTokenValue's
+// placeholder-SHAPE gate (isPlaceholderShape: a long repeated-character run,
+// or overall entropy too low to plausibly be generated secret data) and
+// suppressed the finding entirely for an obvious placeholder body. Review C3
+// found that gate dangerously unreliable when applied to a PROVIDER-PREFIXED
+// format (AWS_SECRET_ACCESS_KEY's own env-var name is exactly that prefix):
+// a Monte-Carlo run over 200k random well-formed AWS secret keys missed a
+// REAL secret 1 in 3,200 times purely by chance shape. The vendor-named
+// keyword is already the evidence a match is real, so the shape gate no
+// longer applies to this pattern at all -- every value here now raises a
+// finding (Overridable: a human can still disposition an obvious
+// placeholder "not a secret"), and -- the part that must never regress --
+// RedactString still masks it regardless.
+func TestAWSSecretAccessKeyObviousPlaceholdersStillRaiseAFinding(t *testing.T) {
 	cases := []struct {
-		name, text string
+		name, value string
 	}{
 		// hasLongRun: a run of one repeated character.
-		{"all_x_run", `{"aws_secret_access_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`},
-		{"all_zero_run", `{"aws_secret_access_key": "00000000000000000000000000000000000000"}`},
-		{"padding_equals_run", `{"aws_secret_access_key": "================================"}`},
+		{"all_x_run", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+		{"all_zero_run", "00000000000000000000000000000000000000"},
+		{"padding_equals_run", "================================"},
 		// Low aggregate entropy: a two-character alternation carries only 1
 		// bit/char, well under placeholderEntropyThreshold (2.5).
-		{"alternating_low_entropy", `{"aws_secret_access_key": "ABABABABABABABABABABABABABABABABABABAB"}`},
+		{"alternating_low_entropy", "ABABABABABABABABABABABABABABABABABABAB"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if FindCredential(c.text) != "" {
-				t.Errorf("placeholder value flagged as a credential: %q", c.text)
+			text := `{"aws_secret_access_key": "` + c.value + `"}`
+			if FindCredential(text) == "" {
+				t.Errorf("obviously-placeholder-shaped value no longer raises ANY finding: %q", text)
 			}
-			for _, m := range FindCredentialsInFile("config/deploy.json", c.text) {
+			var found bool
+			for _, m := range FindCredentialsInFile("config/deploy.json", text) {
 				if m.Kind == "AWS secret access key" {
-					t.Errorf("placeholder value produced an AWS secret access key finding: %q -> %+v", c.text, m)
+					found = true
+					if !m.Overridable {
+						t.Errorf("finding for %q is not Overridable; a human must be able to dismiss an obvious placeholder", text)
+					}
 				}
+			}
+			if !found {
+				t.Errorf("expected an AWS secret access key finding for %q", text)
+			}
+			// The part that must never regress (review C3): redaction is
+			// unconditional regardless of the finding/placeholder gate.
+			if got := Redact(text); got == text {
+				t.Errorf("Redact left the value in place: %q", got)
 			}
 		})
 	}

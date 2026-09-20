@@ -179,11 +179,15 @@ func TestFindPatternsInFileHonorsRedactorKey(t *testing.T) {
 }
 
 // TestMaskedPreviewNeverCarriesTheRawValue is review H3: a finding's preview
-// must show only the first/last 4 characters (or be fully masked for a short
-// value), and the masked line must not contain the raw value anywhere.
+// must show only the first/last 4 characters of a 24+ character value (or be
+// fully masked for a short value -- see TestMaskValueScalesRevealForShortSecrets
+// for maskValue's 16-23 character tier), and the masked line must not
+// contain the raw value anywhere. Uses a 30-character value (GitHub PAT
+// shape, no length cap unlike AKIA's fixed 20) so it lands in maskValue's
+// min(4, len/4) tier rather than the shorter LOW-fix tier below it.
 func TestMaskedPreviewNeverCarriesTheRawValue(t *testing.T) {
-	const value = "AKIA1234567890ABCDEF"
-	content := "aws_key = \"" + value + "\" # do not commit\n"
+	const value = "ghp_1234567890ABCDEFGHIJKLMNOP"
+	content := "x = \"" + value + "\" # do not commit\n"
 	matches := FindCredentialsInFile("a.env", content)
 	if len(matches) == 0 {
 		t.Fatal("expected a match")
@@ -224,16 +228,16 @@ func TestMaskValueMasksShortValuesEntirely(t *testing.T) {
 	}
 }
 
-// TestMaskValueRevealsAtMostQuarterPerSide is review H1's fix itself: for a
-// value of 16+ characters, at most min(4, len/4) characters are revealed on
-// each side -- never more, however long the value.
+// TestMaskValueRevealsAtMostQuarterPerSide is review H1's fix, as scaled down
+// by review LOW: for a value of maskValueLongThreshold (24)+ characters, at
+// most min(4, len/4) characters are revealed on each side -- never more,
+// however long the value.
 func TestMaskValueRevealsAtMostQuarterPerSide(t *testing.T) {
 	cases := []struct {
 		value      string
 		wantReveal int
 	}{
-		{strings.Repeat("a", 16), 4}, // 16/4 == 4, capped at 4
-		{strings.Repeat("a", 20), 4}, // 20/4 == 5, capped at 4
+		{strings.Repeat("a", 24), 4}, // 24/4 == 6, capped at 4
 		{strings.Repeat("a", 100), 4},
 	}
 	for _, tc := range cases {
@@ -250,6 +254,40 @@ func TestMaskValueRevealsAtMostQuarterPerSide(t *testing.T) {
 		if strings.ContainsAny(middle, tc.value) {
 			t.Fatalf("maskValue(%d chars) = %q, revealed more than %d characters per side", len(tc.value), got, tc.wantReveal)
 		}
+	}
+}
+
+// TestMaskValueScalesRevealForShortSecrets is review LOW: maskValue used to
+// reveal min(4, len/4) characters per side starting at 16 characters, which
+// gave a 16-character secret 50% of itself back in the clear
+// (`Hq7zR2mVx9LpQwEr` -> `Hq7z…QwEr`, persisted in SecretPreview on every
+// finding and rendered in the UI). Between 16 and maskValueLongThreshold-1
+// (24) characters, at most maskValueShortRevealLen (1) character is now
+// revealed per side; the fuller min(4, len/4) reveal only starts at
+// maskValueLongThreshold.
+func TestMaskValueScalesRevealForShortSecrets(t *testing.T) {
+	cases := []struct {
+		value      string
+		wantReveal int
+	}{
+		{"Hq7zR2mVx9LpQwEr", 1},      // 16 chars: the review's own example
+		{strings.Repeat("a", 23), 1}, // just under the long threshold
+		{strings.Repeat("a", 24), 4}, // at the long threshold: fuller reveal begins
+	}
+	for _, tc := range cases {
+		got := maskValue(tc.value)
+		wantPrefix := tc.value[:tc.wantReveal]
+		wantSuffix := tc.value[len(tc.value)-tc.wantReveal:]
+		if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, wantSuffix) {
+			t.Fatalf("maskValue(%d chars) = %q, want exactly %d revealed per side", len(tc.value), got, tc.wantReveal)
+		}
+	}
+	// The review's own example: at most 2 characters total back in the
+	// clear, never 8 (50%).
+	got := maskValue("Hq7zR2mVx9LpQwEr")
+	revealed := len(got) - len("…") // maskValue always inserts exactly one "…"
+	if revealed > 2 {
+		t.Fatalf("maskValue(%q) = %q, revealed %d characters, want at most 2", "Hq7zR2mVx9LpQwEr", got, revealed)
 	}
 }
 
