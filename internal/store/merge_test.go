@@ -90,3 +90,64 @@ func TestMergeTasksRejectsCycle(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeTasksCarriesVerifiesEdges is the MEDIUM fix: MergeTasks used to
+// union only EdgeImplements onto the survivor, silently destroying any
+// `verifies` edge either task carried -- a generated verification task
+// merged into another for tidiness dropped its requirement's verification
+// coverage entirely, with no error and no trace.
+func TestMergeTasksCarriesVerifiesEdges(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	implReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "impl", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, implReq); err != nil {
+		t.Fatal(err)
+	}
+	verifyReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "verify", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, verifyReq); err != nil {
+		t.Fatal(err)
+	}
+
+	keep := &domain.Task{InitiativeID: ini.ID, Title: "keep", Statement: "keep", Priority: domain.PriorityMust}
+	if err := db.CreateTaskMulti(ctx, keep, []string{implReq.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A generated verification task, wired with `verifies` (not `implements`).
+	merge := &domain.Task{InitiativeID: ini.ID, Title: "verify it", Statement: "verify it", Priority: domain.PriorityMust}
+	if err := db.CreateVerificationTask(ctx, merge, verifyReq.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.MergeTasks(ctx, ini.ID, keep.ID, merge.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != keep.ID {
+		t.Fatalf("expected survivor %s, got %s", keep.ID, got.ID)
+	}
+
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "task", keep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawImplements, sawVerifies bool
+	for _, e := range edges {
+		switch {
+		case e.EdgeType == domain.EdgeImplements && e.ToID == implReq.ID:
+			sawImplements = true
+		case e.EdgeType == domain.EdgeVerifies && e.ToID == verifyReq.ID:
+			sawVerifies = true
+		}
+	}
+	if !sawImplements {
+		t.Error("the survivor lost its own `implements` edge")
+	}
+	if !sawVerifies {
+		t.Error("MEDIUM: the merged task's `verifies` edge was destroyed, not carried onto the survivor")
+	}
+}

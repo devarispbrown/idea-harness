@@ -199,7 +199,21 @@ func gitCheckIgnore(workspaceRoot string, candidates []string) (map[string]bool,
 		stdin.WriteString(c)
 		stdin.WriteByte(0)
 	}
-	cmd := exec.Command("git", "-C", workspaceRoot, "check-ignore", "--no-index", "-z", "--stdin")
+	// No --no-index: git check-ignore's default behavior is exactly what is
+	// wanted here -- "tracked files are not shown at all since they are not
+	// subject to exclude rules" (git-check-ignore(1)). --no-index turns that
+	// off, so a file force-added (or added before its pattern existed) --
+	// tracked in the workspace, and therefore copied into the before-snapshot
+	// by seedWorkRoot's `git ls-files -co --exclude-standard` (-c always
+	// includes tracked files) -- was reported ignored here and excluded from
+	// the after-snapshot. fsdiff.Diff then read the asymmetry as a deletion:
+	// a change set the agent never touched deleted the user's tracked file,
+	// and with git_commit on, committed the deletion (C1). Dropping
+	// --no-index still catches a genuinely untracked-and-ignored path (e.g.
+	// a downloaded toolchain under .tools/ -- TestSnapshotAlwaysExcludesDefaultIgnoredDirs
+	// and TestWorkspaceIgnoreExcludesTrackedFile below), since an untracked
+	// path has nothing in the index to exempt it.
+	cmd := exec.Command("git", "-C", workspaceRoot, "check-ignore", "-z", "--stdin")
 	cmd.Stdin = &stdin
 	out, err := cmd.Output()
 	if err != nil {

@@ -559,6 +559,25 @@ func (cs ChangeSet) ImplementsTask() bool {
 	return cs.Status == ChangeSetApplied && !cs.NoOp
 }
 
+// NewerChangeSetInScanOrder reports whether cs should replace cur as "the
+// latest" when a caller reduces a slice of change sets to one per key (per
+// task, or across an initiative) by scanning it in ascending CreatedAt order
+// -- store.ListChangeSets' own order, with no secondary sort key.
+//
+// MEDIUM fix: two change sets created in the same millisecond tie on
+// CreatedAt alone, and this codebase had two different answers for who wins
+// that tie -- evidence eligibility and /queue used "not before" (the later
+// one in scan order, i.e. the actual later attempt, wins), while
+// /guidance's LatestChangeSetsPerActiveTask and PR's
+// mostRecentGitCommitWarning used strict "after" (the FIRST one scanned
+// wins instead). Two change sets a millisecond apart could make /queue and
+// /guidance name different "latest" change sets for the same task. Every
+// such reducer must call this one function instead of comparing CreatedAt
+// itself, so they can never disagree again.
+func NewerChangeSetInScanOrder(cs, cur ChangeSet) bool {
+	return !cs.CreatedAt.Before(cur.CreatedAt)
+}
+
 // ApplyJournalEntry is one durable apply-journal record (§39).
 type ApplyJournalEntry struct {
 	ID                      string     `json:"id"`
