@@ -105,6 +105,19 @@ type projectRuntime struct {
 // initiative, so the guard check through every write in the handler runs
 // under the lock.
 //
+// review C2: it is not enough for the handlers alone to take this lock --
+// they re-read the initiative under it (lockPlanEditFresh in handlers.go)
+// precisely so this lock has something to serialize against. Every entry
+// point that claims the initiative and then rewrites its tasks --
+// AdvanceInitiative, ReopenPhaseInitiative, RevisePlanInitiative -- takes
+// this same lock around its own read-check-claim sequence, so a plan-edit
+// handler's fresh read always observes either the claim (and refuses) or a
+// state from strictly before it (and its write is not later undone by
+// DeleteTasksForInitiative). Before this, those three were the one path to
+// DeleteTasksForInitiative that took no lock at all: a plan-edit request
+// could read the initiative as editable, lose the race to one of them, and
+// still answer 200 OK for a task that no longer existed.
+//
 // Locks are per-initiative, not per-project: two different initiatives in
 // the same project may still edit their plans concurrently.
 func (pr *projectRuntime) lockPlanEdit(initiativeID string) func() {
@@ -863,6 +876,14 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	if err != nil {
 		return "", err
 	}
+	// Held across the read-check-claim-CreateOperation sequence below,
+	// mutually exclusive with the same lock held by every Plan-editing HTTP
+	// handler around its own read-check-write (review C2): without this, a
+	// plan-edit request could read the initiative as still editable a moment
+	// before this claims it `running` and rewrites its tasks (Advance builds
+	// the execution plan), and the plan-edit's later write would land on --
+	// or be silently undone by -- that rewrite with no error to the caller.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
@@ -1399,6 +1420,11 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if err != nil {
 		return "", err
 	}
+	// See the identical lock in AdvanceInitiative (review C2): this claims
+	// the initiative and, once running, ReopenPhase calls
+	// DeleteTasksForInitiative -- the exact write a concurrent plan-edit
+	// handler's stale pre-lock read let through as a spurious 200 OK.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
@@ -1486,6 +1512,11 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	if err != nil {
 		return "", err
 	}
+	// See the identical lock in AdvanceInitiative (review C2): this claims
+	// the initiative and, once running, RevisePlan calls
+	// DeleteTasksForInitiative -- the exact write a concurrent plan-edit
+	// handler's stale pre-lock read let through as a spurious 200 OK.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err

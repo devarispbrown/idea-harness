@@ -1466,6 +1466,30 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 // taskEditableGuard validates that an initiative's tasks are editable and (when
 // task is non-nil) that the specific task is mutable. It returns a user-facing
 // error otherwise.
+// lockPlanEditFresh acquires the per-initiative plan-edit lock and re-reads
+// the initiative under it (review C2). Without the re-read, every caller
+// below took the lock but then ran taskEditableGuard against the `ini` value
+// fetched before the lock was acquired: RevisePlanInitiative/
+// ReopenPhaseInitiative/AdvanceInitiative claim the initiative (status ->
+// running) and rewrite -- via DeleteTasksForInitiative -- every task, and
+// none of that took this lock, so a plan-edit request that read `ini` a
+// moment earlier saw a stale, still-editable status and proceeded to a 200
+// OK write against tasks that were deleted moments later. Re-reading here
+// closes that: once this lock is held, the initiative's current status and
+// its unfinished operations (both checked by taskEditableGuard) reflect
+// reality, because RevisePlanInitiative/ReopenPhaseInitiative/
+// AdvanceInitiative now take this same lock around their claim (see
+// runtime.go). Callers must defer the returned unlock func.
+func (s *Server) lockPlanEditFresh(ctx context.Context, pr *projectRuntime, initiativeID string) (domain.Initiative, func(), error) {
+	unlock := pr.lockPlanEdit(initiativeID)
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		unlock()
+		return domain.Initiative{}, nil, err
+	}
+	return ini, unlock, nil
+}
+
 func (s *Server) taskEditableGuard(ctx context.Context, pr *projectRuntime, ini domain.Initiative, task *domain.Task) error {
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return fmt.Errorf("tasks are editable only after the plan is drafted and before it is executed")
@@ -1504,13 +1528,10 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard check through every write below against every
-	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
-	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decode before taking the lock/guard (review C2): a client-controlled
+	// body read must not happen between the guard passing and the write,
+	// nor hold the per-initiative lock for longer than the write itself
+	// needs it.
 	var body struct {
 		Title          string   `json:"title"`
 		Statement      string   `json:"statement"`
@@ -1522,6 +1543,18 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 
@@ -1655,18 +1688,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard check through every write below against every
-	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decode before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		Title          string   `json:"title"`
 		Statement      string   `json:"statement"`
@@ -1676,6 +1698,23 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	// Everything here is validated (and, for requirement_ids, resolved to real
@@ -1754,7 +1793,12 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	// M5: serializes the guard check through every write below against every
 	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1792,7 +1836,12 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 	// M5: serializes the guard check through every write below against every
 	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1815,18 +1864,24 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard check through every write below against every
-	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
-	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decode before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		TaskIDs []string `json:"task_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.TaskIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "task_ids is required")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	if err := pr.db.ReorderTasks(r.Context(), ini.ID, body.TaskIDs); err != nil {
@@ -1848,27 +1903,14 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard check, wouldCycle, and the write against
-	// every other Plan-editing endpoint on this same initiative -- two
-	// concurrent set-depends_on requests (A->B and B->A) each used to pass
-	// wouldCycle against the graph as it stood before either write landed,
-	// and together create a cycle.
-	defer pr.lockPlanEdit(ini.ID)()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
 	// DependsOn is a pointer (review low-priority item): {} or a misspelled
 	// field name decodes to a nil field, which must be refused rather than
 	// silently treated as depends_on: [] and clearing every existing
 	// dependency. An explicitly empty array, {"depends_on": []}, decodes to
 	// a non-nil pointer to an empty slice and is still the legitimate "make
 	// this task depend on nothing" request the doc comment above describes.
+	//
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		DependsOn *[]string `json:"depends_on"`
 	}
@@ -1878,6 +1920,26 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.DependsOn == nil {
 		writeError(w, http.StatusBadRequest, "depends_on is required (use [] to clear all dependencies)")
+		return
+	}
+	// M5: serializes the guard check, wouldCycle, and the write against
+	// every other Plan-editing endpoint on this same initiative -- two
+	// concurrent set-depends_on requests (A->B and B->A) each used to pass
+	// wouldCycle against the graph as it stood before either write landed,
+	// and together create a cycle.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, *body.DependsOn)
@@ -1957,9 +2019,7 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard checks and MergeTasks's own cycle check
-	// against every other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		TaskIDs []string `json:"task_ids"`
 	}
@@ -1974,6 +2034,14 @@ func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "task_ids must name two distinct tasks")
 		return
 	}
+	// M5: serializes the guard checks and MergeTasks's own cycle check
+	// against every other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
 	keep, err := pr.db.GetTask(r.Context(), body.TaskIDs[0])
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[0])
@@ -2073,18 +2141,7 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	// M5: serializes the guard check through every write below against every
-	// other Plan-editing endpoint on this same initiative.
-	defer pr.lockPlanEdit(ini.ID)()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		Tasks []struct {
 			Title          string   `json:"title"`
@@ -2094,6 +2151,23 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Tasks) < 2 {
 		writeError(w, http.StatusBadRequest, "tasks must name at least 2 replacement tasks")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
 
