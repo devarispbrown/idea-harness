@@ -156,19 +156,22 @@ func TestChangeSetReviewMarksOutOfDiffFindingAdvisoryEndToEnd(t *testing.T) {
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := eng.Execute(ctx, ini.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// A finding about a file this change set never touched, self-reported
 	// in_diff:false -- the self-report and the (failed) deterministic match
-	// agree, so it is advisory.
+	// agree, so it is advisory. ICP re-run defect A: the review now runs
+	// once, inside Execute, so the scripted response must be in place BEFORE
+	// Execute runs, not after.
 	fp.SetResponse(ChangeSetReviewSchemaName, `{"findings":[{`+
 		`"severity":"critical","confidence":"high","category":"x",`+
 		`"finding":"a problem elsewhere","recommendation":"fix it",`+
 		`"path":"totally/unrelated/file.go","in_diff":false`+
 		`}]}`)
+
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err != nil {
 		t.Fatalf("approval should not be blocked by an out-of-diff finding: %v", err)
@@ -221,16 +224,17 @@ func TestChangeSetReviewUnmatchedPathWithDishonestSelfReportBlocks(t *testing.T)
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := eng.Execute(ctx, ini.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	fp.SetResponse(ChangeSetReviewSchemaName, `{"findings":[{`+
 		`"severity":"critical","confidence":"high","category":"x",`+
 		`"finding":"a problem elsewhere","recommendation":"fix it",`+
 		`"path":"totally/unrelated/file.go","in_diff":true`+
 		`}]}`)
+
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err == nil {
 		t.Fatal("expected approval to be blocked by the self-reported in-diff critical finding")
@@ -268,16 +272,17 @@ func TestQuickRigorChangeSetReviewStillBlocksCriticalFindings(t *testing.T) {
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := eng.Execute(ctx, ini.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// No path, in_diff omitted (defaults true, review.ParseFindings): a
 	// genuine in-diff critical finding.
 	fp.SetResponse(ChangeSetReviewSchemaName, `{"findings":[{`+
 		`"severity":"critical","confidence":"high","category":"x",`+
 		`"finding":"a real problem","recommendation":"fix it"`+
 		`}]}`)
+
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err == nil {
 		t.Fatal("quick rigor must still block on an undisposed in-diff critical finding")
@@ -359,6 +364,15 @@ func TestChangeSetReviewerPromptRequiresConcreteEvidence(t *testing.T) {
 // an empty file set (which would make EVERY path-bearing finding
 // "advisory" via classifyDiffEvidence -- the unsafe direction for a real
 // blocker).
+//
+// ICP re-run defect A moved the one call site that reaches this guard from
+// ReviewChangeSet (human "approve") into Execute itself, run once at the
+// moment the change set's content is fixed -- by which point its patch is
+// necessarily loadable (Execute just persisted it). This now exercises
+// runChangeSetAdversarialReview directly, the exact function Execute calls,
+// against a change set whose patch_digest was corrupted after the fact --
+// still the only way to reach an unloadable patch, and still Execute's own
+// code path.
 func TestChangeSetReviewFailsWhenPatchCannotLoad(t *testing.T) {
 	fp := model.NewFakeProvider()
 	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
@@ -376,13 +390,20 @@ func TestChangeSetReviewFailsWhenPatchCannotLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("setup: expected the change set already reviewed and awaiting approval, got %q", cs.Status)
+	}
 
 	// Corrupt the change set's patch_digest so loadPatch's blob lookup fails.
 	if _, err := db.SQL().Exec(`UPDATE change_sets SET patch_digest = ? WHERE id = ?`, "not-a-real-digest", cs.ID); err != nil {
 		t.Fatal(err)
 	}
+	corrupted, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err == nil {
+	if _, _, _, err := eng.runChangeSetAdversarialReview(ctx, corrupted); err == nil {
 		t.Fatal("expected the review to fail when the patch cannot load, not silently succeed")
 	}
 

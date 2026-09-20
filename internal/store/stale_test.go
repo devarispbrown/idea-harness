@@ -376,6 +376,78 @@ func TestReopenDecisionMarksTaskAndAppliedChangeSetStale(t *testing.T) {
 	}
 }
 
+// TestResolveDecisionMarksExistingDependentsStale is ICP re-run defect H
+// (third clause): quick rigor can auto-approve a plan -- and tasks can
+// execute -- while a decision is still open, so a decision's FIRST resolve
+// is no longer guaranteed to happen before anything depends on it. A human's
+// answer given after plan approval (e.g. "keys in an env var") must mark the
+// requirement/task/applied change set built without it stale, exactly as
+// ReopenDecision already does for "changed my mind" -- otherwise the answer
+// arrived and nothing on the record ever reflected it. Mutation-check: drop
+// the markDependentsStaleTx call this adds to ResolveDecision, and this
+// fails.
+func TestResolveDecisionMarksExistingDependentsStale(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	// The decision is raised but left OPEN -- the quick-rigor-skip scenario --
+	// while a requirement, task and applied change set are already built on
+	// top of it.
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionProduct, Question: "where do secrets live?", Options: []string{"env var", "config file"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "r", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	applied := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d1"}
+	if err := db.CreateChangeSet(ctx, applied); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct{ from, to domain.ChangeSetStatus }{
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired},
+		{domain.ChangeSetReviewRequired, domain.ChangeSetApproved},
+		{domain.ChangeSetApproved, domain.ChangeSetApplying},
+	} {
+		if err := db.TransitionChangeSet(ctx, applied.ID, step.from, step.to, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.MarkChangeSetApplied(ctx, applied.ID, "digest", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The human answers, resolving the decision for the FIRST time.
+	if err := db.ResolveDecision(ctx, dec.ID, "env var", "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, it := range items {
+		got[it.TargetType+":"+it.TargetID] = true
+	}
+	if !got["requirement:"+req.ID] || !got["task:"+task.ID] || !got["change_set:"+applied.ID] {
+		t.Fatalf("expected requirement, task and the applied change set marked stale after the late resolve, got %+v", items)
+	}
+}
+
 // TestReopenDecisionSkipsRemovedRequirement reproduces the ICP re-run's own
 // defect #4: "DEC-3's reopen marked only removed requirements (REQ-4,
 // REQ-13)". A requirement superseded by a PRD revision (SupersedeRequirements

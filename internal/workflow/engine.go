@@ -873,7 +873,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decisions)},
-		{Selector: "questions", Content: renderQuestions(questions)},
+		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 		{Selector: "findings", Content: renderFindings(findings)},
 	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
@@ -1090,6 +1090,22 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			all[i].Evidence = e.redact(all[i].Evidence)
 			all[i].Impact = e.redact(all[i].Impact)
 			all[i].Recommendation = e.redact(all[i].Recommendation)
+		}
+
+		// ICP re-run defect A: Revise (human answers a question / resolves a
+		// decision -> re-runs product definition -> re-runs this loop from
+		// cycle 1) is a legitimate re-review of the same PRD, and it does not
+		// know a human already dispositioned an earlier cycle's finding --
+		// the fresh pass has no way to see that a near-identical finding was
+		// already judged a false positive. Carry that disposition forward so
+		// a reworded twin does not silently re-block approval. After
+		// redaction, so it compares like-for-like against prior findings
+		// (already redacted themselves before they were persisted).
+		if err := e.inheritDispositionFromPrior(ctx, initiativeID, all); err != nil {
+			return domain.InitiativeFailed, err
+		}
+
+		for i := range all {
 			if err := e.db.CreateFinding(ctx, &all[i]); err != nil {
 				return domain.InitiativeFailed, err
 			}

@@ -72,6 +72,68 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   name already, and from the branch-per-initiative dirty check as of this
   release), staying on the same filesystem as the destination so the final
   rename is still atomic.
+
+- **The change-set adversarial review now runs once, when the change set is
+  created, not again on every `idea review <CHG-n> approve`.** A founder-
+  journey run spent 64% of its model budget re-running the reviewer on every
+  plain `approve` call (15s–2.5min each), and since a model reviewer is not a
+  fixed point, a finding a human had just marked `rejected` came back
+  reworded at the same severity, so approval never converged without
+  `--accept-findings`. The review now runs inside `Execute`, immediately
+  after checks pass and the change set's content is fixed (its `PatchDigest`
+  never changes afterward); `idea review <CHG-n> approve` (without
+  `--accept-findings`) now only evaluates the findings already on the change
+  set plus whatever the human has since dispositioned — the same gate
+  `--accept-findings` already ran through — and makes no model call. A new
+  `Engine.inheritDispositionFromPrior` carries a human's disposition of a
+  finding forward onto a near-duplicate (same target type, path, category,
+  and similar text) raised by a later, legitimate re-review of the same
+  subject (`idea revise`'s PRD re-review, `idea revise-plan`/
+  `idea reopen-phase`'s plan re-review), so a reworded twin of an
+  already-judged finding does not silently re-block approval there either.
+- **`idea review <CHG-n> approve` no longer risks a client-side timeout
+  outliving a fast-enough server action, and a client timeout now says the
+  action is likely still running and how to check.** The fix above already
+  removes the model call that made this endpoint slow; as a backstop, the
+  CLI now translates any client-side HTTP timeout into a message naming the
+  request that timed out and pointing at `idea status`, `idea watch`, and
+  `idea cancel <op-id>` instead of a bare "context deadline exceeded".
+- **Reverting a change set now returns its task to `proposed` so `idea
+  execute` can re-run it**, when no other applied change set for the same
+  task still implements it. Previously the task stayed `done` forever after
+  a revert, so `idea execute` printed "✓ execute started" and then failed
+  "no ready tasks ... (dependencies not satisfied)" in the background, with
+  no documented way back short of editing the database. `idea execute`
+  (and the daemon's execute endpoint) now also checks synchronously, before
+  launching, whether a ready task exists at all, and refuses with a clear
+  message (naming `idea verify` when every task is done) instead of
+  accepting and failing asynchronously.
+- **`idea status`/`/guidance` now say "Review CHG-n" or "Apply CHG-n" instead
+  of "run the next task" while a change set is awaiting the human's own
+  review or apply**, and say "Run `idea verify`" once every task is done
+  instead of repeating "run the next task" forever with nothing left to
+  run. `LatestChangeSetsPerActiveTask` no longer excludes a `done` task's
+  change set — `Execute` marks a task `done` as soon as its change set
+  passes checks, before it is reviewed, approved, or applied, so the old
+  exclusion hid exactly the change set guidance most needed to report.
+- **Decisions and answered questions now reach the implementer.** A
+  founder-journey run answered "keys in an env var" and the implementer
+  built a JSON config file instead, because nothing in the planner's model
+  inputs, or the brief it produces, ever named a resolved decision or an
+  answered question — and `AnswerQuestion`'s answer text (content-addressed,
+  keyed by a digest) was never actually read back anywhere, only whether a
+  question was "answered". `runPlanner`'s prompt and the deterministic
+  implementer brief now both include resolved decisions and answered
+  questions (with their real answer text, via the new
+  `Engine.renderQuestionsWithAnswers`/`resolvedDecisionsAndAnswers`).
+  Resolving a decision after a plan/tasks/change sets were already built on
+  it (possible once quick rigor lets a plan through with an open decision)
+  now marks those requirements/tasks/applied change sets stale, the same
+  way reopening a decided decision already did. Guidance shown while
+  proceeding past PRD/plan approval also now names any still-open
+  decisions/questions instead of saying nothing about them — advisory only,
+  since an open decision/question is a normal, expected state mid-workflow
+  and must not itself block approval.
 - **`go test` (and other toolchains) can now actually pass inside the check
   sandbox.** Docker's default `--tmpfs /tmp` is `noexec`, so a compiled test
   binary — `go test`'s own, jest's native transforms, a cargo build script,

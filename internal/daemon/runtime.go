@@ -935,14 +935,22 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 	// here or the caller gets "✓ execute started" and exit 0 with the failure
 	// only in the log -- the same defect apply was fixed for (audit finding b).
 	//
-	// Scoped deliberately to the status. The stronger check, "a ready task
-	// exists", needs nextReadyTask, which walks tasks, graph edges and each
-	// dependency's change sets; Execute holds the engine mutex across a model
-	// call and a container run, so a synchronous ready-task check here either
-	// blocks this handler for minutes or races the pipeline it guards.
-	// NextAction does that check instead, so `idea next` never proposes an
-	// execute that cannot run, and the async failure path stays the backstop for
-	// the narrow window between this check and the task being claimed.
+	// ICP re-run defect E: this used to be scoped deliberately to the status
+	// alone, reasoning that "a ready task exists" needs nextReadyTask, which
+	// walks tasks, graph edges and each dependency's change sets, and that
+	// doing so here would block this handler or race the pipeline it guards.
+	// That conflated the READ (cheap: table scans, no lock, no model call --
+	// engine.NextReadyTask is documented lock-free precisely so a poll-driven
+	// UI can call it on every refresh) with Execute itself (which holds the
+	// engine mutex across a model call and a container run). The read alone
+	// costs nothing to do here, and NOT doing it is what let `idea execute`
+	// print "✓ execute started" and then fail in the background with "no
+	// ready tasks" on a plan with nothing left to run -- a fully deterministic
+	// outcome, not a narrow race, e.g. right after reverting the change set
+	// for the only remaining task and before its status caught up, or once
+	// every task is simply done. The async failure path (Execute's own
+	// nextReadyTask call) remains the backstop for the genuine race window
+	// between this check and the task actually being claimed.
 	if ini.Status == domain.InitiativeRunning {
 		return "", preconditionf("initiative is already running")
 	}
@@ -956,6 +964,14 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 	}
 	if reason := workflow.PlanNotReadyForExecution(ini); reason != "" {
 		return "", preconditionf("%s", reason)
+	}
+	if nt, err := pr.engine.NextReadyTask(ctx, initiativeID); err != nil {
+		return "", err
+	} else if nt == nil {
+		return "", preconditionf(
+			"no ready tasks for this initiative (every task is done, cancelled, or blocked on an unsatisfied dependency); "+
+				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change "+
+				"set), it must be ready/proposed -- `idea status` shows why it is not")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
