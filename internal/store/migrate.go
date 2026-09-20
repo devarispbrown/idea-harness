@@ -729,6 +729,36 @@ ALTER TABLE change_sets ADD COLUMN review_completed_at INTEGER;
 	`
 ALTER TABLE change_sets ADD COLUMN no_op INTEGER NOT NULL DEFAULT 0;
 `,
+	// 35: review H5. Migration 31 added runs.initiative_id/stage so a model
+	// or agent run could be attributed to the initiative/phase that produced
+	// it, but left every PRE-EXISTING run row's initiative_id at the column
+	// default ('') -- nothing backfilled it. ListModelPhaseCosts and
+	// ListAgentRunStats (internal/projection/costs.go) both filter
+	// `WHERE r.initiative_id = ?`, so an initiative that existed before this
+	// upgrade permanently reports $0.00 / 0 calls from GET .../costs even
+	// though the spend still sits in run_manifests -- a wrong number, not a
+	// missing one, on money already burned.
+	//
+	// The initiative a run belongs to IS recoverable: every run this
+	// happened to (one created before migration 31 shipped) is still wired
+	// into the product graph by a produced_by edge from whatever it produced
+	// (a requirement, an assertion, an artifact version, ...) back to the
+	// run, and that edge's own initiative_id column names the initiative.
+	// One run can in principle be produced_by-linked from more than one
+	// aggregate (or, defensively, from more than one initiative, which
+	// should never happen but costs nothing to guard); MIN(...) picks
+	// deterministically rather than leaving the join's row order to define
+	// the result. A run with no such edge at all (never wired, or the edge
+	// itself predates the product graph) is left at '' exactly as before --
+	// there is nothing to recover it from.
+	`
+UPDATE runs SET initiative_id = (
+	SELECT MIN(e.initiative_id) FROM graph_edges e WHERE e.to_type = 'run' AND e.to_id = runs.id
+)
+WHERE initiative_id = '' AND EXISTS (
+	SELECT 1 FROM graph_edges e WHERE e.to_type = 'run' AND e.to_id = runs.id
+);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

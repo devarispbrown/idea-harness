@@ -225,11 +225,13 @@ type Finding struct {
 	// rows written before this field existed are not retroactively treated
 	// as configured-secret matches.
 	SecretOverridable bool `json:"secret_overridable"`
-	// SecretPreview is a masked preview of the matched value -- first 4 and
-	// last 4 characters, the rest replaced by an ellipsis (e.g. "sk-p…Xy9z"),
-	// short values masked entirely -- shown so a human dispositioning this
-	// finding can see enough to recognize what they are allowlisting without
-	// the raw value ever being persisted or returned in full.
+	// SecretPreview is a masked preview of the matched value (review LOW):
+	// nothing at all for a value under 16 characters (masked entirely), at
+	// most 1 character on each side for a 16-23 character value, and at most
+	// the first/last 4 characters (e.g. "sk-p…Xy9z") only from 24 characters
+	// up -- shown so a human dispositioning this finding can see enough to
+	// recognize what they are allowlisting without the raw value ever being
+	// persisted or returned in full. See security.maskValue.
 	SecretPreview string `json:"secret_preview,omitempty"`
 	// Path is the file the finding is about, self-reported by the reviewer
 	// (change-set review only, review B2, adopted #5). Optional: a finding
