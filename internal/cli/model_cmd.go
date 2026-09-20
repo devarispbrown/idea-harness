@@ -54,7 +54,7 @@ func cmdModel(a cmdArgs, stdout, stderr io.Writer) error {
 		if provider := a.arg(0); provider != "" {
 			return listProviderModels(provider, stdout)
 		}
-		return listModels(stdout)
+		return listModels(a, stdout)
 	case "set":
 		spec := a.arg(0)
 		if spec == "" {
@@ -64,9 +64,17 @@ func cmdModel(a cmdArgs, stdout, stderr io.Writer) error {
 	case "add":
 		return addProvider(a, stdout)
 	default: // "list" or bare `idea model`
-		return listModels(stdout)
+		return listModels(a, stdout)
 	}
 }
+
+// curatedModelCount is how many of a provider's models `idea model` shows by
+// default. Printing every model of every provider (~8k tokens on a real run,
+// once even a couple of presets carry a full catalog) is not what "list my
+// model providers" needs most of the time -- the default view is the current
+// selection plus this many of each provider's models, with a hint pointing at
+// `--all` or a single provider for the rest.
+const curatedModelCount = 5
 
 // listProviderModels lists live models for one provider (falling back to the
 // catalog when the provider cannot enumerate them).
@@ -94,7 +102,17 @@ func listProviderModels(provider string, stdout io.Writer) error {
 	return nil
 }
 
-func listModels(stdout io.Writer) error {
+// listModels lists model providers. `--all` shows every model of every
+// provider (the old, unconditional behaviour); a filter -- `--provider
+// <name>` or a bare positional naming one, both accepted so `idea model list
+// <provider>` reads the same as `idea model ls <provider>` -- narrows to one
+// provider and shows it in full, since one provider's catalog is never the
+// thing that made this command print ~8k tokens on a real run. Neither flag
+// given is the default: the current selection (unchanged, already compact)
+// plus curatedModelCount of each provider's models, with a hint for the rest
+// (DX finding: `idea model` printed every model of every configured provider
+// with no way to see less).
+func listModels(a cmdArgs, stdout io.Writer) error {
 	c, projectID, err := connect()
 	if err != nil {
 		return err
@@ -103,6 +121,30 @@ func listModels(stdout io.Writer) error {
 	if err := c.do("GET", "/api/v1/projects/"+projectID+"/providers", nil, &v); err != nil {
 		return err
 	}
+
+	all := a.has("--all")
+	filter := a.value("--provider")
+	if filter == "" {
+		filter = a.arg(0)
+	}
+	providers := v.Providers
+	if filter != "" {
+		var kept []cliProvider
+		for _, p := range v.Providers {
+			if p.Name == filter {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			names := make([]string, 0, len(v.Providers))
+			for _, p := range v.Providers {
+				names = append(names, p.Name)
+			}
+			return fmt.Errorf("no provider matching %q; configured: %s", filter, strings.Join(names, ", "))
+		}
+		providers = kept
+	}
+
 	fmt.Fprintln(stdout, heading("Model providers"))
 	if v.DefaultModel != "" {
 		fmt.Fprintln(stdout, "  "+muted("default:")+" "+accent(v.DefaultModel))
@@ -121,7 +163,8 @@ func listModels(stdout io.Writer) error {
 		}
 	}
 	fmt.Fprintln(stdout)
-	for _, p := range v.Providers {
+	truncated := false
+	for _, p := range providers {
 		status := muted("  ")
 		if p.Ready {
 			status = ok("✓ ")
@@ -159,11 +202,24 @@ func listModels(stdout io.Writer) error {
 		if p.Problem != "" {
 			fmt.Fprintf(stdout, "      %s  %s\n", warn("problem:"), p.Problem)
 		}
-		if len(p.Models) > 0 {
+		switch {
+		case len(p.Models) == 0:
+			// nothing to show
+		case all || filter != "" || len(p.Models) <= curatedModelCount:
 			fmt.Fprintf(stdout, "      %s  %s\n", muted("models:"), strings.Join(p.Models, ", "))
+		default:
+			truncated = true
+			fmt.Fprintf(stdout, "      %s  %s %s\n", muted("models:"),
+				strings.Join(p.Models[:curatedModelCount], ", "),
+				muted(fmt.Sprintf("(+%d more)", len(p.Models)-curatedModelCount)))
 		}
 	}
 	fmt.Fprintln(stdout)
+	if truncated {
+		fmt.Fprintln(stdout, muted("showing a curated set of models per provider — ")+
+			bold("idea model list --all")+muted(" lists every model, ")+
+			bold("idea model list <provider>")+muted(" lists one provider in full"))
+	}
 	fmt.Fprintln(stdout, muted("set the default: ")+bold("idea model set <provider/model>"))
 	fmt.Fprintln(stdout, muted("set per-role:    ")+bold("idea model set <provider/model> --role <role>"))
 	fmt.Fprintln(stdout, muted("add a provider:  ")+bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
@@ -277,5 +333,5 @@ func addProvider(a cmdArgs, stdout io.Writer) error {
 
 // showConfig renders the current model config.
 func showConfig(stdout, stderr io.Writer) error {
-	return listModels(stdout)
+	return listModels(cmdArgs{}, stdout)
 }

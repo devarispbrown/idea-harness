@@ -68,8 +68,16 @@ func cmdAdvance(a cmdArgs, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ advance started")+" "+code(iniID))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		if err := waitIfRequested(a, c, projectID, iniID, opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
+		return nil
 	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil

@@ -92,6 +92,28 @@ func operationResource(operationID, action string) string {
 	return p
 }
 
+// decisionResource builds a project-scoped decision path with its segments
+// escaped. Decisions are resolved/reopened at the project level
+// (POST .../projects/{projectId}/decisions/{id}/...), not under an
+// initiative, unlike the list route.
+func decisionResource(projectID, decisionID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/decisions/" + url.PathEscape(decisionID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
+// questionResource builds a project-scoped question path with its segments
+// escaped, matching decisionResource.
+func questionResource(projectID, questionID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/questions/" + url.PathEscape(questionID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
 // client talks to the daemon API.
 type client struct {
 	baseURL string

@@ -763,10 +763,21 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding, recentCha
 	}
 
 	if openDecisions > 0 {
-		return Guidance{Action: "Resolve open decisions", Why: fmt.Sprintf("%d decision(s) need your judgment before proceeding.", openDecisions), Affected: []string{"Product Definition"}}
+		// Names the commands that actually resolve this, not just the fact
+		// that something is open: `idea decisions` lists them, `idea resolve`
+		// answers one (by option number or free text), and
+		// `idea accept-recommendations` answers every one with its own
+		// recommendation in a single call.
+		return Guidance{Action: "Resolve open decisions", Why: fmt.Sprintf(
+			"%d decision(s) need your judgment before proceeding. `idea decisions` lists them; "+
+				`idea resolve <decision> <option#>|"<resolution>"`+" resolves one; `idea accept-recommendations` accepts them all.",
+			openDecisions), Affected: []string{"Product Definition"}}
 	}
 	if openQuestions > 0 {
-		return Guidance{Action: "Resolve open questions", Why: fmt.Sprintf("%d open question(s) reduce uncertainty about the product.", openQuestions), Affected: []string{"Product Definition"}}
+		return Guidance{Action: "Resolve open questions", Why: fmt.Sprintf(
+			`%d open question(s) reduce uncertainty about the product. `+"`idea questions`"+` lists them; `+
+				`idea answer <question> "<answer>"`+` answers one.`,
+			openQuestions), Affected: []string{"Product Definition"}}
 	}
 	return Guidance{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
 }
