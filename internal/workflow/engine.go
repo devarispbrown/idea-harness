@@ -61,7 +61,18 @@ const (
 
 // Engine drives the M1 workflow.
 type Engine struct {
-	db       *store.DB
+	db *store.DB
+	// blobs, redactor, registry, cfg, dotEnv are swapped as a group by
+	// Reload (review H4) and are guarded by cfgMu, not by mu: Execute/
+	// ApplyChangeSet/RevertChangeSet hold mu for their whole duration and so
+	// are already excluded from a concurrent Reload, but Run, Advance,
+	// Retry, RevisePlan, Resume, Revise, ReopenPhase and friends do not hold
+	// mu (mu is scoped to the state-mutating trio above, not every entry
+	// point) and read these fields throughout a long, multi-model-call
+	// pipeline. Proven by the race detector: a Reload racing
+	// handleListExecutors/storeBlob/runReviewLoop. Read them only through
+	// snapshotConfig, never directly, outside of Reload itself.
+	cfgMu    sync.RWMutex
 	blobs    *blob.Store // redacted store: model artifacts/context
 	rawBlobs *blob.Store // redaction-free store: diff/apply/revert content
 	redactor *security.Redactor
@@ -146,10 +157,16 @@ func (e *Engine) setStage(ctx context.Context, initiativeID, stage string) {
 // persisted/re-served in structured columns (full-platform review: secret-catalog
 // completion). Nil-safe: without a redactor it returns s unchanged.
 func (e *Engine) redact(s string) string {
-	if s == "" || e.redactor == nil {
+	if s == "" {
 		return s
 	}
-	return e.redactor.RedactString(s)
+	e.cfgMu.RLock()
+	redactor := e.redactor
+	e.cfgMu.RUnlock()
+	if redactor == nil {
+		return s
+	}
+	return redactor.RedactString(s)
 }
 
 // redactSlice redacts every element of a string slice in place.
@@ -199,25 +216,53 @@ func (e *Engine) chargeUSD(cost float64) error {
 }
 
 // Reload swaps the config-derived components in place on the SAME engine, so the
-// engine's mutex continues to serialize execute/apply/revert across a reload. It
-// is guarded by e.mu, which ALL entry points now hold (see below), so no field
-// read races the swap.
+// engine's mutex continues to serialize execute/apply/revert across a reload.
+// e.mu excludes Execute/ApplyChangeSet/RevertChangeSet, which hold it for
+// their whole duration; cfgMu (review H4) is what actually guards the field
+// writes below against every OTHER entry point (Run, Advance, Retry,
+// RevisePlan, Resume, Revise, ReopenPhase, ...), none of which hold e.mu --
+// the doc comment this replaces claimed "ALL entry points now hold [e.mu]",
+// which was false, and go test -race proved it.
 func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store, dotEnv map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	// Swapped under the same lock as cfg, so an Execute never pairs a new
-	// config with the old .env.
-	e.dotEnv = dotEnv
 	if cfg.Review.MaxCycles <= 0 {
 		cfg.Review.MaxCycles = 3
 	}
+	e.cfgMu.Lock()
+	// Swapped under the same lock as cfg, so a reader of the snapshot never
+	// pairs a new config with the old .env (or vice versa).
+	e.dotEnv = dotEnv
 	e.cfg = cfg
 	e.registry = registry
 	e.redactor = redactor
 	e.blobs = blobs
+	e.cfgMu.Unlock()
 	e.costMu.Lock()
 	e.budgetUSD = cfg.Review.MaxCostUSD
 	e.costMu.Unlock()
+}
+
+// engineConfig is a consistent, point-in-time copy of the config-derived
+// fields Reload swaps as a group (review H4). Every entry point that does
+// not hold mu for its whole duration -- Run, Advance, Retry, RevisePlan,
+// Resume, Revise, ReopenPhase, ApprovePlan, ConvergeDecisions,
+// SuggestAnswers, DiscussDecision, PromoteDocComment, DescribeImages, and
+// their helpers -- reads through snapshotConfig instead of the raw fields,
+// so a concurrent Reload is either fully visible or not at all to that read,
+// never a torn mix of an old redactor with a new cfg.
+type engineConfig struct {
+	cfg      config.HarnessConfig
+	registry *model.Registry
+	redactor *security.Redactor
+	blobs    *blob.Store
+	dotEnv   map[string]string
+}
+
+func (e *Engine) snapshotConfig() engineConfig {
+	e.cfgMu.RLock()
+	defer e.cfgMu.RUnlock()
+	return engineConfig{cfg: e.cfg, registry: e.registry, redactor: e.redactor, blobs: e.blobs, dotEnv: e.dotEnv}
 }
 
 // contentBlobs returns the redaction-free store for file content. It fails
@@ -333,9 +378,15 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	}
 	e.wireDocConsumesIfAny(ctx, initiativeID, runID, inputs)
 
+	// One snapshot for the whole call (review H4): a model spec resolved
+	// against one registry generation must be Resolve()d against that SAME
+	// generation, and the max_tokens ceiling enforced below must be the one
+	// that generation configured, not whatever Reload has swapped in by the
+	// time the response comes back.
+	snap := e.snapshotConfig()
 	bundle := ccontext.Compile(inputs)
 	modelSpec := e.modelSpecFor(initiativeID, roleName)
-	prov, modelName, err := e.registry.Resolve(modelSpec)
+	prov, modelName, err := snap.registry.Resolve(modelSpec)
 	if err != nil {
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
 		return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
@@ -439,11 +490,13 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	}
 	e.log.Info("model response", "stage", stageKey, "role", roleName, "model", modelSpec, "actual", resp.ActualModel, "duration", time.Since(reqStart).Round(time.Millisecond), "out_tokens", resp.Usage.OutputTokens, "cost_usd", resp.Usage.CostUSD)
 
-	// Enforce the review token ceiling as a hard stop (review M4).
-	if e.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > e.cfg.Review.MaxTokens {
+	// Enforce the review token ceiling as a hard stop (review M4). snap, not
+	// e.cfg: the ceiling this run is held to is the one in force when it
+	// started (review H4).
+	if snap.cfg.Review.MaxTokens > 0 && resp.Usage.OutputTokens > snap.cfg.Review.MaxTokens {
 		failureManifest()
 		e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
-		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, e.cfg.Review.MaxTokens)
+		return runID, nil, fmt.Errorf("workflow: %s exceeded max_tokens (%d > %d)", stageKey, resp.Usage.OutputTokens, snap.cfg.Review.MaxTokens)
 	}
 
 	if decoded == nil {
@@ -487,7 +540,10 @@ func (e *Engine) storeBlob(content string) string {
 	if content == "" {
 		return ""
 	}
-	d, err := e.blobs.Put([]byte(content))
+	e.cfgMu.RLock()
+	blobs := e.blobs
+	e.cfgMu.RUnlock()
+	d, err := blobs.Put([]byte(content))
 	if err != nil {
 		return ""
 	}
@@ -499,7 +555,8 @@ func (e *Engine) storeBlob(content string) string {
 // default_model, then the registry default with a catalog-default model, then
 // the demo default.
 func (e *Engine) resolveModelSpec(roleName string) string {
-	return resolveModelSpecFor(e.cfg, e.registry, roleName)
+	snap := e.snapshotConfig()
+	return resolveModelSpecFor(snap.cfg, snap.registry, roleName)
 }
 
 func resolveModelSpecFor(cfg config.HarnessConfig, registry *model.Registry, roleName string) string {
@@ -557,7 +614,8 @@ func (e *Engine) modelSpecFor(initiativeID, roleName string) string {
 // ("implementer") wins, then the executor-level model, then the default chain.
 // This is how OMP and Hermes get different models per role.
 func (e *Engine) implementerModel() string {
-	return ImplementerModelSpec(e.cfg, e.registry)
+	snap := e.snapshotConfig()
+	return ImplementerModelSpec(snap.cfg, snap.registry)
 }
 
 // ImplementerModelSpec is the model the coding agent runs: models.implementer,
@@ -811,7 +869,9 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 	}
 
 	// Offline/disabled network: findings must be assumptions, never facts.
-	offline := e.cfg.Network == config.NetworkDisabled
+	// snapshotConfig, not e.cfg directly (review H4): runResearch is an
+	// entry point Run reaches without holding mu.
+	offline := e.snapshotConfig().cfg.Network == config.NetworkDisabled
 	for _, f := range objSlice(obj["findings"]) {
 		ftype := domain.AssertionType(str(f["type"]))
 		if offline && ftype == domain.AssertionFact {
@@ -865,7 +925,10 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	// re-run #1) -- NEVER from a requirement count this very step produces,
 	// which is exactly the circularity that made `auto` unable to select
 	// `quick` for the PRD no matter how small the idea.
-	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
+	//
+	// snapshotConfig, not e.cfg directly (review H4): runProductDefinition is
+	// an entry point Run/Revise reach without holding mu.
+	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement."},
@@ -1033,7 +1096,12 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 // asking for more of the same PRD, not a new, larger one), so calibrating
 // once up front cannot flip level mid-review either way.
 func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
-	maxCycles := e.cfg.Review.MaxCycles
+	// One snapshot for the whole loop (review H4): Run/Resume reach this
+	// without holding mu, and a multi-cycle review should run under one
+	// config generation throughout, not whichever one a concurrent Reload
+	// happens to have swapped in by a later cycle.
+	snap := e.snapshotConfig()
+	maxCycles := snap.cfg.Review.MaxCycles
 	var rigor RigorLevel
 
 	for cycle := 1; ; cycle++ {
@@ -1049,7 +1117,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			if err != nil {
 				return domain.InitiativeFailed, err
 			}
-			rigor = calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
+			rigor = calibrateRigor(RigorLevel(snap.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 			if rigor == RigorQuick {
 				maxCycles = 1
 			}
@@ -1455,6 +1523,9 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 		e.log.Warn("context docs unavailable", "initiative", initiativeID, "err", err)
 		return ""
 	}
+	// review H4: contextDocs is reached by Run/Advance/Revise/Resume without
+	// mu, and every digest below must come from the SAME blob store.
+	blobs := e.snapshotConfig().blobs
 	var b strings.Builder
 	for _, doc := range docs {
 		digest := doc.Digest
@@ -1467,7 +1538,7 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 			digest = doc.DescriptionDigest
 			label = doc.Kind + " (image)"
 		}
-		content, err := e.blobs.Get(digest)
+		content, err := blobs.Get(digest)
 		if err != nil {
 			e.log.Warn("context doc blob missing", "initiative", initiativeID, "doc", doc.ID, "digest", digest, "err", err)
 			continue
@@ -1513,14 +1584,16 @@ func (e *Engine) DescribeImages(ctx context.Context, initiativeID string) error 
 }
 
 // describeImage runs one vision-model call over an image doc's bytes and stores
-// the returned description. It snapshots the reloadable engine components under
-// e.mu (Reload swaps them under the same lock), so the read path cannot race a
-// config reload.
+// the returned description. It snapshots the reloadable engine components via
+// cfgMu (review H4: Reload swaps them under cfgMu, not mu -- mu serializes
+// only execute/apply/revert, and taking it here would needlessly contend with
+// those instead of with Reload), so the read path cannot race a config
+// reload. rawBlobs is set once at construction and never swapped by Reload,
+// so it is read directly.
 func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error {
-	e.mu.Lock()
 	spec := e.resolveModelSpec("vision")
-	registry, redactor, blobs, rawBlobs := e.registry, e.redactor, e.blobs, e.rawBlobs
-	e.mu.Unlock()
+	snap := e.snapshotConfig()
+	registry, redactor, blobs, rawBlobs := snap.registry, snap.redactor, snap.blobs, e.rawBlobs
 
 	if rawBlobs == nil {
 		return fmt.Errorf("image store not configured")
@@ -1636,12 +1709,15 @@ func (e *Engine) wireDocConsumesIfAny(ctx context.Context, initiativeID, runID s
 // or no URLs configured it returns empty, and the researcher marks everything
 // as an assumption (offline path).
 func (e *Engine) researchEvidence(ctx context.Context) string {
-	if e.cfg.Network != config.NetworkEnabled || len(e.cfg.Research.URLs) == 0 {
+	// review H4: reached by Run/Revise without mu; one generation for the
+	// whole fetch loop below.
+	cfg := e.snapshotConfig().cfg
+	if cfg.Network != config.NetworkEnabled || len(cfg.Research.URLs) == 0 {
 		return ""
 	}
 	f := tools.NewFetcher()
 	var b strings.Builder
-	for _, url := range e.cfg.Research.URLs {
+	for _, url := range cfg.Research.URLs {
 		content, err := f.Fetch(ctx, url)
 		if err != nil {
 			continue
