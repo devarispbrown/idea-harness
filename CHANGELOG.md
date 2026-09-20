@@ -227,6 +227,66 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   decisions/questions instead of saying nothing about them — advisory only,
   since an open decision/question is a normal, expected state mid-workflow
   and must not itself block approval.
+- **Stopping a run during Execute's adversarial review left a change set
+  that was approvable and appliable with NO adversarial findings, and its
+  task never marked done — so `idea execute` re-picked the same task
+  forever.** Cancelling mid-review (`workflow: review: anthropic: ... context
+  canceled`) errored out of `Execute` right after the checks-running →
+  review_required transition but before the reviewer ever produced findings
+  or `SetTaskStatus(TaskDone)` ran; a real founder-journey run then found the
+  resulting change set approvable and appliable with only mechanical-check
+  observations (build/tests/patch-applies/workspace-copy), never an
+  adversarial pass, while its task stayed `proposed` and a later `idea
+  execute` picked it again and produced a duplicate change set. A change set
+  now records `review_completed_at` (migration 33), set the one time
+  `store.SetChangeSetReview` actually records a finished review;
+  `idea review <CHG-n> approve` refuses a change set whose review never
+  completed, naming the new `idea review <CHG-n> rerun` (an explicit, paid,
+  user-initiated re-run of the reviewer — the round-3 fix's "approve makes
+  no model call" property is unchanged for a review that already completed).
+  `idea execute`/`Execute` also now refuses to re-pick a task that still has
+  an unreviewed, unresolved change set sitting in `review_required`, naming
+  the same `rerun` command, instead of spending another implementer run on a
+  duplicate. `idea status`/`/guidance` name the same situation instead of
+  pointing at `approve`, which would just refuse.
+- **A no-op change set (zero file changes) counted as "an applied change set
+  implementing" its task.** A real founder-journey run's no-op agent attempt
+  produced an empty change set that was still approved and applied; when the
+  task's real, later change set was reverted, the task stayed `done` and
+  guidance said "Every task has an applied change set. Run `idea verify`"
+  while the actual feature was gone from disk — `taskHasAppliedChangeSet`
+  saw the empty change set still applied and never reopened the task. A
+  change set now records `no_op` (migration 34, `Execute` sets it from
+  `len(files) == 0`) and a new `domain.ChangeSet.ImplementsTask()` (applied
+  AND not `no_op`) is the one predicate task completion
+  (`taskHasAppliedChangeSet`), verification-evidence eligibility
+  (`eligibleChangeSets`, `confirmPassingTests`), staleness propagation
+  (`decisionDependents`), and `next`/guidance's "ready to verify" check now
+  all share — a no-op change set may still be approved, applied and reverted
+  like any other (the existing "approve the empty change set if the task was
+  already done" escape hatch is unchanged); only what it counts AS changes.
+- **A reverted change set could never be applied again**
+  (`cannot be applied from status reverted`), so recovering from a revert
+  always cost a full agent run even when the reverted content was still
+  exactly what was wanted. `reverted` → `applying` is now a legal
+  transition; re-apply runs through `ApplyChangeSet`'s existing staleness
+  (`fsdiff.StaleBase`) and secret-sweep guards exactly as a fresh approved
+  change set does, and a failed re-apply attempt recovers back to
+  `reverted`, not `approved`, so it never misrepresents a change set that
+  was genuinely applied and rolled back once already.
+- **The AWS secret access key sweep missed the credential in JSON.** A real
+  founder-journey run's `config/deploy.json` had `"aws_access_key_id":
+  "AKIA…"` (caught — that pattern matches the value's own `AKIA…` shape, so
+  JSON quoting around the key never mattered to it) directly above
+  `"aws_secret_access_key": "<40-char secret>"`, which produced no finding
+  at all: the `AWS_SECRET_ACCESS_KEY` pattern matched the keyword, not the
+  value, and required `\s*[:=]` immediately after it — but a JSON key's own
+  closing quote sits there instead. The pattern now accepts an optional
+  `["']?` right after the keyword, mirroring the generic credential-
+  assignment rule's own JSON handling; shell/env and YAML forms (no quote
+  there) are unaffected. Table tests cover the JSON, YAML and env-var forms
+  with a real-shaped 40-character value, and confirm a placeholder body
+  (a repeated-character run or low-entropy value) still stays quiet.
 - **`go test` (and other toolchains) can now actually pass inside the check
   sandbox.** Docker's default `--tmpfs /tmp` is `noexec`, so a compiled test
   binary — `go test`'s own, jest's native transforms, a cargo build script,

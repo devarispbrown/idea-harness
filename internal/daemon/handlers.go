@@ -3324,17 +3324,45 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "verdict is required")
 		return
 	}
+	// "rerun" (ICP re-run defect #1) is not a verdict the ChangeSet state
+	// machine records -- it runs the adversarial reviewer again for a change
+	// set whose review never completed the first time (Execute's own review
+	// call errored, most often cancelled mid-review) and leaves the change
+	// set in review_required throughout, exactly where a normal review
+	// leaves it. It shares this endpoint rather than getting its own route
+	// because it takes the identical body shape and belongs in the same
+	// "act on this change set's review" surface a human already knows, not
+	// because it is itself a verdict.
+	if body.Verdict == "rerun" {
+		if body.AcceptFindings {
+			writeError(w, http.StatusBadRequest, "accept_findings does not apply to rerun")
+			return
+		}
+		ctx, cancel := s.rt.detachedContext()
+		defer cancel()
+		if err := pr.engine.RerunChangeSetReview(ctx, cs.InitiativeID, cs.ID); err != nil {
+			s.writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
+		return
+	}
 	review := pr.engine.ReviewChangeSet
 	if body.AcceptFindings {
 		review = pr.engine.ReviewChangeSetAccepting
 	}
-	// E1: an "approved" verdict runs the adversarial reviewer synchronously,
-	// inside this request. That used to share the request's own context, so
-	// closing the browser tab -- which cancels it -- cancelled the review
-	// mid-flight and left "context canceled" in daemon.log with the change set
-	// stuck wherever it was. context.WithoutCancel detaches from the client's
-	// disconnect; the timeout is this process's own bound, generous enough
-	// for a real model call without hanging forever on a wedged provider.
+	// E1: an "approved" verdict used to run the adversarial reviewer
+	// synchronously, inside this request, and shared the request's own
+	// context, so closing the browser tab -- which cancels it -- cancelled
+	// the review mid-flight and left "context canceled" in daemon.log with
+	// the change set stuck wherever it was. Approve itself no longer calls
+	// the model at all (see reviewChangeSet's own comment), but "rerun"
+	// above now does, and context.WithoutCancel below is what protects it
+	// from that exact failure mode; kept here too since nothing about
+	// verdict handling should depend on the request's own lifetime.
+	// context.WithoutCancel detaches from the client's disconnect; the
+	// timeout is this process's own bound, generous enough for a real model
+	// call without hanging forever on a wedged provider.
 	//
 	// It derives from the runtime's lifetime, not from nothing: detached
 	// from everything, a review kept the engine lock through `idea daemon
@@ -3361,7 +3389,12 @@ func (s *Server) handleApplyChangeSet(w http.ResponseWriter, r *http.Request) {
 	// caught here: launching the operation and failing in the background made
 	// `idea apply CHG-1` on an already-applied change set answer "✓ apply
 	// started" with the failure only visible in the log.
-	if cs.Status != domain.ChangeSetApproved {
+	//
+	// ChangeSetReverted is also accepted (ICP re-run defect #3): a reverted
+	// change set may be re-applied, subject to the same staleness and
+	// secret-sweep guards ApplyChangeSet already runs for a fresh approved
+	// one.
+	if cs.Status != domain.ChangeSetApproved && cs.Status != domain.ChangeSetReverted {
 		writeError(w, http.StatusConflict, applyStateMessage(cs))
 		return
 	}
@@ -3382,6 +3415,14 @@ func applyStateMessage(cs *domain.ChangeSet) string {
 	case domain.ChangeSetApplying:
 		return "change set " + cs.HumanID + " is being applied; `idea changes` shows when it lands"
 	case domain.ChangeSetReviewRequired:
+		// ICP re-run defect #1: a change set whose adversarial review never
+		// completed (Execute's own review call errored, most often cancelled
+		// mid-review) cannot usefully be told to approve -- approve refuses
+		// it too, naming the same rerun. Say so here as well, so `idea apply`
+		// on it points the same direction as `idea review ... approve` would.
+		if !cs.ReviewCompleted() {
+			return "change set " + cs.HumanID + " never finished its adversarial review: `idea review " + cs.HumanID + " rerun`, then approve"
+		}
 		return "change set " + cs.HumanID + " needs approval first: `idea review " + cs.HumanID + " approve`"
 	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested:
 		return "change set " + cs.HumanID + " was " + string(cs.Status) + "; `idea reviews` shows why"

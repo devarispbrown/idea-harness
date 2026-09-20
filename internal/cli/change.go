@@ -276,11 +276,16 @@ func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 	return nil
 }
 
-// cmdReview applies a review verdict to a change set.
+// cmdReview applies a review verdict to a change set, or -- with "rerun" --
+// runs the adversarial reviewer again for a change set whose review never
+// completed the first time (ICP re-run defect #1: Execute's own review call
+// errored, most often cancelled mid-review, leaving only mechanical-check
+// observations behind). rerun is not itself a ChangeSet-state-machine
+// verdict, but it shares this command and endpoint.
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested>")
+		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
 	}
 	verdict := positional[1]
 	switch verdict {
@@ -288,9 +293,9 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		verdict = "approved"
 	case "reject":
 		verdict = "rejected"
-	case "approved", "rejected", "changes_requested":
+	case "approved", "rejected", "changes_requested", "rerun":
 	default:
-		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested)", positional[1])
+		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -308,7 +313,11 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
 		return err
 	}
-	line := ok("✓ review recorded") + " " + code(positional[0]) + " → " + verdict
+	verb := "review recorded"
+	if verdict == "rerun" {
+		verb = "review rerun"
+	}
+	line := ok("✓ "+verb) + " " + code(positional[0]) + " → " + verdict
 	if accepting {
 		line += " " + muted("(findings accepted)")
 	}

@@ -35,11 +35,11 @@ Commands:
   retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait] re-run a failed initiative; --note steers this retry (joins the framing prompt)
   changes              list change sets
   change <id>          show a change set
-  apply <id> [--wait]  apply an approved change set; returns a handle immediately unless --wait
+  apply <id> [--wait]  apply an approved (or reverted) change set; returns a handle immediately unless --wait
   revert <id> [--wait] roll back a change set; returns a handle immediately unless --wait
   pr [<initiative>]    open a pull request for the initiative's branch (git.branch_per_initiative)
   pr checks <change-set-id> show the latest CI status via `gh pr checks`
-  review <id> <verdict> approve|reject|changes_requested
+  review <id> <verdict> approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review)
   verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile

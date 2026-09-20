@@ -1754,7 +1754,9 @@ func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, i
 	}
 	hasApplied := false
 	for _, cs := range changeSets {
-		if cs.Status == domain.ChangeSetApplied {
+		// A NoOp applied change set touched nothing (ICP re-run defect #2):
+		// it is not "something built" to have produced real evidence from.
+		if cs.ImplementsTask() {
 			hasApplied = true
 			break
 		}

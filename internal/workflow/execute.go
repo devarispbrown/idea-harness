@@ -202,14 +202,17 @@ func (e *Engine) taskDependenciesApplied(ctx context.Context, initiativeID, task
 	return true, nil
 }
 
-// taskHasAppliedChangeSet reports whether a task has any applied change set.
+// taskHasAppliedChangeSet reports whether a task has any applied change set
+// that actually implements it -- an applied NoOp change set (zero file
+// changes) does not count (ICP re-run defect #2; see
+// domain.ChangeSet.ImplementsTask).
 func (e *Engine) taskHasAppliedChangeSet(ctx context.Context, taskID string) (bool, error) {
 	css, err := e.db.ListChangeSetsByTask(ctx, taskID)
 	if err != nil {
 		return false, err
 	}
 	for _, cs := range css {
-		if cs.Status == domain.ChangeSetApplied {
+		if cs.ImplementsTask() {
 			return true, nil
 		}
 	}
@@ -391,6 +394,25 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			if err := e.db.TransitionChangeSet(ctx, p.ID, domain.ChangeSetChangesRequested, domain.ChangeSetSuperseded, store.ActorOrchestrator); err != nil {
 				return domain.ChangeSet{}, err
 			}
+		}
+		// ICP re-run defect #1: a change set can sit in review_required with
+		// the task still `proposed` only when Execute's own call to the
+		// adversarial reviewer errored (e.g. the operation was cancelled
+		// mid-review) after the checks-running -> review_required transition
+		// already happened -- the normal path always moves the task to
+		// done/proposed the moment the change set leaves checks_running (see
+		// below). refuseWhileAnotherChangeSetIsOpen does not catch this: it
+		// deliberately skips the task's OWN change sets, because a fresh
+		// Execute is expected to supersede/replace them. Here it is the SAME
+		// task, and re-running the agent would spend another implementer run
+		// and produce a second change set while the first -- unreviewed --
+		// one is still sitting there, exactly the "re-picks it forever"
+		// defect. The way forward is `idea review <id> rerun`, not another
+		// Execute.
+		if p.Status == domain.ChangeSetReviewRequired && !p.ReviewCompleted() {
+			return domain.ChangeSet{}, fmt.Errorf(
+				"workflow: execute: %s never finished its adversarial review (likely cancelled mid-review) and is still awaiting one; "+
+					"run `idea review %s rerun` to finish reviewing it before running this task again", p.HumanID, p.HumanID)
 		}
 	}
 
@@ -592,6 +614,12 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		Model:          displayModel(modelSpec),
 		Executor:       exec.Name(),
 		AgentOutput:    agentOutput,
+		// ICP re-run defect #2: `files` is the full before/after diff, so a
+		// zero-length one means this change set touches nothing at all --
+		// whatever else it goes on to do (checks/review/approve/apply are all
+		// still allowed, unchanged), it must never be counted as implementing
+		// task.ID. See domain.ChangeSet.ImplementsTask.
+		NoOp: len(files) == 0,
 	}
 	// CreateChangeSet forces status=draft and assigns CHG-N.
 	if err := e.db.CreateChangeSet(ctx, cs); err != nil {
@@ -1958,7 +1986,16 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	if cs.InitiativeID != initiativeID {
 		return fmt.Errorf("workflow: change set %q does not belong to initiative %q", changeSetID, initiativeID)
 	}
-	if cs.Status != domain.ChangeSetApproved {
+	// ICP re-run defect #3: a reverted change set may be re-applied, subject
+	// to the same staleness/secret-sweep guards below as a fresh approved one
+	// -- recovering from a revert used to always cost a full agent run, even
+	// when the reverted content was still exactly what was wanted.
+	// fromStatus is the state every recovery transition below returns to on
+	// failure: it must never be hardcoded to Approved once Reverted can reach
+	// here too, or a failed re-apply attempt would wrongly relabel an
+	// already-reverted change set as merely "approved".
+	fromStatus := cs.Status
+	if fromStatus != domain.ChangeSetApproved && fromStatus != domain.ChangeSetReverted {
 		return fmt.Errorf("workflow: change set %q is not approved (status=%s)", cs.HumanID, cs.Status)
 	}
 	workspaceRoot := e.workspaceRoot
@@ -2020,14 +2057,22 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		}
 		// Recover the change set to a terminal state and re-open the task so a
 		// corrected re-execute replaces it (review: system-deny deadlock fix).
-		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApproved, domain.ChangeSetRejected, store.ActorOrchestrator)
-		if cs.TaskID != "" {
-			_ = e.db.SetTaskStatus(context.Background(), cs.TaskID, domain.TaskProposed)
+		// Only meaningful starting from Approved -- a re-apply attempt on an
+		// already-Reverted change set (ICP re-run defect #3) is already at a
+		// resting, terminal-for-this-purpose state; rejecting it would
+		// misrepresent a change set that WAS legitimately applied once, and
+		// reopening its task would fight whatever already-correct state the
+		// original revert left it in.
+		if fromStatus == domain.ChangeSetApproved {
+			_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApproved, domain.ChangeSetRejected, store.ActorOrchestrator)
+			if cs.TaskID != "" {
+				_ = e.db.SetTaskStatus(context.Background(), cs.TaskID, domain.TaskProposed)
+			}
 		}
 		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
 	}
 
-	if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetApproved, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
+	if err := e.db.TransitionChangeSet(ctx, changeSetID, fromStatus, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
 		return err
 	}
 
@@ -2062,7 +2107,7 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		ChangeSetID: changeSetID,
 		State:       domain.ApplyPrepared,
 	}); err != nil {
-		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, fromStatus, store.ActorOrchestrator)
 		return err
 	}
 
@@ -2071,12 +2116,12 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	// by reverting applying→approved (full-platform review: apply atomicity).
 	preImage, err := fsdiff.Prepare(workspaceRoot, patch.Files, e.contentBlobs().Put)
 	if err != nil {
-		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, fromStatus, store.ActorOrchestrator)
 		return fmt.Errorf("workflow: apply prepare: %w", err)
 	}
 	preImageDigest, err := e.persistManifest(preImage)
 	if err != nil {
-		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, fromStatus, store.ActorOrchestrator)
 		return err
 	}
 
@@ -2088,7 +2133,7 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 		State:                   domain.ApplyWorkspaceMutated,
 		WorkspaceSnapshotDigest: preImageDigest,
 	}); err != nil {
-		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+		_ = e.db.TransitionChangeSet(context.Background(), changeSetID, domain.ChangeSetApplying, fromStatus, store.ActorOrchestrator)
 		return err
 	}
 
@@ -2828,6 +2873,21 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		if cs.Status != domain.ChangeSetReviewRequired {
 			return fmt.Errorf("workflow: cannot approve change set in status %q", cs.Status)
 		}
+		// ICP re-run defect #1: without this, a change set whose adversarial
+		// review never completed (Execute's own review call errored -- most
+		// often the operation was cancelled mid-review) was indistinguishable
+		// from one that had genuinely converged with zero findings: it
+		// carried only mechanical-check observations (build/tests/
+		// patch-applies/workspace-copy), approve made no model call by
+		// design (see the no-fresh-review comment below), and it went
+		// straight to approved/appliable with no adversarial pass ever having
+		// happened. `idea review <id> rerun` is the explicit, paid way
+		// forward; this refusal names it rather than silently letting the
+		// change set through.
+		if !cs.ReviewCompleted() {
+			return fmt.Errorf("workflow: cannot approve %s: its adversarial review never completed (likely cancelled mid-review), "+
+				"so it carries only mechanical check observations, no adversarial findings; run `idea review %s rerun` first", cs.HumanID, cs.HumanID)
+		}
 		// The human accept: sign off the reviewer's own findings on this change
 		// set, then re-run the gate. NOT skip it -- anything the disposition
 		// declined to touch still refuses, which is what keeps the two predicates
@@ -2901,6 +2961,69 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 	default:
 		return fmt.Errorf("workflow: unknown review verdict %q", verdict)
 	}
+}
+
+// RerunChangeSetReview runs the adversarial reviewer for a change set whose
+// review never completed (ICP re-run defect #1): Execute's own call to it
+// errored -- most often the operation was cancelled mid-review -- after the
+// change set had already left checks_running for review_required, so it sits
+// there carrying only mechanical-check observations, with the task never
+// marked done and `idea execute` free to re-pick it and duplicate the work.
+//
+// This is an explicit, paid, user-initiated action (a real model call), never
+// triggered implicitly by approve: the round-3 fix that made a plain approve
+// free of model calls is unconditional, and this is the one, named escape
+// hatch for the one case that needs a review to actually happen. It refuses
+// outright once a review has already completed for this change set --
+// nothing to rerun, and rerunning would reintroduce exactly the "a rejected
+// finding comes back reworded" non-convergence problem that fix removed.
+func (e *Engine) RerunChangeSetReview(ctx context.Context, initiativeID, changeSetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	cs, err := e.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return err
+	}
+	if cs.InitiativeID != initiativeID {
+		return fmt.Errorf("workflow: change set %q does not belong to initiative %q", changeSetID, initiativeID)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		return fmt.Errorf("workflow: cannot rerun review for change set in status %q", cs.Status)
+	}
+	if cs.ReviewCompleted() {
+		return fmt.Errorf("workflow: %s already has a completed review; nothing to rerun -- `idea review %s approve` or `reject` instead", cs.HumanID, cs.HumanID)
+	}
+
+	runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
+	if err != nil {
+		return err
+	}
+	if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
+		return err
+	}
+	for i := range findings {
+		findings[i].InitiativeID = initiativeID
+		findings[i].TargetType = "change_set"
+		findings[i].TargetID = cs.ID
+		if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+			return err
+		}
+	}
+	if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.HumanActor); err != nil {
+		return err
+	}
+	// Mirror Execute's own not-rejected path: the checks that gate rejection
+	// (secret sweep, deterministic checks) already ran and passed before this
+	// change set ever reached review_required, so a completed review -- same
+	// as a fresh Execute -- marks the task done rather than leaving it
+	// `proposed` forever. Best-effort and idempotent: if the task moved on
+	// (e.g. a human already reopened/superseded it) this is a no-op observer,
+	// not a correctness requirement for the review itself completing.
+	if cs.TaskID != "" {
+		_ = e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskDone)
+	}
+	return nil
 }
 
 // ResetConflictedForRetry resets a conflicted change set back to approved so the
