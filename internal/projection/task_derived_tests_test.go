@@ -83,7 +83,7 @@ func TestRateLimiterRejectsOverBudget(t *testing.T) {}
 	}
 	applyChangeSet(t, db, cs.ID)
 
-	evidence, err := ComputeEvidenceTests(ctx, db, blobs, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, blobs, blobs, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestComputeEvidenceTests_TaskDerivedRequiresCheckPassed(t *testing.T) {
 	}
 	applyChangeSet(t, db, cs.ID)
 
-	evidence, err := ComputeEvidenceTests(ctx, db, blobs, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, blobs, blobs, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestComputeEvidenceTests_UnmappedRequirementYieldsEmptyEvidence(t *testing.
 	if err := db.CreateRequirement(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -59,14 +59,14 @@ func TestWriteKeepsTheFileMode(t *testing.T) {
 	if err := os.WriteFile(script, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAtomic(script, []byte("new")); err != nil {
+	if err := writeAtomic(root, script, []byte("new")); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(script); fi.Mode().Perm() != 0o755 {
 		t.Errorf("mode %v after apply, want 0755", fi.Mode().Perm())
 	}
 	fresh := filepath.Join(root, "new.txt")
-	if err := writeAtomic(fresh, []byte("x")); err != nil {
+	if err := writeAtomic(root, fresh, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(fresh); fi.Mode().Perm() != 0o644 {

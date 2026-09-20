@@ -64,7 +64,7 @@ func TestComputeEvidenceTests_MatchByRequirementCode(t *testing.T) {
 	}
 	applyChangeSet(t, db, cs.ID)
 
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestComputeEvidenceTests_WordBoundary(t *testing.T) {
 	}
 	applyChangeSet(t, db, cs.ID)
 
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestComputeEvidenceTests_NoMappedTests(t *testing.T) {
 	if err := db.CreateRequirement(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestComputeEvidenceTests_SupersededExcluded(t *testing.T) {
 		t.Fatal(err)
 	}
 	applyChangeSet(t, db, cs.ID)
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestComputeEvidenceTests_RejectedChangeSetIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestComputeEvidenceTests_FailedCheckNeverCountsAsPassed(t *testing.T) {
 	}
 	applyChangeSet(t, db, cs.ID)
 
-	evidence, err := ComputeEvidenceTests(ctx, db, nil, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, nil, nil, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestComputeEvidenceTests_HookNamedTestMissingCountsAsFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	evidence, err := ComputeEvidenceTests(ctx, db, blobs, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, blobs, blobs, ini.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
