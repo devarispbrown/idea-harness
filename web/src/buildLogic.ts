@@ -362,6 +362,47 @@ export function appliedOutcomeLabel(executor: string | undefined, model: string 
   return "SHIPPED";
 }
 
+export interface ReviewStateLike {
+  status: string;
+  review_completed_at?: string;
+}
+
+// reviewNeverCompleted (H8 fix) is true for a change set sitting in
+// review_required whose adversarial review itself never finished --
+// Execute's own review call errored, most often because the run was
+// cancelled mid-review (domain.ChangeSet.ReviewCompleted's exact condition:
+// review_completed_at is nil). Approve always 400s in this state
+// (execute.go's reviewChangeSet checks ReviewCompleted before either the
+// plain or the accept-findings approve path, so BOTH approve buttons are a
+// guaranteed-fail click here) -- `idea review CHG-n rerun` (the endpoint
+// already exposes it as POST .../review {"verdict":"rerun"}) is the only way
+// forward, surfaced here as "Re-run the review".
+export function reviewNeverCompleted(cs: ReviewStateLike): boolean {
+  return cs.status === "review_required" && !cs.review_completed_at;
+}
+
+// appliedPillLabel (H8 fix) is the applied change set's status-pill text.
+// `noOp` is the backend's own authoritative signal (ChangeSet.no_op: fsdiff
+// found zero files to persist) and takes priority over both the
+// agent_output-finding heuristic (`noFilesChanged`, hasNoFilesChanged above)
+// and appliedOutcomeLabel's SHIPPED/demo split -- a change set that touched
+// nothing is never SHIPPED, whatever executor or model produced it, and
+// calling it "SHIPPED" (as the pill did before this fix) is exactly the
+// dishonest label the review flagged. Labelled "No file changes" rather than
+// reusing noFilesChanged's "No changes" so the two distinct signals (a real
+// no-op change set vs. an agent that produced no diff at all, e.g. a 401)
+// stay visibly different.
+export function appliedPillLabel(
+  noOp: boolean,
+  noFilesChanged: boolean,
+  executor: string | undefined,
+  model: string | undefined,
+): string {
+  if (noOp) return "No file changes";
+  if (noFilesChanged) return "No changes";
+  return appliedOutcomeLabel(executor, model);
+}
+
 // buildHeaderMeta is B4: "placeholder code" only belongs next to the executor
 // name when that executor IS the placeholder (internal). Every other executor
 // kind does something real.

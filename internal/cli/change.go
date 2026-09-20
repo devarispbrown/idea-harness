@@ -635,14 +635,15 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
 	}
-	if a.has("--json") {
-		return dumpJSON(stdout, out)
-	}
-	if req != "" && (pass || fail || waive) {
-		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
-	}
 	// Headline from the gate, not from the initiative's status. This said
 	// "✓ verified" even for a recorded failure.
+	//
+	// Computed BEFORE the --json branch below (H10 fix): `idea verify --json`
+	// used to `return dumpJSON(...)` here, before `unmet` even existed, so the
+	// only machine-readable form of this command always exited 0 -- silently
+	// contradicting the exact "an unmet gate exits non-zero, so idea verify is
+	// usable in a script" promise docs/demo-greenfield.md makes for this
+	// command, script-usability being the entire point of --json.
 	var unmet []string
 	for _, cov := range out.Coverage {
 		switch cov.Status {
@@ -656,6 +657,21 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 				unmet = append(unmet, fmt.Sprintf("%s %d/%d verified", cov.Code, cov.Pass, cov.Total))
 			}
 		}
+	}
+	if a.has("--json") {
+		// The JSON payload is unchanged (still just {status, coverage}) --
+		// only the exit code gains the same gate the human-readable path
+		// already applies below.
+		if err := dumpJSON(stdout, out); err != nil {
+			return err
+		}
+		if failOnUnmet && len(unmet) > 0 {
+			return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+		}
+		return nil
+	}
+	if req != "" && (pass || fail || waive) {
+		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
 	}
 	if len(unmet) == 0 {
 		fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))

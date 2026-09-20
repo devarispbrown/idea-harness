@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   advisoryBacklogLabel,
   appliedOutcomeLabel,
+  appliedPillLabel,
   approveErrorMessage,
   sortFindingsForCard,
   buildFailure,
@@ -24,6 +25,7 @@ import {
   prOverallLabel,
   prOverallState,
   resolveRunningTask,
+  reviewNeverCompleted,
   revertRefusalMessage,
   runButtonState,
   runningTitle,
@@ -450,6 +452,48 @@ describe("appliedOutcomeLabel", () => {
   it("falls back to the model check for a change set with no recorded executor", () => {
     expect(appliedOutcomeLabel(undefined, "demo")).toBe("Placeholder change (demo)");
     expect(appliedOutcomeLabel(undefined, "anthropic/claude-sonnet-4")).toBe("SHIPPED");
+  });
+});
+
+describe("reviewNeverCompleted (H8 fix)", () => {
+  it("is true for a review_required change set with no review_completed_at", () => {
+    expect(reviewNeverCompleted({ status: "review_required" })).toBe(true);
+    expect(reviewNeverCompleted({ status: "review_required", review_completed_at: undefined })).toBe(
+      true,
+    );
+  });
+
+  it("is false once review_completed_at is set", () => {
+    expect(
+      reviewNeverCompleted({ status: "review_required", review_completed_at: "2026-09-18T12:00:00Z" }),
+    ).toBe(false);
+  });
+
+  it("is false for any other status, whatever review_completed_at says", () => {
+    expect(reviewNeverCompleted({ status: "approved" })).toBe(false);
+    expect(reviewNeverCompleted({ status: "applied" })).toBe(false);
+    expect(reviewNeverCompleted({ status: "reverted" })).toBe(false);
+  });
+});
+
+describe("appliedPillLabel (H8 fix)", () => {
+  it("labels a no_op change set honestly, ahead of everything else", () => {
+    expect(appliedPillLabel(true, false, "container", "anthropic/claude-sonnet-4")).toBe(
+      "No file changes",
+    );
+    // no_op outranks the agent_output-derived noFilesChanged heuristic too.
+    expect(appliedPillLabel(true, true, "internal", undefined)).toBe("No file changes");
+  });
+
+  it("falls through to the agent_output heuristic when no_op is false", () => {
+    expect(appliedPillLabel(false, true, "container", "anthropic/claude-sonnet-4")).toBe(
+      "No changes",
+    );
+  });
+
+  it("falls through to appliedOutcomeLabel when neither signal fired", () => {
+    expect(appliedPillLabel(false, false, "container", "anthropic/claude-sonnet-4")).toBe("SHIPPED");
+    expect(appliedPillLabel(false, false, "internal", undefined)).toBe("Placeholder change (demo)");
   });
 });
 

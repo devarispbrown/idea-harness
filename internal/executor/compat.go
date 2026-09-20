@@ -1,6 +1,9 @@
 package executor
 
-import "fmt"
+import (
+	"fmt"
+	"testing"
+)
 
 // ModelCompat is a verdict on one executor-kind/model combination: whether it
 // is known to fail deterministically, or simply untested (§ docs/agents.md
@@ -95,12 +98,32 @@ func hasProviderPrefix(modelSpec, wildcardSpec string) bool {
 
 // TestOnlySetKnownIncompatible appends a fixture row to the known-incompatible
 // table and returns a func that restores it -- for a test outside this
-// package (internal/cli's executor-setup tests) that needs to prove the
-// refusal mechanism still works, without the test depending on knownIncompatible
-// actually holding a real row (it does not, as of the fix that made
-// gpt-4.1-mini's context window explicit instead of refusing it -- see
-// knownIncompatible's own doc comment). Never call this outside a test.
+// package (internal/cli's, internal/daemon's and internal/workflow's own
+// executor-setup tests) that needs to prove the refusal mechanism still
+// works, without the test depending on knownIncompatible actually holding a
+// real row (it does not, as of the fix that made gpt-4.1-mini's context
+// window explicit instead of refusing it -- see knownIncompatible's own doc
+// comment).
+//
+// This mutates package-level state with no synchronization, so calling it
+// from anything other than a test would be a real, exploitable defect: any
+// importer of this package could silently poison every other caller's
+// CheckModelCompat result. It cannot simply move into a `_test.go` file the
+// way an internal-only test seam normally would (LOW, release-gate report,
+// "move it behind a test-only file") -- Go never links one package's
+// `_test.go` files into another package's build, and the three callers named
+// above are in different packages, so a `_test.go` version of this function
+// would compile clean for `go test ./internal/executor` and then fail to
+// resolve for every other package that needs it. testing.Testing() (stable
+// since Go 1.21, and this module already requires 1.25) is the enforcement a
+// file rename can't provide here: it reports whether the CURRENT BINARY was
+// built by `go test`, not merely whether this call happens to be reachable
+// from test code, so a production `idea`/`idea-harness` build panics instead
+// of quietly accepting the mutation.
 func TestOnlySetKnownIncompatible(kind, spec, reason string) (restore func()) {
+	if !testing.Testing() {
+		panic("executor: TestOnlySetKnownIncompatible must only be called from a test binary")
+	}
 	saved := knownIncompatible
 	knownIncompatible = append(append([]modelIncompatibility{}, saved...), modelIncompatibility{kind: kind, spec: spec, reason: reason})
 	return func() { knownIncompatible = saved }

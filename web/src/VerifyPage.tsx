@@ -6,6 +6,7 @@ import {
   type EvidenceTest,
   evidenceSummary,
   hasBuiltSomething,
+  hasConfirmableEvidence,
   stripSourceTag,
   verifiedRequirementCount,
 } from "./verify";
@@ -28,6 +29,9 @@ interface Requirement {
 }
 interface ChangeSetStatus {
   status: string;
+  // no_op (H8 fix): a no-op applied change set touched nothing -- hasBuiltSomething
+  // (verify.ts) reads this so "built" is never true from one alone.
+  no_op?: boolean;
 }
 
 export default function VerifyPage({
@@ -138,7 +142,12 @@ export default function VerifyPage({
   // already gates on `built` for exactly this reason: confirming against
   // code that never landed is meaningless, whatever the check output says.
   const confirmCandidates = confirmableRequirementCodes(verifiableReqs);
-  const canConfirmPassingTests = built && confirmCandidates.length > 0;
+  // hasConfirmableEvidence (LOW fix, release-gate report): this predicate had
+  // zero production callers -- the button was gated on
+  // `confirmCandidates.length > 0` instead, which is the same rule
+  // (isConfirmCandidate) computed twice. Wired in here rather than deleted:
+  // it's the clearer, named form of exactly the check this page needs.
+  const canConfirmPassingTests = built && hasConfirmableEvidence(verifiableReqs);
 
   return (
     <div className="phase-page">
