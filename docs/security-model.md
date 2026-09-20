@@ -101,40 +101,67 @@ positive the sweep did not distinguish from a real secret:
 3. `not_a_secret` only allowlists the exact (fingerprint, path) a human already saw, so it could
    not help the *next* file or execute that hit the same class of false positive.
 
-Three independent mechanisms now apply, all in `internal/security` (`redact.go`):
+**Review C3 revised this design after it was found to weaken redaction itself, not just
+detection**, and to be unreliable when applied to a provider-prefixed format. Two changes:
 
-- **Placeholder/low-entropy shape (`isPlaceholderShape`, `validFlatTokenValue`).** A captured
-  value with a run of 4+ identical characters (`sk_live_...0000`), or whose Shannon entropy per
-  character falls under 2.5 bits (a repetitive or low-variety body), is never a credential at
-  all — not even advisory — for EVERY provider-specific pattern in the catalog (AWS, GitHub,
-  GitLab, Google, npm, OpenAI/Anthropic, Stripe, Slack) as well as the generic assignment rule.
-  Values over 200 characters (a PEM block, a JWT) are exempt: those are already highly specific
-  formats where a repeated-character run or a raw entropy score is not a meaningful signal.
-- **Placeholder vocabulary and sequential fill (`containsPlaceholderWord`, `isSequentialFill`,
-  `validGenericAssignment`).** Scoped to the GENERIC assignment rule only, never a
-  provider-specific format: a value containing `example`/`test`/`dummy`/`fake`/`placeholder`/
-  `changeme`/`xxx` (case-insensitive), or one that IS essentially a single long ascending/
-  descending run start to end (`abcdefghijklmnop`, not a short embedded fragment like
-  `django-insecure-abcdefgh`), is not a credential. Scoped this narrowly because a real,
-  documented example key can legitimately carry one of these words or a short sequential
-  fragment — AWS's own `AKIAIOSFODNN7EXAMPLE` and
-  `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` docs literals, and hand-written realistic-looking
-  test fixtures using `0123456789`/the alphabet as filler — and those must keep blocking.
-- **Test/fixture paths (`isTestFixturePath`, `CredentialFinding.Advisory`).** A GENERIC
-  assignment match (never a provider-specific format, never a configured secret value) found in
-  a `*_test.go`, `.spec.`/`.test.` file, or a path under `test/`, `tests/`, `testdata/`,
-  `fixtures/`, or `__tests__/` is downgraded to **advisory**: recorded as a real finding, visible
-  to the reviewer, but `Finding.Advisory` means `review.EvaluateApproval` and
-  `denyReviewOpenBlocking` skip it outright regardless of severity (§11/§15) — it never blocks a
-  change set on its own. A provider-specific format or a configured secret value keeps blocking
-  in a test path exactly as anywhere else.
+1. **Redaction and finding-generation are now two separate gates.** `RedactString` — the blob
+   store's own redactor, reached by every persisted model artifact, finding, and agent output —
+   masks every raw regex match unconditionally (aside from the generic assignment rule's own
+   narrow structural check, below). An earlier version filtered `RedactString` through the SAME
+   placeholder/low-entropy gate used to decide whether to raise a finding, which meant a real
+   secret that merely *looked* like a placeholder (a Slack token whose numeric ID segments
+   produced a 4-digit run by chance, `DB_PASSWORD=latestProdPw9xK2` — "latest" contains "test")
+   was never masked at all, not silently downgraded: it passed through in the clear.
+2. **The placeholder/low-entropy shape check no longer applies to any provider-specific
+   format.** A Monte-Carlo run over 200k random well-formed keys per format found it silently
+   missed a REAL secret 1 in 68 times for Slack's `xoxb-` shape (long numeric ID segments make a
+   4-digit run likely by chance), 1 in 3,200 for AWS, and 1 in 6,100–9,500 for the rest — a
+   run-length or entropy heuristic is not reliable evidence on data this short, and the vendor
+   prefix is already the evidence a match is real. A provider-specific match (AWS, GitHub,
+   GitLab, Google, npm, OpenAI/Anthropic, Stripe, Slack) now always raises a finding
+   (`Overridable: true` — a human can still disposition an individual match "not a secret").
+
+What remains, all in `internal/security` (`redact.go`):
+
+- **Placeholder/low-entropy shape (`isPlaceholderShape`) and vocabulary/sequential fill
+  (`containsPlaceholderWord`, `isSequentialFill`, `validGenericAssignment`, `isLikelyPlaceholderValue`).**
+  Scoped to GENERIC patterns only — ones with no vendor prefix of their own to serve as evidence:
+  the credential-assignment rule, plus (review H11) the bearer-token and URL-userinfo-credential
+  rules. A captured value with a run of 4+ identical characters, overall Shannon entropy under
+  2.5 bits/char, a value containing the WHOLE WORD (never a substring — see below)
+  `example`/`test`/`dummy`/`fake`/`placeholder`/`changeme`/`xxx` (case-insensitive), or one that
+  IS essentially a single long ascending/descending run start to end, is not a credential for
+  FINDING purposes — but this decides only whether a *finding* is raised, never whether
+  `RedactString` masks it.
+  `containsPlaceholderWord` compares whole word/segments (splitting on non-letters and camelCase
+  transitions), not substrings: an earlier version's bare `strings.Contains` let `"test"`
+  silently suppress `latest`/`contest`/`greatest`/`attestation`/`protest`, and `"xxx"` suppress
+  any value merely containing it anywhere.
+- **Test/fixture paths (`isTestFixturePath`, `CredentialFinding.Advisory`).** A GENERIC pattern
+  match (credential assignment, bearer token, or URL userinfo credential — never a
+  provider-specific format, never a configured secret value) found in a `*_test.go`,
+  `.spec.`/`.test.` file, or a path under `test/`, `tests/`, `testdata/`, `fixtures/`, or
+  `__tests__/` is downgraded to **advisory**: recorded as a real finding, visible to the
+  reviewer, but `Finding.Advisory` means `review.EvaluateApproval` and `denyReviewOpenBlocking`
+  skip it outright regardless of severity (§11/§15) — it never blocks a change set on its own. A
+  provider-specific format or a configured secret value keeps blocking in a test path exactly as
+  anywhere else. Review H11 extended this from the generic assignment rule alone to bearer token
+  and URL userinfo credential, which previously had no test-path (or placeholder, or template)
+  gate at all: `Bearer YOUR_TOKEN_HERE_XXXXXXXXXX` and `mysql://root:examplepass@127.0.0.1/db`
+  raised a critical BLOCKING finding even inside a `*_test.go` file.
 - **Comment/template placeholders (`looksLikeTemplatePlaceholder`).** A value that is (or
-  contains) `<...>`, or contains `${`/`{{`, never matches the generic assignment rule at all —
-  `<secret>`, `<id>:<secret>`, `"${API_KEY}"`, `"{{ vault_secret }}"`.
+  contains) `<...>`, or contains `${`/`{{`, never matches a GENERIC pattern at all — `<secret>`,
+  `<id>:<secret>`, `"${API_KEY}"`, `"{{ vault_secret }}"` — for finding generation. The generic
+  assignment rule alone also excludes it from REDACTION (`redactGate`,
+  `validCredentialAssignmentValue`): a template placeholder, a variable/property reference, or a
+  function call is not credential-shaped at all, so masking it would mangle ordinary code or
+  prose for no security benefit — a narrower, structural-only check, never the placeholder-word/
+  entropy checks above.
 
 None of this weakens detection of a real secret: `not_a_secret`, its HMAC fingerprinting, and its
-project-scoped allowlist (below) are unchanged, and every provider-specific format with realistic
-entropy still blocks unconditionally, test path or not.
+project-scoped allowlist (below) are unchanged, every provider-specific format now always raises
+a finding regardless of shape, and `RedactString` masks every catalog match unconditionally
+except the generic assignment rule's own narrow structural exclusion.
 
 ### The secret allowlist (review H3/M1)
 
@@ -179,13 +206,17 @@ Several properties hold regardless of how the disposition is invoked:
   upgrade is silently orphaned (its fingerprint never matches a newly-computed one again) and must
   be re-granted; see `CHANGELOG.md`.
 - **Findings never carry the raw value, but do carry a masked preview.** `Finding.SecretPreview`
-  (`secret_preview`) reveals at most `min(4, len/4)` characters of the value on each side, with the
-  middle collapsed to a single ellipsis (e.g. `sk-p…Xy9z` for a long key) — and nothing at all for a
-  value under 16 characters, which is masked entirely. `Finding.Evidence` carries the full source
-  line with **every** credential match on that line replaced by its own such mask (not just the
-  finding's own value), and is itself redacted again before being persisted, so a reviewer can see
-  roughly where and what without the secret — or a second, different secret on the same line — ever
-  being persisted or returned in full.
+  (`secret_preview`) reveals nothing at all for a value under 16 characters (masked entirely), at
+  most 1 character on each side for a 16–23 character value, and at most `min(4, len/4)`
+  characters per side (e.g. `sk-p…Xy9z` for a long key) only from 24 characters up (review LOW).
+  The 16-23 character tier was added after review found the previous single `min(4, len/4)`
+  formula, applied starting at 16 characters, revealed 50% of a 16-character secret in the clear
+  (`Hq7zR2mVx9LpQwEr` → `Hq7z…QwEr`) — and a 16–23 character value (a short password, an API key
+  body) is exactly the common case a human is dispositioning here. `Finding.Evidence` carries the
+  full source line with **every** credential match on that line replaced by its own such mask
+  (not just the finding's own value), and is itself redacted again before being persisted, so a
+  reviewer can see roughly where and what without the secret — or a second, different secret on
+  the same line — ever being persisted or returned in full.
 - **A renamed file's allowlist entry does not follow it.** `fsdiff` expresses a rename as a delete
   of the old path plus an add of the new one, so an allowlist entry keyed on `(fingerprint, path)`
   for the old path does not cover the new one — a renamed, previously-allowlisted fixture blocks
