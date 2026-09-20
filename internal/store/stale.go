@@ -78,7 +78,9 @@ func (db *DB) decisionDependents(ctx context.Context, initiativeID, decisionID s
 			return nil, nil, nil, err
 		}
 		for _, cs := range cses {
-			if cs.Status == domain.ChangeSetApplied {
+			// A NoOp applied change set implements nothing (ICP re-run defect
+			// #2), so a decision change has nothing real to mark stale on it.
+			if cs.ImplementsTask() {
 				csIDs = append(csIDs, cs.ID)
 			}
 		}
