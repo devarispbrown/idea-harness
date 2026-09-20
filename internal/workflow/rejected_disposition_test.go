@@ -36,22 +36,25 @@ func TestHumanRejectedReviewerFindingUnblocksAcceptFindings(t *testing.T) {
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := eng.Execute(ctx, ini.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// A real, in-diff, high-severity finding -- the adversarial reviewer's
 	// own judgment, no system deny code -- that will later turn out to be a
-	// false positive a human rejects.
+	// false positive a human rejects. ICP re-run defect A: the review now
+	// runs once, inside Execute, so the scripted response must be in place
+	// BEFORE Execute runs.
 	fp.SetResponse(ChangeSetReviewSchemaName, `{"findings":[{`+
 		`"severity":"critical","confidence":"high","category":"x",`+
 		`"finding":"looks like an injection risk","recommendation":"review it",`+
 		`"path":"hello.txt"`+
 		`}]}`)
 
-	// First approve attempt: the fresh review's own critical finding blocks,
-	// exactly as before this fix.
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First approve attempt: the review's own critical finding (persisted at
+	// Execute time) blocks.
 	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err == nil {
 		t.Fatal("expected the first approve to be blocked by the reviewer's own critical finding")
 	}

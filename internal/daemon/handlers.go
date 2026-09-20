@@ -196,7 +196,20 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	allChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
 	tasks, _ := pr.db.ListTasks(r.Context(), ini.ID)
 	recentChangeSets := projection.LatestChangeSetsPerActiveTask(allChangeSets, tasks)
-	g := projection.BuildGuidance(ini, u, recentChangeSets)
+	// ICP re-run defect G: "every task is done or cancelled" is the signal
+	// BuildGuidance needs to stop saying "run the next task" and point at
+	// Verify instead. Computed here, not inside BuildGuidance, for the same
+	// reason NextTask/RunBlockedReason are: BuildGuidance stays a pure
+	// function with no task-store access. Vacuously false with no tasks at
+	// all -- a plan with nothing built yet should never be told to verify.
+	allTasksDone := len(tasks) > 0
+	for _, t := range tasks {
+		if t.Status != domain.TaskDone && t.Status != domain.TaskCancelled {
+			allTasksDone = false
+			break
+		}
+	}
+	g := projection.BuildGuidance(ini, u, recentChangeSets, allTasksDone)
 
 	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
 		g.NextTask = &projection.NextTaskRef{ID: nt.ID, HumanID: nt.HumanID, Title: nt.Title}

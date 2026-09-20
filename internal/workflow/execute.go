@@ -233,11 +233,25 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	projectContext := proportionateContext(scale, stack, projectConventions(e.workspaceRoot))
 
+	// ICP re-run defect H: a founder-journey run answered "keys in an env
+	// var" and the implementer built a JSON config file instead, because
+	// nothing in the planner's inputs -- or the brief it produces -- ever
+	// named a resolved decision or an answered question at all. Fed here
+	// exactly as architecture/product design/the execution plan already feed
+	// decisions (advance.go), plus questions (renderQuestionsWithAnswers,
+	// which none of those stages read either, but this one -- the last stop
+	// before code gets written -- most needs to).
+	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
+	decs := activeDecisions(allDecs)
+	questions, _ := e.db.ListQuestions(ctx, initiativeID)
+
 	_, obj, err := e.runModel(ctx, initiativeID, StageImplementationBrief, RoleEngineeringLead, "implementation_brief", schema.ImplementationBrief,
 		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Produce a short implementation brief for the task, for an implementer who will write directly into this project's existing files. Name concrete files to add or change, in the project's own detected stack -- never propose a different language or framework than the one the project already uses."},
+			{Selector: "immutable_policy", Content: "Produce a short implementation brief for the task, for an implementer who will write directly into this project's existing files. Name concrete files to add or change, in the project's own detected stack -- never propose a different language or framework than the one the project already uses. A decided human decision or an answered question is authoritative: do not propose or imply anything that contradicts one."},
 			{Selector: "project_scale", Content: projectContext},
 			{Selector: "task", Content: task.Statement},
+			{Selector: "decisions", Content: renderDecisions(decs)},
+			{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 		},
 		"Task:\n"+task.Statement,
 	)
@@ -256,6 +270,14 @@ func (e *Engine) runPlanner(ctx context.Context, initiativeID string, task domai
 	}
 	if req := str(obj["target_requirement"]); req != "" {
 		b.WriteString("Target requirement: " + req + "\n")
+	}
+	// Deterministic, orchestrator-authored, and NOT contingent on the planner
+	// model choosing to carry them into its own summary (ICP re-run defect
+	// H): a decided decision or an answered question the human already gave
+	// must reach the coding agent verbatim, not survive only if an
+	// intermediate model call happened to repeat it.
+	if resolved := e.resolvedDecisionsAndAnswers(decs, questions); resolved != "" {
+		b.WriteString("\nResolved decisions and answered questions (authoritative -- follow these exactly):\n" + resolved)
 	}
 	// Deterministic, orchestrator-authored -- always present regardless of
 	// what the planner model chose to say.
@@ -763,6 +785,45 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	} else {
 		if err := e.db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired, store.ActorOrchestrator); err != nil {
+			return domain.ChangeSet{}, err
+		}
+		// ICP re-run defect A: the adversarial reviewer used to run again on
+		// every `idea review <CHG-n> approve` call -- a fresh model call (15s
+		// - 2.5min, real spend: 64% of model spend on the run that found
+		// this) that persisted a fresh set of findings every time, with no
+		// memory of what a human had already dispositioned. A finding a
+		// human marked rejected was immediately replaced by a reworded
+		// near-duplicate of the same severity, so approval never converged
+		// without --accept-findings. A change set's content is fixed the
+		// moment it is created here -- PatchDigest is never rewritten after
+		// this call (see runtime invariant: CreateChangeSet forces draft,
+		// and nothing in this package assigns a new patch to an existing
+		// change set id) -- so there is exactly one point where reviewing it
+		// is meaningful: right here, once, before a human ever sees it.
+		// reviewChangeSet's "approved" path (below) now only evaluates these
+		// findings plus whatever the human has since dispositioned; it never
+		// calls the model again.
+		runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
+		if err != nil {
+			return domain.ChangeSet{}, err
+		}
+		// Carry a human's disposition of a near-duplicate PRIOR finding (same
+		// target type, path and near-identical text) forward onto this fresh
+		// batch, so a finding the model merely rewords does not silently
+		// escape a judgment call the human already made on an earlier change
+		// set of this same initiative (dedup.go).
+		if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
+			return domain.ChangeSet{}, err
+		}
+		for i := range findings {
+			findings[i].InitiativeID = initiativeID
+			findings[i].TargetType = "change_set"
+			findings[i].TargetID = cs.ID
+			if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+				return domain.ChangeSet{}, err
+			}
+		}
+		if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.ActorOrchestrator); err != nil {
 			return domain.ChangeSet{}, err
 		}
 	}
@@ -2269,6 +2330,30 @@ func (e *Engine) RevertChangeSet(ctx context.Context, initiativeID, changeSetID 
 				_ = e.db.UnverifyRequirement(ctx, edge.ToID, store.ActorOrchestrator)
 			}
 		}
+		// ICP re-run defect E: reverting a change set used to leave its task
+		// `done` forever. Guidance says "re-run the affected tasks", but a
+		// `done` task is never picked by nextReadyTask (it only considers
+		// ready/proposed) -- so `idea execute` printed "started" and then
+		// failed "no ready tasks", with no way back short of editing the
+		// database directly. Reverting is the reopen: put the task back in a
+		// runnable state, but only when no OTHER applied change set still
+		// implements it (a task can have more than one change set across
+		// retries; reverting an old, already-superseded one must not re-open
+		// a task a newer change set already carries). Dependents need no
+		// extra handling here: taskDependenciesApplied is checked at pick
+		// time (nextReadyTask), not cached, so a dependent that has not yet
+		// executed is automatically re-blocked the moment this task is no
+		// longer applied; one that already executed on top of it is a deeper
+		// cascading-revert scenario this does not attempt to unwind.
+		stillApplied, err := e.taskHasAppliedChangeSet(ctx, cs.TaskID)
+		if err != nil {
+			return err
+		}
+		if !stillApplied {
+			if err := e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed); err != nil {
+				return err
+			}
+		}
 	}
 	_ = e.db.SetInitiativeStatus(ctx, initiativeID, domain.InitiativePlanApproved, store.ActorOrchestrator)
 	return nil
@@ -2627,48 +2712,24 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 			// audit trail rests on.
 			return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
 		}
-		// System-deny: refuse to approve while an undisposed blocking finding
-		// targets this change set (e.g. a prior adversarial review's critical/high
-		// finding). "System deny beats human approve" (review: system-deny tier).
+		// ICP re-run defect A: this used to run a FRESH adversarial review
+		// right here, on every plain `approve` call -- real model spend (15s
+		// to 2.5min; 64% of model spend on the run that found this), and a
+		// model reviewer is not a fixed point: a finding a human had just
+		// marked rejected was immediately replaced by a reworded
+		// near-duplicate of the same severity, so approval never converged
+		// without --accept-findings, and the client-side HTTP timeout (item
+		// C) made it worse. The review now runs exactly once, in Execute,
+		// the moment the change set's content is fixed (execute.go, right
+		// after the checks-running -> review_required transition) --
+		// PatchDigest never changes after that point, so there is nothing
+		// left to re-review here. Approve now only evaluates what is already
+		// on the change set: the reviewer's own findings plus whatever the
+		// human has since dispositioned via `idea finding` -- exactly what
+		// denyReviewOpenBlocking already checks, and exactly the same gate
+		// --accept-findings runs through below. "System deny beats human
+		// approve" (review: system-deny tier) is unchanged.
 		if err := e.denyReviewOpenBlocking(ctx, changeSetID); err != nil {
-			return err
-		}
-		runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
-		if err != nil {
-			return err
-		}
-		// H3: quick does NOT blanket-mark every finding advisory for a
-		// change-set review. Doing so used to let a critical/high finding
-		// IN THE DIFF through with no human step at all, on nothing more
-		// than the calibration heuristic ("<=3 files" on a small repo) --
-		// which was itself gameable, since it only counted files, never
-		// lines (see changeSetLines above). "Quick" for a change set means
-		// one pass and a smaller findings cap (findingCap, above); it does
-		// not mean critical/high stops blocking. A system-deny finding
-		// (denyReviewOpenBlocking, above) was never affected by rigor
-		// either way -- that is a security invariant, not a rigor knob.
-		// classifyDiffEvidence (B2) is the only thing that marks a
-		// change-set finding advisory, and it does so on diff-membership,
-		// not on rigor.
-		for i := range findings {
-			findings[i].InitiativeID = initiativeID
-			findings[i].TargetType = "change_set"
-			findings[i].TargetID = changeSetID
-			if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
-				return err
-			}
-		}
-		if blocked, reason := review.EvaluateApproval(findings); blocked {
-			// The FIRST refusal a user meets, and the one that persists the
-			// findings every later attempt then fails the deny gate on. Naming
-			// the route here matters more than naming it there: by the time the
-			// deny gate speaks, the user has already been told "no" once with no
-			// way forward.
-			return fmt.Errorf("workflow: approval blocked: %s; "+
-				"`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` "+
-				"accepts the change set findings and all", reason)
-		}
-		if err := e.db.SetChangeSetReview(ctx, changeSetID, runID, store.HumanActor); err != nil {
 			return err
 		}
 		return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
