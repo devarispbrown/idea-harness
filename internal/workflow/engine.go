@@ -700,9 +700,21 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 		return err
 	}
 
+	// review H6: completedPhases keys off ArtifactIdeaBrief's mere existence
+	// (CreateArtifact just above, already committed) to decide whether Retry
+	// resumes past framing. The derived rows below are just as much a part
+	// of "framing completed" as the artifact is -- a Stop between two of
+	// them left the artifact durable and the assertions/questions
+	// truncated, and Retry then skipped framing (and its cost) entirely,
+	// building research/PRD from a half-recorded brief with no error.
+	// context.WithoutCancel: the model call above already returned and was
+	// billed; a cancellation from here on stops the NEXT phase from
+	// starting, not this one from finishing recording what it already paid
+	// for.
+	dctx := context.WithoutCancel(ctx)
 	// Record assumptions as assertions.
 	for _, a := range strSlice(obj["assumptions"]) {
-		if err := e.db.CreateAssertion(ctx, &domain.Assertion{
+		if err := e.db.CreateAssertion(dctx, &domain.Assertion{
 			InitiativeID:  initiativeID,
 			Type:          domain.AssertionAssumption,
 			Status:        domain.AssertionCandidate,
@@ -716,7 +728,7 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 	}
 	// Record open questions from framing.
 	for _, q := range strSlice(obj["open_questions"]) {
-		if err := e.createQuestionIfNew(ctx, initiativeID, e.redact(q)); err != nil {
+		if err := e.createQuestionIfNew(dctx, initiativeID, e.redact(q)); err != nil {
 			return err
 		}
 	}
@@ -868,6 +880,12 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 		return err
 	}
 
+	// review H6: see the identical comment in runFraming. completedPhases
+	// treats ArtifactResearchBrief's existence as "research completed";
+	// these assertions are part of that same fact and must not be truncated
+	// by a cancellation the model call already survived.
+	dctx := context.WithoutCancel(ctx)
+
 	// Offline/disabled network: findings must be assumptions, never facts.
 	// snapshotConfig, not e.cfg directly (review H4): runResearch is an
 	// entry point Run reaches without holding mu.
@@ -877,7 +895,7 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 		if offline && ftype == domain.AssertionFact {
 			ftype = domain.AssertionAssumption
 		}
-		if err := e.db.CreateAssertion(ctx, &domain.Assertion{
+		if err := e.db.CreateAssertion(dctx, &domain.Assertion{
 			InitiativeID:  initiativeID,
 			Type:          ftype,
 			Status:        domain.AssertionCandidate,
@@ -957,6 +975,20 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		return err
 	}
 
+	// review H6: completedPhases keys Retry's "PRD completed" off
+	// ArtifactPRD's existence alone -- committed just above -- but the
+	// requirements/decisions/questions below are what that fact actually
+	// means downstream (review/architecture/plan are all built from the
+	// requirement set, not the artifact body). Stop after 6 of 20
+	// CreateRequirement calls used to leave the artifact durable and the
+	// requirement set truncated with no error; Retry then saw "PRD done"
+	// and skipped runProductDefinition entirely, building everything after
+	// it from that truncated set, silently, at real cost. WithoutCancel:
+	// the model call above already returned and was billed; from here on a
+	// cancellation should stop the NEXT phase, not truncate this one's
+	// already-earned result.
+	dctx := context.WithoutCancel(ctx)
+
 	// priorByCode indexes THIS cycle's starting requirements by normalized
 	// code, so a revision response can update one in place instead of
 	// superseding and recreating it (review ICP re-run #1). Only consulted
@@ -991,11 +1023,11 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		if prior, ok := priorByCode[NormalizeRequirementRef(str(r["code"]))]; ok && str(r["code"]) != "" {
 			req.ID = prior.ID
 			req.Code = prior.Code
-			if err := e.db.UpdateRequirement(ctx, req); err != nil {
+			if err := e.db.UpdateRequirement(dctx, req); err != nil {
 				return err
 			}
 		} else {
-			if err := e.db.CreateRequirement(ctx, req); err != nil {
+			if err := e.db.CreateRequirement(dctx, req); err != nil {
 				return err
 			}
 		}
@@ -1012,7 +1044,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		}
 	}
 	if reviseReason != "" {
-		if err := e.db.SupersedeRequirementsExcept(ctx, initiativeID, reviseReason, keptIDs); err != nil {
+		if err := e.db.SupersedeRequirementsExcept(dctx, initiativeID, reviseReason, keptIDs); err != nil {
 			return err
 		}
 	}
@@ -1029,7 +1061,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	decIDByNorm := make(map[string]string, len(decisionRefByReqID))
 	for _, d := range objSlice(obj["decisions"]) {
 		question := e.redact(str(d["question"]))
-		id, err := e.createDecisionIfNew(ctx, initiativeID, &domain.Decision{
+		id, err := e.createDecisionIfNew(dctx, initiativeID, &domain.Decision{
 			InitiativeID:   initiativeID,
 			Type:           domain.DecisionProduct,
 			Question:       question,
@@ -1071,7 +1103,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 				decID, ok = allDecisionsByNorm[norm]
 			}
 			if ok {
-				if err := e.db.WireRequirementDerivedFromDecision(ctx, initiativeID, reqID, decID); err != nil {
+				if err := e.db.WireRequirementDerivedFromDecision(dctx, initiativeID, reqID, decID); err != nil {
 					return err
 				}
 			} else {
@@ -1080,7 +1112,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		}
 	}
 	for _, q := range strSlice(obj["open_questions"]) {
-		if err := e.createQuestionIfNew(ctx, initiativeID, e.redact(q)); err != nil {
+		if err := e.createQuestionIfNew(dctx, initiativeID, e.redact(q)); err != nil {
 			return err
 		}
 	}
