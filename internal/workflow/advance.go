@@ -286,29 +286,147 @@ func (e *Engine) storeArtifact(ctx context.Context, initiativeID string, kind do
 // createDesignDecision records a design-stage decision. If an equivalent
 // decision already exists (raised by another role), the new role's position is
 // recorded as a dissent instead of a duplicate — dissent is never erased (§8).
-func (e *Engine) createDesignDecision(ctx context.Context, initiativeID, roleName string, dtype domain.DecisionType, question string, options []string, recommendation string) error {
+//
+// Three fixes an ICP re-run found, all in the direction of "this stage must
+// behave like runProductDefinition's own decision handling, not a separate,
+// weaker copy of it":
+//
+//  1. Matching. This used to compare questions by exact normalized text only
+//     (normalizeJudgment(d.Question) == norm), where runProductDefinition's
+//     createDecisionIfNew already used similarDecision's fuzzy (token-Jaccard)
+//     match. A design-stage decision reworded across architecture vs product
+//     design (or across a later reopen) could miss an equivalent already on
+//     record and duplicate it instead of merging/dissenting.
+//  2. Answered questions. This never consulted the questions table at all, so
+//     a later phase could -- and, on a real run, did -- re-ask a question the
+//     human had already answered in an earlier phase (DEC-3 re-asked "API keys
+//     come from an environment variable, never a file" as a fresh decision and
+//     recommended a config file). A decision whose question matches an
+//     ANSWERED question is not created; matching createQuestionIfNew's own
+//     `question.reraised_answered` no-op event so the audit trail shows the
+//     re-ask happened rather than looking like nothing did.
+//  3. Provenance. Architecture/design decisions carried no derived_from edge
+//     to anything, so resolving or reopening one marked no dependent
+//     requirement/task/change-set stale and /impact reported none (review A4
+//     #5's cascade never had anything to walk from). reqIDs -- resolved by the
+//     caller from the decision's own `requirements` code references, exactly
+//     as runExecutionPlan resolves a task's -- are now wired the same way
+//     runProductDefinition wires a PRD requirement's `decision` reference:
+//     requirement --derived_from--> decision.
+func (e *Engine) createDesignDecision(ctx context.Context, initiativeID, roleName string, dtype domain.DecisionType, question string, options []string, recommendation string, reqIDs []string) error {
 	norm := normalizeJudgment(question)
 	if norm == "" {
 		return nil
 	}
+
+	// Fix 2: an already-answered question is authoritative; do not re-raise it
+	// as a "new" decision just because this phase worded it differently.
+	questions, err := e.db.ListQuestions(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	for _, q := range questions {
+		if q.Status != domain.QuestionResolved {
+			continue
+		}
+		qn := normalizeJudgment(q.Question)
+		if qn == norm || similarJudgment(qn, norm) {
+			return e.db.ApplyNoop(ctx, store.Event{
+				AggregateType: "question",
+				AggregateID:   q.ID,
+				Actor:         store.ActorOrchestrator,
+				EventType:     "question.reraised_answered",
+			})
+		}
+	}
+
 	existing, err := e.db.ListDecisions(ctx, initiativeID)
 	if err != nil {
 		return err
 	}
+	// Fix 1: similarDecision's fuzzy match, same as createDecisionIfNew --
+	// not exact-text-only comparison.
 	for _, d := range existing {
-		if normalizeJudgment(d.Question) == norm {
-			if recommendation != "" && d.Recommendation != recommendation {
-				return e.db.CreateDissent(ctx, &domain.DecisionDissent{
-					DecisionID: d.ID, ProponentRole: roleName, Position: e.redact(recommendation),
-				})
-			}
-			return nil
+		if d.Type != dtype || !(normalizeJudgment(d.Question) == norm || similarDecision(d.Question, question, d.Options, options)) {
+			continue
 		}
+		// A decision a human already resolved is authoritative (the prompt
+		// itself tells the model so); a fresh, disagreeing recommendation from
+		// this phase is not a dissent against a live open decision, it is a
+		// model proposing to overrule a human, which dissent is not for.
+		if d.Status != domain.DecisionOpen {
+			return e.wireRequirementDecisionEdges(ctx, initiativeID, reqIDs, d.ID)
+		}
+		if recommendation != "" && d.Recommendation != recommendation {
+			if err := e.db.CreateDissent(ctx, &domain.DecisionDissent{
+				DecisionID: d.ID, ProponentRole: roleName, Position: e.redact(recommendation),
+			}); err != nil {
+				return err
+			}
+		}
+		return e.wireRequirementDecisionEdges(ctx, initiativeID, reqIDs, d.ID)
 	}
-	return e.db.CreateDecision(ctx, &domain.Decision{
+	d := &domain.Decision{
 		InitiativeID: initiativeID, Type: dtype, Question: e.redact(question),
 		Options: e.redactSlice(options), Recommendation: e.redact(recommendation),
-	})
+	}
+	if err := e.db.CreateDecision(ctx, d); err != nil {
+		return err
+	}
+	return e.wireRequirementDecisionEdges(ctx, initiativeID, reqIDs, d.ID)
+}
+
+// wireRequirementDecisionEdges wires requirement --derived_from--> decision
+// for each of reqIDs, skipping any pair already wired: wireEdges (the single
+// codepath every graph write goes through) has no uniqueness constraint, and
+// createDesignDecision can be asked to wire the same requirement to the same
+// merged-into decision more than once (architecture raises it, product design
+// later cites the same requirement against the same merged decision) --
+// duplicate edges would double-count that requirement in handleTriage's
+// dependents tally and in /impact's dependent list.
+func (e *Engine) wireRequirementDecisionEdges(ctx context.Context, initiativeID string, reqIDs []string, decisionID string) error {
+	for _, reqID := range reqIDs {
+		edges, err := e.db.ListGraphEdgesFrom(ctx, initiativeID, "requirement", reqID)
+		if err != nil {
+			return err
+		}
+		already := false
+		for _, edge := range edges {
+			if edge.EdgeType == domain.EdgeDerivedFrom && edge.ToType == "decision" && edge.ToID == decisionID {
+				already = true
+				break
+			}
+		}
+		if already {
+			continue
+		}
+		if err := e.db.WireRequirementDerivedFromDecision(ctx, initiativeID, reqID, decisionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// designDecisionRequirementIDs resolves a design-stage decision's own
+// `requirements` code references (e.g. "REQ-2") against reqByCode, the same
+// tolerant matching runExecutionPlan applies to a task's requirement
+// references (NormalizeRequirementRef). Unlike the execution plan's citations,
+// an unresolved reference here is best-effort, not fatal: it is metadata for
+// provenance, not a scheduling dependency, and a miss is exactly the
+// "not shaped by a specific requirement" case the schema tells the model to
+// leave empty.
+func designDecisionRequirementIDs(d map[string]any, reqByCode map[string]string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, ref := range strSlice(d["requirements"]) {
+		id, ok := reqByCode[NormalizeRequirementRef(ref)]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error {
@@ -317,11 +435,14 @@ func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error
 	reqs := activeRequirements(allReqs)
 	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
 	decs := activeDecisions(allDecs)
+	questions, _ := e.db.ListQuestions(ctx, initiativeID)
+	reqByCode := requirementCodeIndex(reqs)
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Produce a technical design that decomposes the PRD into components with clear responsibilities and tradeoffs. Raise an architecture Decision only for a genuine tradeoff. A decided human decision is authoritative: do not propose or imply anything that contradicts it."},
+		{Selector: "immutable_policy", Content: "Produce a technical design that decomposes the PRD into components with clear responsibilities and tradeoffs. Raise an architecture Decision only for a genuine tradeoff. A decided human decision is authoritative and an already-answered question is settled: do not propose or imply anything that contradicts either, and do not re-raise a question that already exists (open or answered) as a new decision. When a decision is about a specific Requirement, set its 'requirements' field to that requirement's code(s) (e.g. \"REQ-2\")."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
+		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
@@ -335,7 +456,8 @@ func (e *Engine) runArchitecture(ctx context.Context, initiativeID string) error
 		return err
 	}
 	for _, d := range objSlice(obj["decisions"]) {
-		if err := e.createDesignDecision(ctx, initiativeID, RoleArchitect, domain.DecisionArchitecture, str(d["question"]), strSlice(d["options"]), str(d["recommendation"])); err != nil {
+		reqIDs := designDecisionRequirementIDs(d, reqByCode)
+		if err := e.createDesignDecision(ctx, initiativeID, RoleArchitect, domain.DecisionArchitecture, str(d["question"]), strSlice(d["options"]), str(d["recommendation"]), reqIDs); err != nil {
 			return err
 		}
 	}
@@ -348,11 +470,14 @@ func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) erro
 	reqs := activeRequirements(allReqs)
 	allDecs, _ := e.db.ListDecisions(ctx, initiativeID)
 	decs := activeDecisions(allDecs)
+	questions, _ := e.db.ListQuestions(ctx, initiativeID)
+	reqByCode := requirementCodeIndex(reqs)
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Produce a product design (flows, screens, interaction model) that traces every flow to a user goal or Requirement. Raise a design Decision only for a genuine interaction tradeoff. A decided human decision is authoritative: do not propose or imply anything that contradicts it."},
+		{Selector: "immutable_policy", Content: "Produce a product design (flows, screens, interaction model) that traces every flow to a user goal or Requirement. Raise a design Decision only for a genuine interaction tradeoff. A decided human decision is authoritative and an already-answered question is settled: do not propose or imply anything that contradicts either, and do not re-raise a question that already exists (open or answered) as a new decision. When a decision is about a specific Requirement, set its 'requirements' field to that requirement's code(s) (e.g. \"REQ-2\")."},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
 		{Selector: "decisions", Content: renderDecisions(decs)},
+		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
@@ -366,11 +491,23 @@ func (e *Engine) runProductDesign(ctx context.Context, initiativeID string) erro
 		return err
 	}
 	for _, d := range objSlice(obj["decisions"]) {
-		if err := e.createDesignDecision(ctx, initiativeID, RoleProductDesigner, domain.DecisionDesign, str(d["question"]), strSlice(d["options"]), str(d["recommendation"])); err != nil {
+		reqIDs := designDecisionRequirementIDs(d, reqByCode)
+		if err := e.createDesignDecision(ctx, initiativeID, RoleProductDesigner, domain.DecisionDesign, str(d["question"]), strSlice(d["options"]), str(d["recommendation"]), reqIDs); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// requirementCodeIndex maps a normalized requirement code to its id, for
+// resolving a design-stage decision's `requirements` references the same
+// tolerant way runExecutionPlan resolves a task's.
+func requirementCodeIndex(reqs []domain.Requirement) map[string]string {
+	reqByCode := make(map[string]string, len(reqs))
+	for _, r := range reqs {
+		reqByCode[NormalizeRequirementRef(r.Code)] = r.ID
+	}
+	return reqByCode
 }
 
 func (e *Engine) runVerificationDesign(ctx context.Context, initiativeID string) error {

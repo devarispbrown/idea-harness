@@ -133,6 +133,34 @@ func TestCreatePRNamesTheSpecificGitCommitWarning(t *testing.T) {
 	}
 }
 
+// TestCreatePRDoesNotTellYouToEnableAnAlreadyEnabledSetting is a real
+// founder-journey defect: git.branch_per_initiative was already on, and
+// `idea pr` was run before any change set had been applied (so there is no
+// GitCommitWarning yet either -- TestCreatePRNamesTheSpecificGitCommitWarning
+// covers that case). The error still said "enable git.branch_per_initiative
+// and apply a change set first", telling the user to do something they had
+// already done. The missing precondition is just "apply a change set first".
+func TestCreatePRDoesNotTellYouToEnableAnAlreadyEnabledSetting(t *testing.T) {
+	eng, _, iniID, _ := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
+	// Deliberately no applyApproved(t, eng, db, iniID): nothing has been
+	// applied yet, so ini.GitBranch is still empty and there is no
+	// GitCommitWarning to name either.
+
+	_, err := eng.CreatePR(context.Background(), iniID)
+	if err == nil {
+		t.Fatal("want an error: the initiative has no dedicated branch")
+	}
+	if !errors.Is(err, ErrNoInitiativeBranch) {
+		t.Errorf("err = %v, want it to still satisfy errors.Is(err, ErrNoInitiativeBranch)", err)
+	}
+	if strings.Contains(err.Error(), "enable git.branch_per_initiative") {
+		t.Errorf("err = %v, should not tell the user to enable a setting that is already on", err)
+	}
+	if !strings.Contains(err.Error(), "already enabled") || !strings.Contains(err.Error(), "apply a change set") {
+		t.Errorf("err = %v, want it to name the actual missing precondition (apply a change set)", err)
+	}
+}
+
 func TestCreatePRReportsMissingGH(t *testing.T) {
 	eng, db, iniID, workspace := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
 	applyApproved(t, eng, db, iniID)
