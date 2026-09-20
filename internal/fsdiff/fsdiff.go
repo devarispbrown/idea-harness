@@ -407,7 +407,7 @@ func Commit(root string, changes []domain.FileChange, get func(digest string) ([
 		if err != nil {
 			return fmt.Errorf("fsdiff: get %q: %w", c.Digest, err)
 		}
-		if err := writeAtomic(dest, content); err != nil {
+		if err := writeAtomic(root, dest, content); err != nil {
 			return fmt.Errorf("fsdiff: write %q: %w", c.Path, err)
 		}
 	}
@@ -446,18 +446,47 @@ func Restore(root string, pre Manifest, get func(digest string) ([]byte, error))
 		if err != nil {
 			return fmt.Errorf("fsdiff: restore get %q: %w", e.Digest, err)
 		}
-		if err := writeAtomic(dest, content); err != nil {
+		if err := writeAtomic(root, dest, content); err != nil {
 			return fmt.Errorf("fsdiff: restore write %q: %w", e.Path, err)
 		}
 	}
 	return nil
 }
 
-func writeAtomic(dest string, content []byte) error {
+// atomicTmpDir is where writeAtomic stages a file before renaming it into
+// place: root/.idea-harness/tmp, not the destination's own directory (review
+// defect I). A temp file used to be created directly beside dest -- e.g.
+// os.CreateTemp(filepath.Dir(dest), ".idea-harness-*") -- which, if the
+// process died between CreateTemp and the rename (a crash, a killed daemon,
+// the container losing power mid-apply), left a stray .idea-harness-<random>
+// entry sitting in the user's own tracked source tree, indistinguishable from
+// a real file to `git status` and easy to mistake for something the agent
+// wrote on purpose. root/.idea-harness/ is already excluded from every
+// snapshot/diff by name (fsdiff.DefaultIgnoredDirNames, isControlPlane) and,
+// as of the review defect D fix, from dirtyPathsOutside's dirty check too, so
+// an orphaned temp file here is invisible to git status, `idea diff`, and the
+// branch-per-initiative guard alike -- never mistaken for the agent's own
+// work and never blocking anything. os.Rename from here to dest stays a same-
+// filesystem, atomic rename as long as .idea-harness/ is on the same mount as
+// the rest of the workspace, true for the overwhelmingly common case (both
+// live under one repository checkout); an exotic setup that bind-mounts part
+// of a workspace onto a separate filesystem was never supported by the
+// original same-directory temp file either, since EVERY destination directory
+// would need to share a filesystem with SOME temp location for this pattern
+// to work at all.
+func atomicTmpDir(root string) string {
+	return filepath.Join(root, ".idea-harness", "tmp")
+}
+
+func writeAtomic(root, dest string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".idea-harness-*")
+	tmpDir := atomicTmpDir(root)
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(tmpDir, ".idea-harness-*")
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -48,19 +49,34 @@ func Slugify(s string, maxLen int) string {
 //   - Otherwise a fresh branch named "idea/<slug of titleSeed>" is created
 //     (suffixed -2, -3, … on a name collision) -- but only if the tree has no
 //     uncommitted changes outside keepPaths (the change set about to be
-//     committed): those would otherwise ride along onto the new branch
-//     uninvited, which is exactly the failure this guards against.
+//     committed) and catchUpPaths (see below): those would otherwise ride
+//     along onto the new branch uninvited, which is exactly the failure this
+//     guards against.
+//   - catchUpPaths names files this same initiative's OWN earlier applied
+//     change sets touched but never committed (review defect D: a real run
+//     had git_commit off for its first several applies, then turned it and
+//     branch_per_initiative on together -- the workspace was left with files
+//     from those earlier applies still uncommitted, and every later attempt
+//     refused forever with "uncommitted changes outside this change set"
+//     naming the harness's OWN prior writes). A dirty path that matches one
+//     of these is committed onto the initiative's branch (right after the
+//     branch switch below, so the catch-up commit lands there and not on
+//     whatever branch was checked out before) as its own commit, separate
+//     from the caller's own change-set commit; a dirty path that matches
+//     neither keepPaths nor catchUpPaths still refuses, naming only the
+//     paths that are genuinely unexplained.
 //
 // Returns (branch, "", "", nil) once workTree is checked out on branch. A
-// soft refusal -- the tree is dirty outside keepPaths -- is ("", reason, "",
-// nil): workTree is left exactly as found, and the caller should skip the
-// commit rather than proceed on whatever branch was already checked out. A
-// non-empty warning (with branch still set, and no error) means the branch
-// WAS created and checked out, but not from the resolved default branch's
-// commit -- see the HEAD-vs-default comment below (review H6); the caller
-// should still commit, but surface the warning (e.g. as the change set's
-// git_commit_warning). A non-nil error is a genuine git failure.
-func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, titleSeed string, keepPaths []string) (branch, reason, warning string, err error) {
+// soft refusal -- the tree has a dirty path outside keepPaths and
+// catchUpPaths -- is ("", reason, "", nil): workTree is left exactly as
+// found, and the caller should skip the commit rather than proceed on
+// whatever branch was already checked out. A non-empty warning (with branch
+// still set, and no error) means the branch WAS created and checked out, but
+// not from the resolved default branch's commit -- see the HEAD-vs-default
+// comment below (review H6); the caller should still commit, but surface the
+// warning (e.g. as the change set's git_commit_warning). A non-nil error is a
+// genuine git failure.
+func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, titleSeed string, keepPaths, catchUpPaths []string) (branch, reason, warning string, err error) {
 	if !isRepo(workTree) {
 		return "", "", "", nil
 	}
@@ -69,16 +85,38 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 	// carried someone else's mid-edit onto the initiative's branch would break
 	// the promise docs/configuration.md makes (review H2) -- reusing a branch
 	// is not exempt just because the branch itself already exists.
+	//
+	// dirtyPathsOutside itself never reports a path under .idea-harness/ (the
+	// harness's own control-plane config + scratch state) as dirty at all --
+	// see its own doc comment -- so that directory needs no handling here.
 	dirty, err := dirtyPathsOutside(ctx, workTree, keepPaths)
 	if err != nil {
 		return "", "", "", err
 	}
+	var catchUp []string
 	if len(dirty) > 0 {
-		return "", "the workspace has uncommitted changes outside this change set: " + strings.Join(dirty, ", "), "", nil
+		catchUp, dirty = splitCatchUp(dirty, catchUpPaths)
+		if len(dirty) > 0 {
+			return "", "the workspace has uncommitted changes outside this change set: " + strings.Join(dirty, ", "), "", nil
+		}
+	}
+	commitCatchUp := func() error {
+		if len(catchUp) == 0 {
+			return nil
+		}
+		msg := "idea-harness: catch up " + strconv.Itoa(len(catchUp)) +
+			" file(s) from earlier applied change sets committed late"
+		if _, err := Commit(ctx, workTree, catchUp, msg); err != nil {
+			return fmt.Errorf("git: catch-up commit: %w", err)
+		}
+		return nil
 	}
 	if existingBranch != "" {
 		if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", existingBranch); err != nil {
 			return "", "", "", fmt.Errorf("git: checkout %s: %w: %s", existingBranch, err, strings.TrimSpace(out))
+		}
+		if err := commitCatchUp(); err != nil {
+			return "", "", "", err
 		}
 		return existingBranch, "", "", nil
 	}
@@ -135,7 +173,32 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 	if out, err := runGit(ctx, workTree, sanitizedEnv(), args...); err != nil {
 		return "", "", "", fmt.Errorf("git: checkout -b %s: %w: %s", name, err, strings.TrimSpace(out))
 	}
+	if err := commitCatchUp(); err != nil {
+		return "", "", "", err
+	}
 	return name, "", warning, nil
+}
+
+// splitCatchUp partitions dirty (already known to be outside keepPaths) into
+// catchUp -- paths also named in catchUpPaths, safe to commit onto the
+// initiative's branch on the caller's behalf -- and the remainder, which is
+// still genuinely unexplained and must still refuse the branch switch.
+func splitCatchUp(dirty, catchUpPaths []string) (catchUp, unexplained []string) {
+	if len(catchUpPaths) == 0 {
+		return nil, dirty
+	}
+	allowed := make(map[string]bool, len(catchUpPaths))
+	for _, p := range catchUpPaths {
+		allowed[filepath.ToSlash(p)] = true
+	}
+	for _, p := range dirty {
+		if allowed[p] {
+			catchUp = append(catchUp, p)
+		} else {
+			unexplained = append(unexplained, p)
+		}
+	}
+	return catchUp, unexplained
 }
 
 // revParse resolves ref to its commit SHA, trimmed. The raw output (usable
@@ -163,6 +226,16 @@ func revParse(ctx context.Context, workTree, ref string) (sha, out string, err e
 // carries two NUL-terminated fields (the new path, then the original path);
 // both are checked against keep, since either one dirties the tree outside
 // the change set.
+//
+// A path under .idea-harness/, the harness's own control-plane directory,
+// never counts as dirty here regardless of keep (review defect D): `idea
+// init` leaves it untracked until a human chooses to commit it (harness.yaml,
+// project.yaml, roles/ -- config meant to be committed, just not yet), and
+// its own scratch space (.idea-harness/tmp/, see fsdiff's atomic write) is
+// never meant to be committed at all. Neither should ever block landing a
+// change set on the initiative's branch -- a founder-journey run hit exactly
+// this, refused forever by its own freshly created, still-untracked
+// .idea-harness/.
 func dirtyPathsOutside(ctx context.Context, workTree string, keep []string) ([]string, error) {
 	out, err := runGit(ctx, workTree, sanitizedEnv(), "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
@@ -190,7 +263,7 @@ func dirtyPathsOutside(ctx context.Context, workTree string, keep []string) ([]s
 		}
 		for _, p := range paths {
 			p = filepath.ToSlash(p)
-			if p == "" || keepSet[p] || seen[p] {
+			if p == "" || keepSet[p] || seen[p] || isHarnessControlPlanePath(p) {
 				continue
 			}
 			seen[p] = true
@@ -198,6 +271,16 @@ func dirtyPathsOutside(ctx context.Context, workTree string, keep []string) ([]s
 		}
 	}
 	return dirty, nil
+}
+
+// isHarnessControlPlanePath reports whether p (workspace-relative,
+// slash-separated) is .idea-harness itself or something inside it. Duplicated
+// as a literal rather than imported from internal/fsdiff's controlPlaneDirs:
+// internal/git does not otherwise depend on internal/fsdiff, and this is one
+// stable literal, not worth a package dependency to share (same tradeoff
+// normalizeRequirementCode documents in internal/projection).
+func isHarnessControlPlanePath(p string) bool {
+	return p == ".idea-harness" || strings.HasPrefix(p, ".idea-harness/")
 }
 
 // freeBranchName returns base, or base suffixed "-2", "-3", … the first name

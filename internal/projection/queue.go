@@ -37,7 +37,7 @@ func queueRank(tier int64, at int64) int64 { return tier*queueTierTierWidth + at
 // UI rendered it as a garbled, meaningless number ("#1729384046714066200")
 // and had nothing it could compare across items anyway. 1 is always the
 // most urgent item; the ordinal is documented in docs/openapi.yaml.
-func BuildQueue(ctx context.Context, db *store.DB, blobs *blob.Store) ([]domain.QueueItem, error) {
+func BuildQueue(ctx context.Context, db *store.DB, blobs, rawBlobs *blob.Store) ([]domain.QueueItem, error) {
 	inis, err := db.ListInitiatives(ctx)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func BuildQueue(ctx context.Context, db *store.DB, blobs *blob.Store) ([]domain.
 		if ini.Status == domain.InitiativeComplete || ini.Status == domain.InitiativeFailed {
 			continue
 		}
-		items, err := buildQueueForInitiative(ctx, db, blobs, ini)
+		items, err := buildQueueForInitiative(ctx, db, blobs, rawBlobs, ini)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +63,7 @@ func BuildQueue(ctx context.Context, db *store.DB, blobs *blob.Store) ([]domain.
 	return out, nil
 }
 
-func buildQueueForInitiative(ctx context.Context, db *store.DB, blobs *blob.Store, ini domain.Initiative) ([]domain.QueueItem, error) {
+func buildQueueForInitiative(ctx context.Context, db *store.DB, blobs, rawBlobs *blob.Store, ini domain.Initiative) ([]domain.QueueItem, error) {
 	out := make([]domain.QueueItem, 0)
 	shortTitle := ini.ShortTitle
 	if shortTitle == "" {
@@ -205,7 +205,7 @@ func buildQueueForInitiative(ctx context.Context, db *store.DB, blobs *blob.Stor
 	if err != nil {
 		return nil, err
 	}
-	evidence, err := ComputeEvidenceTests(ctx, db, blobs, ini.ID)
+	evidence, err := ComputeEvidenceTests(ctx, db, blobs, rawBlobs, ini.ID)
 	if err != nil {
 		return nil, err
 	}

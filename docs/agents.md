@@ -258,6 +258,12 @@ Choose **Start over** to discard them and begin from the workspace. Over the API
 different one, and when a phase is reopened or the plan revised. Files that look like they hold a
 secret are never kept, and the Build page says so.
 
+The timeline's entry for a Stop reads "Run stopped: Execute initiative — Stopped by you" — never the
+raw `context canceled` the daemon's own log records internally (review defect F: the two used to be
+the same text, and "Execute initiative — context canceled" reads exactly like a crash for what was
+actually your own action). `daemon.log` and `GET /operations/{id}` still carry the real underlying
+error for debugging; only the timeline's human-facing detail is replaced.
+
 ## Agent spend
 
 `GET .../initiatives/{id}/costs` reports the deterministic pipeline's model-call spend precisely
@@ -289,6 +295,48 @@ invocation to get it would risk breaking (the exact argv Hermes accepts has brok
 silently before — see the `hermesArgs` comment in `internal/executor/agent.go`), needs verifying
 against a real Hermes container before being wired in. Until then, the stdout-scraping above is the
 whole story.
+
+## Live output during a run: what "silent for minutes" is, and is not
+
+A real founder-journey run watched the live output view (`GET .../agent-output`, backed by `docker
+logs --tail N` against the agent's own container — see `SandboxedAgentExecutor.tailLogs` in
+`internal/executor/agent.go`) go silent for 3.5+ minutes while Hermes was generating code, then Stop
+was clicked. This was investigated as a possible Hermes stdout-buffering problem — the concern being
+that a CLI built for an interactive terminal (spinners, progress lines) might fully buffer its output
+when stdout is a pipe rather than a TTY, so nothing reaches `docker logs` until the process exits or
+an internal buffer fills.
+
+Checked against Hermes's own published CLI reference
+(`https://hermes-agent.nousresearch.com/docs/reference/cli-commands` and `.../faq`), as this document
+insists on for every other Hermes argv detail after the `--in`/`--usage-file` incidents above:
+
+- Real, documented `hermes chat` flags exist for output verbosity and format: `-v`/`--verbose`,
+  `-Q`/`--quiet` (suppresses cosmetic output), and `--format stream-json` (structured JSONL "for
+  machine consumption"). A `display.tool_progress` setting (`off`/`new`/`all`/`verbose`) also exists,
+  but only in `~/.hermes/config.yaml` — there is no CLI flag for it.
+- **None of Hermes's own documentation describes any flag, including these, as affecting output
+  buffering or flush timing when stdout is redirected to a pipe or file rather than a TTY.** The docs
+  distinguish TTY vs. non-TTY only for one thing — whether `hermes chat` stays interactive or answers
+  and exits — never for I/O buffering.
+
+Given that, wiring in `--format stream-json` (the most plausible-sounding candidate, since a
+machine-consumption format is likely to be written incrementally) would be exactly the kind of
+argv guess that has broken this integration silently before (`--in`, above). It would also be a much
+larger change than this one question needs: `agent_output`'s consumers today — `scrubAgentLog`'s
+noise filtering, the cost-scraping regexes above, and the plain-text UI/CLI rendering — all assume
+free text, not JSON Lines, and switching formats would need to touch all three.
+
+The 3.5-minute silence is equally, and more mundanely, explained by the agent genuinely having
+nothing to show: `docker logs` only ever reflects what the container actually printed, and a coding
+agent mid-generation between tool calls (or waiting on its own model's response) prints nothing to
+print. The captured live-output snapshot from that exact run showed the agent still in its read/
+search phase (`search_files`, `read_file`, `session_search`) with no write yet at the moment of Stop
+— consistent with slow generation, not a buffering bug caught in the act.
+
+**Follow-up, not yet done:** confirming this either way needs a real Hermes container with stdout
+piped (not a TTY) and a known-slow prompt, watching whether *any* output line appears before the
+process exits. Until that is done, no flag is added to `hermesArgs` on the strength of a plausible
+name alone.
 
 ## Toolchains: the agent's image doesn't need one, and shouldn't install one
 

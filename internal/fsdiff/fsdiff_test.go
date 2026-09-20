@@ -3,6 +3,7 @@ package fsdiff
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
@@ -120,6 +121,102 @@ func TestApplyRestoreRoundTrip(t *testing.T) {
 	}
 	if readFile(t, root, "del.txt") != "gone" {
 		t.Errorf("del.txt = %q after restore, want %q", readFile(t, root, "del.txt"), "gone")
+	}
+}
+
+// TestApplyLeavesNoStrayTempFileInTheWorkspace pins the review defect I fix:
+// writeAtomic used to stage its temp file directly beside the destination
+// (os.CreateTemp(filepath.Dir(dest), ".idea-harness-*")) -- a real run
+// observed a stray ".idea-harness-<random>" entry sitting in the tracked
+// workspace during apply, indistinguishable from a real file to `git status`
+// if the process ever died between CreateTemp and the rename. The temp file
+// must now be staged under root/.idea-harness/tmp/ instead, and none of the
+// destination's own siblings (the top-level workspace directory this test
+// applies into) may ever contain a ".idea-harness-" prefixed entry, whether
+// the apply is still in flight or already finished.
+func TestApplyLeavesNoStrayTempFileInTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "existing/nested/mod.txt", "old")
+
+	content := map[string][]byte{}
+	get := func(d string) ([]byte, error) { return content[d], nil }
+	put := func(b []byte) (string, error) {
+		d := blob.Digest(b)
+		content[d] = b
+		return d, nil
+	}
+	modContent := []byte("new")
+	addContent := []byte("hello")
+	content[blob.Digest(modContent)] = modContent
+	content[blob.Digest(addContent)] = addContent
+
+	changes := []domain.FileChange{
+		{Path: "existing/nested/mod.txt", Digest: blob.Digest(modContent), Mode: "file"},
+		{Path: "brand/new/dir/add.txt", Digest: blob.Digest(addContent), Mode: "file"},
+	}
+	if _, err := Apply(root, changes, get, put); err != nil {
+		t.Fatal(err)
+	}
+
+	assertNoStrayTempEntries(t, root)
+
+	// The staging directory itself must be exactly .idea-harness/tmp (this is
+	// the deterministic, mutation-provable half of this test: a crash between
+	// CreateTemp and the rename is not reproducible in a test, but
+	// MkdirAll(tmpDir, …) running at all is -- the old same-directory scheme
+	// never created this path). It must be empty afterward: CreateTemp's file
+	// is removed by the deferred cleanup once renamed away.
+	tmpDir := filepath.Join(root, ".idea-harness", "tmp")
+	info, err := os.Stat(tmpDir)
+	if err != nil {
+		t.Fatalf("stat %s: %v (writeAtomic should stage through this directory)", tmpDir, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s exists but is not a directory", tmpDir)
+	}
+	if entries, err := os.ReadDir(tmpDir); err == nil && len(entries) != 0 {
+		t.Errorf(".idea-harness/tmp/ has %d leftover entries after a successful apply, want 0: %v", len(entries), entries)
+	}
+}
+
+// TestRestoreLeavesNoStrayTempFileInTheWorkspace is the revert-path
+// counterpart: Restore uses the same writeAtomic, and must be just as clean.
+func TestRestoreLeavesNoStrayTempFileInTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "mod.txt", "old")
+	content := map[string][]byte{blob.Digest([]byte("old")): []byte("old")}
+	get := func(d string) ([]byte, error) { return content[d], nil }
+
+	pre := Manifest{{Path: "mod.txt", Digest: blob.Digest([]byte("old"))}}
+	if err := Restore(root, pre, get); err != nil {
+		t.Fatal(err)
+	}
+	assertNoStrayTempEntries(t, root)
+	if info, err := os.Stat(filepath.Join(root, ".idea-harness", "tmp")); err != nil || !info.IsDir() {
+		t.Fatalf(".idea-harness/tmp should exist as a directory after Restore, got err=%v", err)
+	}
+}
+
+// assertNoStrayTempEntries walks root (excluding .idea-harness/, the
+// harness's own designated scratch location) and fails the test if any entry
+// name starts with ".idea-harness-" -- the exact pattern writeAtomic used to
+// leave behind directly in the user's tracked tree.
+func assertNoStrayTempEntries(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root && d.IsDir() && d.Name() == ".idea-harness" {
+			return filepath.SkipDir
+		}
+		if strings.HasPrefix(d.Name(), ".idea-harness-") {
+			t.Errorf("stray temp entry %q found outside .idea-harness/tmp", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

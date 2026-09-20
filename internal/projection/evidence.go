@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -66,15 +67,35 @@ func ParseTestOutput(output string) []TestResult {
 	return parseTestOutputText(output)
 }
 
-// looksLikeGoTestJSON reports whether output is (or starts as) a `go test
-// -json` event stream: its first non-blank line is a JSON object.
+// looksLikeGoTestJSON reports whether output contains a `go test -json`
+// event stream: some line is a JSON object naming a recognized test2json
+// Action. It scans every line rather than requiring the FIRST non-blank line
+// to be JSON (the previous rule) because checkCommand's own stored evidence
+// (execute.go's imagePrefix) always prepends at least one human-readable
+// "image: <image>\n" line -- and sometimes a second "<config> not
+// configured; detected ..." line -- before the JSON stream actually starts.
+// Requiring the first line to be JSON meant a real check's evidence, from
+// the sandbox that produced it, was NEVER detected as go test -json: every
+// tier of ComputeEvidenceTests fell through to the free-text parser, which
+// finds nothing in a stream of `{"Action":...}` lines (none of them start
+// with "=== RUN" or "--- PASS"), so evidence_tests read null even when every
+// test in the run passed. Requiring a recognized Action value (not just a
+// leading "{") keeps this from false-positiving on an unrelated line that
+// happens to contain a brace.
 func looksLikeGoTestJSON(output string) bool {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || line[0] != '{' {
 			continue
 		}
-		return strings.HasPrefix(line, "{")
+		var ev goTestEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		switch ev.Action {
+		case "start", "run", "pause", "cont", "pass", "fail", "output", "skip", "bench":
+			return true
+		}
 	}
 	return false
 }
@@ -360,7 +381,8 @@ func requirementCodePattern(code string) *regexp.Regexp {
 // until one produces names:
 //
 //  1. Tests named for its code in the verification plan's hooks
-//     (mappedTestsByRequirement).
+//     (mappedTestsByRequirement, resolved against the redacted `blobs` store
+//     that holds model artifacts).
 //  2. Any parsed test whose name contains the requirement's code on a word
 //     boundary.
 //  3. Test functions found in test/spec files touched by the change set
@@ -370,7 +392,14 @@ func requirementCodePattern(code string) *regexp.Regexp {
 //     for a per-key-rate-limiting requirement has no "REQ-5" in it anywhere),
 //     so (2) alone left every requirement unmapped on a real run despite tests
 //     passing. Only counted when that change set is applied and its OWN check
-//     passed.
+//     passed. Resolved against `rawBlobs`, the redaction-free store: a change
+//     set's patch manifest and file content are written there (see
+//     workflow.Engine.contentBlobs), never in the redacted `blobs` store, so
+//     passing the wrong store here silently produced zero task-derived
+//     evidence on every real run (evidence_tests null on every requirement
+//     despite tests passing) -- decodePatch's Get against the wrong store
+//     failed not-found every time. `blobs` and `rawBlobs` may be the same
+//     value only in tests that don't need to distinguish them.
 //
 // Every tier is resolved against the most recent parsed result for that test
 // name among the initiative's ELIGIBLE change sets (eligibleChangeSets) --
@@ -384,7 +413,7 @@ func requirementCodePattern(code string) *regexp.Regexp {
 // line survived must not read as "both passed") -- tier (2) can never
 // produce a "missing" name by construction (it only ever matches a name
 // already known to have run).
-func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, initiativeID string) (map[string][]domain.EvidenceTest, error) {
+func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs, rawBlobs *blob.Store, initiativeID string) (map[string][]domain.EvidenceTest, error) {
 	requirements, err := db.ListRequirements(ctx, initiativeID)
 	if err != nil {
 		return nil, err
@@ -496,7 +525,7 @@ func ComputeEvidenceTests(ctx context.Context, db *store.DB, blobs *blob.Store, 
 			// wired to this requirement, but ONLY when that change set is
 			// applied and its own check passed -- never a guess at what the
 			// task was FOR, always what it actually shipped and verified.
-			taskNames, err := taskDerivedTests(ctx, db, blobs, initiativeID, changeSets, eligible, checkPassed, req.ID)
+			taskNames, err := taskDerivedTests(ctx, db, rawBlobs, initiativeID, changeSets, eligible, checkPassed, req.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -563,9 +592,14 @@ func extractTestFuncNames(content string) []string {
 // that task's own eligible (applied, latest-attempt), check-passed change
 // set's added/modified test files -- never a test name coincidentally
 // containing the requirement's code, which real test names almost never do.
-func taskDerivedTests(ctx context.Context, db *store.DB, blobs *blob.Store, initiativeID string,
+//
+// rawBlobs must be the redaction-free store (projectRuntime.rawBlobs /
+// workflow.Engine.contentBlobs): a change set's PatchDigest and its files'
+// content digests are both written there, never in the redacted `blobs`
+// store used elsewhere in this file for artifact bodies.
+func taskDerivedTests(ctx context.Context, db *store.DB, rawBlobs *blob.Store, initiativeID string,
 	changeSets []domain.ChangeSet, eligible, checkPassed map[string]bool, requirementID string) ([]string, error) {
-	if blobs == nil {
+	if rawBlobs == nil {
 		return nil, nil
 	}
 	edges, err := db.ListGraphEdgesTo(ctx, initiativeID, "requirement", requirementID)
@@ -586,16 +620,32 @@ func taskDerivedTests(ctx context.Context, db *store.DB, blobs *blob.Store, init
 		if !eligible[cs.ID] || !checkPassed[cs.ID] || !taskIDs[cs.TaskID] {
 			continue
 		}
-		patch, err := decodePatch(blobs, cs.PatchDigest)
-		if err != nil || patch == nil {
-			continue // best-effort: an unreadable patch just contributes nothing
+		if cs.PatchDigest == "" {
+			continue
+		}
+		patch, err := decodePatch(rawBlobs, cs.PatchDigest)
+		if err != nil {
+			// Not best-effort: the digest is set (this change set really does
+			// have a patch) and the store lookup itself failed, which means
+			// either the wrong store was passed in or the blob is gone --
+			// both worth knowing about instead of silently mapping this
+			// requirement's evidence to nothing (the bug this guards against:
+			// evidence_tests null on every requirement despite tests passing).
+			slog.Default().Warn("projection: task-derived tests: unreadable patch",
+				"change_set", cs.HumanID, "patch_digest", cs.PatchDigest, "error", err)
+			continue
+		}
+		if patch == nil {
+			continue // malformed manifest: decodePatch already logged
 		}
 		for _, fc := range patch.Files {
 			if fc.IsDelete() || !testFilePattern.MatchString(fc.Path) {
 				continue
 			}
-			content, err := blobs.Get(fc.Digest)
+			content, err := rawBlobs.Get(fc.Digest)
 			if err != nil {
+				slog.Default().Warn("projection: task-derived tests: unreadable file content",
+					"change_set", cs.HumanID, "path", fc.Path, "digest", fc.Digest, "error", err)
 				continue
 			}
 			names = append(names, extractTestFuncNames(string(content))...)
@@ -604,8 +654,13 @@ func taskDerivedTests(ctx context.Context, db *store.DB, blobs *blob.Store, init
 	return names, nil
 }
 
-// decodePatch reads and decodes a change set's patch manifest from the blob
-// store, best-effort (nil, nil when there is nothing to read). Mirrors
+// decodePatch reads and decodes a change set's patch manifest from blobs
+// (the redaction-free store for a task-derived-tests caller; see
+// taskDerivedTests's doc comment). A missing patchDigest is expected and
+// returns (nil, nil) quietly; an unreadable or malformed manifest is not
+// best-effort silence -- it is logged and returned as an error so a caller
+// gated on real errors (unlike the loose substring-match tiers) can tell "no
+// patch to look at" apart from "something is actually broken". Mirrors
 // workflow.Engine.loadPatch; duplicated rather than shared because
 // internal/projection is a read-model layer independent of the engine (see
 // normalizeRequirementCode's doc comment for the same constraint).
@@ -615,11 +670,13 @@ func decodePatch(blobs *blob.Store, patchDigest string) (*fsdiff.Patch, error) {
 	}
 	data, err := blobs.Get(patchDigest)
 	if err != nil {
-		return nil, nil //nolint:nilerr // best-effort: unreadable patch contributes nothing
+		return nil, err
 	}
 	var p fsdiff.Patch
 	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, nil //nolint:nilerr // best-effort: malformed patch contributes nothing
+		slog.Default().Warn("projection: decodePatch: malformed patch manifest",
+			"patch_digest", patchDigest, "error", err)
+		return nil, nil //nolint:nilerr // malformed manifest contributes nothing, but is a real (logged) condition, not a lookup miss
 	}
 	return &p, nil
 }
