@@ -1,7 +1,13 @@
 # Configuration
 
 idea-harness reads portable config from `.idea-harness/` in the project root. Runtime state is
-**never** stored here — it lives under `~/.local/share/idea-harness/` (§30).
+**never** stored here — it lives under `~/.local/share/idea-harness/` (§30) — with one narrow
+exception: `.idea-harness/tmp/` is a self-cleaning staging directory for the atomic file writes
+apply/revert make into your workspace (`internal/fsdiff.writeAtomic`, review defect I). It exists
+only so that the temporary file is never left sitting directly beside your own tracked files if the
+daemon is killed mid-write; a same-project directory (rather than the state root) is used
+deliberately so the final rename is guaranteed to stay on one filesystem. `idea init` writes a
+`.idea-harness/.gitignore` that ignores it; it is never meant to be committed.
 
 `idea config validate` checks the files against embedded JSON Schemas and rejects inline secrets.
 You can also configure providers and the default model from the web UI (**Settings**) or the CLI
@@ -80,7 +86,10 @@ git:
   allow_default_branch: false
   # Create and check out idea/<slug> on an initiative's first apply, and
   # commit each of its change sets there instead of whatever branch was
-  # already checked out. Opt-in.
+  # already checked out. Opt-in. This ALONE is enough to get commits on that
+  # branch -- git_commit above need not also be true (review defect D: it
+  # used to silently do nothing without it, though its own name never
+  # suggested a second flag was required).
   branch_per_initiative: false
 ```
 
@@ -105,7 +114,7 @@ Top-level fields:
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `git.allow_default_branch` | let commit-on-apply commit while the repository's default branch is checked out | `false` |
-| `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there | `false` |
+| `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there. **Implies committing on its own** — setting this alone, with `git_commit` left `false`, is sufficient (review defect D) | `false` |
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: re-approving re-runs the reviewer, and after the first block the deny gate refuses outright | `0` |
@@ -182,9 +191,13 @@ the daemon and then creates exactly one initiative — and it is the thing to kn
 if you set this by hand and wonder why the second `idea new` behaved differently.
 
 `git_commit` is off by default on purpose: a repository hook would run arbitrary code in the
-daemon's environment, so committing is never implied. Applied change sets are always revertible from
-the snapshot regardless of this setting — the commit is an extra, not the mechanism. The web UI
-exposes the same switch under **Settings**.
+daemon's environment, so committing is never implied by anything other than an explicit opt-in —
+which is exactly what `git.branch_per_initiative` is (see below): turning it on, by itself, is
+already that opt-in, and `git_commit` need not also be set (review defect D; it used to require
+both, silently, though `branch_per_initiative`'s own name and doc never said commits depended on a
+second flag). Applied change sets are always revertible from the snapshot regardless of either
+setting — the commit is an extra, not the mechanism. The web UI exposes the same switch under
+**Settings**.
 
 **Hooks stay disabled for every agent commit** (`-c core.hooksPath=<empty temp dir>`), whether it
 lands via `git_commit` or `git.branch_per_initiative`: a pre-commit or commit-msg hook is arbitrary
@@ -225,6 +238,21 @@ same initiative. A brand-new branch is created from the repository's default bra
 same way as the default-branch guard above), never from whatever HEAD happens to be checked out,
 which may be a different initiative's own branch and would otherwise stack this initiative's commits
 on top of that unrelated one. Every later change set for the initiative commits there.
+
+Two things never count as "uncommitted changes outside the change set" for this guard (review defect
+D):
+
+- **`.idea-harness/`**, the harness's own control-plane directory. `idea init` leaves it untracked
+  until you choose to commit it (`harness.yaml`, `project.yaml`, `roles/*.yaml` are ordinary,
+  committable project files — see the top of this document), and its own scratch space
+  (`.idea-harness/tmp/`) is never meant to be committed at all. Neither should ever block a branch
+  switch, and now neither does.
+- **Files this same initiative's own earlier applied change sets already wrote**, when those change
+  sets never got committed themselves (typically because `git_commit`/`branch_per_initiative` was
+  turned on only after they applied). These are caught up onto the initiative's branch as their own
+  commit — separate from the change set actually being applied — right after the branch switch,
+  instead of refusing forever over the harness's own prior writes. Anything else dirty in the
+  workspace still refuses the switch, naming only the paths that are genuinely unexplained.
 
 **`idea pr`** pushes that branch — to its configured upstream remote (`branch.<name>.remote`) when
 one is set, otherwise `origin` — and runs `gh pr create`, with a body built from the initiative (PRD

@@ -133,12 +133,22 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 		return nil, err
 	}
 	for _, op := range ops {
-		var kind string
+		var kind, detail string
 		switch op.Status {
 		case domain.OperationFailed:
 			kind = "run_failed"
+			detail = op.Error
 		case domain.OperationCancelled:
+			// review defect F: op.Error here is the raw error unwound from a
+			// cancelled context -- typically "context canceled", sometimes
+			// wrapped with a step name -- which is accurate but reads exactly
+			// like a crash for what was actually the user's own Stop action.
+			// Kind ("run_stopped" vs "run_failed") already distinguishes the
+			// two cases; the human-readable detail should too, rather than
+			// showing "Execute initiative — context canceled" as if something
+			// had gone wrong.
 			kind = "run_stopped"
+			detail = "Stopped by you"
 		default:
 			continue
 		}
@@ -147,7 +157,7 @@ func BuildTimeline(ctx context.Context, db *store.DB, initiativeID string, since
 			at = *op.FinishedAt
 		}
 		out = append(out, domain.TimelineEntry{
-			At: at, Kind: kind, Title: humanizeOpType(op.Type), Detail: op.Error,
+			At: at, Kind: kind, Title: humanizeOpType(op.Type), Detail: detail,
 			Ref: domain.TimelineRef{Type: "operation", ID: op.ID},
 		})
 	}

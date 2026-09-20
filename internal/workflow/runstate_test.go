@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,6 +145,36 @@ func TestRunAgainContinuesFromAStoppedRun(t *testing.T) {
 	}
 	if eng.PartialWork(iniID) != nil {
 		t.Error("the kept files were not cleared once carried")
+	}
+}
+
+// TestStopBeforeAnyWriteIsLoggedNotSilent reproduces the ICP re-run's own
+// defect F: a real Stop landed while the agent had only been reading files
+// (no write yet), so capturePartial's diff was genuinely empty -- correct
+// behavior -- but its early return logged NOTHING at all, on either the
+// success or the "nothing to keep" path. An operator watching daemon.log
+// after a Stop could not tell "capturePartial ran and found nothing to keep"
+// apart from "capturePartial never ran" or "it silently swallowed an error",
+// which is exactly the "Stop is unverifiable" complaint. capturePartial must
+// now say what it decided even when it keeps nothing.
+func TestStopBeforeAnyWriteIsLoggedNotSilent(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	var logBuf bytes.Buffer
+	eng.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// path == "" tells stopMidRun to cancel shortly after the agent starts,
+	// without ever writing FAKE_WRITE -- the "nothing written yet" case.
+	stopMidRun(t, eng, iniID, "", "")
+
+	if pw := eng.PartialWork(iniID); pw != nil {
+		t.Fatalf("PartialWork = %+v, want nil: nothing was ever written", pw)
+	}
+	log := logBuf.String()
+	if !strings.Contains(log, "checking for files to keep") {
+		t.Errorf("daemon log = %q, want a line confirming capturePartial ran", log)
+	}
+	if !strings.Contains(log, "nothing to keep") {
+		t.Errorf("daemon log = %q, want a line saying capturePartial found nothing to keep", log)
 	}
 }
 

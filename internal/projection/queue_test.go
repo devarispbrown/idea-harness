@@ -38,7 +38,7 @@ func TestBuildQueueRanksBlockingFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestBuildQueueShortTitleFallsBackToTitle(t *testing.T) {
 	if err := db.CreateDecision(ctx, dec); err != nil {
 		t.Fatal(err)
 	}
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestBuildQueueChangeSetStates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestBuildQueueDenialHiddenOncePlainRejectOrSuperseded(t *testing.T) {
 	if err := db.TransitionChangeSet(ctx, plainFail.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
 		t.Fatal(err)
 	}
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestBuildQueueDenialHiddenOncePlainRejectOrSuperseded(t *testing.T) {
 	if err := db.TransitionChangeSet(ctx, denied.ID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator); err != nil {
 		t.Fatal(err)
 	}
-	items, err = BuildQueue(ctx, db, nil)
+	items, err = BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestBuildQueueDenialHiddenOncePlainRejectOrSuperseded(t *testing.T) {
 	if err := db.MarkChangeSetApplied(ctx, rerun.ID, "digest", ""); err != nil {
 		t.Fatal(err)
 	}
-	items, err = BuildQueue(ctx, db, nil)
+	items, err = BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestBuildQueueRankIsASmallOrdinal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestBuildQueueVerifyOnlyOffersApprovedRequirements(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := BuildQueue(ctx, db, nil)
+	items, err := BuildQueue(ctx, db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

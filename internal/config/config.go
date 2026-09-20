@@ -145,10 +145,19 @@ type HarnessConfig struct {
 	CheckTimeoutSeconds int `json:"check_timeout_seconds,omitempty" yaml:"check_timeout_seconds,omitempty"`
 	// GitCommit opts into creating a git commit (with repo hooks disabled) for
 	// each applied change set (§M7). Off by default: a hook runs arbitrary code
-	// under the daemon's privileged environment, so this must never be implied.
+	// under the daemon's privileged environment, so this must never be implied
+	// by anything OTHER than an explicit opt-in -- which is exactly what
+	// Git.BranchPerInitiative is (review defect D): it is documented as
+	// committing each change set onto the initiative's branch, so setting it
+	// alone, with GitCommit left false, also commits. A user who wants neither
+	// leaves both false; there is no way to get branch-per-initiative's
+	// bookkeeping (Initiative.GitBranch, `idea pr`) without commits landing on
+	// it, since an uncommitted branch is not a reviewable one.
 	GitCommit bool `json:"git_commit" yaml:"git_commit"`
 	// Git configures git-native behavior beyond the commit-on-apply toggle
-	// above (review #2, C4).
+	// above (review #2, C4). Git.BranchPerInitiative alone is sufficient to
+	// commit (see GitCommit's doc comment) -- GitCommit itself need not also
+	// be set.
 	Git GitConfig `json:"git,omitempty" yaml:"git,omitempty"`
 	// Demo configures the built-in deterministic provider. It does nothing when
 	// a real provider is configured.
@@ -167,7 +176,10 @@ type GitConfig struct {
 	AllowDefaultBranch bool `json:"allow_default_branch,omitempty" yaml:"allow_default_branch,omitempty"`
 	// BranchPerInitiative opts into creating and checking out idea/<slug> on an
 	// initiative's first apply, then committing each of its change sets there
-	// instead of on whatever branch the workspace was already on.
+	// instead of on whatever branch the workspace was already on. This implies
+	// committing (review defect D): setting this true is sufficient on its
+	// own, without also setting git_commit -- see GitCommit's doc comment for
+	// why that used to be a second, undocumented requirement.
 	BranchPerInitiative bool `json:"branch_per_initiative,omitempty" yaml:"branch_per_initiative,omitempty"`
 }
 

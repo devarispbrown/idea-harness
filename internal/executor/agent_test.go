@@ -301,6 +301,61 @@ func hasCall(calls []string, prefix string) bool {
 	return false
 }
 
+// fakeDockerNoisyLogs answers `docker logs --tail N <id>` with exactly N
+// lines cycling through a 3-line pattern (skill-sync noise, blank, real
+// content) -- roughly a third of any raw tail is genuine signal, the shape
+// tailRawMultiplier's own doc comment describes from a real run (100 raw
+// lines in, ~70 scrubbed out is a similar ratio).
+const fakeDockerNoisyLogs = `#!/usr/bin/env bash
+if [ "$1" = "logs" ] && [ "$2" = "--tail" ]; then
+  n="$3"
+  i=0
+  count=0
+  while [ "$count" -lt "$n" ]; do
+    mod=$((i % 3))
+    if [ "$mod" -eq 0 ]; then
+      echo "Syncing bundled skills $i"
+    elif [ "$mod" -eq 1 ]; then
+      echo ""
+    else
+      echo "line $i"
+    fi
+    i=$((i+1))
+    count=$((count+1))
+  done
+  exit 0
+fi
+exit 1
+`
+
+// TestTailLogsDeliversTheRequestedLineCountDespiteScrubbing reproduces the
+// ICP re-run's own defect F: `docker logs --tail 100` followed by
+// scrubAgentLog dropping blank lines and skill-sync noise left only ~70 lines
+// of real content on a real run -- silently short of the 100
+// liveOutputLines/agentOutputLines document and every caller asks for.
+// tailLogs must ask for enough raw lines up front (tailRawMultiplier) that,
+// after scrubbing, the requested count still survives.
+func TestTailLogsDeliversTheRequestedLineCountDespiteScrubbing(t *testing.T) {
+	e := &SandboxedAgentExecutor{
+		attempts:   map[string]*agentAttempt{"a1": {containerID: "cid-1"}},
+		dockerPath: writeExecutable(t, "docker", fakeDockerNoisyLogs),
+	}
+	out := e.tailLogs(context.Background(), "a1", 100)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 100 {
+		t.Fatalf("got %d lines, want exactly 100 (the requested count) despite scrubbing dropping noise/blank lines: %v",
+			len(lines), lines)
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(l, "Syncing bundled skills") || strings.TrimSpace(l) == "" {
+			t.Fatalf("scrubbed noise/blank line survived into the final output: %q", l)
+		}
+		if !strings.HasPrefix(l, "line ") {
+			t.Fatalf("unexpected line in output: %q", l)
+		}
+	}
+}
+
 func newHermesForLifecycle(t *testing.T) (*SandboxedAgentExecutor, string) {
 	t.Helper()
 	record := filepath.Join(t.TempDir(), "record")

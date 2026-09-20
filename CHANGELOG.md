@@ -11,6 +11,67 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **`evidence_tests` mapped nothing on a real run despite 30 passing tests.**
+  `ComputeEvidenceTests`'s task-derived tier (`taskDerivedTests`/`decodePatch`)
+  was resolved against the redacted `blobs` store, but a change set's patch
+  manifest and file content are only ever written to `rawBlobs` (see
+  `workflow.Engine.contentBlobs`) — so every patch lookup silently missed and
+  no requirement was ever mapped by that tier. `ComputeEvidenceTests` and
+  `BuildQueue` now take both stores explicitly, and an unreadable patch/file
+  logs a warning instead of failing silently. Separately, the other evidence
+  tiers were also broken against REAL check output: `checkCommand` always
+  prepends a human-readable `image: ...` (and sometimes a `<config> not
+  configured; detected ...`) line before a `go test -json` stream, and
+  `looksLikeGoTestJSON` required the *first* line to be JSON — so real
+  evidence never parsed as JSON at all and fell through to a free-text parser
+  that finds nothing in a stream of `{"Action":...}` lines.
+  `looksLikeGoTestJSON` now scans every line for a recognized `go test`
+  test2json `Action`. A new end-to-end test
+  (`internal/daemon/evidence_two_store_test.go`) uses the real two-store
+  daemon setup and real (prefixed) `go test -json` evidence throughout.
+- **`git.branch_per_initiative` did nothing unless `git_commit` was also
+  set**, though its own name and doc never said a second flag was needed;
+  `idea pr`'s own error told a user to "enable git.branch_per_initiative and
+  apply a change set first" with no mention of one. Setting
+  `git.branch_per_initiative` alone is now sufficient to commit. Also: a
+  fresh, still-untracked `.idea-harness/` (harness.yaml, project.yaml,
+  roles/) and files from this same initiative's own earlier applied change
+  sets (applied while `git_commit` was off) used to refuse every later apply
+  forever with "uncommitted changes outside this change set" — `.idea-harness/`
+  never counts as dirty for this guard now, and the earlier change sets' own
+  files are caught up onto the initiative's branch as their own commit
+  instead of blocking. `idea init` now writes `.idea-harness/.gitignore`
+  (ignoring only the harness's own scratch state, never the committable
+  config), and `idea pr`'s error names the specific reason (a guard refusal,
+  an unrelated dirty file) when one was already recorded, instead of only
+  repeating the generic advice.
+- **Stop/continue was unverifiable.** `capturePartial` logged nothing at all
+  on its "nothing to keep" path (a genuinely empty diff, e.g. Stop landing
+  before the agent had written anything), making it indistinguishable from
+  "never ran" or "silently failed" — it now logs its outcome on every path.
+  The timeline's entry for a user-initiated Stop showed the raw
+  `context canceled` the daemon unwinds internally ("Execute initiative —
+  context canceled"), reading exactly like a crash; it now says "Stopped by
+  you". Separately, `docker logs --tail 100` followed by `scrubAgentLog`
+  dropping blank/noise lines left only ~70 real lines of `agent_output` on a
+  real run, short of the 100 documented and requested — `tailLogs` now asks
+  for a generous multiple of raw lines up front so the requested count
+  reliably survives scrubbing. Hermes's own CLI documentation was checked for
+  a streaming/verbose flag that might explain output going silent for
+  minutes at a time; none is documented as affecting buffering when stdout is
+  piped rather than a TTY, so nothing was guessed into `hermesArgs` — see
+  `docs/agents.md`'s "Live output during a run" section for the full
+  investigation and what would still need verifying against a real container.
+- **A temporary `.idea-harness-<random>` file could appear directly beside a
+  user's own tracked files during apply/revert.** `fsdiff.writeAtomic` staged
+  its atomic-write temp file in the destination's own directory
+  (`os.CreateTemp(filepath.Dir(dest), ".idea-harness-*")`); an interrupted
+  daemon (crash, kill, container OOM) between the write and the rename could
+  leave it there, indistinguishable from a real file to `git status`. It now
+  stages through `.idea-harness/tmp/` (excluded from every snapshot/diff by
+  name already, and from the branch-per-initiative dirty check as of this
+  release), staying on the same filesystem as the destination so the final
+  rename is still atomic.
 - **`go test` (and other toolchains) can now actually pass inside the check
   sandbox.** Docker's default `--tmpfs /tmp` is `noexec`, so a compiled test
   binary — `go test`'s own, jest's native transforms, a cargo build script,

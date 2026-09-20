@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -97,6 +98,38 @@ func TestCreatePRRequiresADedicatedBranch(t *testing.T) {
 	}
 	if err != ErrNoInitiativeBranch {
 		t.Errorf("err = %v, want ErrNoInitiativeBranch", err)
+	}
+}
+
+// TestCreatePRNamesTheSpecificGitCommitWarning is review defect D's precision
+// requirement: when branch_per_initiative IS on but the branch was never
+// created because a specific guard refused the commit (here, the default
+// branch guard), `idea pr`'s error must say exactly that instead of repeating
+// "enable git.branch_per_initiative and apply a change set first" -- advice
+// the user already followed.
+func TestCreatePRNamesTheSpecificGitCommitWarning(t *testing.T) {
+	eng, db, iniID, _ := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
+	// AllowDefaultBranch is left false, but BranchPerInitiative should have
+	// created and switched to idea/<slug> before the default-branch guard
+	// ever runs (see execute.go's ordering comment) -- so to reach a
+	// GitCommitWarning with GitBranch still empty, disable branch creation by
+	// making dirtyPathsOutside refuse it instead: a genuinely unrelated dirty
+	// file outside the change set's own paths.
+	workspace := eng.workspaceRoot
+	if err := os.WriteFile(filepath.Join(workspace, "unrelated.txt"), []byte("mid-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyApproved(t, eng, db, iniID)
+
+	_, err := eng.CreatePR(context.Background(), iniID)
+	if err == nil {
+		t.Fatal("want an error: the initiative has no dedicated branch")
+	}
+	if !errors.Is(err, ErrNoInitiativeBranch) {
+		t.Errorf("err = %v, want it to still satisfy errors.Is(err, ErrNoInitiativeBranch)", err)
+	}
+	if !strings.Contains(err.Error(), "unrelated.txt") {
+		t.Errorf("err = %v, want it to name the specific reason (unrelated.txt) instead of only the generic advice", err)
 	}
 }
 
