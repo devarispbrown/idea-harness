@@ -160,6 +160,11 @@ const Architecture = `{
           "recommendation": {
             "type": "string",
             "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The Requirement code(s) (e.g. \"REQ-2\") this decision shapes, if any -- so resolving or reopening it can flag the requirements, tasks and change sets built on it as possibly invalid. Leave empty only when the decision is not about a specific requirement."
           }
         },
         "required": ["question", "options", "recommendation"]
@@ -199,6 +204,11 @@ const ProductDesign = `{
           "recommendation": {
             "type": "string",
             "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The Requirement code(s) (e.g. \"REQ-2\") this decision shapes, if any -- so resolving or reopening it can flag the requirements, tasks and change sets built on it as possibly invalid. Leave empty only when the decision is not about a specific requirement."
           }
         },
         "required": ["question", "options", "recommendation"]

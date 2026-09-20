@@ -2579,10 +2579,30 @@ func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSe
 }
 
 // ErrNoInitiativeBranch is returned by CreatePR when the initiative has no
-// dedicated branch yet (git.branch_per_initiative has not created one --
-// either the setting is off, or the initiative has not been applied yet).
+// dedicated branch yet AND git.branch_per_initiative is off -- the message
+// names the actual fix in that case: turn the setting on, then apply a
+// change set. It must not be returned verbatim when the setting is already
+// on (see noInitiativeBranchError): a real founder-journey run hit `idea pr`
+// with git.branch_per_initiative already enabled and no change set applied
+// yet, and got told to "enable git.branch_per_initiative" -- advice for a
+// state the initiative was not in.
 var ErrNoInitiativeBranch = errors.New("workflow: this initiative has no dedicated branch yet; " +
 	"enable git.branch_per_initiative and apply a change set first")
+
+// noInitiativeBranchError is CreatePR's refusal when git.branch_per_initiative
+// is already on but no branch exists yet, for either reason: nothing has been
+// applied, or a specific commit attempt was refused (mostRecentGitCommitWarning).
+// Review defect D's fix named the specific reason but still wrapped
+// ErrNoInitiativeBranch with %w, which reproduces its FULL text -- "enable
+// git.branch_per_initiative and apply a change set first" -- regardless, since
+// %w's formatted output is the wrapped error's own Error() string. This type
+// gives the message its own text while Unwrap keeps
+// errors.Is(err, ErrNoInitiativeBranch) true, so daemon/runtime.go's
+// CreatePRForInitiative still classifies it as the same 409 precondition.
+type noInitiativeBranchError struct{ msg string }
+
+func (e *noInitiativeBranchError) Error() string { return e.msg }
+func (e *noInitiativeBranchError) Unwrap() error { return ErrNoInitiativeBranch }
 
 // mostRecentGitCommitWarning returns the most recent non-empty
 // GitCommitWarning among initiativeID's change sets, "" when none exists
@@ -2627,20 +2647,29 @@ func (e *Engine) CreatePR(ctx context.Context, initiativeID string) (string, err
 		return ini.PRURL, nil
 	}
 	if ini.GitBranch == "" {
-		// review defect D: the generic message ("enable git.branch_per_initiative
-		// and apply a change set first") is right when branch_per_initiative was
-		// simply never turned on -- the case e.cfg.Git.BranchPerInitiative being
-		// false covers below, unconditionally. But when it WAS on and every
-		// apply's own commit attempt was refused for a specific, already-
-		// recorded reason (a guard refusal, an unrelated dirty file that wasn't
-		// caught up), that reason is on the change set as GitCommitWarning, and
-		// `idea pr`'s error should say it instead of repeating advice the user
-		// already followed.
+		// The generic ErrNoInitiativeBranch message ("enable
+		// git.branch_per_initiative and apply a change set first") is right
+		// when branch_per_initiative was simply never turned on -- the
+		// e.cfg.Git.BranchPerInitiative == false case, below, unconditionally.
+		// When it is already ON, that advice is wrong regardless of why the
+		// branch does not exist yet: telling a user to "enable" a setting
+		// they already enabled reads as though nothing they did took effect.
+		// noInitiativeBranchError names the real precondition instead --
+		// review defect D's specific-reason case (a guard refused the last
+		// apply's own commit; that reason is on the change set as
+		// GitCommitWarning) and the plainer case (nothing has been applied
+		// yet) both get their own text here rather than %w-wrapping
+		// ErrNoInitiativeBranch, which would reproduce its full "enable
+		// git.branch_per_initiative" text regardless of what came after it.
 		if e.cfg.Git.BranchPerInitiative {
 			if reason := e.mostRecentGitCommitWarning(ctx, initiativeID); reason != "" {
-				return "", fmt.Errorf("%w (the last apply's own commit was skipped: %s; resolve that and re-apply a change set)",
-					ErrNoInitiativeBranch, reason)
+				return "", &noInitiativeBranchError{msg: fmt.Sprintf(
+					"workflow: this initiative has no dedicated branch yet; git.branch_per_initiative is already "+
+						"enabled -- the last apply's own commit was skipped (%s); resolve that and re-apply a change set",
+					reason)}
 			}
+			return "", &noInitiativeBranchError{msg: "workflow: this initiative has no dedicated branch yet; " +
+				"git.branch_per_initiative is already enabled -- apply a change set first to create it"}
 		}
 		return "", ErrNoInitiativeBranch
 	}

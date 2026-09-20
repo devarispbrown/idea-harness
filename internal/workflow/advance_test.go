@@ -1010,3 +1010,210 @@ func TestQuickRigorPlanReviewCycleAlwaysNeedsHumanJudgment(t *testing.T) {
 		t.Fatal("expected a dependency-cycle finding to be recorded")
 	}
 }
+
+// TestArchitectureDecisionWiresRequirementProvenance is a real founder-journey
+// defect: architecture/design-stage decisions carried no derived_from edge to
+// anything, so resolving or reopening one marked no dependent requirement,
+// task or change set stale, and /impact reported none -- DEC-2..DEC-5 in that
+// run had empty provenance, and TASK-2 kept the title "token-bucket" after the
+// human chose "fixed-window". The fix wires requirement --derived_from-->
+// decision from the decision's own `requirements` code references (added to
+// the Architecture/ProductDesign schemas), the same way runProductDefinition
+// wires a PRD requirement's `decision` reference.
+func TestArchitectureDecisionWiresRequirementProvenance(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Code: "REQ-2", Statement: "Per-key rate limit", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("architecture", `{
+		"summary": "s",
+		"components": [{"name": "c", "responsibility": "r"}],
+		"decisions": [{
+			"question": "Which rate-limiting algorithm should be used?",
+			"options": ["Token bucket", "Fixed window"],
+			"recommendation": "Token bucket",
+			"requirements": ["REQ-2"]
+		}]
+	}`)
+
+	if err := eng.runArchitecture(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil || len(decs) != 1 {
+		t.Fatalf("expected one decision, got %d (err=%v)", len(decs), err)
+	}
+	dec := decs[0]
+	if dec.Type != domain.DecisionArchitecture {
+		t.Fatalf("expected an architecture decision, got %q", dec.Type)
+	}
+
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "requirement", req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wired := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDerivedFrom && e.ToType == "decision" && e.ToID == dec.ID {
+			wired = true
+		}
+	}
+	if !wired {
+		t.Fatalf("expected requirement %s derived_from decision %s, got edges %+v", req.ID, dec.ID, edges)
+	}
+
+	// Resolve, build a task on the requirement, then reopen: the cascade
+	// (decision <- requirement <- task, review A4 #5) must now have something
+	// to walk from, exactly as it does for a PRD-phase decision.
+	if err := db.ResolveDecision(ctx, dec.ID, "Token bucket", "human"); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement rate limiting", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleTargets := map[string]bool{}
+	for _, s := range stale {
+		staleTargets[s.TargetType+":"+s.TargetID] = true
+	}
+	for _, want := range []string{"requirement:" + req.ID, "task:" + task.ID} {
+		if !staleTargets[want] {
+			t.Fatalf("expected %s marked stale after reopening the architecture decision, got %+v", want, stale)
+		}
+	}
+
+	impact, err := eng.Impact(ctx, ini.ID, "decision", dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact) == 0 {
+		t.Fatal(`expected /impact to list dependents for an architecture decision, not "No dependents found"`)
+	}
+}
+
+// TestArchitectureDoesNotReraiseAnAnsweredQuestion is the other half of the
+// same real founder-journey defect: the human answered "API keys come from an
+// environment variable, never a file" in define, and the architecture phase
+// re-asked essentially the same question as a fresh Decision, recommending a
+// config file -- because createDesignDecision never consulted the questions
+// table at all, unlike runProductDefinition's own createDecisionIfNew. A
+// design-stage decision matching an ANSWERED question must not be created.
+func TestArchitectureDoesNotReraiseAnAnsweredQuestion(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	q := &domain.Question{InitiativeID: ini.ID, Question: "What format/source should be used for startup configuration of API keys and limits?"}
+	if err := db.CreateQuestion(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	digest := eng.storeBlob("Environment variables, never a file.")
+	if err := db.AnswerQuestion(ctx, q.ID, digest, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("architecture", `{
+		"summary": "s",
+		"components": [{"name": "c", "responsibility": "r"}],
+		"decisions": [{
+			"question": "What format/source should be used for startup configuration of API keys and limits?",
+			"options": ["YAML/JSON config file", "Environment variables"],
+			"recommendation": "YAML/JSON config file",
+			"requirements": []
+		}]
+	}`)
+
+	if err := eng.runArchitecture(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 0 {
+		t.Fatalf("expected no decision to be raised over an already-answered question, got %+v", decs)
+	}
+
+	events, err := db.ListEvents(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		if e.EventType == "question.reraised_answered" && e.AggregateID == q.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a question.reraised_answered event linking the re-ask to the answered question")
+	}
+}
+
+// TestArchitectureDissentsFromAnOpenDecisionButNotADecidedOne pins the other
+// side of createDesignDecision's dissent rule: a fresh, disagreeing
+// recommendation is a genuine dissent (§8) against an OPEN decision another
+// role raised, but not against one a human has already resolved -- the
+// prompt itself says a decided human decision is authoritative, so recording
+// a "dissent" there would be a model arguing with a human, not two roles
+// disagreeing with each other.
+func TestArchitectureDissentsFromAnOpenDecisionButNotADecidedOne(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which rate-limiting algorithm should be used?",
+		Options: []string{"Token bucket", "Fixed window"}, Recommendation: "Token bucket"}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Token bucket", "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.createDesignDecision(ctx, ini.ID, RoleProductDesigner, domain.DecisionArchitecture,
+		"Which rate-limiting algorithm should be used?", []string{"Token bucket", "Fixed window"}, "Fixed window", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil || len(decs) != 1 {
+		t.Fatalf("expected the decided decision to stay singular, got %d (err=%v)", len(decs), err)
+	}
+	if decs[0].Recommendation != "Token bucket" || decs[0].Resolution != "Token bucket" {
+		t.Fatalf("a decided decision must not be overwritten by a later phase's disagreement, got %+v", decs[0])
+	}
+	dissents, err := db.ListDissents(ctx, dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dissents) != 0 {
+		t.Fatalf("a disagreement with an already-DECIDED human decision is not a dissent, got %+v", dissents)
+	}
+}
