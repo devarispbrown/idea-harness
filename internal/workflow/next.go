@@ -39,7 +39,9 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 			}
 		}
 		for _, cs := range changes {
-			if cs.Status == domain.ChangeSetApplied {
+			// A NoOp applied change set touched nothing (ICP re-run defect
+			// #2): it never counts as "there is something built to verify".
+			if cs.ImplementsTask() {
 				return "verify", nil
 			}
 		}

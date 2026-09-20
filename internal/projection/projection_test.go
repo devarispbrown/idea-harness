@@ -234,7 +234,12 @@ func TestBuildGuidancePendingChangeSetApprovalBeatsNextTask(t *testing.T) {
 	ini := domain.Initiative{Status: domain.InitiativePlanApproved}
 	u := Understanding{}
 
-	recent := []domain.ChangeSet{{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetReviewRequired}}
+	// ReviewCompletedAt set: this is the ordinary "awaiting a human's
+	// approval" state, not defect #1's interrupted-review one (which
+	// BuildGuidance now reports as "Rerun the review" instead -- see
+	// TestBuildGuidancePointsAtRerunWhenReviewNeverCompleted).
+	reviewedAt := time.Now()
+	recent := []domain.ChangeSet{{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetReviewRequired, ReviewCompletedAt: &reviewedAt}}
 	nm := BuildGuidance(ini, u, recent, false)
 	if !strings.Contains(nm.Action, "CHG-1") || !strings.Contains(nm.Action, "Review") {
 		t.Fatalf("expected guidance to point at reviewing CHG-1, got %+v", nm)
@@ -247,6 +252,31 @@ func TestBuildGuidancePendingChangeSetApprovalBeatsNextTask(t *testing.T) {
 	nm = BuildGuidance(ini, u, recent, false)
 	if !strings.Contains(nm.Action, "CHG-2") || !strings.Contains(nm.Action, "Apply") {
 		t.Fatalf("expected guidance to point at applying CHG-2, got %+v", nm)
+	}
+}
+
+// TestBuildGuidancePointsAtRerunWhenReviewNeverCompleted is ICP re-run defect
+// #1: a change set stuck in review_required with no completed adversarial
+// review (Execute's own review call errored, most often cancelled
+// mid-review) is not simply "awaiting your review" -- `idea review CHG-1
+// approve` refuses it. Guidance must name the actual way forward (rerun),
+// not point at a command that will just fail. Mutation check: delete the
+// !ReviewCompleted() branch in BuildGuidance's InitiativePlanApproved case
+// and this fails.
+func TestBuildGuidancePointsAtRerunWhenReviewNeverCompleted(t *testing.T) {
+	ini := domain.Initiative{Status: domain.InitiativePlanApproved}
+	u := Understanding{}
+
+	recent := []domain.ChangeSet{{ID: "cs-1", HumanID: "CHG-1", Status: domain.ChangeSetReviewRequired}}
+	nm := BuildGuidance(ini, u, recent, false)
+	if !strings.Contains(nm.Action, "CHG-1") || !strings.Contains(nm.Action, "Rerun") {
+		t.Fatalf("expected guidance to point at rerunning CHG-1's review, got %+v", nm)
+	}
+	if strings.Contains(nm.Why, "review CHG-1 approve") {
+		t.Errorf("guidance still tells the human to approve, which refuses on an incomplete review: %+v", nm)
+	}
+	if !strings.Contains(nm.Why, "rerun") {
+		t.Errorf("guidance does not name the `rerun` command: %+v", nm)
 	}
 }
 

@@ -693,6 +693,42 @@ ALTER TABLE operations ADD COLUMN stage TEXT NOT NULL DEFAULT '';
 	`
 UPDATE findings SET secret_overridable = 0 WHERE secret_kind = 'configured secret value';
 `,
+	// 33: ICP re-run defect #1. review_completed_at records the one time the
+	// adversarial reviewer actually FINISHED for a change set, as opposed to
+	// the change set merely reaching review_required. Before this, a change
+	// set whose Execute-time review call errored (the operation was
+	// cancelled mid-review, the provider timed out, ...) after the
+	// checks-running -> review_required transition already happened was
+	// indistinguishable, in the stored state, from one that had genuinely
+	// converged with zero adversarial findings: `idea review CHG-n approve`
+	// happily approved it, and it was then appliable, with only mechanical
+	// check observations (build/tests/patch-applies/workspace-copy) ever
+	// having been recorded against it. NULL (unset) for every change set
+	// created before this migration and for one whose review has not yet
+	// completed; set once, in store.SetChangeSetReview, the only place a
+	// completed review is ever recorded.
+	`
+ALTER TABLE change_sets ADD COLUMN review_completed_at INTEGER;
+`,
+	// 34: ICP re-run defect #2. no_op marks a change set that touched zero
+	// files -- fsdiff.Diff found nothing between the before/after snapshots,
+	// because the agent decided the task was already done or its model call
+	// failed and it wrote nothing. Such a change set can still be reviewed,
+	// approved, applied and reverted like any other (the existing "approve
+	// the empty change set if the task was already done" escape hatch is
+	// unchanged) -- but an APPLIED no_op change set must never be counted as
+	// "this task is implemented": a real run produced exactly this (an empty
+	// change set for one task, counted as implementing it), and reverting
+	// the task's real, later change set left the task `done` and guidance
+	// insisting "every task has an applied change set" while the actual
+	// feature was gone from disk. 0 (false) for every change set created
+	// before this migration, which is the correct, conservative default:
+	// there is no way to recompute file counts for old rows without
+	// reloading and diffing every historical patch, and treating them all as
+	// "not no-op" preserves their existing, already-relied-upon behavior.
+	`
+ALTER TABLE change_sets ADD COLUMN no_op INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
