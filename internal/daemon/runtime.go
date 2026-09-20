@@ -2077,20 +2077,37 @@ func (r *Runtime) reconcileStaleOperations(ctx context.Context, pr *projectRunti
 	for _, rec := range recoveries {
 		switch rec.Status {
 		case domain.ChangeSetApplying:
+			// H3: recover to where this attempt STARTED, not always Approved.
+			// reverted->applying is a legal, documented edge (changeset.go's
+			// legalChangeSetTransition, added for re-apply crash recovery;
+			// CHANGELOG.md's "a failed re-apply attempt recovers back to
+			// `reverted`, not `approved`") -- hardcoding Approved here
+			// mislabeled a crashed re-apply of an already-reverted change
+			// set, and a later `idea apply` on it re-ran the fresh-apply path
+			// against content that was, in fact, already once applied and
+			// reverted.
+			fromStatus := rec.FromStatus
+			if fromStatus != domain.ChangeSetApproved && fromStatus != domain.ChangeSetReverted {
+				fromStatus = domain.ChangeSetApproved // unknown (e.g. pre-upgrade event history): the only possibility before re-apply existed
+			}
 			if rec.PreImageDigest != "" {
-				// A byte may have been written: restore the pre-image, and only
-				// then mark conflicted. If the restore fails, leave the change set
-				// in applying and log loudly so a later reconcile/operator can
-				// retry (never persist a terminal status over a mutated workspace).
-				if err := pr.engine.RestoreWorkspace(ctx, rec.PreImageDigest); err != nil {
+				// A byte may have been written (scoped to THIS attempt only --
+				// see ChangeSetRecovery.PreImageDigest): restore the pre-image,
+				// and only then mark conflicted. RestoreWorkspace itself refuses
+				// (StalePost) rather than overwrite an edit made to the same
+				// paths since the crash. Either way, if the restore fails, leave
+				// the change set in applying and log loudly so a later
+				// reconcile/operator can retry (never persist a terminal status
+				// over a mutated-or-refused workspace).
+				if err := pr.engine.RestoreWorkspace(ctx, rec.ChangeSetID, rec.PreImageDigest); err != nil {
 					r.log.Error("reconcile: restore failed, leaving change set applying", "change_set", rec.ChangeSetID, "err", err)
 					continue
 				}
 				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, domain.ChangeSetConflicted, store.ActorOrchestrator)
 			} else {
-				// No bytes were written (prepared/absent): revert applying→approved
-				// so a human can re-apply.
-				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, domain.ChangeSetApproved, store.ActorOrchestrator)
+				// No bytes were written by this attempt (prepared/absent):
+				// recover to fromStatus so a human can (re-)apply from there.
+				_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetApplying, fromStatus, store.ActorOrchestrator)
 			}
 		case domain.ChangeSetChecksRunning:
 			_ = pr.db.TransitionChangeSet(ctx, rec.ChangeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.ActorOrchestrator)

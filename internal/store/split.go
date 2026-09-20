@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/id"
 )
 
 // SplitTaskSpec is one replacement task for SplitTask (review M4, B3): a
@@ -50,10 +51,19 @@ func (db *DB) SplitTask(ctx context.Context, initiativeID, originalID string, sp
 
 	var created []*domain.Task
 	err := db.Apply(ctx, Event{
+		// MEDIUM fix: keyed on the INITIATIVE, not originalID. originalID is
+		// deleted in this same transaction, so an event keyed on it could
+		// never be read back: ListEventsForInitiative's per-type clause is a
+		// subquery against the live table (`aggregate_id IN (SELECT id FROM
+		// tasks WHERE ...)`), which a deleted row can never satisfy. Keying
+		// on the initiative mirrors SupersedeRequirements/SupersedeAssertions'
+		// own bulk-event shape, and the 'task' clause now carries the same
+		// direct-match escape hatch those two already have.
 		AggregateType: "task",
-		AggregateID:   originalID,
+		AggregateID:   initiativeID,
 		Actor:         ActorOrchestrator,
 		EventType:     "task.split",
+		Operation:     originalID,
 	}, func(tx *sql.Tx) error {
 		original, err := getTaskTx(tx, originalID)
 		if err != nil {
@@ -63,6 +73,15 @@ func (db *DB) SplitTask(ctx context.Context, initiativeID, originalID string, sp
 			return fmt.Errorf("store: task %q does not belong to initiative %q", originalID, initiativeID)
 		}
 		dependents, err := listGraphEdgesToTx(tx, initiativeID, "task", originalID)
+		if err != nil {
+			return err
+		}
+		// MEDIUM fix: the original's own `verifies` edges (task -> a
+		// requirement it verifies, distinct from `implements`) were silently
+		// dropped by a split -- only EdgeImplements was ever carried onto the
+		// replacements. Carried onto EVERY new task, the same "safe
+		// superset" choice already made for depends_on above.
+		originalVerifies, err := taskEdgeTargetsTx(tx, initiativeID, domain.EdgeVerifies, originalID)
 		if err != nil {
 			return err
 		}
@@ -80,6 +99,32 @@ func (db *DB) SplitTask(ctx context.Context, initiativeID, originalID string, sp
 				Priority:     priority,
 			}
 			if err := db.createTaskTx(tx, nt, domain.EdgeImplements, spec.RequirementIDs, originalDeps); err != nil {
+				return err
+			}
+			if len(originalVerifies) > 0 {
+				verifyEdges := make([]EdgeToWrite, 0, len(originalVerifies))
+				for _, reqID := range originalVerifies {
+					verifyEdges = append(verifyEdges, EdgeToWrite{FromType: "task", FromID: nt.ID, EdgeType: domain.EdgeVerifies, ToType: "requirement", ToID: reqID})
+				}
+				if err := db.wireEdges(tx, initiativeID, verifyEdges); err != nil {
+					return err
+				}
+			}
+			// MEDIUM fix: createTaskTx is createTask's tx-scoped BODY,
+			// called directly here (so every replacement shares this one
+			// transaction, review M4) -- but createTask's own db.Apply
+			// wrapper is what records "task.created" for every other
+			// caller. Calling the body alone silently skipped it: the plan
+			// visibly grew a task and "What Changed" reported nothing.
+			if err := appendEvent(tx, Event{
+				ID:            id.New(),
+				AggregateType: "task",
+				AggregateID:   nt.ID,
+				Actor:         ActorOrchestrator,
+				EventType:     "task.created",
+				CausationID:   originalID,
+				PayloadDigest: "-",
+			}); err != nil {
 				return err
 			}
 			created = append(created, nt)

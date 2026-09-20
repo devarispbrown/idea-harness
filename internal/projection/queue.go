@@ -136,15 +136,14 @@ func buildQueueForInitiative(ctx context.Context, db *store.DB, blobs, rawBlobs 
 		return cs.TaskID
 	}
 	for _, cs := range changeSets {
-		// ListChangeSets orders by created_at ASC with no secondary key, so
-		// two change sets created in the same millisecond (routine in a fast
-		// test, and not impossible in production) tie on CreatedAt alone;
-		// `!Before` rather than strict `After` makes the later one in
-		// iteration order win the tie, matching actual creation order
-		// instead of silently keeping whichever happened to be seen first.
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder,
+		// so this and every other "latest change set" reducer (evidence
+		// eligibility, /guidance, PR's git-commit-warning) agree on which
+		// one wins a same-millisecond tie (ListChangeSets orders by
+		// created_at ASC with no secondary key).
 		key := taskKey(cs)
 		cur, ok := latestByTask[key]
-		if !ok || !cs.CreatedAt.Before(cur.CreatedAt) {
+		if !ok || domain.NewerChangeSetInScanOrder(cs, cur) {
 			latestByTask[key] = cs
 		}
 	}

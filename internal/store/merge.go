@@ -77,6 +77,18 @@ func (db *DB) MergeTasks(ctx context.Context, initiativeID, keepID, mergeID stri
 		if err := replaceEdgesTx(tx, db, initiativeID, keepID, domain.EdgeImplements, "requirement", reqIDs); err != nil {
 			return err
 		}
+		// MEDIUM fix: `verifies` edges (task -> a requirement it verifies,
+		// distinct from `implements`) were silently destroyed by a merge --
+		// only EdgeImplements was ever unioned onto keepID, so a generated
+		// verification task merged for tidiness dropped its requirement's
+		// verification coverage entirely. Same union-then-replace shape.
+		verifyIDs, err := taskEdgeTargetsTx(tx, initiativeID, domain.EdgeVerifies, keepID, mergeID)
+		if err != nil {
+			return err
+		}
+		if err := replaceEdgesTx(tx, db, initiativeID, keepID, domain.EdgeVerifies, "requirement", verifyIDs); err != nil {
+			return err
+		}
 
 		// Concatenate the statements.
 		statement := keep.Statement
