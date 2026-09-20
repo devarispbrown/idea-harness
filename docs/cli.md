@@ -16,19 +16,26 @@ if this file has drifted.
 | Command | What it does | Flags | `--json` |
 | --- | --- | --- | --- |
 | `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
-| `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow | `--doc`, `--no-wait` | no |
+| `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately) | `--doc`, `--no-wait`, `--wait` | no |
 | `idea status [<initiative>]` | show initiative + current work | `--json` | yes |
 | `idea changed [<initiative>]` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |
+| `idea questions` | list open/answered questions | `--json` | yes |
+| `idea answer <question> "<answer>" [<initiative>]` | answer an open question | none | takes no flags |
+| `idea resolve <decision> <option#>\|"<resolution>" [<initiative>]` | resolve an open decision, by option number or free text | none | takes no flags |
+| `idea reopen-decision <decision> [<initiative>]` | return a resolved decision to open | none | takes no flags |
+| `idea accept-recommendations` | resolve every open decision with its own recommendation | `--json` | yes |
+| `idea triage` | show the ranked "needs your judgment" view | `--json` | yes |
 | `idea reviews` | list review findings | `--json` | yes |
-| `idea model` | list/set model providers (Gemini, OpenAI, …) | `add --base-url`, `add --key-env`, `add --type`, `list`, `ls`, `set --role` | takes no flags |
+| `idea model [--provider <name>] [--all]` | show the current model + a curated set (Gemini, OpenAI, …) | `--all`, `--provider`, `add --base-url`, `add --key-env`, `add --type`, `list --all`, `list --provider`, `ls`, `set --role` | no |
+| `idea model list [<provider>] [--all]` | list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider | — | — |
 | `idea model ls <provider>` | list a provider's models live (falls back to the catalog offline) | — | — |
 | `idea model set <provider/model>` | set the default model (--role <role> sets one role only) | — | — |
 | `idea model add <name>` | add a provider (--type, --base-url, --key-env) | — | — |
 | `idea prd` | render the reviewed PRD in your terminal | none | takes no flags |
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |
-| `idea advance` | run Design → Execution Plan (M2) | none | takes no flags |
+| `idea advance [--wait]` | run Design → Execution Plan (M2); returns a handle immediately unless --wait | `--wait` | no |
 | `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
 | `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
 | `idea approve-plan` | accept the execution plan as it stands | none | takes no flags |
@@ -39,13 +46,13 @@ if this file has drifted.
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
-| `idea execute [--note <text>]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief) | `--note` | no |
+| `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
 | `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative; --note steers this retry (joins the framing prompt) | `--model`, `--no-wait`, `--note` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
-| `idea apply <id>` | apply an approved change set | none | takes no flags |
-| `idea revert <id>` | roll back a change set | none | takes no flags |
+| `idea apply <id> [--wait]` | apply an approved change set; returns a handle immediately unless --wait | `--wait` | no |
+| `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
 | `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
