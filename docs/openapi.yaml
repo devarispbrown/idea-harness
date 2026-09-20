@@ -3001,7 +3001,18 @@ paths:
                   description: |
                     The wire vocabulary, which is not the CLI's: `idea review <id> approve` sends
                     `approved`. A client that posts `approve` or `reject` gets a 400.
-                  enum: [approved, rejected, changes_requested]
+
+                    `rerun` (ICP re-run defect #1) is not a verdict the ChangeSet state machine
+                    records — the change set stays `review_required` throughout — it runs the
+                    adversarial reviewer again for a change set whose review never completed the
+                    first time (`Execute`'s own review call errored, most often because the
+                    operation was cancelled mid-review). It shares this endpoint because it takes
+                    the identical body shape and belongs in the same "act on this change set's
+                    review" surface, not because it is itself a verdict. `approved` refuses (400)
+                    while a change set's review has not completed, naming `rerun`; once `rerun`
+                    completes it, `approved` proceeds normally and — as below — makes no further
+                    model call.
+                  enum: [approved, rejected, changes_requested, rerun]
                 accept_findings:
                   type: boolean
                   description: |
@@ -3019,7 +3030,8 @@ paths:
                     no deny code: that resolves the gate too (ICP re-run defect #2), the same as if
                     this call had signed it off as `accepted_risk`.
 
-                    Ignored without `approved`.
+                    Ignored without `approved`. A 400 with `rerun`: there is nothing to sign off
+                    before rerun's review has even produced findings.
               required: [verdict]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
@@ -3054,11 +3066,15 @@ paths:
     post:
       tags: [change-sets]
       operationId: applyChangeSet
-      summary: Apply an approved change set to the workspace
+      summary: Apply an approved (or reverted) change set to the workspace
       description: |
         Asynchronous, so the status guard runs here rather than in the background: a change set that
-        is not `approved` is refused with 409 and a message that says what to do instead, rather
-        than reporting "apply started" and failing where only the log would see it.
+        is not `approved` or `reverted` is refused with 409 and a message that says what to do
+        instead, rather than reporting "apply started" and failing where only the log would see it.
+
+        `reverted` (ICP re-run defect #3) is accepted so a reverted change set can be re-applied
+        without a full agent run, subject to the same staleness (`fsdiff.StaleBase`) and
+        secret-sweep guards a fresh `approved` apply runs.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -3071,6 +3087,9 @@ paths:
             `change set CHG-1 is already applied; \`idea revert CHG-1\` rolls it back`,
             `change set CHG-1 is being applied; \`idea changes\` shows when it lands`,
             `change set CHG-1 needs approval first: \`idea review CHG-1 approve\``,
+            `change set CHG-1 never finished its adversarial review: \`idea review CHG-1 rerun\`,
+            then approve` (ICP re-run defect #1: its review never completed, so approve itself
+            would also refuse it),
             `change set CHG-1 was rejected; \`idea reviews\` shows why`, or
             `change set CHG-1 cannot be applied from status <status>`.
           content:
@@ -4464,6 +4483,25 @@ components:
             last 100 lines, escape sequences stripped, known secrets redacted. Omitted for executors
             with no agent output and for change sets made before this field existed.
         created_at: { type: string, format: date-time }
+        no_op:
+          type: boolean
+          description: |
+            True when this change set touched zero files (ICP re-run defect #2): the agent decided
+            the task was already done, or its model call failed and it wrote nothing. Omitted
+            (false) for every ordinary change set. A `no_op` change set may still be approved,
+            applied and reverted like any other, but an applied one never counts as "this task is
+            implemented" — not for task completion, verification-evidence eligibility, staleness
+            propagation, or the "every task has an applied change set" guidance.
+        review_completed_at:
+          type: string
+          format: date-time
+          description: |
+            Set the one time the adversarial reviewer actually finishes for this change set
+            (ICP re-run defect #1), never merely attempted. Omitted while `status` is
+            `review_required` and the review never completed — most often because the operation
+            was cancelled mid-review — in which case the change set carries only mechanical-check
+            observations (build/tests/patch-applies/workspace-copy), `approved` refuses it, and
+            `POST .../review {"verdict":"rerun"}` is the way forward.
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
     PRChecksResult:

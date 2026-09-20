@@ -465,7 +465,20 @@ var credentialCatalog = []credentialPattern{
 	// separator, and "ACCESS_KEY" -- not one of those words -- comes between
 	// "SECRET" and "=" in AWS_SECRET_ACCESS_KEY. AWS secret keys are 40
 	// base64-ish characters; 30+ tolerates a truncated/rotated example.
-	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key", valid: validFlatTokenValue},
+	//
+	// ICP re-run defect #4: the ["']? right after the keyword (mirroring the
+	// generic assignment pattern below) was missing here, so a JSON key --
+	// "aws_secret_access_key": "<40-char value>" -- never matched: \s*[:=]
+	// requires whitespace only immediately after the keyword, and JSON's
+	// closing quote on the KEY sits right there instead. A real founder-
+	// journey run had exactly this shape in config/deploy.json: the
+	// aws_access_key_id line on the line above fired (its own pattern
+	// matches the VALUE's AKIA... shape, not a key name, so JSON quoting
+	// never mattered to it), and the aws_secret_access_key line next to it
+	// produced no finding at all. Shell/env (`AWS_SECRET_ACCESS_KEY=...`) and
+	// YAML (`aws_secret_access_key: ...`) syntax have no quote there and are
+	// unaffected; this only widens what already matched.
+	{re: regexp.MustCompile(`(?i)\bAWS_SECRET_ACCESS_KEY["']?\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})["']?`), kind: "AWS secret access key", valid: validFlatTokenValue},
 	// Generic credential assignment in text/JSON/shell/URLs (review M3, H5):
 	// {"password": "..."}, DB_PASSWORD=..., client_secret: ..., pwd = "...",
 	// SECRET_KEY = "...", and similar.

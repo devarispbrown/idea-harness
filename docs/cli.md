@@ -44,11 +44,11 @@ if this file has drifted.
 | `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative; --note steers this retry (joins the framing prompt) | `--model`, `--no-wait`, `--note` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
-| `idea apply <id>` | apply an approved change set | none | takes no flags |
+| `idea apply <id>` | apply an approved (or reverted) change set | none | takes no flags |
 | `idea revert <id>` | roll back a change set | none | takes no flags |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
-| `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
+| `idea review <id> <verdict>` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review) | `--accept-findings` | no |
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |

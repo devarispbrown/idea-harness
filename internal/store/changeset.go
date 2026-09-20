@@ -13,13 +13,24 @@ import (
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.
-const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at`
+const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, review_completed_at, no_op`
 
 // scanChangeSet scans one change_sets row into cs. createdMS receives the raw
-// unix-ms timestamp so the caller can convert it.
-func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64) error {
+// unix-ms timestamp so the caller can convert it; reviewCompletedMS receives
+// the nullable review_completed_at column (migration 33).
+func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64, reviewCompletedMS *sql.NullInt64) error {
 	return row.Scan(&cs.ID, &cs.HumanID, &cs.InitiativeID, &cs.TaskID, &cs.BaseSnapshotID,
-		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS)
+		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS, reviewCompletedMS, &cs.NoOp)
+}
+
+// applyReviewCompletedAt converts the nullable review_completed_at scan
+// target into cs.ReviewCompletedAt.
+func applyReviewCompletedAt(cs *domain.ChangeSet, v sql.NullInt64) {
+	if !v.Valid {
+		return
+	}
+	t := time.UnixMilli(v.Int64)
+	cs.ReviewCompletedAt = &t
 }
 
 // CreateChangeSet inserts a change set, assigning its HumanID "CHG-N" from the
@@ -35,6 +46,11 @@ func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
 	// draft, so a caller can never persist a change set that has already skipped
 	// checks/review (§4.5, §6.3).
 	cs.Status = domain.ChangeSetDraft
+	// A change set's review never completes at creation time (ICP re-run
+	// defect #1): whatever the caller set is discarded, exactly like Status
+	// above, so a caller can never persist a change set that already claims a
+	// review that has not run.
+	cs.ReviewCompletedAt = nil
 	return db.Apply(ctx, Event{
 		AggregateType: "change_set",
 		AggregateID:   cs.ID,
@@ -50,10 +66,10 @@ func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
 		}
 		_, err := tx.Exec(`
 			INSERT INTO change_sets
-				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, no_op)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			cs.ID, cs.HumanID, cs.InitiativeID, cs.TaskID, cs.BaseSnapshotID, cs.Status,
-			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.Model, cs.Executor, cs.AgentOutput, cs.GitCommitWarning, cs.CreatedAt.UnixMilli())
+			cs.PatchDigest, cs.ReviewID, cs.GitCommitSHA, cs.CreatedByRunID, cs.Model, cs.Executor, cs.AgentOutput, cs.GitCommitWarning, cs.CreatedAt.UnixMilli(), cs.NoOp)
 		return err
 	})
 }
@@ -80,11 +96,23 @@ func legalChangeSetTransition(from, to domain.ChangeSetStatus) bool {
 	case domain.ChangeSetApplying:
 		// applying→approved recovers a crash window where the pre-image was
 		// captured but no byte was written (review: full-platform apply atomicity).
-		return to == domain.ChangeSetApplied || to == domain.ChangeSetConflicted || to == domain.ChangeSetApproved
+		// applying→reverted is the same recovery, for a re-apply of a reverted
+		// change set (ICP re-run defect #3): nothing was written, so it is
+		// still exactly as reverted as it was before the re-apply attempt.
+		return to == domain.ChangeSetApplied || to == domain.ChangeSetConflicted || to == domain.ChangeSetApproved || to == domain.ChangeSetReverted
 	case domain.ChangeSetApplied:
 		// A change set that has been applied may be rolled back; this is the
 		// only way an applied change set leaves the applied state.
 		return to == domain.ChangeSetReverted
+	case domain.ChangeSetReverted:
+		// ICP re-run defect #3: a reverted change set could never be applied
+		// again ("cannot be applied from status reverted"), so recovering
+		// from a revert always cost a full agent run even when the reverted
+		// content was still exactly what was wanted. Re-apply runs through
+		// the same ApplyChangeSet path (and its staleness/secret-sweep
+		// guards) as a fresh approved change set; only the starting state
+		// differs.
+		return to == domain.ChangeSetApplying
 	case domain.ChangeSetConflicted:
 		// A conflicted change set (apply/commit failed and the pre-image was
 		// restored) resolves either by resetting to approved so a retry re-runs
@@ -128,18 +156,26 @@ func (db *DB) TransitionChangeSet(ctx context.Context, changeSetID string, from,
 	})
 }
 
-// SetChangeSetReview records the review id for a change set.
+// SetChangeSetReview records the review id for a change set AND stamps
+// review_completed_at (ICP re-run defect #1). This is the ONLY place a
+// completed adversarial review is ever recorded — called once from Execute
+// after runChangeSetAdversarialReview succeeds, and again from
+// RerunChangeSetReview when a human explicitly retries a review that never
+// completed the first time. If the caller's review attempt itself errors,
+// this must never be called, so the change set correctly keeps
+// ReviewCompletedAt nil (unreviewed).
 func (db *DB) SetChangeSetReview(ctx context.Context, changeSetID, reviewID, actor string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
 	}
+	now := time.Now().UTC()
 	return db.Apply(ctx, Event{
 		AggregateType: "change_set",
 		AggregateID:   changeSetID,
 		Actor:         actor,
 		EventType:     "change_set.review_set",
 	}, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE change_sets SET review_id = ? WHERE id = ?`, reviewID, changeSetID)
+		res, err := tx.Exec(`UPDATE change_sets SET review_id = ?, review_completed_at = ? WHERE id = ?`, reviewID, now.UnixMilli(), changeSetID)
 		if err != nil {
 			return err
 		}
@@ -253,10 +289,12 @@ func (db *DB) MarkChangeSetReverted(ctx context.Context, changeSetID, actor stri
 func (db *DB) GetChangeSet(ctx context.Context, changeSetID string) (*domain.ChangeSet, error) {
 	var cs domain.ChangeSet
 	var created int64
-	if err := scanChangeSet(db.SQL().QueryRowContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE id = ?`, changeSetID), &cs, &created); err != nil {
+	var reviewCompleted sql.NullInt64
+	if err := scanChangeSet(db.SQL().QueryRowContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE id = ?`, changeSetID), &cs, &created, &reviewCompleted); err != nil {
 		return nil, notFoundIfNoRows(err, "change set", changeSetID)
 	}
 	cs.CreatedAt = time.UnixMilli(created)
+	applyReviewCompletedAt(&cs, reviewCompleted)
 	return &cs, nil
 }
 
@@ -280,10 +318,12 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 	for rows.Next() {
 		var cs domain.ChangeSet
 		var created int64
-		if err := scanChangeSet(rows, &cs, &created); err != nil {
+		var reviewCompleted sql.NullInt64
+		if err := scanChangeSet(rows, &cs, &created, &reviewCompleted); err != nil {
 			return nil, err
 		}
 		cs.CreatedAt = time.UnixMilli(created)
+		applyReviewCompletedAt(&cs, reviewCompleted)
 		found = &cs
 		all = append(all, cs)
 		count++
@@ -343,10 +383,12 @@ func (db *DB) ListChangeSetsByTask(ctx context.Context, taskID string) ([]domain
 	for rows.Next() {
 		var cs domain.ChangeSet
 		var created int64
-		if err := scanChangeSet(rows, &cs, &created); err != nil {
+		var reviewCompleted sql.NullInt64
+		if err := scanChangeSet(rows, &cs, &created, &reviewCompleted); err != nil {
 			return nil, err
 		}
 		cs.CreatedAt = time.UnixMilli(created)
+		applyReviewCompletedAt(&cs, reviewCompleted)
 		out = append(out, cs)
 	}
 	return out, rows.Err()
@@ -363,10 +405,12 @@ func (db *DB) ListChangeSets(ctx context.Context, initiativeID string) ([]domain
 	for rows.Next() {
 		var cs domain.ChangeSet
 		var created int64
-		if err := scanChangeSet(rows, &cs, &created); err != nil {
+		var reviewCompleted sql.NullInt64
+		if err := scanChangeSet(rows, &cs, &created, &reviewCompleted); err != nil {
 			return nil, err
 		}
 		cs.CreatedAt = time.UnixMilli(created)
+		applyReviewCompletedAt(&cs, reviewCompleted)
 		out = append(out, cs)
 	}
 	return out, rows.Err()
