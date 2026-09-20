@@ -65,7 +65,12 @@ and a `secret_key`/`secret_value`-style suffix (`SECRET_KEY = "..."`) — none o
 matched an earlier version of this rule. A separate pattern matches URL userinfo credentials
 (`scheme://user:PASSWORD@host`, e.g. `postgres://admin:hunter2345@db`). A dedicated rule covers
 `AWS_SECRET_ACCESS_KEY=...` separately, since `ACCESS_KEY` (not one of the generic rule's keywords)
-sits between `SECRET` and the separator.
+sits between `SECRET` and the separator. Like the generic rule, it accepts an optional `["']?`
+right after the keyword (ICP re-run defect #4: without it, a JSON key's own closing quote —
+`"aws_secret_access_key": "..."` — sat exactly where the pattern required `\s*[:=]` alone, so a
+real founder-journey run's `config/deploy.json` produced no finding at all for the secret key,
+while the `aws_access_key_id` line right above it fired, because that pattern matches the value's
+own `AKIA…` shape rather than the key name).
 
 The value itself must look like a literal, not an identifier, a member-access expression, or a
 function call. A quoted value counts (almost anything 8+ characters, so long as it does not start

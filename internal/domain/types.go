@@ -517,6 +517,44 @@ type ChangeSet struct {
 	// that produced this change set: redacted, sanitized, at most 100 lines.
 	AgentOutput string    `json:"agent_output,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+	// NoOp is true when the change set touched zero files (fsdiff.Diff found
+	// nothing to persist) — the agent decided the task was already done, or
+	// its model call failed and it wrote nothing (ICP re-run defect #2). An
+	// applied NoOp change set must never count as "this task is implemented"
+	// anywhere: task completion, evidence eligibility, staleness propagation,
+	// or the "every task has an applied change set" guidance — see
+	// ImplementsTask. It can still be approved/applied/reverted like any
+	// other change set; only what it is COUNTED as changes.
+	NoOp bool `json:"no_op,omitempty"`
+	// ReviewCompletedAt is set the one time the adversarial reviewer actually
+	// finishes for this change set (store.SetChangeSetReview), never merely
+	// attempted (ICP re-run defect #1). A change set can reach
+	// review_required with this nil when Execute's call to the reviewer
+	// itself errored (e.g. the operation was cancelled mid-review) after the
+	// checks-running -> review_required transition already happened: it then
+	// carries only mechanical-check observations, no adversarial findings,
+	// and reviewChangeSet's "approved" verdict must refuse it rather than
+	// let it through as if a real review had converged.
+	ReviewCompletedAt *time.Time `json:"review_completed_at,omitempty"`
+}
+
+// ReviewCompleted reports whether the adversarial reviewer actually finished
+// for this change set at least once (ICP re-run defect #1). False for a
+// change set still in review_required after Execute's own review call
+// errored (e.g. cancelled mid-review) — it holds only mechanical-check
+// observations, never a real adversarial pass.
+func (cs ChangeSet) ReviewCompleted() bool {
+	return cs.ReviewCompletedAt != nil
+}
+
+// ImplementsTask reports whether this change set is applied AND actually
+// changed something. An applied change set with zero file changes (NoOp)
+// must never count as "the task is implemented" (ICP re-run defect #2): not
+// for task completion, not for verification-evidence eligibility, not for
+// staleness propagation, and not for "every task has an applied change set"
+// guidance.
+func (cs ChangeSet) ImplementsTask() bool {
+	return cs.Status == ChangeSetApplied && !cs.NoOp
 }
 
 // ApplyJournalEntry is one durable apply-journal record (§39).

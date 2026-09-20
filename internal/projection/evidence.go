@@ -362,7 +362,10 @@ func eligibleChangeSets(changeSets []domain.ChangeSet) map[string]bool {
 	}
 	out := map[string]bool{}
 	for _, l := range byTask {
-		if l.cs.Status == domain.ChangeSetApplied {
+		// A NoOp change set (zero file changes) is applied but changed
+		// nothing (ICP re-run defect #2): it has produced no real evidence to
+		// resurrect, and must not be eligible any more than a reverted one.
+		if l.cs.ImplementsTask() {
 			out[l.cs.ID] = true
 		}
 	}

@@ -699,6 +699,18 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding, recentCha
 		// it fell straight through to "run the next task" while CHG-n sat
 		// waiting for its own approval.
 		if cs, ok := latestChangeSetWithStatus(recentChangeSets, domain.ChangeSetReviewRequired); ok {
+			// ICP re-run defect #1: a change set whose adversarial review
+			// never completed (Execute's own review call errored, most often
+			// cancelled mid-review) is not simply "awaiting your review" --
+			// there is no review to approve yet, and approve refuses it,
+			// naming the same rerun. Name the situation here too, rather
+			// than pointing at a command that will just fail.
+			if !cs.ReviewCompleted() {
+				return Guidance{Action: "Rerun the review for " + cs.HumanID, Why: fmt.Sprintf(
+					"%s never finished its adversarial review (likely cancelled mid-review), so it has no findings to approve yet. "+
+						"`idea review %s rerun` runs it.", cs.HumanID, cs.HumanID),
+					Affected: []string{"Execution Plan", cs.HumanID}}
+			}
 			return Guidance{Action: "Review " + cs.HumanID, Why: fmt.Sprintf(
 				"%s is awaiting your review before it can be applied. `idea reviews` shows its findings; "+
 					"`idea review %s approve` approves it.", cs.HumanID, cs.HumanID),
