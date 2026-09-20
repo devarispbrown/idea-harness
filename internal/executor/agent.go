@@ -461,8 +461,36 @@ func (e *SandboxedAgentExecutor) tailLogs(ctx context.Context, id string, n int)
 	if !ok {
 		return ""
 	}
-	out, _ := exec.CommandContext(ctx, e.dockerPath, "logs", "--tail", fmt.Sprint(n), a.containerID).CombinedOutput()
-	return strings.TrimSpace(sanitizeAgentLog(scrubAgentLog(string(out))))
+	raw := n * tailRawMultiplier
+	out, _ := exec.CommandContext(ctx, e.dockerPath, "logs", "--tail", fmt.Sprint(raw), a.containerID).CombinedOutput()
+	scrubbed := lastNLines(scrubAgentLog(string(out)), n)
+	return strings.TrimSpace(sanitizeAgentLog(scrubbed))
+}
+
+// tailRawMultiplier is how many raw `docker logs --tail` lines tailLogs asks
+// for per line of scrubbed output it needs to guarantee (review defect F): a
+// real run's container log was dense enough with blank lines and per-start
+// skill-sync noise (scrubAgentLog) that `docker logs --tail 100` left only
+// about 70 lines after scrubbing -- silently short of what
+// liveOutputLines/agentOutputLines document and callers ask for. Requesting
+// several times the raw lines before scrubbing, then trimming to exactly n
+// scrubbed lines (lastNLines below), keeps the promised count whenever the
+// container actually wrote that much. It is generous rather than exact
+// because the noise ratio varies by agent and image; `docker logs --tail`
+// asking for more lines than the container has ever written is itself
+// harmless (docker just returns everything).
+const tailRawMultiplier = 4
+
+// lastNLines returns s's last n lines, or all of s when it has n or fewer.
+func lastNLines(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 // maxAgentLogBytes caps what an error or finding carries from the agent. Forty
@@ -497,7 +525,8 @@ var ansiEscape = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\
 // enough for the provider's error and the lines around it.
 const agentOutputLines = 40
 
-// OutputTail implements OutputTailer.
+// OutputTail implements OutputTailer. See tailLogs and tailRawMultiplier for
+// how this actually delivers the requested line count (review defect F).
 func (e *SandboxedAgentExecutor) OutputTail(ctx context.Context, id string, lines int) string {
 	if lines <= 0 {
 		lines = agentOutputLines

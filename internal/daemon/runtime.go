@@ -1744,7 +1744,7 @@ func (r *Runtime) confirmPassingTests(ctx context.Context, pr *projectRuntime, i
 		}
 		return result, nil
 	}
-	evidence, err := projection.ComputeEvidenceTests(ctx, pr.db, pr.blobs, initiativeID)
+	evidence, err := projection.ComputeEvidenceTests(ctx, pr.db, pr.blobs, pr.rawBlobs, initiativeID)
 	if err != nil {
 		return result, err
 	}

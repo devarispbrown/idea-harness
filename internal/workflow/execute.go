@@ -468,6 +468,16 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		completed = cerr == nil || errors.Is(cerr, executor.ErrUnknownAttempt)
 		if completed {
 			e.capturePartial(ctx, initiativeID, task.ID, req.WorkRoot, before)
+		} else {
+			// review defect F: without this, a Stop whose cleanup could not
+			// confirm the container was gone left NO log line at all -- not
+			// even a warning -- making "did it try to keep my files" as
+			// unanswerable from the log as capturePartial's own "nothing to
+			// keep" case (fixed in capturePartial itself). cerr is the real
+			// reason nothing was attempted: the container may still be
+			// running and writing, so it would be unsafe to snapshot it.
+			e.log.Warn("stopped run: could not confirm the agent's container is gone; its files were not kept",
+				"initiative", initiativeID, "task", task.ID, "err", cerr)
 		}
 		return domain.ChangeSet{}, err
 	}
@@ -2041,8 +2051,21 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 	// adopted #2) is NOT a commit failure: the change set still applies, and
 	// the reason is recorded as a warning instead (below), never a half-applied
 	// change set.
+	//
+	// git.branch_per_initiative IMPLIES committing (review defect D): it is
+	// documented as opting into "creating and checking out idea/<slug> …, then
+	// committing each of its change sets there" (GitConfig.BranchPerInitiative's
+	// own doc comment), but nothing ever created that commit unless git_commit
+	// was ALSO set -- a config combination the setting's own name never
+	// suggested was necessary, and `idea pr`'s own error told a user to
+	// "enable git.branch_per_initiative and apply a change set first" with no
+	// mention that git_commit was a second, separate requirement. A real run
+	// set only branch_per_initiative, applied change sets that silently never
+	// committed anything, and `idea pr` refused with no dedicated branch ever
+	// having been created. Rather than fix the error message to describe two
+	// flags, the semantics are made to match the one flag's own promise.
 	var commitSHA, commitWarning string
-	if e.cfg.GitCommit {
+	if e.cfg.GitCommit || e.cfg.Git.BranchPerInitiative {
 		sha, warning, err := e.commitChangeSet(ctx, cs, patch)
 		if err != nil {
 			_ = fsdiff.Restore(workspaceRoot, preImage, e.contentBlobs().Get)
@@ -2127,7 +2150,17 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		if iniErr != nil {
 			return "", "not committed: could not look up the initiative's branch: " + iniErr.Error(), nil
 		}
-		branch, reason, warning, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths)
+		// catchUpPaths (review defect D): files this same initiative's own
+		// earlier applied change sets touched but never got committed --
+		// typically because git_commit was off for those applies and turned
+		// on later. EnsureInitiativeBranch commits exactly these onto the
+		// initiative's branch rather than refusing forever over the
+		// harness's own prior writes.
+		catchUpPaths, catchUpErr := e.uncommittedAppliedPaths(ctx, cs.InitiativeID, cs.ID)
+		if catchUpErr != nil {
+			return "", "not committed: could not look up earlier applied change sets: " + catchUpErr.Error(), nil
+		}
+		branch, reason, warning, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths, catchUpPaths)
 		if brErr != nil {
 			return "", "not committed: could not switch to the initiative's branch: " + brErr.Error(), nil
 		}
@@ -2168,6 +2201,42 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 	message := fmt.Sprintf("%s: %s", cs.HumanID, sanitizeCommitTitle(title))
 	sha, err = git.Commit(ctx, e.workspaceRoot, paths, message)
 	return sha, branchWarning, err
+}
+
+// uncommittedAppliedPaths returns the de-duplicated file paths touched by
+// initiativeID's own OTHER applied change sets that have never been
+// committed (GitCommitSHA == ""), excluding excludeChangeSetID (the one
+// commitChangeSet is about to commit itself). This is exactly the set of
+// files a real run left sitting uncommitted in the workspace because
+// git_commit was off for those earlier applies (review defect D) --
+// EnsureInitiativeBranch treats a dirty path in this set as safe to catch up
+// onto the initiative's branch, rather than refusing forever over the
+// harness's own prior writes. Best-effort: an earlier change set whose patch
+// can no longer be read contributes nothing rather than failing this apply.
+func (e *Engine) uncommittedAppliedPaths(ctx context.Context, initiativeID, excludeChangeSetID string) ([]string, error) {
+	changeSets, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, cs := range changeSets {
+		if cs.ID == excludeChangeSetID || cs.Status != domain.ChangeSetApplied || cs.GitCommitSHA != "" {
+			continue
+		}
+		patch, err := e.loadPatch(&cs)
+		if err != nil || patch == nil {
+			continue // best-effort: an unreadable earlier patch contributes nothing to catch up
+		}
+		for _, fc := range patch.Files {
+			if seen[fc.Path] {
+				continue
+			}
+			seen[fc.Path] = true
+			paths = append(paths, fc.Path)
+		}
+	}
+	return paths, nil
 }
 
 // sanitizeCommitTitle collapses newlines and strips leading dashes from a task
@@ -2430,6 +2499,32 @@ func (e *Engine) RevertBlockedReason(ctx context.Context, initiativeID, changeSe
 var ErrNoInitiativeBranch = errors.New("workflow: this initiative has no dedicated branch yet; " +
 	"enable git.branch_per_initiative and apply a change set first")
 
+// mostRecentGitCommitWarning returns the most recent non-empty
+// GitCommitWarning among initiativeID's change sets, "" when none exists
+// (either no change sets yet, or every commit that was attempted succeeded).
+// Best-effort: a lookup failure yields "" rather than failing CreatePR over a
+// nicer error message.
+func (e *Engine) mostRecentGitCommitWarning(ctx context.Context, initiativeID string) string {
+	changeSets, err := e.db.ListChangeSets(ctx, initiativeID)
+	if err != nil {
+		return ""
+	}
+	var latest *domain.ChangeSet
+	for i := range changeSets {
+		cs := &changeSets[i]
+		if cs.GitCommitWarning == "" {
+			continue
+		}
+		if latest == nil || cs.CreatedAt.After(latest.CreatedAt) {
+			latest = cs
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	return latest.GitCommitWarning
+}
+
 // CreatePR pushes an initiative's dedicated branch and opens a pull request
 // via `gh pr create` (review C4 piece 3), with a body built from the
 // initiative's title, description, change sets and verification progress.
@@ -2447,6 +2542,21 @@ func (e *Engine) CreatePR(ctx context.Context, initiativeID string) (string, err
 		return ini.PRURL, nil
 	}
 	if ini.GitBranch == "" {
+		// review defect D: the generic message ("enable git.branch_per_initiative
+		// and apply a change set first") is right when branch_per_initiative was
+		// simply never turned on -- the case e.cfg.Git.BranchPerInitiative being
+		// false covers below, unconditionally. But when it WAS on and every
+		// apply's own commit attempt was refused for a specific, already-
+		// recorded reason (a guard refusal, an unrelated dirty file that wasn't
+		// caught up), that reason is on the change set as GitCommitWarning, and
+		// `idea pr`'s error should say it instead of repeating advice the user
+		// already followed.
+		if e.cfg.Git.BranchPerInitiative {
+			if reason := e.mostRecentGitCommitWarning(ctx, initiativeID); reason != "" {
+				return "", fmt.Errorf("%w (the last apply's own commit was skipped: %s; resolve that and re-apply a change set)",
+					ErrNoInitiativeBranch, reason)
+			}
+		}
 		return "", ErrNoInitiativeBranch
 	}
 	if e.workspaceRoot == "" {

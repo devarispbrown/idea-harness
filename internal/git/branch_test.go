@@ -34,7 +34,7 @@ func TestSlugifyTruncatesWithoutATrailingDash(t *testing.T) {
 func TestEnsureInitiativeBranchCreatesAndReuses(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestEnsureInitiativeBranchCreatesAndReuses(t *testing.T) {
 
 	// A prior apply's branch is reused verbatim, from any starting branch.
 	gitOut(t, repo, "checkout", "-q", "main")
-	again, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, branch, "Add rate limiting", nil)
+	again, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, branch, "Add rate limiting", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestEnsureInitiativeBranchAvoidsACollidingName(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	gitOut(t, repo, "branch", "idea/add-rate-limiting")
 
-	branch, _, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, _, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFiles(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "unrelated.txt", "an edit the agent never touched")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestEnsureInitiativeBranchAllowsTheChangeSetsOwnDirtyFiles(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "server.js", "app.get('/health', ok)")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +111,103 @@ func TestEnsureInitiativeBranchAllowsTheChangeSetsOwnDirtyFiles(t *testing.T) {
 	}
 	if branch == "" {
 		t.Fatal("want a branch, got none")
+	}
+}
+
+// TestEnsureInitiativeBranchNeverBlockedByIdeaHarnessDir reproduces the ICP
+// re-run's own defect D: `idea init` leaves .idea-harness/ (harness.yaml,
+// project.yaml, roles/*.yaml) untracked, and a founder-journey run turned on
+// git.branch_per_initiative before ever committing it -- the branch switch
+// refused forever, naming files that are the harness's own control-plane
+// config, not anything the change set's reviewer or a PR would ever need to
+// see moved between branches.
+func TestEnsureInitiativeBranchNeverBlockedByIdeaHarnessDir(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	if err := os.MkdirAll(filepath.Join(repo, ".idea-harness", "roles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, filepath.Join(".idea-harness", "harness.yaml"), "git_commit: true\n")
+	writeFile(t, repo, filepath.Join(".idea-harness", "roles", "architect.yaml"), "name: architect\n")
+
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want none: an untracked .idea-harness/ must never block the branch switch", reason)
+	}
+	if branch == "" {
+		t.Fatal("want a branch, got none")
+	}
+}
+
+// TestEnsureInitiativeBranchCatchesUpEarlierAppliedFiles reproduces the other
+// half of defect D: files from this SAME initiative's earlier applied change
+// sets, left uncommitted because git_commit was off at the time, must be
+// caught up onto the initiative's branch rather than refusing it forever.
+func TestEnsureInitiativeBranchCatchesUpEarlierAppliedFiles(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	writeFile(t, repo, "auth.go", "package main // from an earlier applied change set")
+	writeFile(t, repo, "server.js", "app.get('/health', ok)") // this change set's own file
+
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
+		[]string{"server.js"}, []string{"auth.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want none: auth.go is named in catchUpPaths", reason)
+	}
+	if branch == "" {
+		t.Fatal("want a branch, got none")
+	}
+	// auth.go must have been committed (caught up), on the new branch, as its
+	// own commit -- separate from server.js, which the caller still commits
+	// itself afterward and is deliberately left uncommitted here.
+	log := gitOut(t, repo, "log", "--name-only", "--pretty=format:%s")
+	if !strings.Contains(log, "catch up") || !strings.Contains(log, "auth.go") {
+		t.Fatalf("git log = %q, want a catch-up commit naming auth.go", log)
+	}
+	status := gitOut(t, repo, "status", "--porcelain")
+	if strings.Contains(status, "auth.go") {
+		t.Fatalf("status = %q, auth.go should have been committed by the catch-up", status)
+	}
+	if !strings.Contains(status, "server.js") {
+		t.Fatalf("status = %q, server.js (this change set's own file) should still be uncommitted", status)
+	}
+}
+
+// TestEnsureInitiativeBranchStillRefusesFilesNotInCatchUp pins the other side
+// of the catch-up fix: a dirty path that is NOT one of this initiative's own
+// earlier applied files (a genuine, unrelated in-progress edit) must still
+// refuse the branch switch, and the refusal must name only that file -- never
+// the ones catchUpPaths already explains.
+func TestEnsureInitiativeBranchStillRefusesFilesNotInCatchUp(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	writeFile(t, repo, "auth.go", "package main // from an earlier applied change set")
+	writeFile(t, repo, "unrelated.txt", "someone's mid-edit")
+
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
+		[]string{"server.js"}, []string{"auth.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "" {
+		t.Fatalf("branch = %q, want none: unrelated.txt is not explained by keepPaths or catchUpPaths", branch)
+	}
+	if !strings.Contains(reason, "unrelated.txt") {
+		t.Errorf("reason %q does not name the genuinely unexplained file", reason)
+	}
+	if strings.Contains(reason, "auth.go") {
+		t.Errorf("reason %q should not name auth.go: catchUpPaths already explains it", reason)
+	}
+	// Refusing must leave the tree untouched: no catch-up commit either.
+	if got := gitOut(t, repo, "symbolic-ref", "--short", "HEAD"); got != "main" {
+		t.Fatalf("HEAD moved to %q despite the refusal", got)
+	}
+	status := gitOut(t, repo, "status", "--porcelain")
+	if !strings.Contains(status, "auth.go") {
+		t.Fatalf("status = %q, auth.go should still be uncommitted: the whole switch was refused", status)
 	}
 }
 
@@ -128,7 +225,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFilesInNestedDir(t *testing.
 	}
 	writeFile(t, repo, filepath.Join("src", "new", "unrelated.go"), "package new")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +247,7 @@ func TestEnsureInitiativeBranchAllowsANestedFileInScope(t *testing.T) {
 	}
 	writeFile(t, repo, filepath.Join("src", "new", "a.go"), "package new")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"src/new/a.go"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"src/new/a.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +268,7 @@ func TestEnsureInitiativeBranchRefusesUnrelatedDirtyFileWithSpaces(t *testing.T)
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "my new file.txt", "an edit the agent never touched")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"server.js"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +287,7 @@ func TestEnsureInitiativeBranchAllowsAPathWithSpacesInScope(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
 	writeFile(t, repo, "my new file.txt", "the change set's own content")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"my new file.txt"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", []string{"my new file.txt"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +309,7 @@ func TestEnsureInitiativeBranchSwitchAppliesDirtyCheckToo(t *testing.T) {
 	gitOut(t, repo, "branch", "idea/add-rate-limiting")
 	writeFile(t, repo, "unrelated.txt", "a mid-edit the agent never touched")
 
-	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "idea/add-rate-limiting", "Add rate limiting", []string{"server.js"})
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "idea/add-rate-limiting", "Add rate limiting", []string{"server.js"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +352,7 @@ func TestEnsureInitiativeBranchFromUnrelatedHEADWarnsRatherThanSwitch(t *testing
 		t.Fatal("setup: idea/other-initiative should be ahead of main")
 	}
 
-	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +394,7 @@ func TestEnsureInitiativeBranchPrefersLocalDefaultOverStaleOriginHEAD(t *testing
 		t.Fatal("setup: local main should be ahead of the simulated origin/main")
 	}
 
-	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil)
+	branch, reason, warning, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

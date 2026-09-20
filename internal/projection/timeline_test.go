@@ -380,6 +380,50 @@ func TestBuildTimelineDecisionAndRunFailed(t *testing.T) {
 	}
 }
 
+// TestBuildTimelineRunStoppedSaysStoppedByYou reproduces the ICP re-run's own
+// defect F: a user-initiated Stop recorded the operation's raw unwound error
+// ("context canceled") as the timeline entry's detail, which read as
+// "Execute initiative — context canceled" -- indistinguishable from a genuine
+// crash. run_stopped (as opposed to run_failed) is exactly the signal that
+// this was the user's own action, and the rendered detail must say so plainly
+// instead of repeating the underlying context error.
+func TestBuildTimelineRunStoppedSaysStoppedByYou(t *testing.T) {
+	db := openProjTestDB(t)
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "i", Description: "i"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	opID, err := db.CreateOperation(ctx, "proj", ini.ID, "execute_initiative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOperationFailed(ctx, opID, domain.OperationCancelled, "context canceled"); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := BuildTimeline(ctx, db, ini.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, e := range entries {
+		if e.Kind != "run_stopped" {
+			continue
+		}
+		saw = true
+		if e.Detail != "Stopped by you" {
+			t.Errorf("run_stopped detail = %q, want %q (never the raw context error)", e.Detail, "Stopped by you")
+		}
+		if e.Title != "Execute initiative" {
+			t.Errorf("run_stopped title = %q, want %q", e.Title, "Execute initiative")
+		}
+	}
+	if !saw {
+		t.Fatal("missing the run_stopped entry")
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

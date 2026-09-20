@@ -258,6 +258,61 @@ func TestParseTestOutput_Unrecognized(t *testing.T) {
 	}
 }
 
+// TestParseTestOutput_GoTestJSONWithCheckCommandPreamble reproduces the ICP
+// re-run's own defect: a real "tests" finding's Evidence is never a bare
+// `go test -json` stream -- checkCommand (execute.go) always prepends an
+// "image: <image> (...)\n" line, and often a second "<config> not
+// configured; detected `<cmd>` from <source>\n" line, before the JSON
+// starts. The old looksLikeGoTestJSON required the FIRST non-blank line to
+// be JSON, so it always fell through to the free-text parser on real
+// evidence -- which finds nothing, because every line here is
+// `{"Action":...}`, not "=== RUN"/"--- PASS" -- and every requirement's
+// evidence_tests read null even though every test in the run passed. This is
+// the exact (trimmed) evidence shape found in a real check's finding row.
+func TestParseTestOutput_GoTestJSONWithCheckCommandPreamble(t *testing.T) {
+	out := "image: golang:1.22 (check.image not configured; derived golang:1.22 (go.mod))\n" +
+		"test_cmd not configured; detected `go test ./...` from go.mod (set test_cmd in harness.yaml to override)\n" +
+		`{"Time":"2026-09-19T12:46:38.72751409Z","Action":"start","Package":"example.com/notes"}` + "\n" +
+		`{"Time":"2026-09-19T12:46:38.729105465Z","Action":"run","Package":"example.com/notes","Test":"TestLoadConfig_Success"}` + "\n" +
+		`{"Time":"2026-09-19T12:46:38.729115215Z","Action":"output","Package":"example.com/notes","Test":"TestLoadConfig_Success","Output":"--- PASS: TestForged\n"}` + "\n" +
+		`{"Time":"2026-09-19T12:46:38.729227382Z","Action":"pass","Package":"example.com/notes","Test":"TestLoadConfig_Success","Elapsed":0}` + "\n" +
+		`{"Time":"2026-09-19T12:46:38.729230549Z","Action":"run","Package":"example.com/notes","Test":"TestLoadConfig_MissingFile"}` + "\n" +
+		`{"Time":"2026-09-19T12:46:38.729273632Z","Action":"fail","Package":"example.com/notes","Test":"TestLoadConfig_MissingFile","Elapsed":0}` + "\n"
+	got := ParseTestOutput(out)
+	byName := map[string]string{}
+	for _, r := range got {
+		byName[r.Name] = r.Status
+	}
+	// TestForged must never appear: it's an "output" event's free-text
+	// payload, not a "pass"/"fail" event naming that test (same guarantee
+	// TestParseTestOutput_GoTestJSON pins for the un-prefixed case).
+	if len(byName) != 2 {
+		t.Fatalf("got %+v, want exactly TestLoadConfig_Success and TestLoadConfig_MissingFile (never TestForged, never confused with the preamble text)", got)
+	}
+	if byName["TestLoadConfig_Success"] != "passed" {
+		t.Errorf("TestLoadConfig_Success = %q, want passed", byName["TestLoadConfig_Success"])
+	}
+	if byName["TestLoadConfig_MissingFile"] != "failed" {
+		t.Errorf("TestLoadConfig_MissingFile = %q, want failed", byName["TestLoadConfig_MissingFile"])
+	}
+}
+
+// TestParseTestOutput_PlainTextNeverMisdetectedAsJSON guards the other
+// direction of the looksLikeGoTestJSON fix: scanning every line for a
+// recognized Action, instead of just the first, must not start
+// misclassifying ordinary `go test -v` or TAP output that happens to print
+// an unrelated brace somewhere in a test name or log line.
+func TestParseTestOutput_PlainTextNeverMisdetectedAsJSON(t *testing.T) {
+	out := "building...\n" +
+		"note: config { nested: true } loaded\n" +
+		"=== RUN   TestThing\n" +
+		"--- PASS: TestThing (0.00s)\n"
+	got := ParseTestOutput(out)
+	if len(got) != 1 || got[0].Name != "TestThing" || got[0].Status != "passed" {
+		t.Fatalf("got %+v, want exactly TestThing passed (a stray '{' must not switch this to the JSON parser)", got)
+	}
+}
+
 // TestAllTestsPassed pins the confirm_passing_tests rule (C2, wire contract):
 // non-empty AND every entry passed. Mutation-check: an implementation that
 // returns true for an empty slice would let confirm_passing_tests confirm a

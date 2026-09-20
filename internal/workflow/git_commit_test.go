@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/fsdiff"
 	"github.com/devarispbrown/idea-harness/internal/git"
 	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/store"
@@ -166,6 +168,16 @@ func TestApplyGitCommitEnabledRecordsSHA(t *testing.T) {
 // SHA-recording tests above stay on the fake git binary they already had.
 func realGitCommitFixture(t *testing.T, branch string, gitCfg config.GitConfig) (*Engine, *store.DB, string, string) {
 	t.Helper()
+	return realGitCommitFixtureWithGitCommit(t, branch, true, gitCfg)
+}
+
+// realGitCommitFixtureWithGitCommit is realGitCommitFixture with an explicit
+// GitCommit setting, so a test can pin the "branch_per_initiative alone
+// implies committing, git_commit need not also be set" fix (review defect D)
+// against the real guard/branch machinery, not just the fake-git SHA-only
+// path newGitCommitFixture covers.
+func realGitCommitFixtureWithGitCommit(t *testing.T, branch string, gitCommit bool, gitCfg config.GitConfig) (*Engine, *store.DB, string, string) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
 	}
@@ -173,7 +185,7 @@ func realGitCommitFixture(t *testing.T, branch string, gitCfg config.GitConfig) 
 	cfg := config.HarnessConfig{
 		Network:   config.NetworkDisabled,
 		Review:    config.ReviewConfig{MaxCycles: 3},
-		GitCommit: true,
+		GitCommit: gitCommit,
 		Git:       gitCfg,
 	}
 	eng, db := newTestEngine(t, fp, cfg)
@@ -281,6 +293,129 @@ func TestApplyGitCommitBranchPerInitiativeCreatesAndReuses(t *testing.T) {
 	}
 	if ini2.GitBranch != ini.GitBranch {
 		t.Fatalf("second apply's branch = %q, want the same branch %q", ini2.GitBranch, ini.GitBranch)
+	}
+}
+
+// TestApplyGitCommitImpliedByBranchPerInitiativeAlone reproduces the ICP
+// re-run's own defect D: git.branch_per_initiative did nothing at all unless
+// git_commit was ALSO set, even though `idea pr`'s own error told a user to
+// "enable git.branch_per_initiative and apply a change set first" -- no
+// mention of a second flag. Setting only branch_per_initiative must be
+// sufficient to create the initiative's branch and commit onto it.
+func TestApplyGitCommitImpliedByBranchPerInitiativeAlone(t *testing.T) {
+	eng, db, iniID, workspace := realGitCommitFixtureWithGitCommit(t, "main", false, config.GitConfig{BranchPerInitiative: true})
+
+	got := applyApproved(t, eng, db, iniID)
+	if got.GitCommitSHA == "" {
+		t.Fatal("GitCommitSHA is empty, want a commit: branch_per_initiative alone must imply committing")
+	}
+	ini, err := db.GetInitiative(context.Background(), iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.GitBranch == "" || !strings.HasPrefix(ini.GitBranch, "idea/") {
+		t.Fatalf("initiative.GitBranch = %q, want an idea/<slug> branch even with git_commit unset", ini.GitBranch)
+	}
+	if got := gitOutTest(t, workspace, "symbolic-ref", "--short", "HEAD"); got != ini.GitBranch {
+		t.Fatalf("checked out branch = %q, want %q", got, ini.GitBranch)
+	}
+}
+
+// TestApplyGitCommitBranchPerInitiativeCatchesUpEarlierApplies is the other
+// half of defect D end to end: an initiative has an earlier applied change
+// set that touched a file while git_commit was off (so it landed in the
+// workspace, uncommitted, on whatever branch was checked out), then
+// branch_per_initiative was turned on for a later apply. The later apply must
+// not refuse forever over that earlier change set's own uncommitted file --
+// it catches it up onto the new initiative branch instead, as its own commit,
+// separate from the later apply's own commit.
+//
+// The internal executor's placeholder always writes to the same "hello.txt"
+// (see InternalExecutor.Collect), so the earlier change set here is built by
+// hand with a distinct path ("manual.txt") -- otherwise this change set's own
+// keepPaths would already cover the same path and never exercise the
+// catch-up branch at all.
+func TestApplyGitCommitBranchPerInitiativeCatchesUpEarlierApplies(t *testing.T) {
+	eng, db, iniID, workspace := realGitCommitFixtureWithGitCommit(t, "main", false, config.GitConfig{})
+	ctx := context.Background()
+
+	// An earlier task/change set, applied (files written to the real
+	// workspace) while git_commit was off, so it was never committed.
+	earlierTask := &domain.Task{InitiativeID: iniID, Title: "earlier task", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, earlierTask, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "manual.txt"), []byte("from an earlier applied change set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := eng.rawBlobs.Put([]byte("from an earlier applied change set\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchBytes, err := json.Marshal(fsdiff.Patch{Files: []domain.FileChange{
+		{Path: "manual.txt", Digest: digest, ChangeType: domain.FileAdded},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchDigest, err := eng.rawBlobs.Put(patchBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlierCS := &domain.ChangeSet{InitiativeID: iniID, TaskID: earlierTask.ID, PatchDigest: patchDigest, HumanID: "CHG-manual"}
+	if err := db.CreateChangeSet(ctx, earlierCS); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct{ from, to domain.ChangeSetStatus }{
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired},
+		{domain.ChangeSetReviewRequired, domain.ChangeSetApproved},
+		{domain.ChangeSetApproved, domain.ChangeSetApplying},
+	} {
+		if err := db.TransitionChangeSet(ctx, earlierCS.ID, step.from, step.to, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.MarkChangeSetApplied(ctx, earlierCS.ID, "digest", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitOutTest(t, workspace, "status", "--porcelain"); !strings.Contains(status, "manual.txt") {
+		t.Fatalf("status = %q, want manual.txt left uncommitted by the earlier apply", status)
+	}
+
+	// Now flip on branch_per_initiative (which, per the fix above, also
+	// implies committing) for a new apply, through the normal execute path.
+	eng.Reload(config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3},
+		Git:     config.GitConfig{BranchPerInitiative: true},
+	}, eng.registry, nil, eng.blobs, nil)
+
+	got := applyApprovedTitled(t, eng, db, iniID, "add /metrics")
+	if got.GitCommitWarning != "" {
+		t.Fatalf("GitCommitWarning = %q, want none: manual.txt should have been caught up, not refused", got.GitCommitWarning)
+	}
+	if got.GitCommitSHA == "" {
+		t.Fatal("GitCommitSHA is empty, want this apply to commit once manual.txt is caught up")
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := gitOutTest(t, workspace, "status", "--porcelain")
+	if status != "" {
+		t.Fatalf("status = %q, want a clean tree: both the catch-up and this apply should have committed", status)
+	}
+	log := gitOutTest(t, workspace, "log", "--name-only", "--pretty=format:%s", ini.GitBranch)
+	if !strings.Contains(log, "catch up") || !strings.Contains(log, "manual.txt") {
+		t.Fatalf("git log = %q, want a catch-up commit naming manual.txt", log)
+	}
+	// The catch-up commit is separate from this apply's own commit: hello.txt
+	// (this apply's own file) must not appear in the catch-up commit's own
+	// file list.
+	catchUpFiles := gitOutTest(t, workspace, "show", "--name-only", "--pretty=format:", "HEAD~1")
+	if strings.Contains(catchUpFiles, "hello.txt") {
+		t.Fatalf("catch-up commit's files = %q, must not include hello.txt (this apply's own file)", catchUpFiles)
 	}
 }
 

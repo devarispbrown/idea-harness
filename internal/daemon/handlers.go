@@ -433,7 +433,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	items, err := projection.BuildQueue(r.Context(), pr.db, pr.blobs)
+	items, err := projection.BuildQueue(r.Context(), pr.db, pr.blobs, pr.rawBlobs)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1387,7 +1387,7 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 	}
 	// evidence_tests (C2, wave 3 contract): computed at read time, never
 	// persisted, so it is always as fresh as the last check run.
-	evidence, err := projection.ComputeEvidenceTests(r.Context(), pr.db, pr.blobs, ini.ID)
+	evidence, err := projection.ComputeEvidenceTests(r.Context(), pr.db, pr.blobs, pr.rawBlobs, ini.ID)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return

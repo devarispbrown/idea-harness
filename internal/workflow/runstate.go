@@ -192,8 +192,17 @@ func (e *Engine) partialPath(initiativeID string) string {
 // nothing is still writing. Best effort: it logs and returns on any failure,
 // and never replaces the run's own error. ctx may be cancelled -- a Stop and
 // a daemon shutdown are the reasons it runs -- so it works on a detached one.
+//
+// It always logs its own outcome, including "nothing to keep" (review defect
+// F: "Stop is unverifiable" -- a real run's daemon.log had no line at all
+// after a Stop, on either the success or the early-return path, so there was
+// no way to tell "capturePartial ran and the agent genuinely had not written
+// anything yet" apart from "capturePartial never ran" or "it silently
+// swallowed an error somewhere else"). Every path below now says which one
+// happened.
 func (e *Engine) capturePartial(ctx context.Context, initiativeID, taskID, workRoot string, before fsdiff.Manifest) {
 	ctx = context.WithoutCancel(ctx)
+	e.log.Info("stopped run: checking for files to keep", "initiative", initiativeID, "task", taskID)
 	// Same untrusted-content treatment as the normal after-snapshot (review
 	// defect #2): a stopped run's work root can carry the same downloaded
 	// toolchain a completed one can.
@@ -204,6 +213,7 @@ func (e *Engine) capturePartial(ctx context.Context, initiativeID, taskID, workR
 	}
 	files := fsdiff.Diff(before, after)
 	if len(files) == 0 {
+		e.log.Info("stopped run: nothing to keep", "initiative", initiativeID, "task", taskID)
 		return
 	}
 	pw := partialWork{TaskID: taskID, CreatedAt: time.Now()}
