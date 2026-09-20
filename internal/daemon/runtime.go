@@ -87,10 +87,25 @@ type projectRuntime struct {
 	// (review defect #4). Zero when the file did not exist at that time.
 	cfgMTime time.Time
 
-	// planEditMu guards planEditLocks itself (not the edits); planEditLocks
-	// holds one *sync.Mutex per initiative id, lazily created (review M5).
-	planEditMu    sync.Mutex
-	planEditLocks map[string]*sync.Mutex
+	// planEdit is shared across every *projectRuntime a reload ever produces
+	// for this project (review H4: ReloadProject now builds a NEW
+	// projectRuntime and swaps the pointer rather than mutating fields in
+	// place, so anything that must outlive a reload -- this registry,
+	// engine -- has to be a pointer copied onto the new value, not a plain
+	// field. Two separate *sync.Mutex-per-initiative maps, one per
+	// projectRuntime generation, would let two requests that landed on
+	// different generations "hold the same lock" without excluding each
+	// other at all).
+	planEdit *planEditRegistry
+}
+
+// planEditRegistry holds one *sync.Mutex per initiative id, lazily created
+// (review M5), shared by every generation of a project's *projectRuntime
+// (review H4) so a reload can never hand out a second, unrelated lock for an
+// initiative another generation is already editing.
+type planEditRegistry struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
 }
 
 // lockPlanEdit serializes the Plan-editing endpoints (add/update/delete/
@@ -121,16 +136,17 @@ type projectRuntime struct {
 // Locks are per-initiative, not per-project: two different initiatives in
 // the same project may still edit their plans concurrently.
 func (pr *projectRuntime) lockPlanEdit(initiativeID string) func() {
-	pr.planEditMu.Lock()
-	m, ok := pr.planEditLocks[initiativeID]
+	pe := pr.planEdit
+	pe.mu.Lock()
+	m, ok := pe.locks[initiativeID]
 	if !ok {
-		if pr.planEditLocks == nil {
-			pr.planEditLocks = map[string]*sync.Mutex{}
+		if pe.locks == nil {
+			pe.locks = map[string]*sync.Mutex{}
 		}
 		m = &sync.Mutex{}
-		pr.planEditLocks[initiativeID] = m
+		pe.locks[initiativeID] = m
 	}
-	pr.planEditMu.Unlock()
+	pe.mu.Unlock()
 	m.Lock()
 	return m.Unlock
 }
@@ -283,6 +299,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	pr = &projectRuntime{
 		db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv,
 		registry: registry, engine: engine, redactor: redactor, cfgMTime: harnessYAMLMTime(rec.RootPath),
+		planEdit: &planEditRegistry{},
 	}
 
 	r.projects[projectID] = pr
@@ -336,19 +353,43 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
 
-	// Rebuild config-derived components in place on the SAME engine (its mutex
-	// keeps serializing execute/apply/revert across the reload); then publish the
-	// pr fields under r.mu.
+	// Rebuild config-derived components on the SAME engine (its own mutexes
+	// keep serializing execute/apply/revert, and cfgMu -- see engine.go --
+	// keep every entry point's config-derived reads consistent, across the
+	// reload; review H4).
 	pr.engine.Reload(cfg.Harness, registry, redactor, blobs, dotEnv)
+
+	// review H4: build a FRESH *projectRuntime and swap the map entry under
+	// r.mu, rather than mutating pr's fields in place as this used to do
+	// (despite the doc comment above already promising a pointer swap).
+	// EnsureProject hands out this pointer to every HTTP handler, and
+	// roughly twenty of them (executor_status.go, providers, secrets,
+	// queue/evidence projections, redaction call sites...) read
+	// cfg/registry/redactor/blobs/dotEnv directly off it with no lock at
+	// all -- proven by the race detector against the in-place mutation this
+	// replaces. A handler that already holds the OLD pr (fetched from the
+	// map before this swap) keeps a fully self-consistent snapshot for the
+	// rest of its request; the next EnsureProject call gets the new one.
+	// db, rawBlobs, rootPath, engine and planEdit are identical across every
+	// generation by construction (see projectRuntime's doc comment) and so
+	// are carried over unchanged, not reloaded.
+	newPr := &projectRuntime{
+		db:       pr.db,
+		blobs:    blobs,
+		rawBlobs: pr.rawBlobs,
+		cfg:      cfg,
+		rootPath: pr.rootPath,
+		dotEnv:   dotEnv,
+		registry: registry,
+		engine:   pr.engine,
+		redactor: redactor,
+		cfgMTime: harnessYAMLMTime(pr.rootPath),
+		planEdit: pr.planEdit,
+	}
 	r.mu.Lock()
-	pr.cfg = cfg
-	pr.dotEnv = dotEnv
-	pr.registry = registry
-	pr.blobs = blobs
-	pr.redactor = redactor
-	pr.cfgMTime = harnessYAMLMTime(pr.rootPath)
+	r.projects[projectID] = newPr
 	r.mu.Unlock()
-	return pr, nil
+	return newPr, nil
 }
 
 // harnessYAMLMTime returns harness.yaml's modification time under rootPath's

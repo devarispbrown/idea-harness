@@ -159,8 +159,24 @@ func TestReloadProjectKeepsSameRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != after {
-		t.Fatal("ReloadProject must keep the same runtime (same engine -> shared mutex)")
+	// review H4: ReloadProject now builds a fresh *projectRuntime and swaps
+	// the map entry rather than mutating fields on the same one in place
+	// (proven by the race detector to be unsafe -- ~20 read sites hold no
+	// lock at all over cfg/registry/redactor/blobs). The engine, the DB
+	// handle, and the plan-edit lock registry, which all outlive a reload by
+	// design (their own internal synchronization is what "shared mutex"
+	// means below), must still be the SAME instances.
+	if before == after {
+		t.Fatal("ReloadProject must build a new *projectRuntime, not mutate the old one in place (review H4)")
+	}
+	if before.engine != after.engine {
+		t.Fatal("ReloadProject must keep the same engine (same engine -> shared mutex)")
+	}
+	if before.db != after.db {
+		t.Fatal("ReloadProject must keep the same *store.DB (no second handle)")
+	}
+	if before.planEdit != after.planEdit {
+		t.Fatal("ReloadProject must keep the same plan-edit lock registry, or a plan edit in flight on the old generation and one on the new generation could hold two different locks for the same initiative (review C2/H4)")
 	}
 	// Reconciliation must not re-run on reload: the reconciled flag stays set.
 	rt.mu.Lock()
@@ -264,10 +280,14 @@ func TestEnsureProjectAutoReloadsOnHandEditedHarnessYAML(t *testing.T) {
 	if reloaded.cfg.Harness.TestCmd != "go test ./..." {
 		t.Fatalf("EnsureProject did not pick up the hand-edited test_cmd: got %q", reloaded.cfg.Harness.TestCmd)
 	}
-	// Same underlying runtime (same engine/mutex), exactly like an explicit
-	// ReloadProject -- this must feel like a reload, not a fresh open.
-	if reloaded != pr {
-		t.Fatal("auto-reload must keep the same *projectRuntime (same engine -> shared mutex)")
+	// review H4: a fresh *projectRuntime (see TestReloadProjectKeepsSameRuntime),
+	// but the same underlying engine/DB/lock registry -- this must still feel
+	// like a reload, not a fresh open.
+	if reloaded == pr {
+		t.Fatal("auto-reload must build a new *projectRuntime, not mutate the old one in place (review H4)")
+	}
+	if reloaded.engine != pr.engine {
+		t.Fatal("auto-reload must keep the same engine (same engine -> shared mutex)")
 	}
 
 	// A second call with nothing changed on disk must not reload again (no
