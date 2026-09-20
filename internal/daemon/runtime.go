@@ -853,18 +853,53 @@ func (r *Runtime) ApproveInitiative(ctx context.Context, projectID, initiativeID
 	return domain.InitiativeApproved, nil
 }
 
-// ResumeInitiative re-runs the review loop for an initiative parked on a human.
+// ResumeInitiative re-runs the review loop for an initiative parked on a
+// human. It stays synchronous (unlike Advance/RevisePlan/ReopenPhase below):
+// callers get the final status directly, as before.
+//
+// review H4: Resume used to run Engine.Resume with no operation row at all --
+// the only claiming entry point that didn't create one. That made it
+// invisible to ListUnfinishedOperations, which both ReloadProject's "refuse
+// to swap config while an operation is running" guard and
+// reconcileStaleOperations key off: a reload could swap in a new
+// redactor/registry/cfg mid-review-loop (a secret just added to harness.yaml
+// would not be swept from the second half of the run), and a daemon crash
+// mid-Resume stranded Engine.Resume's own ClaimInitiativeRunning claim with
+// nothing for the sweep to find -- exactly what that claim's own comment
+// already flagged. The operation row here is bookkeeping only: Resume still
+// runs synchronously in this goroutine and still self-claims/self-releases
+// inside Engine.Resume exactly as before (its own defer already restores
+// needs_human_judgment on error); only ops visibility changes, so this
+// operation's own status is recorded here rather than via failOperation
+// (which would also fail the initiative -- Engine.Resume already decided
+// that outcome).
 func (r *Runtime) ResumeInitiative(ctx context.Context, projectID, initiativeID string) (domain.InitiativeStatus, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
 	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "resume")
+	if err != nil {
+		return "", err
+	}
+	r.ops.Add(1)
+	defer r.ops.Done()
 	status, err := pr.engine.Resume(ctx, initiativeID)
 	if err != nil {
+		opStatus := domain.OperationFailed
+		if ctx.Err() != nil {
+			opStatus = domain.OperationCancelled
+		}
+		if serr := pr.db.SetOperationFailed(context.WithoutCancel(ctx), opID, opStatus, operationErrorMessage(pr, err.Error())); serr != nil {
+			r.log.Error("could not record resume's operation failure", "initiative", initiativeID, "op", opID, "error", serr)
+		}
 		if errors.Is(err, store.ErrInitiativeNotClaimable) {
 			return "", preconditionf("resume re-runs the review for an initiative waiting on your judgment; this one is not")
 		}
 		return "", err
+	}
+	if serr := pr.db.SetOperationStatus(context.WithoutCancel(ctx), opID, domain.OperationSucceeded, initiativeID); serr != nil {
+		r.log.Error("could not record resume's operation success", "initiative", initiativeID, "op", opID, "error", serr)
 	}
 	return status, nil
 }

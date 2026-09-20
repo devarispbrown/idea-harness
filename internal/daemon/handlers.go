@@ -1688,6 +1688,15 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention -- body validation jumping ahead of an id lookup needs to be
+	// a deliberate, listed exception, not a side effect of C2's reordering).
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	// Decode before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		Title          string   `json:"title"`
@@ -1708,7 +1717,10 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	// Re-fetch the task under the lock too: taskEditableGuard's task-specific
+	// checks (status, existing change sets) must see current state, not the
+	// pre-lock read above (same C2 reasoning as the initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
@@ -1903,6 +1915,14 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention; see handleUpdateTask).
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	// DependsOn is a pointer (review low-priority item): {} or a misspelled
 	// field name decodes to a nil field, which must be refused rather than
 	// silently treated as depends_on: [] and clearing every existing
@@ -1933,7 +1953,9 @@ func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer unlock()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	// Re-fetch the task under the lock too (same C2 reasoning as the
+	// initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
@@ -2141,6 +2163,14 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention; see handleUpdateTask).
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	// Decoded before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		Tasks []struct {
@@ -2161,7 +2191,9 @@ func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
-	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	// Re-fetch the task under the lock too (same C2 reasoning as the
+	// initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
