@@ -69,6 +69,16 @@ type Response struct {
 // Provider is a model provider adapter.
 type Provider interface {
 	Name() string
+	// Capabilities describes this provider's BASELINE capabilities -- not
+	// necessarily what it can do for any one model. A real HTTP provider's
+	// true output ceiling varies by model (claude-sonnet-5 and
+	// claude-haiku-4-5 do not share one, nor do gpt-4o and gpt-4.1), so a
+	// caller that already knows which model it is about to call should
+	// prefer MaxOutputFor(modelName) over Capabilities().MaxOutput when one
+	// is available (see workflow.minOutput). Capabilities() stays the
+	// provider-wide, model-agnostic baseline: the conservative floor a
+	// provider's own Complete uses for a model MaxOutputFor does not
+	// recognize (round-6 B1).
 	Capabilities() Capabilities
 	// Complete runs one request and returns a response. It must set
 	// ActualModel to the model actually used (no silent fallback, §36).

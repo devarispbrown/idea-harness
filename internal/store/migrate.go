@@ -763,6 +763,33 @@ WHERE initiative_id = '' AND EXISTS (
 	SELECT 1 FROM graph_edges e WHERE e.to_type = 'run' AND e.to_id = runs.id
 );
 `,
+	// 36: the adversarial-review truncation defect. Before this, a change set
+	// whose reviewer call genuinely ran but could never complete -- every
+	// attempt (including runModel's own reduced-ask retry) cut off at the
+	// model's output-token ceiling, model.ErrTruncated -- was recorded
+	// identically to one whose review was simply never attempted (the
+	// operation cancelled mid-review): both left review_completed_at NULL,
+	// and ReviewNeverCompletedCause's only answer was the generic "likely
+	// cancelled mid-review". `idea execute` then refused to re-run the task
+	// (the never-completed-review guard) AND `idea review <id> approve
+	// --accept-findings` refused too (TestApproveAcceptFindingsAlsoRefuses
+	// WhenReviewNeverCompleted deliberately pins that for the ordinary
+	// "never attempted" case) -- a real diff too large for the model's own
+	// ceiling had no way forward that did not mean hand-editing harness.yaml.
+	//
+	// review_unavailable_reason is set exactly once, by
+	// store.SetChangeSetReviewUnavailable, ONLY when the reviewer was
+	// genuinely attempted and explicitly could not finish -- never merely
+	// guessed. Its presence is what reviewChangeSet's approve path now
+	// checks to allow the ONE new, explicit, recorded escape:
+	// --accept-findings on a change set whose review never completed BUT
+	// carries this reason. A change set that was simply cancelled
+	// (review_unavailable_reason still '') keeps refusing exactly as before
+	// -- this migration narrows, not removes, the round-4 guarantee that an
+	// unreviewed change set cannot be silently approved.
+	`
+ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -19,6 +19,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/fsdiff"
 	"github.com/devarispbrown/idea-harness/internal/git"
+	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/review"
 	"github.com/devarispbrown/idea-harness/internal/risk"
 	"github.com/devarispbrown/idea-harness/internal/schema"
@@ -890,27 +891,43 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// already recorded stage=review for it.
 		e.setStage(ctx, initiativeID, "Running adversarial review")
 		runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
-		if err != nil {
-			return domain.ChangeSet{}, err
-		}
-		// Carry a human's disposition of a near-duplicate PRIOR finding (same
-		// target type, path and near-identical text) forward onto this fresh
-		// batch, so a finding the model merely rewords does not silently
-		// escape a judgment call the human already made on an earlier change
-		// set of this same initiative (dedup.go).
-		if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
-			return domain.ChangeSet{}, err
-		}
-		for i := range findings {
-			findings[i].InitiativeID = initiativeID
-			findings[i].TargetType = "change_set"
-			findings[i].TargetID = cs.ID
-			if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+		var unavailable *ErrReviewUnavailable
+		switch {
+		case errors.As(err, &unavailable):
+			// No wedge (the defect this closes): the review was genuinely
+			// attempted and exhausted every retry on truncation. Record that
+			// explicitly -- never silently -- and let Execute finish this
+			// task (marked done below, same as a completed review) instead
+			// of returning early and leaving the task re-pickable forever
+			// with a change set stuck in review_required and no recorded
+			// reason. The human's way forward is `idea review <id> approve
+			// --accept-findings` (domain.ChangeSet.ReviewUnavailable) or
+			// `idea review <id> rerun` to try again.
+			if err := e.db.SetChangeSetReviewUnavailable(ctx, cs.ID, unavailable.Error(), store.ActorOrchestrator); err != nil {
 				return domain.ChangeSet{}, err
 			}
-		}
-		if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.ActorOrchestrator); err != nil {
+		case err != nil:
 			return domain.ChangeSet{}, err
+		default:
+			// Carry a human's disposition of a near-duplicate PRIOR finding
+			// (same target type, path and near-identical text) forward onto
+			// this fresh batch, so a finding the model merely rewords does
+			// not silently escape a judgment call the human already made on
+			// an earlier change set of this same initiative (dedup.go).
+			if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
+				return domain.ChangeSet{}, err
+			}
+			for i := range findings {
+				findings[i].InitiativeID = initiativeID
+				findings[i].TargetType = "change_set"
+				findings[i].TargetID = cs.ID
+				if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+					return domain.ChangeSet{}, err
+				}
+			}
+			if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.ActorOrchestrator); err != nil {
+				return domain.ChangeSet{}, err
+			}
 		}
 	}
 
@@ -3174,10 +3191,32 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		// happened. `idea review <id> rerun` is the explicit, paid way
 		// forward; this refusal names it rather than silently letting the
 		// change set through.
-		if !cs.ReviewCompleted() {
+		//
+		// The one narrow exception (the change-set review truncation defect,
+		// round 6): a review that was genuinely ATTEMPTED and explicitly
+		// could not complete -- domain.ChangeSet.ReviewUnavailable(), set
+		// only by store.SetChangeSetReviewUnavailable after every retry on
+		// model.ErrTruncated was exhausted -- may proceed through
+		// --accept-findings. This is still an explicit, recorded human
+		// override, never a silent approve: acceptFindings must be true, the
+		// reason is durably stored (not guessed), and a plain `approve` with
+		// no flag refuses exactly as before regardless of the cause. A
+		// change set that was simply cancelled mid-review (ReviewUnavailable
+		// false) still refuses either way -- see
+		// TestApproveAcceptFindingsAlsoRefusesWhenReviewNeverCompleted, which
+		// this must not weaken.
+		if !cs.ReviewCompleted() && !(acceptFindings && cs.ReviewUnavailable()) {
+			wayForward := fmt.Sprintf("run `idea review %s rerun` first", cs.HumanID)
+			if cs.ReviewUnavailable() {
+				// The review WAS attempted (and explicitly could not
+				// finish), so there is a second reachable option beyond
+				// rerun: proceed without one, explicitly.
+				wayForward = fmt.Sprintf("run `idea review %s rerun` to try again, or `idea review %s approve --accept-findings` to proceed without a completed review",
+					cs.HumanID, cs.HumanID)
+			}
 			return fmt.Errorf("workflow: cannot approve %s: its adversarial review never completed (%s), "+
-				"so it carries only mechanical check observations, no adversarial findings; run `idea review %s rerun` first",
-				cs.HumanID, cs.ReviewNeverCompletedCause(), cs.HumanID)
+				"so it carries only mechanical check observations, no adversarial findings; %s",
+				cs.HumanID, cs.ReviewNeverCompletedCause(), wayForward)
 		}
 		// The human accept: sign off the reviewer's own findings on this change
 		// set, then re-run the gate. NOT skip it -- anything the disposition
@@ -3288,22 +3327,39 @@ func (e *Engine) RerunChangeSetReview(ctx context.Context, initiativeID, changeS
 
 	e.setStage(ctx, initiativeID, "Running adversarial review")
 	runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
-	if err != nil {
-		return err
-	}
-	if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
-		return err
-	}
-	for i := range findings {
-		findings[i].InitiativeID = initiativeID
-		findings[i].TargetType = "change_set"
-		findings[i].TargetID = cs.ID
-		if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+	var unavailable *ErrReviewUnavailable
+	switch {
+	case errors.As(err, &unavailable):
+		// No wedge (the defect this closes): rerun is the explicit, paid,
+		// human-initiated escape defect #1 already gave this case, but a
+		// diff too large for the model's own output ceiling made it fail
+		// identically every time -- there was no distinction between "never
+		// attempted" and "attempted, exhausted, and explicitly could not
+		// finish", so rerun just reproduced the same wedge it was supposed
+		// to resolve. Recording the reason explicitly here (never silently)
+		// is what lets --accept-findings apply
+		// (domain.ChangeSet.ReviewUnavailable) instead of leaving the human
+		// with only a failing rerun and a guard that refuses to move on.
+		if err := e.db.SetChangeSetReviewUnavailable(ctx, cs.ID, unavailable.Error(), store.HumanActor); err != nil {
 			return err
 		}
-	}
-	if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.HumanActor); err != nil {
+	case err != nil:
 		return err
+	default:
+		if err := e.inheritDispositionFromPrior(ctx, initiativeID, findings); err != nil {
+			return err
+		}
+		for i := range findings {
+			findings[i].InitiativeID = initiativeID
+			findings[i].TargetType = "change_set"
+			findings[i].TargetID = cs.ID
+			if err := e.db.CreateFinding(ctx, &findings[i]); err != nil {
+				return err
+			}
+		}
+		if err := e.db.SetChangeSetReview(ctx, cs.ID, runID, store.HumanActor); err != nil {
+			return err
+		}
 	}
 	// Mirror Execute's own not-rejected path: the checks that gate rejection
 	// (secret sweep, deterministic checks) already ran and passed before this
@@ -3311,7 +3367,10 @@ func (e *Engine) RerunChangeSetReview(ctx context.Context, initiativeID, changeS
 	// as a fresh Execute -- marks the task done rather than leaving it
 	// `proposed` forever. Best-effort and idempotent: if the task moved on
 	// (e.g. a human already reopened/superseded it) this is a no-op observer,
-	// not a correctness requirement for the review itself completing.
+	// not a correctness requirement for the review itself completing. This
+	// also applies when the review is merely unavailable rather than
+	// completed: there is nothing more for Execute to re-run here either
+	// way, and leaving the task re-pickable is exactly the wedge.
 	if cs.TaskID != "" {
 		_ = e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskDone)
 	}
@@ -3368,11 +3427,48 @@ func (e *Engine) RejectConflicted(ctx context.Context, initiativeID, changeSetID
 // it; it never reaches a real provider.
 const ChangeSetReviewSchemaName = "change_set_review"
 
+// ErrReviewUnavailable is returned by runChangeSetAdversarialReview when the
+// adversarial reviewer was genuinely ATTEMPTED for a change set but could not
+// complete: every attempt (including runModel's own reduced-ask retry on
+// model.ErrTruncated) was cut off at the model's output-token ceiling.
+//
+// This is the "no wedge" half of the change-set review truncation defect. An
+// ordinary error here used to propagate straight out of Execute/
+// RerunChangeSetReview: the change set was left in review_required with
+// ReviewCompletedAt nil and no record of WHY, indistinguishable from a
+// cancelled operation, and the task was never marked done -- so `idea
+// execute` kept re-offering it, hit the same "never finished its adversarial
+// review" guard every time, and the ONLY documented escape,
+// --accept-findings, refused too (it requires ReviewCompleted()). A caller
+// that receives this instead calls store.SetChangeSetReviewUnavailable,
+// which records the cause explicitly (never silently) and lets that one,
+// narrowly-scoped escape apply -- see domain.ChangeSet.ReviewUnavailable.
+type ErrReviewUnavailable struct {
+	// RunID is the (failed) run that made the final, exhausted attempt --
+	// attributable for `idea logs` / cost accounting even though it never
+	// produced findings.
+	RunID string
+	// Cause is the underlying error from runModel (wrapping model.ErrTruncated).
+	Cause error
+}
+
+func (e *ErrReviewUnavailable) Error() string {
+	return fmt.Sprintf("the adversarial review could not complete: %v", e.Cause)
+}
+
+func (e *ErrReviewUnavailable) Unwrap() error { return e.Cause }
+
 // runChangeSetAdversarialReview runs the adversarial reviewer over a change set
 // and converts its structured output into findings. The returned RigorLevel is
 // the one this review actually ran at (review B1), so the caller can decide
 // whether a blocking finding should still block (quick converges in one pass
 // and accepts with advisories instead).
+//
+// An error that wraps ErrReviewUnavailable means the reviewer was genuinely
+// attempted and exhausted every retry on truncation (see runModel); any other
+// error means the attempt never meaningfully ran at all (a bad patch, a
+// cancelled context, ...) and callers must treat it as before -- a hard
+// failure with nothing to record.
 func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.ChangeSet) (string, []domain.Finding, RigorLevel, error) {
 	// H2: a patch that fails to load must fail the review, not silently
 	// review against an empty file set. An empty changeFiles set makes
@@ -3413,6 +3509,9 @@ func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.C
 		"Adversarial review of change set "+cs.HumanID+".",
 	)
 	if err != nil {
+		if errors.Is(err, model.ErrTruncated) {
+			return runID, nil, rigor, &ErrReviewUnavailable{RunID: runID, Cause: err}
+		}
 		return "", nil, "", err
 	}
 	findings, err := review.ParseFindings(runID, "change_set", cs.ID, obj)

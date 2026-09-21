@@ -6,6 +6,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -312,8 +313,27 @@ func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.Ini
 // So the cap is only safe because the providers now detect truncation directly,
 // from their own finish reason, and return model.ErrTruncated (see
 // model.truncatedError). Do not remove that check and leave this one.
-func effectiveMaxOutput(stageKey string, prov model.Provider) int {
-	return minOutput(maxOutputForStage(stageKey), prov)
+//
+// reviewMaxTokens is harness.yaml's review.max_tokens (config.ReviewConfig.
+// MaxTokens), and this is the fix for the second layer of the change-set
+// review truncation defect: before this, that field was read in exactly ONE
+// place -- a post-hoc check, after the model already answered, that FAILED a
+// stage whose output exceeded it (still true, see runModel) -- and nothing
+// ever raised the number actually SENT to the provider. A human hitting
+// model.ErrTruncated was told to "raise the stage budget", and
+// review.max_tokens -- the one field in harness.yaml that sounds like it
+// does that -- silently did nothing: docs/configuration.md already
+// documented it as "a per-call cap", and it was, but only downward, never
+// up. An explicit review.max_tokens now overrides the stage's built-in want
+// directly (not just as a floor or a ceiling), still bounded below by the
+// model's real output ceiling, so raising it is the reachable fix the error
+// message can honestly point to.
+func effectiveMaxOutput(stageKey string, prov model.Provider, reviewMaxTokens int64) int {
+	want := maxOutputForStage(stageKey)
+	if reviewMaxTokens > 0 {
+		want = int(reviewMaxTokens)
+	}
+	return minOutput(want, prov)
 }
 
 // minOutput caps a wanted budget by the provider's declared ceiling. A provider
@@ -351,6 +371,25 @@ func maxOutputForStage(stageKey string) int {
 	default:
 		return 4096
 	}
+}
+
+// wrapTruncationGuidance adds reachable remediation to a model.ErrTruncated
+// once runModel's own retry-with-a-smaller-ask has been exhausted; every
+// other error passes through unchanged.
+//
+// model.truncatedError (internal/model/httperr.go) deliberately names only
+// the fact (which model, what budget was hit) and not a fix: that package has
+// no idea whether harness.yaml is even in play. This is the layer that does
+// know, so this is where the honest, reachable suggestion belongs -- the
+// defect this closes is exactly a suggestion that was NOT reachable ("raise
+// the stage budget" pointed at review.max_tokens, which effectiveMaxOutput
+// now actually reads; see its own doc comment).
+func wrapTruncationGuidance(err error) error {
+	if !errors.Is(err, model.ErrTruncated) {
+		return err
+	}
+	return fmt.Errorf("%w; raise `review.max_tokens` in harness.yaml to ask for a larger reply and retry this stage, "+
+		"or reduce the size of what is being sent to it", err)
 }
 
 // isTransientModelError reports whether a provider error is a transient
@@ -397,7 +436,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		Messages:       []model.Message{{Role: "user", Content: userPrompt}},
 		JSONSchema:     []byte(schemaJSON),
 		JSONSchemaName: schemaName,
-		MaxOutput:      effectiveMaxOutput(stageKey, prov),
+		MaxOutput:      effectiveMaxOutput(stageKey, prov, snap.cfg.Review.MaxTokens),
 	}
 
 	reqStart := time.Now()
@@ -447,10 +486,30 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 				time.Sleep(time.Duration(attempt) * 1500 * time.Millisecond)
 				continue
 			}
+			// No wedge, no silent truncation (the change-set adversarial
+			// review defect's third layer): truncation is not transient --
+			// the same request truncates the same way every time -- so
+			// retrying it unchanged would just repeat the failure. Instead,
+			// retry ONCE with a smaller ask: the reply must fit inside the
+			// same budget, so ask for less of it. A genuinely exhausted
+			// retry still surfaces model.ErrTruncated to the caller; for the
+			// change-set review, that is handled as an explicit, recorded
+			// "review unavailable" state rather than a hard failure (see
+			// ErrReviewUnavailable in execute.go), which is what keeps this
+			// from wedging `idea execute` behind a guard with no way
+			// forward.
+			if attempt < maxAttempts && errors.Is(err, model.ErrTruncated) {
+				e.log.Warn("model output truncated, retrying with a smaller ask", "stage", stageKey, "role", roleName, "model", modelSpec, "attempt", attempt, "err", err)
+				req.System += "\n\nYour previous reply was cut off because it exceeded the output budget. " +
+					"This time respond with SIGNIFICANTLY less so the full reply fits well within the budget: " +
+					"for a findings list, return only the 5 highest-severity findings; for any other content, " +
+					"be much more concise throughout."
+				continue
+			}
 			e.log.Error("model request failed", "stage", stageKey, "role", roleName, "model", modelSpec, "err", err, "attempt", attempt, "duration", time.Since(reqStart).Round(time.Millisecond))
 			failureManifest()
 			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
-			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, err)
+			return runID, nil, fmt.Errorf("workflow: %s: %w", stageKey, wrapTruncationGuidance(err))
 		}
 		// Charge every billed attempt (including retries) against the budget,
 		// and accumulate it for the manifest this run eventually writes.

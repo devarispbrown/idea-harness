@@ -99,6 +99,24 @@ var modelPricing = map[string]Pricing{
 // defaultPricing applies to models not in the table.
 var defaultPricing = Pricing{0.50, 2.00}
 
+// modelCandidates returns the id forms tried when matching a model against a
+// canonical table (modelPricing, modelMaxOutput, ...): the id itself, the id
+// without a vendor prefix ("anthropic/claude-sonnet-5", as OpenRouter returns
+// it), and the bare id with dots in a version spelled as dashes
+// ("claude-opus-4.8") -- so one model matches the same row by any route.
+func modelCandidates(model string) []string {
+	candidates := []string{model}
+	bare := model
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		bare = model[i+1:]
+		candidates = append(candidates, bare)
+	}
+	if dashed := strings.ReplaceAll(bare, ".", "-"); dashed != bare {
+		candidates = append(candidates, dashed)
+	}
+	return candidates
+}
+
 // normalizeModel maps a model identifier to its row in modelPricing, or
 // returns it unchanged (and it is charged defaultPricing).
 //
@@ -109,21 +127,8 @@ var defaultPricing = Pricing{0.50, 2.00}
 // priced different models as their family: gpt-5.4-pro ($30/$180) as gpt-5
 // ($1.25/$10), eighteen times under, so max_cost_usd let it spend far past
 // the ceiling.
-//
-// The id is also tried without a vendor prefix ("anthropic/claude-sonnet-5",
-// as OpenRouter returns it) and with dots in a version spelled as dashes
-// ("claude-opus-4.8"), so one model costs the same by any route.
 func normalizeModel(model string) string {
-	candidates := []string{model}
-	bare := model
-	if i := strings.LastIndex(model, "/"); i >= 0 {
-		bare = model[i+1:]
-		candidates = append(candidates, bare)
-	}
-	if dashed := strings.ReplaceAll(bare, ".", "-"); dashed != bare {
-		candidates = append(candidates, dashed)
-	}
-	for _, c := range candidates {
+	for _, c := range modelCandidates(model) {
 		if best := priceRow(c); best != "" {
 			return best
 		}
@@ -154,4 +159,109 @@ func CostUSD(model string, inputTokens, outputTokens int64) float64 {
 		p = defaultPricing
 	}
 	return (float64(inputTokens)/1e6)*p.InputUSD + (float64(outputTokens)/1e6)*p.OutputUSD
+}
+
+// modelMaxOutput maps canonical model names to the REAL, verified maximum
+// output (completion) tokens the provider's own docs declare for that model
+// (round-6 B1: the capability-accuracy layer).
+//
+// Before this, internal/model/{anthropic,openai,gemini}.go each declared ONE
+// constant MaxOutput for the whole provider (16384, 16384, 8192), copied from
+// an early guess and never checked against a real model. It was wrong for
+// every current Anthropic model (the real floor is 64,000, not 16,384) and
+// for most current Gemini and OpenAI models too. A change-set adversarial
+// review against claude-sonnet-5 (real ceiling 128,000) on an 11-file diff
+// hit exactly this: capped at 16384, its reply was truncated mid-structure,
+// runModel raised model.ErrTruncated, and the review could never complete --
+// wedging the initiative behind the change-set "never completed" guard,
+// because nothing in the request was actually near what the model could
+// produce.
+//
+// Keys are canonical (bare, pre-release-suffix) model names, matched the same
+// way modelPricing is (see priceRow/modelCandidates): an exact id, a
+// date/snapshot/preview suffix, a vendor-prefixed OpenRouter id, or a
+// dot-for-dash spelling all resolve to the same row.
+//
+// Every entry was checked against the provider's own current model
+// documentation on 2026-09-21 (NOT a model listing, NOT a guess -- see the
+// source noted per block). A model absent here falls back to its provider's
+// own Capabilities.MaxOutput baseline (see anthropic.go/openai.go/gemini.go),
+// which is itself the conservative floor across everything checked below for
+// that provider, not the old, uniformly-wrong constant.
+var modelMaxOutput = map[string]int{
+	// Anthropic — platform.claude.com/docs/en/about-claude/models/overview
+	// and the per-model pages linked from it (models/opus-4-8/overview,
+	// models/sonnet-4-5/overview, ...). The current 1M-context generation
+	// (Fable 5.1, Opus 5, Sonnet 5) and the legacy Opus 4.8 all declare
+	// "Max output: 128K tokens"; Sonnet 4.5 and Haiku 4.5 (200K context)
+	// declare 64K. Opus 4.7, Opus 4.6 and Sonnet 4.6 are not pinned
+	// individually here -- they were confirmed only as members of the same
+	// "supports up to 300K output on the Batch API" cohort as Opus 5/Sonnet 5
+	// (both independently confirmed at 128K), which that beta is documented
+	// to extend FROM the 128K synchronous ceiling, not from Haiku/Sonnet
+	// 4.5's 64K one -- so they are entered at 128K too, on that basis, not a
+	// guess.
+	"claude-sonnet-5":   128000,
+	"claude-opus-5":     128000,
+	"claude-fable-5-1":  128000,
+	"claude-opus-4-8":   128000,
+	"claude-opus-4-7":   128000,
+	"claude-opus-4-6":   128000,
+	"claude-sonnet-4-6": 128000,
+	"claude-haiku-4-5":  64000,
+	"claude-sonnet-4-5": 64000,
+
+	// OpenAI — developers.openai.com/api/docs/models/<id>. Unlike Anthropic,
+	// the ceiling does NOT track "current vs legacy" generation: gpt-4o and
+	// gpt-4o-mini (128K context) declare only 16,384 max output tokens, the
+	// SAME number the old provider-wide constant used -- it was an accurate
+	// ceiling for exactly these two models and wrong for every other one,
+	// which is what made the old single-constant design misleading rather
+	// than simply conservative.
+	"gpt-5.6-luna":  128000,
+	"gpt-5.6-sol":   128000,
+	"gpt-5.6-terra": 128000,
+	"gpt-5.5":       128000,
+	"gpt-5.4-mini":  128000,
+	"gpt-4.1":       32768,
+	"gpt-4.1-mini":  32768,
+	"gpt-4o":        16384,
+	"gpt-4o-mini":   16384,
+	"o3-mini":       100000,
+
+	// Gemini — ai.google.dev/gemini-api/docs/models/<id>. Every current
+	// flash model and the 3.1 pro preview declare the same "Output token
+	// limit: 65,536", unlike Anthropic/OpenAI's split ceilings.
+	"gemini-3.6-flash": 65536,
+	"gemini-3.7-flash": 65536,
+	"gemini-3.8-flash": 65536,
+	"gemini-3.5-flash": 65536,
+	"gemini-3.1-pro":   65536, // gemini-3.1-pro-preview normalizes to this row
+}
+
+// maxOutputRow finds modelMaxOutput's longest matching row for model, using
+// the same prefix + release-suffix rule as priceRow (see releaseSuffix).
+func maxOutputRow(model string) (string, bool) {
+	best := ""
+	for k := range modelMaxOutput {
+		if strings.HasPrefix(model, k) && len(k) > len(best) && releaseSuffix.MatchString(model[len(k):]) {
+			best = k
+		}
+	}
+	return best, best != ""
+}
+
+// MaxOutputFor returns the verified real output-token ceiling for a model
+// name (bare, vendor-prefixed, or dot/dash spelled -- see modelCandidates),
+// and ok=false when the model is not in modelMaxOutput. A caller sees ok=false
+// for any model this catalog has not verified -- including a brand-new one
+// that postdates this table -- and must fall back to its provider's own
+// baseline Capabilities.MaxOutput rather than treat 0 as a real ceiling.
+func MaxOutputFor(modelName string) (int, bool) {
+	for _, c := range modelCandidates(modelName) {
+		if k, ok := maxOutputRow(c); ok {
+			return modelMaxOutput[k], true
+		}
+	}
+	return 0, false
 }
