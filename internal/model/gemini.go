@@ -35,7 +35,13 @@ func NewGemini(apiKey, baseURL string) *GeminiProvider {
 			Streaming:         true,
 			ReasoningControls: false,
 			ContextLimit:      1000000,
-			MaxOutput:         8192,
+			// 65536, not the old 8192: every current Gemini flash model and
+			// the 3.1 pro preview document the same 65,536-token output
+			// limit (see MaxOutputFor in pricing.go), so there is no smaller
+			// "current" tier to be conservative about the way Anthropic and
+			// OpenAI's baselines are -- this is both the verified floor AND
+			// the verified ceiling for everything in the catalog today.
+			MaxOutput: 65536,
 		},
 	}
 }
@@ -109,9 +115,21 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 		system += "Respond with a single JSON object matching the requested schema. Do not wrap in markdown."
 	}
 
+	// ceiling is THIS model's real, verified ceiling when known (MaxOutputFor
+	// overrides the provider-wide baseline; every current Gemini model
+	// checked so far matches the baseline exactly, but a future or custom
+	// model this catalog verifies differently -- e.g. lower -- must still be
+	// bounded correctly); sent is what capOutput actually bounds the request
+	// to, and is also what a truncation error below must name -- not
+	// req.MaxOutput, which is only the stage's uncapped "want".
+	ceiling := p.caps.MaxOutput
+	if v, ok := MaxOutputFor(req.Model); ok {
+		ceiling = v
+	}
+	sent := capOutput(req.MaxOutput, ceiling)
 	body := geminiRequest{
 		Contents:         []geminiContent{{Role: "user", Parts: geminiParts(req)}},
-		GenerationConfig: geminiGenConfig{MaxOutputTokens: capOutput(req.MaxOutput, p.caps)},
+		GenerationConfig: geminiGenConfig{MaxOutputTokens: sent},
 	}
 	if system != "" {
 		body.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
@@ -164,7 +182,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 		return Response{}, fmt.Errorf("gemini: empty content (output_tokens=%d)", parsed.UsageMetadata.CandidatesTokenCount)
 	}
 	if len(parsed.Candidates) > 0 && parsed.Candidates[0].FinishReason == "MAX_TOKENS" {
-		return Response{}, truncatedError("gemini", req.MaxOutput)
+		return Response{}, truncatedError("gemini", req.Model, sent)
 	}
 	actual := parsed.ModelVersion
 	if actual == "" {

@@ -13,14 +13,18 @@ import (
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.
-const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, review_completed_at, no_op`
+const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, review_completed_at, no_op, review_unavailable_reason`
 
 // scanChangeSet scans one change_sets row into cs. createdMS receives the raw
 // unix-ms timestamp so the caller can convert it; reviewCompletedMS receives
 // the nullable review_completed_at column (migration 33).
+// review_unavailable_reason (migration 36) is NOT NULL DEFAULT '' and scans
+// directly into cs.ReviewUnavailableReason, unlike review_completed_at, since
+// an empty string already means "not set" with no separate nullability to
+// track.
 func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64, reviewCompletedMS *sql.NullInt64) error {
 	return row.Scan(&cs.ID, &cs.HumanID, &cs.InitiativeID, &cs.TaskID, &cs.BaseSnapshotID,
-		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS, reviewCompletedMS, &cs.NoOp)
+		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS, reviewCompletedMS, &cs.NoOp, &cs.ReviewUnavailableReason)
 }
 
 // applyReviewCompletedAt converts the nullable review_completed_at scan
@@ -227,7 +231,53 @@ func (db *DB) SetChangeSetReview(ctx context.Context, changeSetID, reviewID, act
 		Actor:         actor,
 		EventType:     "change_set.review_set",
 	}, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE change_sets SET review_id = ?, review_completed_at = ? WHERE id = ?`, reviewID, now.UnixMilli(), changeSetID)
+		// review_unavailable_reason is cleared here too: a review that just
+		// completed supersedes whatever an earlier attempt on this same
+		// change set left behind (e.g. a truncation `idea review <id> rerun`
+		// has since retried past -- see SetChangeSetReviewUnavailable). Once
+		// ReviewCompletedAt is set, ReviewNeverCompletedCause/
+		// ReviewUnavailable are never consulted for cs again, so this is
+		// hygiene, not a behavior change.
+		res, err := tx.Exec(`UPDATE change_sets SET review_id = ?, review_completed_at = ?, review_unavailable_reason = '' WHERE id = ?`, reviewID, now.UnixMilli(), changeSetID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "change set %q not found", changeSetID)
+	})
+}
+
+// SetChangeSetReviewUnavailable records that the adversarial reviewer was
+// genuinely ATTEMPTED for cs but could not complete -- e.g. every attempt
+// (including runModel's own reduced-ask retry) was cut off at the model's
+// output-token ceiling (model.ErrTruncated) -- as a plain, non-empty reason.
+// It deliberately does NOT set review_completed_at: round-4's guarantee that
+// an unreviewed change set cannot be silently approved must hold exactly as
+// before ReviewCompleted() still reports false. What changes is
+// ReviewNeverCompletedCause, which now names this reason instead of the
+// generic "likely cancelled mid-review", and ReviewUnavailable, which
+// reviewChangeSet's "approved" verdict consults to allow the one new,
+// explicit, recorded escape: --accept-findings on a change set whose review
+// never completed but was genuinely attempted and exhausted.
+//
+// Called from Execute's own review call and from RerunChangeSetReview, in
+// place of returning the truncation error outright -- that early return is
+// exactly what used to leave the task never marked done and the change set
+// wedged behind a guard with no supported way forward (the defect this
+// closes).
+func (db *DB) SetChangeSetReviewUnavailable(ctx context.Context, changeSetID, reason, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	if reason == "" {
+		return fmt.Errorf("store: SetChangeSetReviewUnavailable: reason must not be empty")
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "change_set",
+		AggregateID:   changeSetID,
+		Actor:         actor,
+		EventType:     "change_set.review_unavailable",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE change_sets SET review_unavailable_reason = ? WHERE id = ?`, reason, changeSetID)
 		if err != nil {
 			return err
 		}

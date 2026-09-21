@@ -18,6 +18,7 @@ type FakeProvider struct {
 	responses map[string]string
 	queue     map[string][]string // schema name -> queued responses (FIFO)
 	costQueue map[string][]float64 // schema name -> queued CostUSD (FIFO)
+	errQueue  map[string][]error   // schema name -> queued errors (FIFO), consumed before any response
 	caps      Capabilities
 	calls     []Request
 }
@@ -112,6 +113,24 @@ func (f *FakeProvider) EnqueueCost(schemaName string, usd float64) {
 	f.costQueue[schemaName] = append(f.costQueue[schemaName], usd)
 }
 
+// EnqueueError appends an error to return on the NEXT Complete() call for a
+// schema name (FIFO, independent of EnqueueResponse's own queue and consumed
+// before it) -- for a test that needs to script a failed attempt, most
+// commonly a truncated one (model.ErrTruncated, via a real provider's own
+// truncatedError), so it can prove a caller's retry-with-reduced-ask or
+// batch-and-merge degrade path actually runs and completes, rather than
+// merely existing in the code and being exercised only by a real, flaky
+// provider call. A schema with nothing queued behaves exactly as before this
+// existed: Complete falls through to its scripted/demo response.
+func (f *FakeProvider) EnqueueError(schemaName string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errQueue == nil {
+		f.errQueue = map[string][]error{}
+	}
+	f.errQueue[schemaName] = append(f.errQueue[schemaName], err)
+}
+
 // Name implements Provider.
 func (f *FakeProvider) Name() string { return "demo" }
 
@@ -122,6 +141,12 @@ func (f *FakeProvider) Capabilities() Capabilities { return f.caps }
 func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, req)
+	if q := f.errQueue[req.JSONSchemaName]; len(q) > 0 {
+		err := q[0]
+		f.errQueue[req.JSONSchemaName] = q[1:]
+		f.mu.Unlock()
+		return Response{}, err
+	}
 	raw := ""
 	if q := f.queue[req.JSONSchemaName]; len(q) > 0 {
 		raw = q[0]

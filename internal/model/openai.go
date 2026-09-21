@@ -44,7 +44,20 @@ func NewOpenAICompat(name, apiKey, baseURL string) *OpenAIProvider {
 			Streaming:         true,
 			ReasoningControls: true,
 			ContextLimit:      128000,
-			MaxOutput:         16384,
+			// 16384 is a conservative floor, deliberately NOT raised here:
+			// this same struct backs every OpenAI-COMPATIBLE endpoint
+			// (OpenRouter, Ollama, Groq, LM Studio, ...), most of which are
+			// not OpenAI itself and were never verified against OpenAI's own
+			// docs -- and it happens to still be the real, documented
+			// ceiling for two of OpenAI's own current models (gpt-4o,
+			// gpt-4o-mini), so it is not merely a guess either. A model
+			// actually documented higher -- OpenAI's own gpt-5.x/gpt-6
+			// catalog leaders, gpt-4.1, o3-mini -- is raised per-model by
+			// MaxOutputFor (pricing.go), consulted below in Complete, which
+			// only ever matches a model id this package has verified, so it
+			// cannot accidentally raise the ceiling for a same-named model
+			// on a different, unverified backend.
+			MaxOutput: 16384,
 		},
 	}
 }
@@ -125,10 +138,21 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		}
 		system += "Respond with a single JSON object matching the requested schema. Do not wrap in markdown."
 	}
+	// ceiling is THIS model's real, verified ceiling when known (MaxOutputFor
+	// overrides the conservative provider-wide baseline for a model verified
+	// HIGHER, e.g. gpt-5.6-luna's 128000 against the 16384 baseline); sent is
+	// what capOutput actually bounds the request to, and is also what a
+	// truncation error below must name -- not req.MaxOutput, which is only
+	// the stage's uncapped "want".
+	ceiling := p.caps.MaxOutput
+	if v, ok := MaxOutputFor(req.Model); ok {
+		ceiling = v
+	}
+	sent := capOutput(req.MaxOutput, ceiling)
 	body := openAIChatRequest{
 		Model:     req.Model,
 		Messages:  openAIMessages(req, system),
-		MaxTokens: capOutput(req.MaxOutput, p.caps),
+		MaxTokens: sent,
 	}
 	if len(req.JSONSchema) > 0 {
 		body.ResponseFormat = &openAIResponseFormat{Type: "json_object"}
@@ -165,7 +189,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		return Response{}, fmt.Errorf("openai: empty content (completion_tokens=%d)", parsed.Usage.CompletionTokens)
 	}
 	if len(parsed.Choices) > 0 && parsed.Choices[0].FinishReason == "length" {
-		return Response{}, truncatedError("openai", req.MaxOutput)
+		return Response{}, truncatedError("openai", req.Model, sent)
 	}
 	actual := parsed.Model
 	if actual == "" {

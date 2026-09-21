@@ -290,6 +290,42 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **The change-set adversarial review could truncate on a real diff and wedge
+  the initiative behind an unreachable remediation.** Observed with a real
+  model (claude-sonnet-5) on an 11-file, ~26 KB diff: the review failed
+  twice, identically, with `model: output truncated at the token budget …
+  raise the stage budget or use a model with a larger output ceiling`. The
+  suggested fix was unreachable — `MaxOutput` was a hardcoded provider
+  constant (16384 for Anthropic and OpenAI, 8192 for Gemini) that
+  `review.max_tokens` never touched — and once truncated, the change set sat
+  in `review_required` with no completed review: `idea execute` refused to
+  re-run the task (the never-completed-review guard) and `idea review <id>
+  approve --accept-findings` refused too, because it still required a
+  completed review. Fixed at all three layers:
+  1. **Capability accuracy.** Every provider's real, currently-documented
+     output ceiling is now used per model instead of one guessed constant —
+     Claude Sonnet 5/Opus 5/Fable 5.1/Opus 4.8 raise to 128,000 (Haiku
+     4.5/Sonnet 4.5 stay at their real 64,000), current OpenAI models raise to
+     128,000/32,768/100,000 depending on the model (gpt-4o/gpt-4o-mini stay at
+     16,384, their real ceiling), and Gemini's 3.x Flash models raise to
+     65,536 — verified against each provider's own model documentation, not
+     guessed from a price tier.
+  2. **`review.max_tokens` is now reachable.** It used to be read in exactly
+     one place — a post-hoc check that could only *fail* a stage whose output
+     exceeded it — and never raised what was actually requested. Setting it
+     now directly overrides the request budget sent for every stage (still
+     bounded by the model's real ceiling above), and a truncation error now
+     names it as the fix instead of the old, unreachable "raise the stage
+     budget".
+  3. **No wedge, no silent truncation.** A truncated reply is retried once
+     with a smaller ask (fewer findings, more concise) before giving up. If a
+     change-set review still cannot complete, that is now recorded explicitly
+     on the change set (never silently) instead of failing the whole run: the
+     task is still marked done, and `idea review <id> approve
+     --accept-findings` is the supported, explicit way forward — a change set
+     whose review was simply never attempted (e.g. a cancelled operation)
+     still refuses exactly as before, so an unreviewed change set still
+     cannot be silently approved.
 - **Architecture/design-stage decisions carried no provenance.** Resolving or
   reopening one marked no dependent requirement/task/change-set stale, and
   `/impact` reported "No dependents found" — on a real run, DEC-2..DEC-5 (all

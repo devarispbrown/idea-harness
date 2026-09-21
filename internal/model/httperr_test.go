@@ -250,3 +250,34 @@ func TestAnUntruncatedReplyIsNotFlagged(t *testing.T) {
 		t.Fatalf("a complete reply was rejected: %v", err)
 	}
 }
+
+// TestTruncatedErrorNamesOnlyReachableActions is the "the error must never
+// recommend an action that cannot be taken" requirement (round-6 B1).
+// model.truncatedError used to say "raise the stage budget or use a model
+// with a larger output ceiling" -- and the first half was a dead end: no
+// config field in this codebase raised the number this package actually
+// sent (MaxOutput was a hardcoded provider constant, and harness.yaml's
+// review.max_tokens, the one field a human would try, was read nowhere near
+// here). This package has no idea whether a caller is even running inside
+// the workflow engine, so it must not name a workflow-level remediation
+// (review.max_tokens, harness.yaml) it cannot verify applies or exists --
+// that is workflow.wrapTruncationGuidance's job, one layer up, where it IS
+// reachable. This test pins truncatedError to naming only what is true and
+// actionable at ITS layer: which model, which provider, and the exact
+// budget that was hit.
+func TestTruncatedErrorNamesOnlyReachableActions(t *testing.T) {
+	err := truncatedError("anthropic", "claude-sonnet-5", 16384)
+	msg := err.Error()
+
+	for _, unreachable := range []string{"review.max_tokens", "harness.yaml", "raise the stage budget"} {
+		if strings.Contains(msg, unreachable) {
+			t.Errorf("truncatedError names %q, which this package cannot verify is reachable "+
+				"(that is workflow.wrapTruncationGuidance's job, one layer up): %q", unreachable, msg)
+		}
+	}
+	for _, fact := range []string{"anthropic", "claude-sonnet-5", "16384"} {
+		if !strings.Contains(msg, fact) {
+			t.Errorf("truncatedError does not name %q, a fact this layer does know: %q", fact, msg)
+		}
+	}
+}
