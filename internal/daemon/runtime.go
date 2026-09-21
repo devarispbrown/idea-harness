@@ -87,10 +87,25 @@ type projectRuntime struct {
 	// (review defect #4). Zero when the file did not exist at that time.
 	cfgMTime time.Time
 
-	// planEditMu guards planEditLocks itself (not the edits); planEditLocks
-	// holds one *sync.Mutex per initiative id, lazily created (review M5).
-	planEditMu    sync.Mutex
-	planEditLocks map[string]*sync.Mutex
+	// planEdit is shared across every *projectRuntime a reload ever produces
+	// for this project (review H4: ReloadProject now builds a NEW
+	// projectRuntime and swaps the pointer rather than mutating fields in
+	// place, so anything that must outlive a reload -- this registry,
+	// engine -- has to be a pointer copied onto the new value, not a plain
+	// field. Two separate *sync.Mutex-per-initiative maps, one per
+	// projectRuntime generation, would let two requests that landed on
+	// different generations "hold the same lock" without excluding each
+	// other at all).
+	planEdit *planEditRegistry
+}
+
+// planEditRegistry holds one *sync.Mutex per initiative id, lazily created
+// (review M5), shared by every generation of a project's *projectRuntime
+// (review H4) so a reload can never hand out a second, unrelated lock for an
+// initiative another generation is already editing.
+type planEditRegistry struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
 }
 
 // lockPlanEdit serializes the Plan-editing endpoints (add/update/delete/
@@ -105,19 +120,33 @@ type projectRuntime struct {
 // initiative, so the guard check through every write in the handler runs
 // under the lock.
 //
+// review C2: it is not enough for the handlers alone to take this lock --
+// they re-read the initiative under it (lockPlanEditFresh in handlers.go)
+// precisely so this lock has something to serialize against. Every entry
+// point that claims the initiative and then rewrites its tasks --
+// AdvanceInitiative, ReopenPhaseInitiative, RevisePlanInitiative -- takes
+// this same lock around its own read-check-claim sequence, so a plan-edit
+// handler's fresh read always observes either the claim (and refuses) or a
+// state from strictly before it (and its write is not later undone by
+// DeleteTasksForInitiative). Before this, those three were the one path to
+// DeleteTasksForInitiative that took no lock at all: a plan-edit request
+// could read the initiative as editable, lose the race to one of them, and
+// still answer 200 OK for a task that no longer existed.
+//
 // Locks are per-initiative, not per-project: two different initiatives in
 // the same project may still edit their plans concurrently.
 func (pr *projectRuntime) lockPlanEdit(initiativeID string) func() {
-	pr.planEditMu.Lock()
-	m, ok := pr.planEditLocks[initiativeID]
+	pe := pr.planEdit
+	pe.mu.Lock()
+	m, ok := pe.locks[initiativeID]
 	if !ok {
-		if pr.planEditLocks == nil {
-			pr.planEditLocks = map[string]*sync.Mutex{}
+		if pe.locks == nil {
+			pe.locks = map[string]*sync.Mutex{}
 		}
 		m = &sync.Mutex{}
-		pr.planEditLocks[initiativeID] = m
+		pe.locks[initiativeID] = m
 	}
-	pr.planEditMu.Unlock()
+	pe.mu.Unlock()
 	m.Lock()
 	return m.Unlock
 }
@@ -270,6 +299,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	pr = &projectRuntime{
 		db: db, blobs: blobs, rawBlobs: rawBlobs, cfg: cfg, rootPath: rec.RootPath, dotEnv: dotEnv,
 		registry: registry, engine: engine, redactor: redactor, cfgMTime: harnessYAMLMTime(rec.RootPath),
+		planEdit: &planEditRegistry{},
 	}
 
 	r.projects[projectID] = pr
@@ -323,19 +353,43 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
 
-	// Rebuild config-derived components in place on the SAME engine (its mutex
-	// keeps serializing execute/apply/revert across the reload); then publish the
-	// pr fields under r.mu.
+	// Rebuild config-derived components on the SAME engine (its own mutexes
+	// keep serializing execute/apply/revert, and cfgMu -- see engine.go --
+	// keep every entry point's config-derived reads consistent, across the
+	// reload; review H4).
 	pr.engine.Reload(cfg.Harness, registry, redactor, blobs, dotEnv)
+
+	// review H4: build a FRESH *projectRuntime and swap the map entry under
+	// r.mu, rather than mutating pr's fields in place as this used to do
+	// (despite the doc comment above already promising a pointer swap).
+	// EnsureProject hands out this pointer to every HTTP handler, and
+	// roughly twenty of them (executor_status.go, providers, secrets,
+	// queue/evidence projections, redaction call sites...) read
+	// cfg/registry/redactor/blobs/dotEnv directly off it with no lock at
+	// all -- proven by the race detector against the in-place mutation this
+	// replaces. A handler that already holds the OLD pr (fetched from the
+	// map before this swap) keeps a fully self-consistent snapshot for the
+	// rest of its request; the next EnsureProject call gets the new one.
+	// db, rawBlobs, rootPath, engine and planEdit are identical across every
+	// generation by construction (see projectRuntime's doc comment) and so
+	// are carried over unchanged, not reloaded.
+	newPr := &projectRuntime{
+		db:       pr.db,
+		blobs:    blobs,
+		rawBlobs: pr.rawBlobs,
+		cfg:      cfg,
+		rootPath: pr.rootPath,
+		dotEnv:   dotEnv,
+		registry: registry,
+		engine:   pr.engine,
+		redactor: redactor,
+		cfgMTime: harnessYAMLMTime(pr.rootPath),
+		planEdit: pr.planEdit,
+	}
 	r.mu.Lock()
-	pr.cfg = cfg
-	pr.dotEnv = dotEnv
-	pr.registry = registry
-	pr.blobs = blobs
-	pr.redactor = redactor
-	pr.cfgMTime = harnessYAMLMTime(pr.rootPath)
+	r.projects[projectID] = newPr
 	r.mu.Unlock()
-	return pr, nil
+	return newPr, nil
 }
 
 // harnessYAMLMTime returns harness.yaml's modification time under rootPath's
@@ -452,6 +506,42 @@ func closedChan() chan struct{} {
 	return c
 }
 
+// claimingOperationTypes are the CreateOperation `type` strings whose entry
+// point takes ClaimInitiativeRunning -- either directly in the Runtime
+// method that creates the operation, or (resume) inside the engine call it
+// launches -- before the operation exists (review H7). Everything else
+// (currently just suggest_answers) only reads the initiative to refuse an
+// already-running request synchronously; it never claims it.
+//
+// This is an explicit allowlist, not its complement, deliberately: a new
+// operation type added here that DOES claim and is left off this list only
+// means failOperationAfterPanic leaves a stuck `running` claim for
+// reconcileStaleOperations to sweep up on the next daemon restart -- a
+// recoverable stall. The list being wrong in the other direction (a
+// non-claiming type added here by mistake) is the actual hazard this review
+// item is about: it lets a panic in that operation steal and fail a
+// DIFFERENT, unrelated live claim. When adding a new claiming
+// CreateOperation call site, add its type string here too.
+var claimingOperationTypes = map[string]bool{
+	"resume":             true,
+	"advance_initiative": true,
+	"execute_initiative": true,
+	"apply_change_set":   true,
+	"revert_change_set":  true,
+	"revise_initiative":  true,
+	"retry_initiative":   true,
+	"reopen_phase":       true,
+	"revise_plan":        true,
+	"approve_plan":       true,
+}
+
+// operationClaimsInitiative reports whether opType's entry point takes
+// ClaimInitiativeRunning before the operation exists (review H7). See
+// claimingOperationTypes.
+func operationClaimsInitiative(opType string) bool {
+	return claimingOperationTypes[opType]
+}
+
 // registerCancel records a live cancellation handle for opID.
 func (r *Runtime) registerCancel(opID string, cancel context.CancelFunc) {
 	r.cancelMu.Lock()
@@ -564,7 +654,23 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
 			return
 		}
-		if op.InitiativeID != "" {
+		// review H7: only release the initiative when this operation type is
+		// one that actually claims it (ClaimInitiativeRunning, directly here
+		// or inside the engine call this launched). SuggestAnswersInitiative
+		// notably does not: it only reads the initiative to refuse a
+		// synchronous "already running" case and never claims anything, so a
+		// panic in it has no claim of its own to release. Before this,
+		// FailInitiative ran unconditionally here regardless of operation
+		// type; if some OTHER, unrelated operation legitimately held the
+		// initiative `running` at that exact moment, this overwrote that
+		// live claim with `failed` -- the user then ran `idea retry`, and a
+		// second pipeline started concurrently with the first, which kept
+		// running to completion none the wiser. FailInitiative's own CAS
+		// (status must be `running`) is defense-in-depth for the same
+		// hazard, but cannot by itself tell "my claim" from "someone else's
+		// claim" -- both look like `running` -- so this check is what
+		// actually closes it for the case this function handles.
+		if op.InitiativeID != "" && operationClaimsInitiative(op.Type) {
 			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
 				fmt.Sprintf("internal error while running %s", op.Type)); err != nil {
 				r.log.Error("releasing the initiative after a panic failed",
@@ -840,18 +946,53 @@ func (r *Runtime) ApproveInitiative(ctx context.Context, projectID, initiativeID
 	return domain.InitiativeApproved, nil
 }
 
-// ResumeInitiative re-runs the review loop for an initiative parked on a human.
+// ResumeInitiative re-runs the review loop for an initiative parked on a
+// human. It stays synchronous (unlike Advance/RevisePlan/ReopenPhase below):
+// callers get the final status directly, as before.
+//
+// review H4: Resume used to run Engine.Resume with no operation row at all --
+// the only claiming entry point that didn't create one. That made it
+// invisible to ListUnfinishedOperations, which both ReloadProject's "refuse
+// to swap config while an operation is running" guard and
+// reconcileStaleOperations key off: a reload could swap in a new
+// redactor/registry/cfg mid-review-loop (a secret just added to harness.yaml
+// would not be swept from the second half of the run), and a daemon crash
+// mid-Resume stranded Engine.Resume's own ClaimInitiativeRunning claim with
+// nothing for the sweep to find -- exactly what that claim's own comment
+// already flagged. The operation row here is bookkeeping only: Resume still
+// runs synchronously in this goroutine and still self-claims/self-releases
+// inside Engine.Resume exactly as before (its own defer already restores
+// needs_human_judgment on error); only ops visibility changes, so this
+// operation's own status is recorded here rather than via failOperation
+// (which would also fail the initiative -- Engine.Resume already decided
+// that outcome).
 func (r *Runtime) ResumeInitiative(ctx context.Context, projectID, initiativeID string) (domain.InitiativeStatus, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
 	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "resume")
+	if err != nil {
+		return "", err
+	}
+	r.ops.Add(1)
+	defer r.ops.Done()
 	status, err := pr.engine.Resume(ctx, initiativeID)
 	if err != nil {
+		opStatus := domain.OperationFailed
+		if ctx.Err() != nil {
+			opStatus = domain.OperationCancelled
+		}
+		if serr := pr.db.SetOperationFailed(context.WithoutCancel(ctx), opID, opStatus, operationErrorMessage(pr, err.Error())); serr != nil {
+			r.log.Error("could not record resume's operation failure", "initiative", initiativeID, "op", opID, "error", serr)
+		}
 		if errors.Is(err, store.ErrInitiativeNotClaimable) {
 			return "", preconditionf("resume re-runs the review for an initiative waiting on your judgment; this one is not")
 		}
 		return "", err
+	}
+	if serr := pr.db.SetOperationStatus(context.WithoutCancel(ctx), opID, domain.OperationSucceeded, initiativeID); serr != nil {
+		r.log.Error("could not record resume's operation success", "initiative", initiativeID, "op", opID, "error", serr)
 	}
 	return status, nil
 }
@@ -863,6 +1004,14 @@ func (r *Runtime) AdvanceInitiative(ctx context.Context, projectID, initiativeID
 	if err != nil {
 		return "", err
 	}
+	// Held across the read-check-claim-CreateOperation sequence below,
+	// mutually exclusive with the same lock held by every Plan-editing HTTP
+	// handler around its own read-check-write (review C2): without this, a
+	// plan-edit request could read the initiative as still editable a moment
+	// before this claims it `running` and rewrites its tasks (Advance builds
+	// the execution plan), and the plan-edit's later write would land on --
+	// or be silently undone by -- that rewrite with no error to the caller.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
@@ -982,8 +1131,8 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 		return "", err
 	} else if nt == nil {
 		return "", preconditionf(
-			"no ready tasks for this initiative (every task is done, cancelled, or blocked on an unsatisfied dependency); "+
-				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change "+
+			"no ready tasks for this initiative (every task is done, cancelled, or blocked on an unsatisfied dependency); " +
+				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change " +
 				"set), it must be ready/proposed -- `idea status` shows why it is not")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
@@ -1042,8 +1191,12 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 		pr.engine.SetNoteOverride(initiativeID, note)
 	}
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): a CAS
+		// on `running`, so this cannot stomp a legitimate write (e.g.
+		// verify's CompleteInitiative) that landed in the gap between
+		// Execute's engine mutex being released and this closure running.
 		release := func() {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				priorStatus, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after execute",
 					"initiative", initiativeID, "op", opID, "error", err)
@@ -1106,8 +1259,13 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 	}
 	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): a CAS
+		// on `running`. Proven repro: verify's CompleteInitiative landing in
+		// the gap between ApplyChangeSet's engine mutex being released and
+		// this closure running, discarding a real completion. See
+		// ReleaseInitiativeClaim's own doc comment.
 		release := func() {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				priorStatus, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after apply",
 					"initiative", initiativeID, "op", opID, "error", err)
@@ -1181,8 +1339,10 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	}
 	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): see
+		// the identical comment on apply's release() above.
 		release := func(to domain.InitiativeStatus) {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				to, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after revert",
 					"initiative", initiativeID, "op", opID, "error", err)
@@ -1399,6 +1559,11 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 	if err != nil {
 		return "", err
 	}
+	// See the identical lock in AdvanceInitiative (review C2): this claims
+	// the initiative and, once running, ReopenPhase calls
+	// DeleteTasksForInitiative -- the exact write a concurrent plan-edit
+	// handler's stale pre-lock read let through as a spurious 200 OK.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err
@@ -1486,6 +1651,11 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	if err != nil {
 		return "", err
 	}
+	// See the identical lock in AdvanceInitiative (review C2): this claims
+	// the initiative and, once running, RevisePlan calls
+	// DeleteTasksForInitiative -- the exact write a concurrent plan-edit
+	// handler's stale pre-lock read let through as a spurious 200 OK.
+	defer pr.lockPlanEdit(initiativeID)()
 	ini, err := pr.db.GetInitiative(ctx, initiativeID)
 	if err != nil {
 		return "", err

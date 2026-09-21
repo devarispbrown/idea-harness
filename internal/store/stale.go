@@ -238,6 +238,40 @@ func (db *DB) ClearStaleItem(ctx context.Context, initiativeID, staleID, actor s
 	})
 }
 
+// clearStaleMarksForTargetTx clears every active stale mark for one target (a
+// specific task, change_set, or requirement id), through tx, so it composes
+// atomically into whatever transaction retires that target (review MEDIUM:
+// stale marks are never garbage-collected -- a requirement mark survives
+// supersession and a change-set mark survives revert/reject, both display-only
+// noise but noise nonetheless). target_id alone selects the row correctly:
+// ids are globally unique across tables, so target_type only disambiguates
+// against a theoretical (never observed) UUID collision.
+func clearStaleMarksForTargetTx(tx *sql.Tx, targetType, targetID, actor string) error {
+	_, err := tx.Exec(`
+		UPDATE stale_marks SET cleared_at = ?, cleared_by = ?
+		WHERE target_type = ? AND target_id = ? AND cleared_at IS NULL`,
+		nowMS(), actor, targetType, targetID)
+	return err
+}
+
+// clearStaleMarksForRemovedRequirementsTx clears every active stale mark
+// whose requirement is (now, or already was) removed/superseded (review
+// MEDIUM: stale-mark garbage collection). A mark on a requirement that no
+// longer exists as live state is not an outstanding acknowledgement of
+// anything -- there is nothing left to re-examine against the decision that
+// made it stale. Scoped to the whole initiative rather than a specific id
+// list so it also retroactively clears marks an earlier supersede (before
+// this fix existed) left behind; harmless, since it only ever touches marks
+// whose requirement is already removed.
+func clearStaleMarksForRemovedRequirementsTx(tx *sql.Tx, initiativeID, actor string) error {
+	_, err := tx.Exec(`
+		UPDATE stale_marks SET cleared_at = ?, cleared_by = ?
+		WHERE initiative_id = ? AND target_type = 'requirement' AND cleared_at IS NULL
+		  AND target_id IN (SELECT id FROM requirements WHERE initiative_id = ? AND status = ?)`,
+		nowMS(), actor, initiativeID, initiativeID, domain.RequirementRemoved)
+	return err
+}
+
 // ClearStaleItemsForInitiative clears every active TASK and CHANGE-SET stale
 // mark for an initiative -- never a REQUIREMENT mark (review M5) -- when
 // re-planning regenerates the execution plan (review A4 #5: "re-planning

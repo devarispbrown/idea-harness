@@ -170,6 +170,23 @@ func (db *DB) SetInitiativePRURL(ctx context.Context, initiativeID, prURL, actor
 }
 
 // FailInitiative marks an initiative failed with a reason.
+//
+// review H7: this is a general-purpose "mark failed" primitive, not only the
+// release half of a live ClaimInitiativeRunning claim -- tests (and,
+// plausibly, a future administrative path) call it directly on an
+// initiative that is not currently `running` and expect it to take effect,
+// so it deliberately stays unconditional here rather than gaining
+// ClaimInitiativeRunning's CAS. The actual hazard this review item is about
+// -- failOperationAfterPanic calling this unconditionally for an operation
+// that never claimed the initiative in the first place
+// (SuggestAnswersInitiative, notably, has no ClaimInitiativeRunning call at
+// all), which could overwrite a DIFFERENT, unrelated live claim with
+// `failed` -- is closed at that call site instead, by skipping this call
+// entirely for operation types known not to claim
+// (operationClaimsInitiative in runtime.go). A blanket CAS here would have
+// been the wrong layer: it cannot distinguish "no claim to release" from "a
+// live claim that happens to belong to someone else", which is exactly the
+// case that matters.
 func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) error {
 	return db.Apply(ctx, Event{
 		AggregateType: "initiative",
@@ -183,6 +200,12 @@ func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) e
 		return err
 	})
 }
+
+// errInitiativeNotRunning is ReleaseInitiativeClaim's internal no-op signal
+// (review H7): the initiative was not `running`, so there was no live claim
+// to release. Never returned to ReleaseInitiativeClaim's own callers, which
+// translate it to a plain nil.
+var errInitiativeNotRunning = errors.New("store: initiative was not running; nothing to release")
 
 // ClaimInitiativeRunning marks an initiative running, but only from one of the
 // states given. It reports ErrInitiativeNotClaimable when no row matched.
@@ -346,6 +369,22 @@ func (db *DB) TransitionInitiative(ctx context.Context, initiativeID string, to 
 // the release only writes the status back. A commit review caught it by
 // reproducing exactly that against the real handler. `failed` is a transient
 // display of the status; the recorded reason is the durable fact.
+//
+// review H7: `status != failed` alone also passes while status == running
+// with an empty failure_reason -- the documented apply-then-verify sequence
+// (`idea apply` does not wait for its operation) runs exactly there, and
+// TestVerifyIsAllowedWhileAnApplyIsInFlight asserts that must keep working,
+// so `running` is deliberately NOT excluded here. What closes the actual
+// hazard (verify's CompleteInitiative racing apply/execute/revert while they
+// are still actively mutating files, not merely while the row still reads
+// `running` after they finished) is VerifyInitiative now taking the same
+// engine mutex Execute/ApplyChangeSet/RevertChangeSet hold for their whole
+// duration (see verify.go) -- verify cannot even reach this write until
+// their real work is over, which is the actual invariant this needs, not a
+// DB-status proxy for it that would also refuse the legitimate case above.
+// The residual sliver -- apply's own release() running a moment after
+// ApplyChangeSet returns (mutex released) but this write lands first -- is
+// closed by making that release a CAS too (ReleaseInitiativeClaim).
 func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
@@ -373,6 +412,68 @@ func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string
 		}
 		return nil
 	})
+}
+
+// ReleaseInitiativeClaim transitions an initiative FROM `running` back to
+// `to` -- the release half of ClaimInitiativeRunning -- but only while it is
+// STILL `running` (review H7). Every apply/execute/revert-style entry point
+// claims running, does its real work, and then hands the initiative back to
+// wherever it found it (or a related status); before this, that handback
+// (runtime.go's `release()` closures) used the unconditional
+// SetInitiativeStatus, so it could run moments after the claiming
+// operation's real work finished (its engine mutex already released) but
+// AFTER some other, legitimate write had already moved the initiative
+// somewhere else -- proven with verify's CompleteInitiative landing in that
+// exact gap and being silently overwritten back to the pre-apply status,
+// discarding a real completion. CAS-ing this on `running` makes the handback
+// a no-op whenever that has happened, instead of a stomp.
+func (db *DB) ReleaseInitiativeClaim(ctx context.Context, initiativeID string, to domain.InitiativeStatus, actor string) error {
+	if !to.Valid() {
+		return fmt.Errorf("store: invalid initiative status %q", to)
+	}
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	err := db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.status_changed",
+		Operation:     string(to),
+	}, func(tx *sql.Tx) error {
+		// Mirrors SetInitiativeStatus's own failure_reason handling: a
+		// release TO failed or running or needs_human_judgment must not
+		// clear a reason a real resolution (TransitionInitiative) has not
+		// yet acted on.
+		var res sql.Result
+		var err error
+		if to == domain.InitiativeFailed || to == domain.InitiativeRunning ||
+			to == domain.InitiativeNeedsHumanJudgment {
+			res, err = tx.Exec(
+				`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+				to, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeRunning)
+		} else {
+			res, err = tx.Exec(
+				`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ?
+				 WHERE id = ? AND status = ?`,
+				to, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeRunning)
+		}
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return errInitiativeNotRunning
+		}
+		return nil
+	})
+	if errors.Is(err, errInitiativeNotRunning) {
+		return nil
+	}
+	return err
 }
 
 // ErrInitiativeNotClaimable reports that an initiative could not be claimed:
@@ -595,9 +696,14 @@ func (db *DB) SupersedeRequirements(ctx context.Context, initiativeID, supersede
 		Actor:         ActorOrchestrator,
 		EventType:     "requirements.superseded",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
-			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved)
-		return err
+		if _, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
+			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- a superseded
+		// requirement's stale mark is dead weight, not an outstanding
+		// acknowledgement (see clearStaleMarksForRemovedRequirementsTx).
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
 	})
 }
 
@@ -629,8 +735,12 @@ func (db *DB) SupersedeRequirementsExcept(ctx context.Context, initiativeID, sup
 		args = append(args, domain.RequirementRemoved)
 		query := `UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND id NOT IN (` +
 			strings.Join(placeholders, ",") + `) AND status != ?`
-		_, err := tx.Exec(query, args...)
-		return err
+		if _, err := tx.Exec(query, args...); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- see
+		// SupersedeRequirements's identical call.
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
 	})
 }
 

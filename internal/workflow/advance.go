@@ -545,7 +545,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	}
 
 	scale := projectScaleOf(ctx, e.workspaceRoot)
-	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(reqs)})
+	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{Requirements: len(reqs)})
 	inputs := []ccontext.Input{
 		{Selector: "immutable_policy", Content: "Decompose the converged design into 2-4 Tasks, each shipping a working vertical slice end to end -- not one task per layer or per requirement. A Task implements one or more Requirements (referenced by code); it is fine, and expected, for one task to implement several. Only go finer than 2-4 tasks when the plan is genuinely that granular (many independent, unrelated slices). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title."},
 		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, projectConventions(e.workspaceRoot))},
@@ -719,7 +719,7 @@ const PlanFindingTarget = "execution_plan"
 func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
 	tasks, _ := e.db.ListTasks(ctx, initiativeID)
 	scale := projectScaleOf(ctx, e.workspaceRoot)
-	rigor := calibrateRigor(RigorLevel(e.cfg.Review.Rigor), scale, changeSize{Requirements: len(tasks)})
+	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{Requirements: len(tasks)})
 
 	det := e.deterministicPlanChecks(ctx, initiativeID)
 	adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor)
