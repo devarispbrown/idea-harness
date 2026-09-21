@@ -126,32 +126,15 @@ func (e *Engine) RecordHumanEvidence(ctx context.Context, initiativeID, requirem
 	default:
 		return fmt.Errorf("workflow: requirement %q in state %q cannot take a human judgment", requirementRef, r.Status)
 	}
-	// A new human judgment supersedes all prior evidence for this requirement's
-	// criteria, so a stale pass cannot resurrect a later fail/waive.
-	if err := e.db.ClearVerificationEvidence(ctx, r.ID, actor); err != nil {
-		return err
-	}
-	for i := range r.AcceptanceCriteria {
-		ev := &domain.VerificationEvidence{
-			InitiativeID:  initiativeID,
-			RequirementID: r.ID,
-			CriterionKey:  domain.CriterionKey(r.ID, i),
-			Kind:          domain.VerificationAcceptance,
-			Status:        status,
-			VerifiedBy:    actor,
-			Note:          note,
-		}
-		if err := e.db.CreateVerificationEvidence(ctx, ev); err != nil {
-			return err
-		}
-	}
-	switch status {
-	case domain.VerificationFail:
-		return e.db.MarkRequirementFailed(ctx, r.ID, actor)
-	case domain.VerificationWaived:
-		return e.db.MarkRequirementWaived(ctx, r.ID, actor)
-	}
-	return nil
+	// store.RecordHumanEvidence, not a separate ClearVerificationEvidence +
+	// N*CreateVerificationEvidence + MarkRequirementFailed/Waived (review
+	// MEDIUM: RecordHumanEvidence atomicity): that used to be N+2 separate
+	// transactions, and a crash between any two of them destroyed the prior
+	// judgment without recording the new one -- an empty evidence set left
+	// standing under whatever status (e.g. `verified`) the requirement had
+	// before the call. One transaction: either the clear, every criterion's
+	// new evidence, and the status transition all land, or none of them do.
+	return e.db.RecordHumanEvidence(ctx, initiativeID, r.ID, len(r.AcceptanceCriteria), status, note, actor)
 }
 
 // RecordHumanPass records a human "pass" evidence for every acceptance criterion
