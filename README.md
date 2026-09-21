@@ -212,8 +212,10 @@ before approving anything: [a new project](docs/demo-greenfield.md), and
 
 `idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
 and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
-and findings (which is a web-UI action; the CLI only lists them) — printing exactly what to run
-next. `idea new` waits for the run it starts (`--no-wait` returns immediately and
+and findings — printing exactly what to run next. Decisions and questions can be resolved from the
+CLI (`idea resolve`, `idea answer`, `idea reopen-decision`, `idea accept-recommendations`,
+`idea triage`); dispositioning a review finding is still a web-UI action — the CLI only lists them
+(`idea reviews`). `idea new` waits for the run it starts (`--no-wait` returns immediately and
 `idea watch` follows it), and `--until-human` keeps going through the automatable steps —
 waiting for each to finish —
 instead of stopping after one, which is why the block above is eight commands rather than thirteen.
