@@ -326,6 +326,33 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
      whose review was simply never attempted (e.g. a cancelled operation)
      still refuses exactly as before, so an unreviewed change set still
      cannot be silently approved.
+- **A real Anthropic truncation (and the same class of reply from OpenAI or
+  Gemini) never became `model.ErrTruncated`, bypassing the recovery above.**
+  A follow-up live probe found that when `claude-sonnet-5` is cut off before
+  it finishes reasoning, it can return a lone `thinking` block with no text
+  block at all — observed on the wire as `stop_reason: max_tokens` with zero
+  text content. `anthropic.go` checked for empty content *before* checking
+  `stop_reason`, so this reply produced a generic `anthropic: empty content
+  (stop_reason=max_tokens, …)` error instead of `model.ErrTruncated`: no
+  retry-with-a-smaller-ask, no `review_unavailable_reason` recorded, and
+  `idea review <id> approve --accept-findings` refused with "likely
+  cancelled mid-review" — a truncation reported as a cancellation, with the
+  documented escape unreachable. The same ordering hazard existed in
+  `openai.go` (empty message content before `finish_reason=length`) and
+  `gemini.go` (empty parts before `finishReason=MAX_TOKENS`). All three now
+  check the provider's own finish/stop reason first, so a length-stop with
+  empty or thinking-only content is always reported as truncated.
+- **The review stage's default output-token ask was still the flat 16,384 it
+  had before the capability-accuracy fix above, so the same truncation
+  recurred by default.** Removing the old hardcoded per-provider clamp only
+  helped once a caller actually asked for more than 16,384; nothing did,
+  until a human hand-edited `review.max_tokens` in `harness.yaml`. The
+  review stage's default ask is now derived from the model's own verified
+  output ceiling (capped at 32,000 — the same size as the PRD stage's own
+  want, chosen so the default is not itself a full-ceiling ask on every
+  call, which would be needlessly slow and expensive for the common case),
+  so a `claude-sonnet-5` review now defaults to 32,000 instead of 16,384.
+  `review.max_tokens` still overrides this default outright when set.
 - **Architecture/design-stage decisions carried no provenance.** Resolving or
   reopening one marked no dependent requirement/task/change-set stale, and
   `/impact` reported "No dependents found" — on a real run, DEC-2..DEC-5 (all

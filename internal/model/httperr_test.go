@@ -239,6 +239,65 @@ func TestTruncationIsDetected(t *testing.T) {
 	}
 }
 
+// TestTruncationIsDetectedWhenContentIsEmpty pins D1 of the 2026-09-21
+// live-probe follow-up: TestTruncationIsDetected above already covers a
+// length-stop with SOME text content (a partial JSON string); this covers
+// the case actually observed on the wire, where the reply has NO text
+// content at all -- for Anthropic, a lone "thinking" block with a
+// length-stop and zero text blocks (observed: {"max_tokens": 4096,
+// "stop_reason": "max_tokens", "out_tokens": 4096, "blocks": [["thinking",
+// 0]]}). Before the fix, each provider checked for empty content BEFORE
+// checking its own finish/stop reason, so this exact shape produced a
+// generic "empty content" error that never satisfied
+// errors.Is(err, ErrTruncated) -- silently skipping runModel's
+// retry-with-a-smaller-ask and every layer built on top of it (see
+// internal/workflow/review_truncation_test.go's end-to-end pin of the same
+// defect through the real Anthropic client).
+//
+// Restoring the old check order (empty-content check before the finish/stop
+// reason check) in any of these three providers must fail this test.
+func TestTruncationIsDetectedWhenContentIsEmpty(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		call       func(u string) error
+	}{
+		{
+			name: "openai finish_reason=length, no message content",
+			body: `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"completion_tokens":4096}}`,
+			call: func(u string) error { _, err := NewOpenAI("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			// The exact shape observed on the wire: a lone thinking block
+			// (no "text" field, only "thinking"), so anthropicResponse
+			// decodes it with Text == "" and the concatenated content is
+			// empty even though the model produced 4096 tokens of output.
+			name: "anthropic stop_reason=max_tokens, lone thinking block",
+			body: `{"content":[{"type":"thinking","thinking":"partial reasoning, cut off"}],"stop_reason":"max_tokens","usage":{"output_tokens":4096}}`,
+			call: func(u string) error { _, err := NewAnthropic("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			name: "gemini finishReason=MAX_TOKENS, no text parts",
+			body: `{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"candidatesTokenCount":4096}}`,
+			call: func(u string) error { _, err := NewGemini("k", u).Complete(context.Background(), req()); return err },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer ts.Close()
+
+			err := c.call(ts.URL)
+			if err == nil {
+				t.Fatal("a truncated, content-free reply was accepted as a successful one")
+			}
+			if !errors.Is(err, ErrTruncated) {
+				t.Fatalf("error does not wrap ErrTruncated (the empty-content check ran first): %v", err)
+			}
+		})
+	}
+}
+
 // TestAnUntruncatedReplyIsNotFlagged is the other direction: the ordinary stop
 // reason must pass through.
 func TestAnUntruncatedReplyIsNotFlagged(t *testing.T) {

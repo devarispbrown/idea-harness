@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -219,6 +222,95 @@ func TestTruncationErrorNamesOnlyReachableActions(t *testing.T) {
 	other := errors.New("some other model failure")
 	if got := wrapTruncationGuidance(other); got != other {
 		t.Errorf("wrapTruncationGuidance altered a non-truncation error: got %v, want it unchanged", got)
+	}
+}
+
+// TestChangeSetReviewRecoversFromARealAnthropicTruncatedThinkingReply pins
+// D1 of the 2026-09-21 live-probe follow-up, end-to-end through the REAL
+// Anthropic client (not FakeProvider's synthetic errors used above): a lone
+// "thinking" content block with no text block at all, stop_reason
+// "max_tokens" -- the exact shape observed on the wire for claude-sonnet-5
+// when it is cut off before it finishes reasoning -- must still become
+// model.ErrTruncated, so every layer above (runModel's retry-with-a-smaller-
+// ask, ErrReviewUnavailable, domain.ChangeSet.ReviewUnavailable, the
+// --accept-findings escape) actually fires.
+//
+// Before the fix, AnthropicProvider.Complete checked for empty content
+// BEFORE checking stop_reason, so this exact reply produced a generic
+// "anthropic: empty content (stop_reason=max_tokens, ...)" error that never
+// satisfied errors.Is(err, model.ErrTruncated) -- runModel's retry never
+// triggered (isTransientModelError is also false for this message), the
+// change set was left wedged in review_required with ReviewCompletedAt nil,
+// and ReviewNeverCompletedCause fell back to "likely cancelled mid-review":
+// a truncation reported as a cancellation, with --accept-findings refused
+// because ReviewCompleted() and ReviewUnavailable() were both false.
+func TestChangeSetReviewRecoversFromARealAnthropicTruncatedThinkingReply(t *testing.T) {
+	var requests []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, string(body))
+		// The probe's own observed wire values: {"max_tokens": 4096,
+		// "stop_reason": "max_tokens", "out_tokens": 4096,
+		// "blocks": [["thinking", 0]]} -- a lone thinking block, no text
+		// block, and output_tokens equal to the budget (a length-stop, not
+		// the model choosing to stop on its own).
+		_, _ = w.Write([]byte(`{"content":[{"type":"thinking","thinking":"partial reasoning, cut off mid-thought"}],` +
+			`"stop_reason":"max_tokens","usage":{"input_tokens":100,"output_tokens":4096},"model":"claude-sonnet-5"}`))
+	}))
+	defer ts.Close()
+
+	eng, db, iniID, _ := newWorkspaceFixture(t)
+	addTask(t, db, iniID, "add /health")
+	// Route ONLY the adversarial-review role to a real AnthropicProvider
+	// pointed at the stub above, so this test exercises anthropic.go's
+	// actual response parsing for that call while every other stage
+	// (implementation_brief/planner, ...) keeps using the demo FakeProvider's
+	// synthetic-but-valid responses -- Execute calls more than one role, and
+	// only the review role's truncation is what this test is about.
+	eng.registry.Add("review-stub", model.NewAnthropic("sk-test-not-real", ts.URL))
+	eng.cfg.Models = map[string]string{RoleAdversarialReviewer: "review-stub/claude-sonnet-5"}
+
+	ctx := context.Background()
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatalf("Execute must not hard-fail on an exhausted truncation: %v", err)
+	}
+
+	if len(requests) != 3 {
+		t.Fatalf("expected exactly 3 review requests (1 + 1 retry with a smaller ask + 1 final exhausted attempt), got %d", len(requests))
+	}
+	if !strings.Contains(requests[1], "cut off because it exceeded the output budget") {
+		t.Error("the retried request's system prompt does not ask for a smaller reply -- the retry-on-truncation path did not fire")
+	}
+
+	if cs.ReviewCompleted() {
+		t.Fatal("expected ReviewCompleted() false -- every attempt truncated")
+	}
+	if !cs.ReviewUnavailable() {
+		t.Fatal("expected ReviewUnavailable() true, recording that the review was attempted and exhausted")
+	}
+	cause := cs.ReviewNeverCompletedCause()
+	if cause == "likely cancelled mid-review" {
+		t.Errorf("ReviewNeverCompletedCause still reports the generic cancellation guess, not the real reason: %q", cause)
+	}
+	if !strings.Contains(cause, "truncat") && !strings.Contains(cause, "output budget") {
+		t.Errorf("ReviewNeverCompletedCause does not name truncation: %q", cause)
+	}
+
+	// The documented escape must be reachable, and ONLY it -- a plain approve
+	// must still refuse.
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err == nil {
+		t.Fatal("plain approve succeeded on a change set whose review is only unavailable, not completed")
+	}
+	if err := eng.ReviewChangeSetAccepting(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatalf("--accept-findings refused a change set with a genuinely exhausted, recorded review: %v", err)
+	}
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetApproved {
+		t.Fatalf("expected approved, got %q", got.Status)
 	}
 }
 
