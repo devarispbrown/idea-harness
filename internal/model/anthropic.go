@@ -175,14 +175,19 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 		}
 	}
 	content := sb.String()
-	if strings.TrimSpace(content) == "" {
-		return Response{}, fmt.Errorf("anthropic: empty content (stop_reason=%s, output_tokens=%d, blocks=%d)", parsed.StopReason, parsed.Usage.OutputTokens, len(parsed.Content))
-	}
-	// StopReason was already parsed and used only inside the empty-content
-	// message above; it was never compared to max_tokens, so a truncated reply
-	// looked like a successful one.
+	// stop_reason is checked BEFORE the empty-content check: a real truncation
+	// can arrive as a lone "thinking" block with no text part at all (observed
+	// on the wire: stop_reason=max_tokens, output_tokens=4096, one thinking
+	// block), which makes content == "". Checking the length-stop first
+	// ensures that case is always reported as model.ErrTruncated -- not as an
+	// opaque "empty content" error that skips retry-with-a-smaller-ask and the
+	// rest of the truncation recovery path. Restoring the old order (empty
+	// check first) reintroduces the defect.
 	if parsed.StopReason == "max_tokens" {
 		return Response{}, truncatedError("anthropic", req.Model, sent)
+	}
+	if strings.TrimSpace(content) == "" {
+		return Response{}, fmt.Errorf("anthropic: empty content (stop_reason=%s, output_tokens=%d, blocks=%d)", parsed.StopReason, parsed.Usage.OutputTokens, len(parsed.Content))
 	}
 	actual := parsed.Model
 	if actual == "" {

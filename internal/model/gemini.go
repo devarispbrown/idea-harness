@@ -178,11 +178,17 @@ func (p *GeminiProvider) Complete(ctx context.Context, req Request) (Response, e
 		}
 	}
 	content := sb.String()
-	if strings.TrimSpace(content) == "" {
-		return Response{}, fmt.Errorf("gemini: empty content (output_tokens=%d)", parsed.UsageMetadata.CandidatesTokenCount)
-	}
+	// finish_reason is checked BEFORE the empty-content check: a truncated
+	// reply can come back with no text parts at all (e.g. cut off mid a
+	// non-text part), which makes content == "". Checking the length-stop
+	// first ensures that is always reported as model.ErrTruncated, matching
+	// the ordering fix applied to the Anthropic and OpenAI providers -- see
+	// anthropic.go for the full rationale.
 	if len(parsed.Candidates) > 0 && parsed.Candidates[0].FinishReason == "MAX_TOKENS" {
 		return Response{}, truncatedError("gemini", req.Model, sent)
+	}
+	if strings.TrimSpace(content) == "" {
+		return Response{}, fmt.Errorf("gemini: empty content (output_tokens=%d)", parsed.UsageMetadata.CandidatesTokenCount)
 	}
 	actual := parsed.ModelVersion
 	if actual == "" {
