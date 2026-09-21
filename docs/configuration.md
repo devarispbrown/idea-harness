@@ -49,7 +49,7 @@ network: disabled
 # table below; they are not three spellings of one budget.
 review:
   max_cycles: 3        # review passes in M1 before needs_human_judgment (0 also means 3)
-  max_tokens: 0        # per-response output-token ceiling (0 = no ceiling)
+  max_tokens: 0        # requested output-token budget per call, 0 = each stage's own built-in size
   max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
   rigor: auto          # auto | quick | standard | thorough (review B1)
 
@@ -104,7 +104,7 @@ Top-level fields:
 |---|---|---|
 | `network` | `disabled` \| `enabled` — whether research may fetch `research.urls` | `disabled` |
 | `review.max_cycles` | how many **review passes** the M1 review loop may run before it stops and sets the initiative to `needs_human_judgment`. A revise happens between passes, so `n` passes allow at most `n-1` revisions. `0` is **not** unlimited: the engine coerces any value `<= 0` to 3 | `3` |
-| `review.max_tokens` | ceiling on the **output tokens of a single model response**. A response over it fails that stage — it is a per-call cap, not a pool that drains | `0` (no ceiling) |
+| `review.max_tokens` | the **output-token budget requested for every model call**, and the ceiling checked against the response — it is a per-call figure, not a pool that drains. Set, it directly overrides a stage's own built-in request size (still bounded by the model's real output ceiling — see "Model output ceilings" below); a response over it still fails that stage. Unset (`0`), each stage uses its own built-in request size as before | `0` (each stage's built-in size) |
 | `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |
 | `review.rigor` | `auto` \| `quick` \| `standard` \| `thorough` — how much scrutiny the PRD, plan and change-set reviews apply (review B1). See "Review rigor" below | `auto` |
 | `research.urls` | seed URLs fetched during research when `network: enabled` | none |
@@ -294,8 +294,14 @@ so it is worth being exact:
   `POST /initiatives/{id}/revise` — gets a fresh count. The CLI has no revise or resume verb
   of its own; it reaches the loop through `idea new` and `idea next`. The M2 plan review
   is a single pass and does not consult this field.
-- **`review.max_tokens`** is checked against one response's output-token count. It never accumulates,
-  and it does not limit input tokens.
+- **`review.max_tokens`** sets the output-token budget **requested** for every model call
+  (`workflow.effectiveMaxOutput`) and is then checked against one response's actual output-token
+  count. It never accumulates, and it does not limit input tokens. Before 0.6.0 it was checked-only:
+  setting it could fail a stage whose response came in over it, but could never raise what was
+  actually sent — a truncated adversarial review's own error message pointed at this field as "the
+  stage budget" to raise, and doing so did nothing. It is now wired through: set, it overrides a
+  stage's own built-in request size directly (see "Model output ceilings" below for what that size
+  is still bounded by).
 - **`review.max_cost_usd`** is the only cumulative figure. It is charged in `Engine.chargeUSD` from
   each response's reported cost, including the vision-description calls for uploaded images.
   The cost is computed from a built-in price table (`internal/model/pricing.go`), not billed
@@ -303,8 +309,29 @@ so it is worth being exact:
   tokens and $2.00 per million output tokens. Calls to a local model (Ollama, or any provider on `localhost`) are charged nothing.
   The coding agent's own model calls, made inside its container, are not counted.
 
-Reading `0` as "unlimited" is right for `max_tokens` and `max_cost_usd` and wrong for `max_cycles`,
-which the engine rewrites to 3. `idea config validate` rejects a negative `max_cycles`.
+Reading `0` as "unlimited" is right for `max_cost_usd`, "each stage's own built-in request size" for
+`max_tokens`, and wrong for `max_cycles`, which the engine rewrites to 3. `idea config validate`
+rejects a negative `max_cycles`.
+
+### Model output ceilings
+
+Every stage's request carries a `MaxOutput` (the number of output tokens the model may produce),
+capped by the model's own real ceiling so the request is never rejected outright — `internal/model`
+tracks each provider's current models' verified ceilings (checked against that provider's own model
+documentation, not guessed): Claude Sonnet 5/Opus 5/Fable 5.1/Opus 4.8 at 128,000, Claude Haiku
+4.5/Sonnet 4.5 at their real, lower 64,000; current OpenAI models at 128,000 (the gpt-5.x/gpt-6
+family), 32,768 (gpt-4.1/gpt-4.1-mini), 100,000 (o3-mini) or 16,384 (gpt-4o/gpt-4o-mini, their real
+ceiling); Gemini's 3.x Flash family at 65,536. A model this table does not recognize falls back to
+its provider's own conservative baseline rather than an optimistic guess.
+
+If a reply is still cut off at that ceiling (`model: output truncated at the token budget`), the
+engine retries ONCE with a smaller ask (fewer findings, more concise) before giving up — this is
+usually enough for a moderately oversized diff or PRD. If it still cannot complete: for the
+change-set adversarial review specifically, this is recorded on the change set explicitly (never
+silently) instead of failing the whole run, and `idea review <id> approve --accept-findings` is the
+supported way to proceed without a completed review (see the `idea review` row in
+[`cli.md`](cli.md)); for every other stage, the run fails with a message naming `review.max_tokens`
+as the field to raise, since that is now what actually controls the size of the request.
 
 ### Review rigor (review B1)
 

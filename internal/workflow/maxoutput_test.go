@@ -123,7 +123,7 @@ func TestStageBudgetsThatExceedACeilingAreCapped(t *testing.T) {
 		ceiling := prov.Capabilities().MaxOutput
 		for _, stage := range allStages {
 			raw := maxOutputForStage(stage)
-			got := effectiveMaxOutput(stage, prov)
+			got := effectiveMaxOutput(stage, prov, 0)
 			if raw > ceiling && got != ceiling {
 				t.Errorf("stage %q wants %d, %s declares %d, but %d was sent", stage, raw, name, ceiling, got)
 			}
@@ -142,7 +142,7 @@ func TestTheCapIsOnlyACap(t *testing.T) {
 
 	for _, stage := range allStages {
 		want := maxOutputForStage(stage)
-		got := effectiveMaxOutput(stage, anthropic)
+		got := effectiveMaxOutput(stage, anthropic, 0)
 		switch {
 		case want <= ceiling && got != want:
 			t.Errorf("stage %q wants %d, which fits under %d, but %d was sent",
@@ -180,8 +180,73 @@ func TestAProviderWithNoDeclaredCeilingIsNotCapped(t *testing.T) {
 	if got := minOutput(32000, uncappedProvider{}); got != 32000 {
 		t.Errorf("minOutput against a provider declaring no ceiling = %d, want 32000", got)
 	}
-	if got := effectiveMaxOutput(StageProductDefinition, uncappedProvider{}); got != maxOutputForStage(StageProductDefinition) {
+	if got := effectiveMaxOutput(StageProductDefinition, uncappedProvider{}, 0); got != maxOutputForStage(StageProductDefinition) {
 		t.Errorf("effectiveMaxOutput against an uncapped provider = %d, want the stage budget %d",
 			got, maxOutputForStage(StageProductDefinition))
+	}
+}
+
+// TestReviewMaxTokensRaisesTheWant is the fix for the second layer of the
+// change-set review truncation defect (the defect's own remediation, "raise
+// the stage budget", pointed at review.max_tokens, and it did nothing:
+// runModel only ever checked it AFTER a response came back, to fail a stage
+// that exceeded it -- never to raise what was actually requested). An
+// explicit review.max_tokens above the stage's built-in want must now change
+// what is actually sent, not just enforce a ceiling after the fact.
+func TestReviewMaxTokensRaisesTheWant(t *testing.T) {
+	anthropic := model.NewAnthropic("k", "https://example.invalid")
+	ceiling := anthropic.Capabilities().MaxOutput
+	builtIn := maxOutputForStage(StageReview)
+
+	raised := int64(builtIn + 20000)
+	if raised > int64(ceiling) {
+		t.Fatalf("test fixture: raised (%d) must stay under this provider's ceiling (%d)", raised, ceiling)
+	}
+	if got := effectiveMaxOutput(StageReview, anthropic, raised); got != int(raised) {
+		t.Errorf("effectiveMaxOutput(StageReview, review.max_tokens=%d) = %d, want %d (the built-in want, %d, was never raised)",
+			raised, got, raised, builtIn)
+	}
+}
+
+// TestReviewMaxTokensStillCappedByTheProviderCeiling: raising review.max_tokens
+// past what the model can actually produce must still be capped by the
+// model's real ceiling -- it is a way to raise the ask, not to bypass
+// Capabilities.MaxOutput and send a request the provider will reject or
+// truncate anyway.
+func TestReviewMaxTokensStillCappedByTheProviderCeiling(t *testing.T) {
+	anthropic := model.NewAnthropic("k", "https://example.invalid")
+	ceiling := anthropic.Capabilities().MaxOutput
+
+	got := effectiveMaxOutput(StageReview, anthropic, int64(ceiling)*10)
+	if got != ceiling {
+		t.Errorf("effectiveMaxOutput with review.max_tokens far over the ceiling = %d, want capped to %d", got, ceiling)
+	}
+}
+
+// TestReviewMaxTokensAppliesBeyondTheReviewStage: review.max_tokens is
+// enforced (post-hoc) against every stage's response, not only the
+// adversarial review's (see runModel's own hard-stop check) -- docs/
+// configuration.md documents it as checked "against one response's
+// output-token count" with no stage scoping. Raising it must be symmetric
+// with that: it overrides any stage's want, not only StageReview's.
+func TestReviewMaxTokensAppliesBeyondTheReviewStage(t *testing.T) {
+	anthropic := model.NewAnthropic("k", "https://example.invalid")
+	small := int64(1234)
+	if got := effectiveMaxOutput(StageProductDefinition, anthropic, small); got != int(small) {
+		t.Errorf("effectiveMaxOutput(StageProductDefinition, review.max_tokens=%d) = %d, want %d", small, got, small)
+	}
+}
+
+// TestReviewMaxTokensZeroLeavesEveryStageAtItsBuiltInWant: 0 (the config
+// default, "no ceiling" per docs/configuration.md) must not change any
+// stage's existing behavior.
+func TestReviewMaxTokensZeroLeavesEveryStageAtItsBuiltInWant(t *testing.T) {
+	for name, prov := range realProviders() {
+		for _, stage := range allStages {
+			if got, want := effectiveMaxOutput(stage, prov, 0), minOutput(maxOutputForStage(stage), prov); got != want {
+				t.Errorf("%s/%s: effectiveMaxOutput(..., 0) = %d, want %d (unchanged from before review.max_tokens was wired through)",
+					name, stage, got, want)
+			}
+		}
 	}
 }

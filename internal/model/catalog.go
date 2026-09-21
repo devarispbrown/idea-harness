@@ -113,3 +113,7 @@ func ContextWindowFor(provider, model string) int {
 	}
 	return 0
 }
+
+// Per-model output-ceiling accuracy (round-6 B1, the change-set adversarial
+// review truncation defect) is owned by pricing.go's modelMaxOutput /
+// MaxOutputFor, not this file -- see pricing.go.

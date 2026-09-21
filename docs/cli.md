@@ -55,7 +55,7 @@ if this file has drifted.
 | `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
-| `idea review <id> <verdict> [--no-wait]` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review; a real model call, waits by default -- --no-wait returns a handle immediately) | `--accept-findings`, `--no-wait` | no |
+| `idea review <id> <verdict> [--no-wait]` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait` | no |
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |

@@ -551,6 +551,17 @@ type ChangeSet struct {
 	// expected, permanent state for that row, not evidence of a cancellation.
 	// Never serialized: it is a message-selection detail, not API surface.
 	PredatesReviewTracking bool `json:"-"`
+	// ReviewUnavailableReason records why the adversarial reviewer was
+	// genuinely ATTEMPTED for cs but could not complete -- e.g. every
+	// attempt (including runModel's own reduced-ask retry) was cut off at
+	// the model's output-token ceiling (model.ErrTruncated) on a change set
+	// too large for it. Set once, by store.SetChangeSetReviewUnavailable,
+	// from Execute's own review call or RerunChangeSetReview -- never
+	// guessed. Empty means either the review completed (ReviewCompleted()
+	// is true) or it was never attempted at all (see
+	// ReviewNeverCompletedCause, which falls back to "likely cancelled
+	// mid-review" in that case). See ReviewUnavailable.
+	ReviewUnavailableReason string `json:"review_unavailable_reason,omitempty"`
 }
 
 // ReviewCompleted reports whether the adversarial reviewer actually finished
@@ -569,10 +580,29 @@ func (cs ChangeSet) ReviewCompleted() bool {
 // projection.BuildGuidance, and daemon.applyStateMessage (review MEDIUM #2).
 // Only meaningful when !cs.ReviewCompleted().
 func (cs ChangeSet) ReviewNeverCompletedCause() string {
+	if cs.ReviewUnavailableReason != "" {
+		return cs.ReviewUnavailableReason
+	}
 	if cs.PredatesReviewTracking {
 		return "it predates review-completion tracking from before this project's daemon was upgraded, not because anything was cancelled"
 	}
 	return "likely cancelled mid-review"
+}
+
+// ReviewUnavailable reports whether the adversarial reviewer was genuinely
+// ATTEMPTED for cs but explicitly could not complete (as opposed to never
+// having run at all -- ordinary cancellation, or predating review tracking).
+// Only meaningful when !cs.ReviewCompleted().
+//
+// This is the one case reviewChangeSet's "approved" verdict may let through
+// with --accept-findings even though ReviewCompleted() is false: the human
+// asked for a review, one genuinely ran, and it explicitly could not finish
+// (recorded by store.SetChangeSetReviewUnavailable, never guessed) -- as
+// opposed to a change set that was simply cancelled mid-review and has no
+// review attempt to point to at all, which must still refuse either way (the
+// round-4 guarantee: an unreviewed change set cannot be silently approved).
+func (cs ChangeSet) ReviewUnavailable() bool {
+	return cs.ReviewUnavailableReason != ""
 }
 
 // ImplementsTask reports whether this change set is applied AND actually
