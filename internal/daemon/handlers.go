@@ -3414,6 +3414,7 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
 	pr, cs, err := s.changeSet(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
@@ -3448,18 +3449,25 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	// because it takes the identical body shape and belongs in the same
 	// "act on this change set's review" surface a human already knows, not
 	// because it is itself a verdict.
+	//
+	// Async (ICP re-run D2): this is a real model call (observed 1m12s-1m38s
+	// across four founder-journey runs), and running it synchronously inside
+	// this handler used to mean the daemon always finished the work while the
+	// CLI's own 60s http.Client timed out waiting for the response -- a
+	// brand-new command that appeared to fail on every use. 202 + operation_id
+	// is the same shape `idea apply`/`idea execute` already answer with, so
+	// the CLI can wait/watch/cancel it instead of racing a fixed timeout.
 	if body.Verdict == "rerun" {
 		if body.AcceptFindings {
 			writeError(w, http.StatusBadRequest, "accept_findings does not apply to rerun")
 			return
 		}
-		ctx, cancel := s.rt.detachedContext()
-		defer cancel()
-		if err := pr.engine.RerunChangeSetReview(ctx, cs.InitiativeID, cs.ID); err != nil {
+		opID, err := s.rt.RerunChangeSetReviewInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
+		if err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
+		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 		return
 	}
 	review := pr.engine.ReviewChangeSet
@@ -3471,10 +3479,12 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 	// context, so closing the browser tab -- which cancels it -- cancelled
 	// the review mid-flight and left "context canceled" in daemon.log with
 	// the change set stuck wherever it was. Approve itself no longer calls
-	// the model at all (see reviewChangeSet's own comment), but "rerun"
-	// above now does, and context.WithoutCancel below is what protects it
-	// from that exact failure mode; kept here too since nothing about
-	// verdict handling should depend on the request's own lifetime.
+	// the model at all (see reviewChangeSet's own comment); kept here anyway
+	// since nothing about verdict handling should depend on the request's own
+	// lifetime. "rerun" above is the one verdict that does call the model,
+	// and it is now async (RerunChangeSetReviewInitiative, ICP re-run D2),
+	// detached the same way via its own launchOperation background context
+	// rather than this one.
 	// context.WithoutCancel detaches from the client's disconnect; the
 	// timeout is this process's own bound, generous enough for a real model
 	// call without hanging forever on a wedged provider.

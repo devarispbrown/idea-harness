@@ -53,6 +53,8 @@ var asyncEntryPoints = map[string]entryPoint{
 	"ReopenPhaseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
 	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
 	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"RerunChangeSetReviewInitiative": {true,
+		"claims from every non-running state (ICP re-run D2: the adversarial review this runs is a real model call, now async rather than synchronous inside the request); explicit release on both exits"},
 	"SuggestAnswersInitiative": {false,
 		"checks existence and refuses while running, but does not take the claim — it only reads open questions and writes suggestions, so a concurrent advance is a provenance race rather than a corrupted tree. The existence check landed after audit 5; the claim itself is still recorded in docs/plans/deferred.md as C4"},
 }

@@ -28,6 +28,32 @@ type cliChangeSet struct {
 	ReviewID       string `json:"review_id"`
 	GitCommitSHA   string `json:"git_commit_sha"`
 	CreatedAt      string `json:"created_at"`
+	// ReviewCompletedAt mirrors domain.ChangeSet.ReviewCompletedAt (omitted by
+	// the API when nil, same as there): non-nil once the adversarial reviewer
+	// has actually run for this change set. Used to distinguish "awaiting
+	// your approval" from "never finished its adversarial review" (ICP re-run
+	// D4) -- both surface as status review_required, and only this field
+	// tells them apart.
+	ReviewCompletedAt *string `json:"review_completed_at,omitempty"`
+}
+
+// changeSetReviewStatusLabel is cmdChanges's per-item status label (ICP
+// re-run D4): `idea changes` used to answer "needs your approval" for a
+// change set whose adversarial review never completed at all (most often
+// cancelled mid-review, per domain.ChangeSet.ReviewNeverCompletedCause) --
+// the same state `idea status`'s guidance already described correctly as
+// "never finished its adversarial review". There is nothing to approve yet
+// in that state (`idea review <id> approve` refuses it and names `rerun`),
+// so the two commands must not disagree about what to call it.
+func changeSetReviewStatusLabel(cs cliChangeSet) string {
+	if cs.Status == "review_required" && cs.ReviewCompletedAt == nil {
+		return "never finished its adversarial review"
+	}
+	label := humanStatus[cs.Status]
+	if label == "" {
+		return cs.Status
+	}
+	return label
 }
 
 // cliRiskSignal mirrors a risk signal.
@@ -158,11 +184,7 @@ func cmdChanges(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, heading("Change Sets"))
 	for _, cs := range changes {
-		label := humanStatus[cs.Status]
-		if label == "" {
-			label = cs.Status
-		}
-		fmt.Fprintf(stdout, "  %s  %s\n", code(cs.HumanID), muted(label))
+		fmt.Fprintf(stdout, "  %s  %s\n", code(cs.HumanID), muted(changeSetReviewStatusLabel(cs)))
 	}
 	return nil
 }
@@ -282,6 +304,20 @@ func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 // errored, most often cancelled mid-review, leaving only mechanical-check
 // observations behind). rerun is not itself a ChangeSet-state-machine
 // verdict, but it shares this command and endpoint.
+//
+// rerun is a real model call (ICP re-run D2: observed 1m12s-1m38s across
+// four founder-journey runs) and the daemon now runs it as an async
+// operation rather than inside the request -- running it inside the request
+// used to mean the daemon always finished the review while the CLI's own 60s
+// http.Client timed out waiting for the response, so a brand-new command
+// appeared to fail on every single use even though the work completed every
+// time. rerun therefore waits on the operation by default (the same
+// reasoning `idea retry` waits by default: it prints a start line and then
+// polls, so a client-side timeout can never again be mistaken for the review
+// itself failing); --no-wait returns a handle immediately instead, matching
+// every other long-running command's escape hatch. approve/reject/
+// changes_requested are unchanged: no model call, still answered
+// synchronously.
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 2 {
@@ -313,11 +349,24 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
 		return err
 	}
-	verb := "review recorded"
 	if verdict == "rerun" {
-		verb = "review rerun"
+		fmt.Fprintln(stdout, ok("✓ review rerun started")+" "+code(positional[0]))
+		opID := out["operation_id"]
+		if opID != "" {
+			fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+		}
+		if a.has("--no-wait") || opID == "" {
+			fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+			return nil
+		}
+		fmt.Fprintln(stdout, muted("working… (")+bold("--no-wait")+muted(" returns immediately; ")+bold("idea watch")+muted(" follows it)"))
+		if err := waitForOperation(c, projectID, "", opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ review rerun complete")+" "+code(positional[0]))
+		return nil
 	}
-	line := ok("✓ "+verb) + " " + code(positional[0]) + " → " + verdict
+	line := ok("✓ review recorded") + " " + code(positional[0]) + " → " + verdict
 	if accepting {
 		line += " " + muted("(findings accepted)")
 	}

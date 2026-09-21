@@ -1331,6 +1331,97 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   (Go does not link one package's `_test.go` files into another's build, so
   it cannot simply move into one), so this is the enforcement a file rename
   can't provide here.
+- **The adversarial reviewer read the harness's own redaction as a syntax
+  error and raised a blocking false-positive critical (ICP re-run 5, D1,
+  High).** An advisory (test-fixture) secret in a diff shown to the reviewer
+  was masked to `const [REDACTED]` — `RedactString`'s generic
+  "credential assignment" pattern matches an identifier PREFIX before its
+  keyword, so `AuthFixtureSecret = "<value>"` (the keyword "Secret" inside
+  the identifier itself) pulled the identifier, `=` and quotes into the
+  match, and `redact()` replaced the WHOLE match, not just the value. The
+  reviewer, never told redaction happens, reported at `confidence: high`
+  that the file "contains an invalid Go const declaration that will not
+  compile, breaking the entire main package" — blocking approval — while
+  `go build ./...` and `go test ./...` passed on the same change set and
+  `gofmt -e` parsed the file cleanly. Fixed two ways: `redact()` now masks
+  only the matched pattern's own capturing group (every catalog pattern's
+  doc comment already promised this is what the group wraps), so
+  `const AuthFixtureSecret = "[REDACTED]"` stays valid Go and reads
+  unambiguously as a withheld value rather than an absent one; and the
+  adversarial reviewer's own prompt now says plainly that credential-shaped
+  values are masked before it sees the diff, that a `[REDACTED]` span is a
+  withheld value and not missing/malformed source, and that it must not
+  raise a finding about the syntax, validity or type of one. Prevention via
+  the prompt plus a legible placeholder was chosen over a post-hoc
+  finding-filter: the harness cannot know every way a model might phrase a
+  "this doesn't parse" objection, but it can make the thing being objected
+  to actually parse.
+- **`idea review <id> rerun` exceeded the CLI's 60s HTTP timeout on every
+  invocation (ICP re-run 5, D2, Medium).** The adversarial review it runs is
+  a real model call — observed 1m12s–1m38s across four founder-journey
+  observations — and used to run synchronously inside the HTTP handler
+  (detached from the request's own cancellation, but not from the CLI's own
+  `http.Client{Timeout: 60 * time.Second}`): the daemon always finished the
+  review, but the CLI reported a timeout error every time, so a brand-new
+  command of this release appeared to fail on every use even though the
+  work always completed. `rerun` is now an async operation
+  (`RerunChangeSetReviewInitiative`), the same 202 + `operation_id` shape
+  `idea apply`/`idea execute` already use; the CLI waits on it by default
+  (the same reasoning `idea retry` already waits by default: the command's
+  entire job is completing a review, so a client-side timeout must never
+  again be mistaken for the review itself failing), reports success once
+  the operation actually succeeds, and understands `--no-wait`/`idea
+  cancel`/`idea watch` like every other long-running command.
+- **The adversarial review — the most expensive phase of `idea execute`,
+  1–1.5 minutes — was never reported as its own stage (ICP re-run 5, D3,
+  Low).** `setStage` was called for "Planning", "Agent running" and "Running
+  checks", but not for the review that follows, so a polled operation's
+  `stage` read "Running checks" for the review's entire duration even
+  though the daemon log already recorded `stage=review` for it. Both call
+  sites (`Execute`, `RerunChangeSetReview`) now call
+  `setStage(ctx, initiativeID, "Running adversarial review")` first.
+- **`idea changes` labelled a never-reviewed change set "needs your
+  approval" (ICP re-run 5, D4, Low).** The same `review_required` status
+  `idea status`'s guidance already, correctly, described as "never finished
+  its adversarial review" (`domain.ChangeSet.ReviewCompleted`/
+  `ReviewNeverCompletedCause`) — there is nothing to approve yet in that
+  state, and `idea review <id> approve` refuses it and names `rerun`. The
+  API's change-set list now carries `review_completed_at`, and `idea
+  changes` uses the same wording `idea status` does whenever it is nil.
+- **`idea execute` printed "✓ execute started" before a synchronous
+  precondition guard could still reject the run (ICP re-run 5, D5, Low).**
+  Several of Execute's own guards — another open change set, executor
+  resolution, the trust-tier gate, a prior change set of the same task left
+  mid-review or as an unresolved no-op — ran only inside the async
+  `launchOperation` goroutine, strictly after the daemon had already
+  answered 202 and the CLI had already printed its success line; a
+  real founder-journey run hit exactly this (a task whose only change set
+  never finished its adversarial review) and it failed in under a
+  millisecond, at zero model cost, immediately after the "started" line
+  printed. `Engine.ExecutePrecondition` now runs the same read-only checks
+  synchronously, before the operation is ever created, so a run this cheap
+  a guard would refuse anyway is refused synchronously with nothing printed
+  as having started; Execute's own copies remain the backstop for the race
+  window between the two.
+- **`idea tasks --json` omitted `requirement_ids` and `depends_on`** even
+  though `GET .../tasks` has always returned both (ICP re-run 5 gap): the
+  CLI's `cliTask` DTO simply dropped them, so a script had no way to see a
+  task's requirement traceability or dependencies short of raw HTTP — which
+  is exactly what the evaluator had to fall back to for plan edits, since
+  there is no CLI verb for add/merge/split/depends-on/reorder either (see
+  `docs/plans/deferred.md`). Both fields are now on `cliTask` and reach
+  `idea tasks --json` unchanged.
+- **`idea pr` dumped a raw git error on a repository with no remote
+  configured** (ICP re-run 5 gap): `pushRemote`'s "origin" fallback named a
+  remote that did not exist, so `git push -u origin <branch>` failed with
+  git's own unclassified text ("'origin' does not appear to be a git
+  repository"). `pushRemote` now checks the remote actually exists before
+  ever shelling out to `git push`, and a push that still fails on a
+  missing-remote message (a branch's own `branch.<name>.remote` naming a
+  remote since removed) is classified the same way; both surface as a new
+  `git.ErrNoRemote`, reported as "this repository has no remote configured;
+  add one (e.g. `git remote add origin <url>`) and push the branch, then
+  run `idea pr` again" rather than git's raw output.
 
 ### Fixed — whole-branch adversarial review follow-up (MEDIUM/LOW backlog)
 
