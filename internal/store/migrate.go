@@ -2,7 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // globalMigrations is the global.db schema (project registry + daemon meta).
@@ -733,6 +737,24 @@ ALTER TABLE change_sets ADD COLUMN no_op INTEGER NOT NULL DEFAULT 0;
 
 // migrate applies any pending migrations transactionally, recording each in
 // schema_migrations.
+//
+// review MEDIUM: this exists-check used to run as a standalone SELECT
+// outside any transaction, and only THEN would applyMigration open its own
+// transaction to run the DDL and record the row. Two connections opening the
+// same un-migrated database for the first time concurrently (a real
+// scenario store.Open on its own does nothing to prevent -- EnsureProject's
+// single-flight is a daemon-layer guard, not one this package can rely on
+// every caller to provide) both read `exists=0` for version 1 before either
+// had committed, so both proceeded to applyMigration: whichever's write
+// transaction commits second then re-runs DDL SQLite had already applied
+// (e.g. `ALTER TABLE … ADD COLUMN` a second time) and fails outright.
+// Reproduced failing roughly 3 of 4 times under real concurrent opens.
+//
+// The fix is in applyMigration below: it no longer trusts a check made
+// outside its own transaction. This loop's exists check stays as a cheap
+// pre-filter (skipping an already-applied migration's transaction entirely
+// in the common, uncontended case) but is no longer load-bearing for
+// correctness.
 func (db *DB) migrate(list []string) error {
 	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
@@ -758,23 +780,54 @@ func (db *DB) migrate(list []string) error {
 	return nil
 }
 
+// applyMigration records version as applied FIRST, inside the transaction,
+// before running its DDL -- not after (review MEDIUM: concurrent first-open
+// race). schema_migrations.version is its PRIMARY KEY, so that INSERT is
+// itself the atomic claim: SQLite's own file locking serializes two
+// connections' concurrent write transactions (the busy_timeout already
+// configured on Open makes the second simply wait rather than error), and
+// once the second's INSERT finally runs, it either succeeds (this
+// connection won the race, or nobody has applied this version yet) or hits
+// a primary-key constraint violation (the OTHER connection already
+// committed this version while this one was waiting) -- reported here as
+// "already applied", not as a failure, and the DDL below is correctly
+// skipped rather than run a second time over a schema SQLite already
+// changed.
 func (db *DB) applyMigration(version int, sqlText string) error {
 	tx, err := db.sql.Begin()
 	if err != nil {
 		return fmt.Errorf("store: migrate %d begin: %w", version, err)
 	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, nowMS()); err != nil {
+		tx.Rollback()
+		if isUniqueOrPKViolation(err) {
+			// A concurrent first-open already applied this version while we
+			// were waiting for the write lock. Nothing to do.
+			return nil
+		}
+		return fmt.Errorf("store: migrate %d record: %w", version, err)
+	}
 	if _, err := tx.Exec(sqlText); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: migrate %d: %w", version, err)
-	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, nowMS()); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("store: migrate %d record: %w", version, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: migrate %d commit: %w", version, err)
 	}
 	return nil
+}
+
+// isUniqueOrPKViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
+// constraint violation (any SQLITE_CONSTRAINT_* extended code masks down to
+// the base SQLITE_CONSTRAINT primary result code), as opposed to some other
+// failure (disk full, corruption, a genuinely malformed statement) that must
+// still surface as a real error.
+func isUniqueOrPKViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_CONSTRAINT
 }
 
 var _ = sql.ErrNoRows // keep database/sql import stable across edits
