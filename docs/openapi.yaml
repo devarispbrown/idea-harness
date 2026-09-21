@@ -14,7 +14,7 @@ openapi: 3.1.0
 
 info:
   title: idea-harness daemon API
-  version: 0.5.1
+  version: 0.6.0
   summary: The local HTTP API of the idea-harness daemon.
   description: |
     The daemon's REST + SSE API is the only way into the product graph. The `idea` CLI is a thin
@@ -405,6 +405,13 @@ paths:
         status and the Understanding projection - counts of open decisions and open questions - so
         it never loads change sets and can never name one. Use `/next` when you want a command to
         execute; the two legitimately disagree.
+
+        The HANDLER wrapping the pure projection above does have store access, and uses it for
+        `why` sentences the projection alone cannot compose: `stale_items` (review A4 #5), and,
+        when the current change set was rejected by the secret sweep, the actual cause -- the file
+        (or "in the output of `<check>`") and kind of secret, never the value, plus the
+        not_a_secret disposition route when the match is overridable -- instead of only the
+        generic "a check or the review found a problem" (ICP re-run defect #5).
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -562,6 +569,69 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getTimeline
+      summary: Human-language "what changed" timeline
+      description: |
+        C1, wave 3 contract. Built from the event log and the change-set, decision and stale-mark
+        tables, scoped to this initiative throughout — the bug this replaces let `GET .../changed`
+        leak another initiative's counts, since the events table carries no `initiative_id` of its
+        own. Newest first. `idea changed` uses this endpoint.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: RFC3339 timestamp; excludes entries at or before it.
+          schema: { type: string, format: date-time }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The timeline, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TimelineEntry" }
+        "400":
+          description: "`since must be RFC3339`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/costs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [understanding]
+      operationId: getCosts
+      summary: Spend and time per phase
+      description: |
+        C3, wave 3 contract. Model-call spend/time per workflow phase, from the run records that
+        already exist, plus the coding-agent run count/duration separately — agent spend is
+        parsed best-effort from the agent's own output and is `null` with a note when it could
+        not be recovered for every run.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The cost/time summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InitiativeCosts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/seen:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -570,9 +640,14 @@ paths:
       operationId: markSeen
       summary: Advance the UI read cursor
       description: |
-        Sets the project's `ui` read cursor to `through`, clamped to the highest event sequence, so
-        What Changed never clears events that arrived mid-read. Project-scoped despite pairing with
-        an initiative view.
+        Sets a read cursor to `through`, clamped to the highest event sequence, so What Changed
+        never clears events that arrived mid-read.
+
+        `initiative_id` (M1, wave 3 review fix) scopes the cursor to that one initiative
+        (`ui:<initiativeId>`) -- required so that marking one initiative seen cannot advance a
+        single project-wide cursor past another initiative's own, still-unseen events. Optional
+        and backward compatible: omitting it keeps writing the project-wide `ui` cursor, exactly
+        as every caller before this field existed.
       requestBody:
         required: true
         content:
@@ -585,6 +660,11 @@ paths:
                   format: int64
                   minimum: 0
                   description: The sequence echoed from `/changed`.
+                initiative_id:
+                  type: string
+                  description: >-
+                    Scopes the cursor to this initiative (`ui:<initiativeId>`). Omitted: writes
+                    the project-wide `ui` cursor (back-compat default).
               required: [through]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
@@ -776,6 +856,12 @@ paths:
                 fresh:
                   type: boolean
                   description: Discard a stopped run's kept files, once this run is accepted.
+                note:
+                  type: string
+                  description: |
+                    D-a, wave 3 contract: an optional human note steering this one run, appended
+                    to the implementer's brief and recorded on the agent run. Decoded as leniently
+                    as `fresh`.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202":
@@ -792,6 +878,44 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/pr:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [initiatives]
+      operationId: createInitiativePR
+      summary: Open a pull request for the initiative's dedicated branch
+      description: |
+        Review C4 piece 3. Pushes `initiative.git_branch` (created by `git.branch_per_initiative`
+        on a first apply) and runs `gh pr create` with a body built from the initiative (PRD
+        summary, change sets, verification progress). Synchronous: unlike apply/execute/revert this
+        touches only git/GitHub state, not the workspace tree, so there is no background operation.
+        Idempotent -- a repeat call answers the same `pr_url` already recorded on the initiative
+        rather than opening a second PR.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The pull request's URL (freshly opened, or the existing one on a repeat call).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr_url: { type: string }
+                required: [pr_url]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The initiative has no dedicated branch yet (`git.branch_per_initiative` has not created
+            one), or the GitHub CLI (`gh`) is not installed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/verify:
@@ -839,6 +963,18 @@ paths:
                   type: boolean
                   description: Records the requirement as waived. Same one-disposition rule as `fail`.
                 note: { type: string }
+                confirm_passing_tests:
+                  type: boolean
+                  description: |
+                    C2/C3/H2/H4, wave 3 contract: confirms every requirement that is `approved`
+                    (never `draft`, `removed`, or one already carrying a human's own
+                    `verified`/`failed`/`waived` judgment), has acceptance criteria, and whose
+                    mapped tests (`evidence_tests` on `GET .../requirements`) all passed, through
+                    the same human-evidence path as a manual pass, actor `human`. Requires at
+                    least one applied change set for the initiative. Nothing is ever
+                    auto-verified without this explicit request, and one ineligible requirement
+                    never aborts the rest -- every candidate is attempted independently and the
+                    response says which were confirmed and which were skipped, and why.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -852,6 +988,29 @@ paths:
                   coverage:
                     type: array
                     items: { $ref: "#/components/schemas/Coverage" }
+                  confirmed:
+                    type: array
+                    items: { type: string }
+                    description: >-
+                      Present only when `confirm_passing_tests` was sent: the requirement codes
+                      it actually confirmed.
+                  skipped:
+                    type: array
+                    description: >-
+                      Present only when `confirm_passing_tests` was sent: every candidate
+                      requirement it looked at but did not confirm, and why (e.g. "no acceptance
+                      criteria", "not every mapped test passed", "no tests are mapped to
+                      <code>; ..." (ICP re-run defect #3 -- distinct from "not every mapped test
+                      passed": nothing was ever mapped, as opposed to a mapped test failing),
+                      "the initiative has no applied change set yet"). A requirement that was
+                      never a candidate at all (already verified/failed/waived, draft, or
+                      removed) is not listed here.
+                    items:
+                      type: object
+                      properties:
+                        requirement: { type: string }
+                        reason: { type: string }
+                      required: [requirement, reason]
                 required: [status, coverage]
         "400":
           description: "`invalid body`, or the domain error from recording evidence or running the gate."
@@ -920,6 +1079,11 @@ paths:
       tags: [understanding]
       operationId: getImpact
       summary: Dependents and staleness for one graph node
+      description: |
+        A task's change sets are not graph edges (`ChangeSet.TaskID` links them instead), so when the
+        walk reaches a task, its change sets are added as synthetic dependents (`edge_type:
+        "change_set"`) -- otherwise impact on a requirement or decision could reach the task and stop
+        there (review A4 #4/#5).
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1150,6 +1314,41 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/StaleId"
+    post:
+      tags: [graph]
+      operationId: ackStaleItem
+      summary: Acknowledge a stale item, clearing it
+      description: |
+        Review A4 #5: a decision reopened (or re-resolved differently) after tasks/change sets were
+        built on it marks the requirements that cite it, their tasks, and their applied change sets
+        stale (`GET /guidance`'s `stale_items`, and `staleness: "stale"` on `/impact`). Clears one
+        item by acknowledging it; re-planning (`revise-plan`/`reopen-phase`) clears every stale item
+        for the initiative at once instead.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cleared: { type: boolean }
+                required: [cleared]
+        "400":
+          description: The stale item does not exist, belongs to another initiative, or is already cleared.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -1186,30 +1385,38 @@ paths:
       operationId: retryInitiative
       summary: Re-run a failed initiative under a chosen model
       description: |
-        Restarts a run that failed, with the model named explicitly rather than inherited - a run
-        that failed on one model is often retried on another, and making the choice part of the
-        request keeps that decision in the operation's record.
+        Restarts a run that failed. `model` names the model explicitly rather than inheriting one
+        - a run that failed on one model is often retried on another, and making the choice part
+        of the request keeps that decision in the operation's record.
+
+        M4, wave 3 review fix: the whole body, including `model`, is optional and decoded
+        leniently (like `fresh`/`note` on `/execute`) - a caller that sends only `{"note":"..."}`
+        must not be rejected as if `model` were required. An absent or blank `model` falls back
+        to the initiative's already-configured default model, same as before this field existed.
 
         Asynchronous: poll the returned operation.
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              required: [model]
               properties:
                 model:
                   type: string
-                  description: "`provider/model`, e.g. `anthropic/claude-sonnet-5`."
+                  description: >-
+                    `provider/model`, e.g. `anthropic/claude-sonnet-5`. Optional: falls back to
+                    the initiative's configured default model when absent or blank.
+                note:
+                  type: string
+                  description: |
+                    D-a, wave 3 contract: an optional human note steering this retry. Retry re-runs
+                    framing→research→PRD→review rather than the implementer, so it joins the
+                    framing prompt (there is no implementer brief at this stage) and is recorded on
+                    that run. Decoded leniently.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
-        "400":
-          description: model was empty.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1288,6 +1495,44 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/queue:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [projects]
+      operationId: listQueue
+      summary: Cross-initiative "needs you" queue
+      description: |
+        D-b, wave 3 contract. Everything that needs the user across every initiative in the
+        project: open blocking decisions, change sets awaiting review, conflicts, denials, stale
+        items, and verifications ready to confirm. Ranked blocking first, then by age; the list
+        is returned pre-sorted.
+
+        `rank` (H6, wave 3 review fix) is a small 1..N ordinal position in that sorted list -- 1
+        is always the single most urgent item, N is the list's length -- never the daemon's
+        internal tier/age sort key (which routinely exceeds a double's safe-integer range and has
+        no meaning on its own). A denied change set (H3, review fix) appears here only for the
+        latest change set of its task, and only when a finding on it actually carries a
+        machine-readable deny code -- never for a plain human reject, a plain check failure, or an
+        attempt since superseded by a later one on the same task. A "ready to confirm" item (H4)
+        mirrors `confirm_passing_tests`' own eligibility: only an `approved` requirement. An
+        initiative that is `complete` or `failed` contributes nothing (H3): the queue is nothing
+        left for either to act on through it.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The queue, pre-sorted by `rank`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/QueueItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/artifacts/diff:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -1372,9 +1617,12 @@ paths:
       summary: Add a task to the plan
       description: |
         Only while the plan is editable: the initiative must be `plan_approved` or
-        `needs_human_judgment` and have no unfinished operation. `implements` may name a
-        requirement by code or id; `depends_on` entries may name existing tasks by title, code or
-        id. Title and statement are redacted before they are stored.
+        `needs_human_judgment` and have no unfinished operation. A task implements one or more
+        requirements, N:M (review A4 #3/#4): `implements` (single, kept for compatibility) and
+        `requirement_ids` (one or more) are merged, resolved by exact id or by code (tolerant of
+        case and a "REQ-3: title" form), and de-duplicated; **at least one is required**. `depends_on`
+        entries may name existing tasks by title, code or id. Title and statement are redacted before
+        they are stored.
       requestBody:
         required: true
         content:
@@ -1393,7 +1641,11 @@ paths:
                 estimate: { type: string }
                 implements:
                   type: string
-                  description: Requirement code or id.
+                  description: A single requirement code or id, kept for compatibility. Prefer requirement_ids.
+                requirement_ids:
+                  type: array
+                  items: { type: string }
+                  description: One or more requirement codes or ids. Merged with `implements`; at least one of the two is required.
                 depends_on:
                   type: array
                   items: { type: string }
@@ -1407,7 +1659,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`title is required`, `implements references an unknown requirement`, or `depends_on references an unknown task \"...\"`."
+          description: "`title is required`, `requirement_ids is required (at least one)`, `requirement_ids references an unknown requirement \"...\"`, or `depends_on references an unknown task \"...\"`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1471,6 +1723,9 @@ paths:
         Only the fields present are changed; an empty or blank string leaves the current value in
         place. Subject to the same editable window as `POST /tasks`, plus: the task must belong to
         this initiative, must not be `done` or `cancelled`, and must have no change sets yet.
+        `requirement_ids`, when present, REPLACES the task's requirement links entirely (resolved
+        the same tolerant way as `POST /tasks`); omit the field to leave them untouched. An empty
+        array is refused -- at least one requirement is required (review A4 #3).
       requestBody:
         required: true
         content:
@@ -1484,6 +1739,10 @@ paths:
                 estimate:
                   type: string
                   description: Written through as given, so an empty string clears it.
+                requirement_ids:
+                  type: array
+                  items: { type: string }
+                  description: Replaces the task's requirement links. Omit to leave unchanged; an empty array is a 400.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1492,7 +1751,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`invalid body` or `invalid priority`."
+          description: "`invalid body`, `invalid priority`, `requirement_ids is required (at least one)`, or `requirement_ids references an unknown requirement \"...\"`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1530,11 +1789,175 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: |
-            The editable-window message, or
-            `another task depends on this task; remove that dependency first`.
+            The editable-window message, or a readable refusal naming every task that still
+            depends on this one (review B3), e.g.
+            `TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies
+            first, or delete them too.` (it used to be the undifferentiated
+            `another task depends on this task; remove that dependency first`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: setTaskDependsOn
+      summary: Set a task's dependencies (review B3)
+      description: |
+        Replaces the task's `depends_on` wholesale (unlike `PATCH .../tasks/{taskId}`, which
+        leaves it untouched when omitted) -- an empty list is a legitimate request, "make this
+        task depend on nothing". Entries may name existing tasks by title, code or id, the same
+        tolerant resolution `POST /tasks` uses. Refused if the change would introduce a
+        dependency cycle anywhere in the initiative's task graph, not just a direct one. Subject
+        to the same editable window as `PATCH .../tasks/{taskId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                depends_on:
+                  type: array
+                  items: { type: string }
+              required: [depends_on]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The task after the edit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`invalid body`, `depends_on references an unknown task \"...\"`, `a task cannot depend on itself`, or `that dependency would create a cycle: ...`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/split:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: splitTask
+      summary: Split a task into two or more (review B3)
+      description: |
+        Each replacement task's `requirement_ids` defaults to the original task's own
+        requirements when omitted. Every replacement inherits the original's outgoing
+        `depends_on`, and anything that depended on the original now depends on ALL the
+        replacements (a safe superset; narrow it afterward with `POST .../depends-on`). The
+        original task is deleted once the replacements exist. Subject to the same editable
+        window as `PATCH .../tasks/{taskId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tasks:
+                  type: array
+                  minItems: 2
+                  items:
+                    type: object
+                    properties:
+                      title: { type: string, description: Required, non-blank. }
+                      statement: { type: string }
+                      requirement_ids:
+                        type: array
+                        items: { type: string }
+                        description: Defaults to the original task's own requirements when omitted.
+                    required: [title]
+              required: [tasks]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The new replacement tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`tasks must name at least 2 replacement tasks`, `replacement task N needs a title`, `replacement task N (\"...\") needs at least one requirement` (a caller-supplied `requirement_ids: []` or an original task with none), or `requirement_ids references an unknown requirement \"...\"`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/tasks/merge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [tasks]
+      operationId: mergeTasks
+      summary: Merge two tasks into one (review B3)
+      description: |
+        `task_ids` names exactly two tasks; the first survives. The requirements each task
+        implements are unioned onto the survivor, their statements are concatenated (survivor's,
+        blank line, merged task's), every dependency edge either task held is rewired onto the
+        survivor (including anything that depended on the merged task), and the merged task is
+        deleted. Subject to the same editable window as `PATCH .../tasks/{taskId}`, checked for
+        BOTH tasks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_ids:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  items: { type: string }
+                  description: "[survivor, task to merge in]."
+              required: [task_ids]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The survivor task after the merge.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400":
+          description: "`task_ids must name exactly 2 tasks`, `task_ids must name two distinct tasks` (the handler's own pre-check for a self-merge), `cannot merge a task with itself` (the store's defense-in-depth for the same case, reached only by a race the handler's pre-check missed), or `merging would create a dependency cycle (through ...)`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404":
+          description: "`task not found: ...`, or the initiative or project is unknown."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/TaskNotEditable" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel:
@@ -1806,6 +2229,84 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [decisions]
+      operationId: acceptRecommendations
+      summary: Resolve every open decision with its recommendation (review B4)
+      description: |
+        Answers the ICP round's "53 things need your judgment" in one call: every OPEN decision
+        on the initiative is resolved with its own `recommendation`, actor `human`. When a decision
+        has `options`, the recommendation must map onto exactly one of them -- verbatim, an "Option
+        B"/letter/index reference, or a case/whitespace/punctuation-tolerant match -- or it is left
+        open and named in `skipped` with a `reason`, along with a decision the model raised with no
+        recommendation at all.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: What was resolved and what was skipped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resolved:
+                    type: array
+                    items: { type: string }
+                    description: Codes of the decisions resolved.
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, description: The decision's code. }
+                        reason:
+                          type: string
+                          description: |
+                            Why it was left open: no recommendation was given, the recommendation
+                            did not match any option (or matched more than one), or it was resolved
+                            by a concurrent request while this call was running.
+                      required: [code, reason]
+                    description: Open decisions left open, and why.
+                required: [resolved, skipped]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/triage:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [decisions]
+      operationId: triage
+      summary: What needs your judgment first (review B4)
+      description: |
+        Ranks every open decision, open question, and open blocking finding by impact --
+        blocking, then severity, then dependents count (how many requirements cite an open
+        decision) -- and labels the top 3 `priority`; the rest `optional`.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The ranked items.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/TriageItem" }
+                required: [items]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/initiatives/{id}/questions:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -2013,7 +2514,10 @@ paths:
       tags: [decisions]
       operationId: reopenDecision
       summary: Undo a resolution
-      description: Takes no body.
+      description: |
+        Takes no body. Also marks stale the LIVE requirements that cite this decision via a
+        `derived_from` edge (review A4 #5) -- never one a later PRD revision superseded or removed
+        (ICP re-run defect #4) -- their tasks, and the applied change sets for those tasks.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -2228,6 +2732,21 @@ paths:
       tags: [graph]
       operationId: setFindingDisposition
       summary: Set a finding's disposition
+      description: |
+        `not_a_secret` is valid only when the finding's `category` is `secret_sweep` (review
+        changes #1); every other category refuses it with 400. A finding whose
+        `secret_overridable` is `false` (review H3 -- a value drawn from the project's own
+        configured secrets) refuses it too, unconditionally, with 400. Recording it also writes a
+        `SecretAllowlistEntry` for the finding's `secret_fingerprint` scoped to `secret_path`, so
+        the secret sweep ignores that exact (fingerprint, path) pair from then on, at Execute,
+        Apply, and the deterministic-check output sweep.
+
+        `rejected` means "the human judged this finding wrong" (ICP re-run defect #2): on a
+        finding with no system deny code -- the adversarial reviewer's own judgment call --
+        it resolves the approval bar exactly like `fixed`/`accepted_risk` does. It is always
+        recorded (200) regardless, but has no effect on approval for a finding that carries a
+        deny code, or one the system itself set to `rejected` (a failing build/test check); the
+        response then also carries `warning` naming the deny code that still applies.
       requestBody:
         required: true
         content:
@@ -2247,9 +2766,15 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: dispositioned }
+                  warning:
+                    type: string
+                    description: >-
+                      Present only when `disposition` was `rejected` and the finding still
+                      carries a system deny code (ICP re-run defect #2): names the code that
+                      still blocks approval, since a human's `rejected` does not clear one.
                 required: [status]
         "400":
-          description: "`disposition is required`, or the store's rejection of an unknown disposition."
+          description: "`disposition is required`, the store's rejection of an unknown disposition, or `not_a_secret` on a finding that is not `secret_sweep`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2300,6 +2825,61 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/projects/{projectId}/secret-allowlist:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [graph]
+      operationId: listSecretAllowlist
+      summary: List this project's "not a secret" overrides
+      description: |
+        Every fingerprint a human dispositioned `not_a_secret` on a `secret_sweep` finding (review
+        changes #1): the secret sweep ignores each of these from then on, at both Execute and
+        Apply. The fingerprint itself is never returned in full -- only a short prefix, enough to
+        tell entries apart -- and the value it was computed from never was.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The project's allowlist entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SecretAllowlistEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/secret-allowlist/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Allowlist entry id.
+        schema: { type: string }
+    delete:
+      tags: [graph]
+      operationId: revokeSecretAllowlist
+      summary: Revoke a "not a secret" override
+      description: Removes one allowlist entry, so the secret sweep denies that fingerprint again.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: revoked }
+                required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/change-sets/{id}:
     parameters:
@@ -2421,7 +3001,24 @@ paths:
                   description: |
                     The wire vocabulary, which is not the CLI's: `idea review <id> approve` sends
                     `approved`. A client that posts `approve` or `reject` gets a 400.
-                  enum: [approved, rejected, changes_requested]
+
+                    `rerun` (ICP re-run defect #1) is not a verdict the ChangeSet state machine
+                    records — the change set stays `review_required` throughout — it runs the
+                    adversarial reviewer again for a change set whose review never completed the
+                    first time (`Execute`'s own review call errored, most often because the
+                    operation was cancelled mid-review). It shares this endpoint because it takes
+                    the identical body shape and belongs in the same "act on this change set's
+                    review" surface, not because it is itself a verdict. `approved` refuses (400)
+                    while a change set's review has not completed, naming `rerun`; once `rerun`
+                    completes it, `approved` proceeds normally and — as below — makes no further
+                    model call.
+
+                    `rerun` is itself a real model call (ICP re-run D2, observed 1m12s–1m38s), so
+                    unlike the other three verdicts it answers **202** with an `operation_id` rather
+                    than **200** — poll `GET /operations/{id}` for completion. Running it
+                    synchronously used to mean the daemon always finished the review while a
+                    client's own HTTP timeout gave up waiting on the response.
+                  enum: [approved, rejected, changes_requested, rerun]
                 accept_findings:
                   type: boolean
                   description: |
@@ -2434,14 +3031,19 @@ paths:
                     Only the reviewer's findings. A finding carrying a deny code — `secret_sweep`,
                     `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
                     dispositioned (a failing build check is `rejected`, not a judgment to accept
-                    away). The deny gate is re-run afterwards, so anything left alone still refuses.
+                    away). The deny gate is re-run afterwards, so anything left alone still refuses
+                    — except a finding a HUMAN already dispositioned `rejected` on their own, with
+                    no deny code: that resolves the gate too (ICP re-run defect #2), the same as if
+                    this call had signed it off as `accepted_risk`.
 
-                    Ignored without `approved`.
+                    Ignored without `approved`. A 400 with `rerun`: there is nothing to sign off
+                    before rerun's review has even produced findings.
               required: [verdict]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
-          description: Reviewed.
+          description: Reviewed. `approved`, `rejected` and `changes_requested` call no model and
+            answer synchronously.
           content:
             application/json:
               schema:
@@ -2449,18 +3051,21 @@ paths:
                 properties:
                   status: { type: string, const: reviewed }
                 required: [status]
+        "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
           description: |
             `verdict is required`, the engine's rejection of the verdict or the change set's
-            state, or `json: unknown field "..."`. The body is closed: this operation decodes
-            strictly and rejects any key it does not declare, so `acceptFindings` (camelCase)
-            is a 400 rather than a silently-dropped field. Closed only up to Go's
+            state, `accept_findings: true` with `rerun` (nothing to sign off before rerun's review
+            has even produced findings), or `json: unknown field "..."`. The body is closed: this
+            operation decodes strictly and rejects any key it does not declare, so `acceptFindings`
+            (camelCase) is a 400 rather than a silently-dropped field. Closed only up to Go's
             ASCII-case-insensitive field matching — `Verdict` is accepted as `verdict`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -2471,11 +3076,15 @@ paths:
     post:
       tags: [change-sets]
       operationId: applyChangeSet
-      summary: Apply an approved change set to the workspace
+      summary: Apply an approved (or reverted) change set to the workspace
       description: |
         Asynchronous, so the status guard runs here rather than in the background: a change set that
-        is not `approved` is refused with 409 and a message that says what to do instead, rather
-        than reporting "apply started" and failing where only the log would see it.
+        is not `approved` or `reverted` is refused with 409 and a message that says what to do
+        instead, rather than reporting "apply started" and failing where only the log would see it.
+
+        `reverted` (ICP re-run defect #3) is accepted so a reverted change set can be re-applied
+        without a full agent run, subject to the same staleness (`fsdiff.StaleBase`) and
+        secret-sweep guards a fresh `approved` apply runs.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -2488,6 +3097,9 @@ paths:
             `change set CHG-1 is already applied; \`idea revert CHG-1\` rolls it back`,
             `change set CHG-1 is being applied; \`idea changes\` shows when it lands`,
             `change set CHG-1 needs approval first: \`idea review CHG-1 approve\``,
+            `change set CHG-1 never finished its adversarial review: \`idea review CHG-1 rerun\`,
+            then approve` (ICP re-run defect #1: its review never completed, so approve itself
+            would also refuse it),
             `change set CHG-1 was rejected; \`idea reviews\` shows why`, or
             `change set CHG-1 cannot be applied from status <status>`.
           content:
@@ -2511,6 +3123,37 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/change-sets/{id}/pr-checks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/ChangeSetId"
+    get:
+      tags: [change-sets]
+      operationId: getChangeSetPRChecks
+      summary: The latest CI status of the change set's initiative's pull request
+      description: |
+        Review C4 piece 3. Runs `gh pr checks` against the initiative's dedicated branch
+        (`git.branch_per_initiative`); every change set of one initiative shares the same PR and so
+        the same result. Synchronous: this is a read, not a mutation.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The PR's latest CI status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PRChecksResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            No pull request exists yet for this initiative (`idea pr` first), or the GitHub CLI
+            (`gh`) is not installed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/change-sets/{id}/resolve-conflict:
@@ -2693,6 +3336,22 @@ paths:
                 git_commit:
                   type: boolean
                   description: Omitted leaves the current value; null is treated as omitted.
+                git_allow_default_branch:
+                  type: boolean
+                  description: |
+                    harness.yaml `git.allow_default_branch` (review C4, adopted #2; wave 3
+                    contract). Omitted leaves the current value; null is treated as omitted.
+                git_branch_per_initiative:
+                  type: boolean
+                  description: |
+                    harness.yaml `git.branch_per_initiative`. Omitted leaves the current value;
+                    null is treated as omitted.
+                review_rigor:
+                  type: string
+                  enum: [auto, quick, standard, thorough]
+                  description: |
+                    harness.yaml `review.rigor` (review B1). Omitted leaves the current value;
+                    null is treated as omitted. Rejected with 400 if not one of the enum values.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3018,6 +3677,12 @@ components:
       required: true
       description: Task id. A task belonging to another initiative is refused by the editable guard.
       schema: { type: string }
+    StaleId:
+      name: staleId
+      in: path
+      required: true
+      description: Stale-mark id, as returned in `stale_items[].id` on `/guidance`.
+      schema: { type: string }
     DecisionId:
       name: id
       in: path
@@ -3207,7 +3872,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 84 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 97 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3274,6 +3939,14 @@ components:
         id: { type: string }
         project_id: { type: string }
         title: { type: string }
+        short_title:
+          type: string
+          description: |
+            A deterministically generated short label (<=60 chars, C1, wave 3 contract): the idea's
+            first sentence or clause, trimmed at a word boundary, with a common lead-in ("I want
+            to", "Build") dropped. `title`/`description` keep the full prompt; clients show
+            `short_title || title`. Generated on create, and backfilled the same way for
+            initiatives created before this field existed.
         description: { type: string }
         status: { $ref: "#/components/schemas/InitiativeStatus" }
         failure_reason:
@@ -3286,6 +3959,18 @@ components:
             Why the initiative is waiting on a human. Set only while `status` is
             `needs_human_judgment`, and absent or empty on a row parked before this field
             existed.
+        git_branch:
+          type: string
+          description: |
+            The dedicated branch (`idea/<slug>`) this initiative's change sets commit to when
+            `git.branch_per_initiative` is on. Set on the initiative's first apply and reused by
+            every later one. Empty when the setting is off, or before a first apply has created it.
+        pr_url:
+          type: string
+          description: |
+            The pull request `POST .../initiatives/{id}/pr` opened for `git_branch`. Empty until a
+            PR exists; a repeat call is idempotent and returns this URL rather than opening a
+            second PR.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [id, title, description, status, created_at, updated_at]
@@ -3376,8 +4061,34 @@ components:
         verified_at:
           type: [string, "null"]
           format: date-time
+        evidence_tests:
+          type: array
+          description: |
+            Test-run evidence mapped to this requirement (C2, wave 3 contract): every test the
+            verification plan names for it, that names its code, or -- since a real test's name
+            almost never contains the requirement's code -- one found in a test file touched by
+            the applied, check-passed change set of a task that `implements` this requirement
+            (ICP re-run defect #3), resolved against the most recent parsed check result.
+            Computed at read time from the "tests" check's output, never persisted, so it
+            reflects the last check run. Absent means no test is known to cover this requirement
+            yet, not that one failed.
+          items: { $ref: "#/components/schemas/EvidenceTest" }
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]
+
+    EvidenceTest:
+      type: object
+      title: EvidenceTest
+      description: One test-run result mapped to a requirement (C2, wave 3 contract).
+      properties:
+        name: { type: string }
+        status:
+          type: string
+          enum: [passed, failed]
+        change_set:
+          type: string
+          description: The `human_id` (e.g. `CHG-2`) of the change set this result came from.
+      required: [name, status, change_set]
 
     Assertion:
       type: object
@@ -3463,6 +4174,32 @@ components:
           format: date-time
       required: [id, initiative_id, question, status, created_at]
 
+    TriageItem:
+      type: object
+      title: TriageItem
+      description: One ranked open judgment item (review B4's triage view).
+      properties:
+        type:
+          type: string
+          enum: [decision, question, finding]
+        id: { type: string }
+        label: { type: string }
+        blocking:
+          type: boolean
+          description: Findings only -- an open decision/question is never "blocking" in this sense.
+        severity:
+          allOf:
+            - $ref: "#/components/schemas/Severity"
+          description: Findings only; empty for a decision or question.
+        dependents:
+          type: integer
+          description: How many requirements cite this open decision. Always 0 for a question or a finding today.
+        rank:
+          type: string
+          enum: [priority, optional]
+          description: "`priority` for the top 3 by impact (blocking, then severity, then dependents); `optional` for the rest."
+      required: [type, id, label, blocking, dependents, rank]
+
     SuggestedAnswer:
       type: object
       title: SuggestedAnswer
@@ -3538,7 +4275,11 @@ components:
     Disposition:
       type: string
       title: Disposition
-      enum: [fixed, accepted_risk, not_applicable, duplicate, deferred, rejected, mitigate]
+      enum: [fixed, accepted_risk, not_applicable, duplicate, deferred, rejected, mitigate, not_a_secret]
+      description: |
+        `not_a_secret` is valid only on a `secret_sweep` finding (review changes #1): recording it
+        allowlists the finding's fingerprint for the project, so a future sweep ignores that same
+        value. Every other target refuses it with 400.
 
     Finding:
       type: object
@@ -3569,8 +4310,87 @@ components:
         disposition: { $ref: "#/components/schemas/Disposition" }
         disposition_actor: { type: string }
         note: { type: string }
+        secret_fingerprint:
+          type: string
+          description: |
+            Set only on a `secret_sweep` finding raised from a per-file credential match: a
+            per-project HMAC-SHA256 of the matched value's capture group (review H3 -- never a bare
+            sha256, which would be the same, precomputable value across every installation that
+            ever saw the same secret). Never the value itself. Scoped together with `secret_path`
+            when disposed `not_a_secret`: the allowlist entry it creates only suppresses this exact
+            fingerprint at this exact path.
+        secret_kind:
+          type: string
+          description: The kind of secret matched, e.g. "looks like an OpenAI API key". Set alongside `secret_fingerprint`.
+        secret_path:
+          type: string
+          description: |
+            The `path:line`-bearing file the match was found in, or a synthetic path such as
+            "output of build" for a match found in a deterministic check's captured output rather
+            than a file. Set alongside `secret_fingerprint`.
+        secret_overridable:
+          type: boolean
+          description: |
+            Whether this finding is even eligible for a `not_a_secret` disposition (review H3):
+            `true` for an ordinary pattern-shaped match (might be a false positive), `false` for a
+            value drawn from the project's own configured secrets -- a real credential by
+            construction. The store refuses `not_a_secret` outright when this is `false`. Only
+            meaningful on a `secret_sweep` finding.
+        secret_preview:
+          type: string
+          description: |
+            A masked preview of the matched value (review H3): the first 4 and last 4 characters,
+            the rest replaced by a single ellipsis (e.g. `sk-p…Xy9z`); a value of 8 characters or
+            fewer is masked entirely. Never the raw value. Set alongside `secret_fingerprint`.
+        path:
+          type: string
+          description: |
+            The file this finding is about, self-reported by the reviewer (change-set review
+            only; review B2). Optional.
+        in_diff:
+          type: boolean
+          description: |
+            Self-report: whether this finding is about code the change set actually touches.
+            Only consulted when `path` is empty; defaults to `true` when the reviewer omits it
+            entirely, so an older prompt or a scripted response is never silently downgraded
+            (review B2).
+        advisory:
+          type: boolean
+          description: |
+            Never blocks approval, whatever the severity (review B1, B2). Set when: a rigor cap
+            dropped lower-severity findings this cycle (the note on THIS finding names how many);
+            a `path` is not one of the change set's files ("about code this change set did not
+            touch"); or, with no `path`, `in_diff` is `false` ("unverified").
         created_at: { type: string, format: date-time }
       required: [id, review_run_id, target_type, target_id, severity, confidence, category, finding, evidence, impact, recommendation, created_at]
+
+    SecretAllowlistEntry:
+      type: object
+      title: SecretAllowlistEntry
+      description: |
+        One human "not a secret" override (review changes #1, review H3), as
+        `GET .../secret-allowlist` projects it: fingerprint prefix, kind, path at the time, actor,
+        created_at. Recorded when a `secret_sweep` finding is dispositioned `not_a_secret`, scoped
+        to (fingerprint, path) together -- the same value allowlisted at one path still blocks at
+        another.
+      properties:
+        id: { type: string }
+        fingerprint_prefix:
+          type: string
+          description: |
+            The first characters of the per-project HMAC fingerprint (review H3; not a bare
+            sha256) -- enough to tell entries apart, never the full digest.
+        kind:
+          type: string
+          description: The kind of secret matched, e.g. "looks like an OpenAI API key".
+        path:
+          type: string
+          description: The file the match was found in, at the time of the disposition.
+        actor:
+          type: string
+          description: Always `human` -- not_a_secret requires a human actor.
+        created_at: { type: string, format: date-time }
+      required: [id, fingerprint_prefix, kind, path, actor, created_at]
 
     TaskStatus:
       type: string
@@ -3594,8 +4414,20 @@ components:
         estimate: { type: string }
         produced_by_run: { type: string }
         superseded_by: { type: string }
+        requirement_ids:
+          type: array
+          items: { type: string }
+          description: |
+            The requirement ids this task implements (N:M, review A4 #3/#4). Computed at read
+            time from the task's `implements` graph edges; always an array, never `null`.
+        depends_on:
+          type: array
+          items: { type: string }
+          description: |
+            The task ids this task depends on. Computed at read time from the task's `depends_on`
+            graph edges; always an array, never `null`.
         created_at: { type: string, format: date-time }
-      required: [id, initiative_id, code, title, statement, status, priority, created_at]
+      required: [id, initiative_id, code, title, statement, status, priority, requirement_ids, depends_on, created_at]
 
     ChangeSetStatus:
       type: string
@@ -3633,6 +4465,13 @@ components:
         git_commit_sha:
           type: string
           description: Set when the harness is configured to commit applied change sets.
+        git_commit_warning:
+          type: string
+          description: |
+            Set instead of `git_commit_sha` when `git_commit` is on but the commit-on-apply guard
+            refused (review C4): a detached HEAD, a rebase/merge/cherry-pick in progress, or the
+            repository's default branch without `git.allow_default_branch`. The change set still
+            applies; only the commit is skipped.
         created_by_run_id: { type: string }
         model:
           type: string
@@ -3654,7 +4493,51 @@ components:
             last 100 lines, escape sequences stripped, known secrets redacted. Omitted for executors
             with no agent output and for change sets made before this field existed.
         created_at: { type: string, format: date-time }
+        no_op:
+          type: boolean
+          description: |
+            True when this change set touched zero files (ICP re-run defect #2): the agent decided
+            the task was already done, or its model call failed and it wrote nothing. Omitted
+            (false) for every ordinary change set. A `no_op` change set may still be approved,
+            applied and reverted like any other, but an applied one never counts as "this task is
+            implemented" — not for task completion, verification-evidence eligibility, staleness
+            propagation, or the "every task has an applied change set" guidance.
+        review_completed_at:
+          type: string
+          format: date-time
+          description: |
+            Set the one time the adversarial reviewer actually finishes for this change set
+            (ICP re-run defect #1), never merely attempted. Omitted while `status` is
+            `review_required` and the review never completed — most often because the operation
+            was cancelled mid-review — in which case the change set carries only mechanical-check
+            observations (build/tests/patch-applies/workspace-copy), `approved` refuses it, and
+            `POST .../review {"verdict":"rerun"}` is the way forward.
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
+
+    PRChecksResult:
+      type: object
+      title: PRChecksResult
+      description: |
+        `gh pr checks`'s result for one pull request (review C4 piece 3, `git.PRChecksResult`).
+      properties:
+        overall:
+          type: string
+          description: |
+            `success` (every check passed), `failure` (at least one failed), `pending` (none
+            failed, at least one still running), or `none` (no checks reported at all).
+          enum: [success, failure, pending, none]
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              state:
+                type: string
+                description: e.g. `SUCCESS`, `FAILURE`, `PENDING`, `SKIPPED`, as `gh` reports it.
+              link: { type: string }
+            required: [name, state]
+      required: [overall, checks]
 
     StructuredFile:
       type: object
@@ -3662,9 +4545,13 @@ components:
       description: |
         One file of a change set, for per-file display (`workflow.StructuredFile`). `content` is
         redacted at this display surface; the raw store keeps the unredacted bytes so apply and
-        revert round-trip byte-for-byte. A deleted file carries no content, and content is also
-        absent (with `size` 0) when the produced bytes were never persisted - a change set rejected
-        by the secret sweep, for example. The post-image digest is deliberately not exposed.
+        revert round-trip byte-for-byte. A deleted file carries no content. When a change set is
+        rejected by the secret sweep, the produced bytes are never persisted to the raw store -- but
+        a MASKED stand-in is (`redacted: true`), so the diff viewer still has something honest to
+        show instead of an empty, indistinguishable-from-broken file. `content` is genuinely absent
+        (`size` 0, `redacted` false) only when neither the raw nor the masked bytes could be found
+        (e.g. a patch persisted before this field existed). The post-image digest is deliberately not
+        exposed.
       properties:
         path: { type: string }
         change_type:
@@ -3676,7 +4563,15 @@ components:
           description: Byte length of the stored content, 0 when no content is available.
         content:
           type: string
-          description: Redacted file content; empty for a deletion.
+          description: |
+            Redacted file content; empty for a deletion. Masked stand-in content, never the file's
+            real bytes, when `redacted` is true.
+        redacted:
+          type: boolean
+          description: |
+            True when `content` holds masked content instead of the file's real post-image bytes,
+            because the secret sweep denied this change set and the raw bytes were never persisted --
+            only their masked form was. Omitted (false) otherwise.
         patch:
           type: string
           description: |
@@ -3685,14 +4580,16 @@ components:
             (` ` context, `-` removed, `+` added), three lines of context. An added file is one hunk
             `@@ -0,0 +1,N @@`; a deleted file is `@@ -1,N +0,0 @@`. The base comes from the raw blob
             store after apply, or from the workspace file before apply - only while that file still
-            matches the recorded base digest. Omitted when there is no change to show, or when
-            `patch_note` explains why there is no diff.
+            matches the recorded base digest. Omitted when there is no change to show, when `redacted`
+            is true (masked content is never diffed against a real base), or when `patch_note`
+            explains why there is no diff.
         patch_note:
           type: string
           description: |
             Why `patch` is absent although the file changed: binary, too large to diff, content not
-            kept, or the base no longer recoverable because the workspace file was edited after the
-            agent ran. Clients show it and fall back to `content`.
+            kept, the content is masked (`redacted: true`), or the base no longer recoverable because
+            the workspace file was edited after the agent ran. Clients show it and fall back to
+            `content`.
       required: [path, change_type, size, content]
 
     OperationStatus:
@@ -3722,6 +4619,13 @@ components:
             8 KB. Omitted (never an empty string) on a `succeeded`, `pending` or `running`
             operation. Before this field existed, a failed execute left the running card with
             nothing to show and the only record of why was a line in daemon.log.
+        stage:
+          type: string
+          description: |
+            The engine's current step (C3, wave 3 contract), e.g. "Writing the PRD", "Reviewing
+            the plan (cycle 2)", "Agent running TASK-2", "Running checks". Set by a callback as
+            the engine moves between steps; simply stops changing once the operation reaches a
+            terminal status. The CLI's wait loop prints it in place of a bare "still working…".
         created_at: { type: string, format: date-time }
         finished_at:
           type: [string, "null"]
@@ -3914,7 +4818,38 @@ components:
               type: string
               description: Why nothing was kept, when the stopped run's files looked like they held a secret.
           required: [task_id, files]
+        stale_items:
+          type: array
+          items: { $ref: "#/components/schemas/StaleItemRef" }
+          description: |
+            The requirements, tasks and change sets marked stale by a decision that was reopened or
+            re-resolved after they were built on it (review A4 #5). Omitted when nothing is stale.
+            When present, `why` also carries a sentence naming the count and the decision code, and
+            the recommended path (`idea revise-plan`, or acknowledge each item via
+            `POST .../stale/{staleId}/ack`).
       required: [action, why, affected]
+
+    StaleItemRef:
+      type: object
+      title: StaleItemRef
+      description: One item marked stale on the Recommended Next Move projection (review A4 #5).
+      properties:
+        stale_id:
+          type: string
+          description: The stale mark's own id -- what `POST …/stale/{staleId}/ack` takes. Distinct from `id`.
+        type:
+          type: string
+          description: "The graph node's type: `requirement`, `task` or `change_set`."
+        id:
+          type: string
+          description: The graph node's id (the requirement/task/change set), not the stale mark's id.
+        label:
+          type: string
+          description: The item's human code (`REQ-3`, `TASK-2`, `CHG-1`), when it could be resolved.
+        reason:
+          type: string
+          description: Why it is stale, e.g. `"DEC-9 changed"`.
+      required: [stale_id, type, id, reason]
 
     NextTaskRef:
       type: object
@@ -3951,6 +4886,113 @@ components:
           items: { type: string }
       required: [category, items]
 
+    TimelineRef:
+      type: object
+      title: TimelineRef
+      description: Points a TimelineEntry at the entity it is about.
+      properties:
+        type: { type: string, description: "e.g. `change_set`, `decision`, `operation`, `initiative`." }
+        id: { type: string }
+      required: [type, id]
+
+    TimelineEntry:
+      type: object
+      title: TimelineEntry
+      description: |
+        One human-language line of an initiative's timeline (C1, wave 3 contract).
+
+        M3, wave 3 review fix: `change_set_denied` is reserved for a genuine system block -- a
+        finding on that change set carries a machine-readable deny code (a secret, PII, a path
+        escape, host exec, a blob mismatch, an unresolved blocking review finding). A plain check
+        failure (build/tests) and the restart-reconcile sweep (an interrupted run recovering, with
+        no findings of its own) both read `change_set_rejected` instead, same as a human
+        reviewer's own reject verdict -- none of those three is a system-level deny, whatever actor
+        recorded the transition.
+      properties:
+        at: { type: string, format: date-time }
+        kind:
+          type: string
+          enum:
+            - change_set_applied
+            - change_set_rejected
+            - change_set_denied
+            - change_set_reverted
+            - run_failed
+            - run_stopped
+            - decision_changed
+            - stale
+            - phase_completed
+        title: { type: string }
+        detail: { type: string }
+        ref: { $ref: "#/components/schemas/TimelineRef" }
+      required: [at, kind, title, ref]
+
+    PhaseCost:
+      type: object
+      title: PhaseCost
+      description: One workflow phase's model-call spend and time (C3, wave 3 contract).
+      properties:
+        phase: { type: string, description: "The workflow stage key, e.g. `product_definition`, `review`." }
+        usd: { type: number }
+        seconds: { type: number }
+        calls: { type: integer }
+      required: [phase, usd, seconds, calls]
+
+    AgentCost:
+      type: object
+      title: AgentCost
+      description: The coding-agent run summary (C3, wave 3 contract).
+      properties:
+        runs: { type: integer }
+        seconds: { type: number }
+        usd:
+          type: [number, "null"]
+          description: |
+            Null ("agent spend not measured") unless every counted run's cost could be parsed
+            from the agent's own output.
+        note:
+          type: string
+          description: Set alongside a null `usd`, e.g. "agent spend not measured".
+      required: [runs, seconds, usd]
+
+    InitiativeCosts:
+      type: object
+      title: InitiativeCosts
+      description: The `GET .../costs` response (C3, wave 3 contract).
+      properties:
+        total_usd: { type: number }
+        by_phase:
+          type: array
+          items: { $ref: "#/components/schemas/PhaseCost" }
+          description: >-
+            Ordered by the pipeline's own step order (framing, research, product_definition,
+            review, ...), not alphabetically by stage key; a stage the pipeline order does not
+            name sorts after every known one (review Low fix).
+        agent: { $ref: "#/components/schemas/AgentCost" }
+      required: [total_usd, by_phase, agent]
+
+    QueueItem:
+      type: object
+      title: QueueItem
+      description: One cross-initiative "needs you" row (D-b, wave 3 contract).
+      properties:
+        initiative_id: { type: string }
+        short_title: { type: string }
+        kind:
+          type: string
+          description: "e.g. `decision`, `review`, `conflict`, `denial`, `stale`, `verify`."
+        label: { type: string }
+        rank:
+          type: integer
+          format: int32
+          description: >-
+            A small 1..N ordinal position in the returned (already-sorted) list -- 1 is the
+            single most urgent item, N is the list's length (H6, wave 3 review fix: never the
+            internal tier/age sort key, which routinely exceeded a double's safe-integer range
+            and rendered as a garbled number).
+        href: { type: string, description: "A client-side route, e.g. `#/i/<id>/build`." }
+      required: [initiative_id, short_title, kind, label, rank, href]
+
     TraceItem:
       type: object
       title: TraceItem
@@ -3967,7 +5009,11 @@ components:
 
     ImpactItem:
       title: ImpactItem
-      description: A `TraceItem` plus a staleness classification for the dependent node.
+      description: |
+        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"`
+        (supersedes/invalidates edges), `"revalidate"` (every other edge type), or `"stale"` (review
+        A4 #5: an active stale mark on this exact node, which always wins over the edge-type
+        classification).
       allOf:
         - $ref: "#/components/schemas/TraceItem"
         - type: object
@@ -4153,13 +5199,23 @@ components:
         git_commit:
           type: boolean
           description: Whether applied change sets are committed to git.
+        git_allow_default_branch:
+          type: boolean
+          description: harness.yaml `git.allow_default_branch` (review C4, adopted #2; wave 3 contract).
+        git_branch_per_initiative:
+          type: boolean
+          description: harness.yaml `git.branch_per_initiative`.
+        review_rigor:
+          type: string
+          enum: [auto, quick, standard, thorough]
+          description: harness.yaml `review.rigor`; `auto` when unset.
         demo:
           type: boolean
           description: True when no real provider is configured or reachable, so output will be synthetic.
         providers:
           type: array
           items: { $ref: "#/components/schemas/ProviderSummary" }
-      required: [default_model, git_commit, demo, providers]
+      required: [default_model, git_commit, git_allow_default_branch, git_branch_per_initiative, review_rigor, demo, providers]
 
     ExecutorKind:
       type: string

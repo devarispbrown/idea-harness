@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,7 +20,15 @@ type ProjectConfig struct {
 	Name string `json:"name" yaml:"name"`
 }
 
-// NetworkPolicy is the v0.1 network mode (§46).
+// NetworkPolicy is the v0.1 network mode (§46). It governs ONLY the
+// deterministic idea-brief/research/PRD pipeline (Engine.researchEvidence and
+// the offline fact→assumption downgrade in Engine.runResearch) -- it does NOT
+// gate the coding agent's network access (executor.kind omp/hermes always has
+// egress, deliberately, to reach its model API: internal/executor/agent.go)
+// or the build/test check sandbox's (internal/executor/sandbox.go always runs
+// with `--network none`, unconditionally). A prior version of this comment,
+// and of docs/configuration.md, did not say so, which read as though setting
+// this to "disabled" also sandboxed those (review defect #3).
 type NetworkPolicy string
 
 const (
@@ -36,6 +45,46 @@ type ReviewConfig struct {
 	MaxCycles  int     `json:"max_cycles" yaml:"max_cycles"`
 	MaxTokens  int64   `json:"max_tokens" yaml:"max_tokens"`
 	MaxCostUSD float64 `json:"max_cost_usd" yaml:"max_cost_usd"`
+	// Rigor calibrates how much scrutiny the PRD, plan and change-set reviews
+	// apply (review B1): one of "auto" (the default -- calibrated from
+	// project size and change size), "quick", "standard", or "thorough".
+	// Auto exists because a fixed rigor level was the ICP round's root
+	// cause: a 60-line toy app got the same review depth as an enterprise
+	// system, and the loop never converged.
+	Rigor string `json:"rigor,omitempty" yaml:"rigor,omitempty"`
+}
+
+// EffectiveMaxCycles is MaxCycles as the engine actually enforces it: any
+// value <= 0 (unset, or explicitly zero) coerces to 3, the same rule
+// workflow.New/Engine.Reload apply to their own copy of this config before
+// running a review loop. applyDefaults only defaults the raw field to 3 when
+// every review.* field is unset (review MEDIUM #7) -- a harness.yaml that
+// sets, say, max_tokens alongside max_cycles == 0 leaves the raw field at
+// zero -- so a caller that needs to know the true effective cap without
+// going through an *Engine (daemon.demoProvider's block_review_cycles clamp)
+// must call this, not read MaxCycles directly.
+func (r ReviewConfig) EffectiveMaxCycles() int {
+	if r.MaxCycles <= 0 {
+		return 3
+	}
+	return r.MaxCycles
+}
+
+// RigorLevels are review.rigor's allowed configured values.
+var RigorLevels = []string{"auto", "quick", "standard", "thorough"}
+
+// ValidRigor reports whether s is a recognized review.rigor value. Empty is
+// valid and means "auto" (applyDefaults fills it in).
+func ValidRigor(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, r := range RigorLevels {
+		if s == r {
+			return true
+		}
+	}
+	return false
 }
 
 // ProviderConfig describes one model provider (§40). API keys are resolved
@@ -112,11 +161,42 @@ type HarnessConfig struct {
 	CheckTimeoutSeconds int `json:"check_timeout_seconds,omitempty" yaml:"check_timeout_seconds,omitempty"`
 	// GitCommit opts into creating a git commit (with repo hooks disabled) for
 	// each applied change set (§M7). Off by default: a hook runs arbitrary code
-	// under the daemon's privileged environment, so this must never be implied.
+	// under the daemon's privileged environment, so this must never be implied
+	// by anything OTHER than an explicit opt-in -- which is exactly what
+	// Git.BranchPerInitiative is (review defect D): it is documented as
+	// committing each change set onto the initiative's branch, so setting it
+	// alone, with GitCommit left false, also commits. A user who wants neither
+	// leaves both false; there is no way to get branch-per-initiative's
+	// bookkeeping (Initiative.GitBranch, `idea pr`) without commits landing on
+	// it, since an uncommitted branch is not a reviewable one.
 	GitCommit bool `json:"git_commit" yaml:"git_commit"`
+	// Git configures git-native behavior beyond the commit-on-apply toggle
+	// above (review #2, C4). Git.BranchPerInitiative alone is sufficient to
+	// commit (see GitCommit's doc comment) -- GitCommit itself need not also
+	// be set.
+	Git GitConfig `json:"git,omitempty" yaml:"git,omitempty"`
 	// Demo configures the built-in deterministic provider. It does nothing when
 	// a real provider is configured.
 	Demo DemoConfig `json:"demo,omitempty" yaml:"demo,omitempty"`
+}
+
+// GitConfig configures git-native behavior beyond git_commit (review C4,
+// adopted change #2). Both fields are opt-in and off by default.
+type GitConfig struct {
+	// AllowDefaultBranch permits the commit-on-apply path to commit while HEAD
+	// is checked out on the repository's default branch. Off by default: an
+	// agent commit landing directly on the default branch, with no human
+	// commit of their own in between, is a stronger claim than opting into
+	// git_commit alone should make. Irrelevant when BranchPerInitiative is on,
+	// since apply then commits on the initiative's own branch.
+	AllowDefaultBranch bool `json:"allow_default_branch,omitempty" yaml:"allow_default_branch,omitempty"`
+	// BranchPerInitiative opts into creating and checking out idea/<slug> on an
+	// initiative's first apply, then committing each of its change sets there
+	// instead of on whatever branch the workspace was already on. This implies
+	// committing (review defect D): setting this true is sufficient on its
+	// own, without also setting git_commit -- see GitCommit's doc comment for
+	// why that used to be a second, undocumented requirement.
+	BranchPerInitiative bool `json:"branch_per_initiative,omitempty" yaml:"branch_per_initiative,omitempty"`
 }
 
 // DemoConfig steers the built-in demo provider.
@@ -179,7 +259,7 @@ func Default() Config {
 	return Config{
 		Harness: HarnessConfig{
 			Network:   NetworkDisabled,
-			Review:    ReviewConfig{MaxCycles: 3},
+			Review:    ReviewConfig{MaxCycles: 3, Rigor: "auto"},
 			Providers: map[string]ProviderConfig{},
 			Executor:  ExecutorConfig{Kind: ExecutorInternal},
 		},
@@ -235,6 +315,9 @@ func Load(dir string) (Config, error) {
 	if cfg.Harness.Review.MaxCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
 	}
+	if !ValidRigor(cfg.Harness.Review.Rigor) {
+		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
+	}
 	return cfg, nil
 }
 
@@ -264,6 +347,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Harness.Review.MaxCycles == 0 && c.Harness.Review.MaxTokens == 0 && c.Harness.Review.MaxCostUSD == 0 {
 		c.Harness.Review.MaxCycles = 3
+	}
+	if c.Harness.Review.Rigor == "" {
+		c.Harness.Review.Rigor = "auto"
 	}
 	if c.Harness.Executor.Kind == "" {
 		c.Harness.Executor.Kind = ExecutorInternal

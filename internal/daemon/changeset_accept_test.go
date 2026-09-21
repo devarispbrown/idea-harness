@@ -189,12 +189,13 @@ func TestAcceptFindingsRefusesASystemDeny(t *testing.T) {
 
 // The accept must make NO model call. That is what separates it from a retry,
 // and it is the property the two previous rounds got wrong.
+//
+// ICP re-run defect A: the review itself now runs exactly once, at Execute
+// time, so it only ever drains ONE entry off this queue -- the surplus is
+// harmless (never reached), kept at 50 anyway so this test still reads as the
+// direct descendant of the two prior rounds' identical assertion.
 func TestAcceptFindingsMakesNoModelCall(t *testing.T) {
 	rt, ts, token := newTestServer(t)
-	// A reviewer that blocks 50 times, not 1. On a converging queue the accept
-	// and a retry are indistinguishable -- the retry would simply find nothing
-	// to object to -- so a count assertion against it asserts nothing. This is
-	// the same reasoning the plan-accept test records for its own queue size.
 	projectID, pr := newDemoSteeredProject(t, rt, ts, token,
 		"\ndemo:\n  block_change_set_review_cycles: 50\n")
 
@@ -224,8 +225,21 @@ func TestAcceptFindingsMakesNoModelCall(t *testing.T) {
 	csID := sets[0].ID
 	base := ts.URL + "/api/v1/projects/" + projectID + "/change-sets/" + csID + "/review"
 
-	// The real sequence: the first approve runs the reviewer, which blocks and
-	// persists its finding.
+	// ICP re-run defect A: the reviewer now runs exactly once, inside
+	// Execute, at the moment the change set's content is fixed -- not again
+	// on every plain `approve`. Its findings (and review_id) are already on
+	// the change set by the time either approve call below runs.
+	setupCS, err := pr.db.GetChangeSet(t.Context(), csID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalReviewID := setupCS.ReviewID
+	if originalReviewID == "" {
+		t.Fatal("setup: expected the change set already reviewed (at execute time) with a review_id recorded")
+	}
+
+	// The real sequence: the first plain approve is refused by the findings
+	// the execute-time review already persisted (no fresh model call).
 	resp = doReq(t, http.MethodPost, base, token, "", `{"verdict":"approved"}`)
 	if body := errorBody(t, resp); body == "" {
 		t.Fatal("setup: the first approve was expected to be refused by the review")
@@ -255,8 +269,11 @@ func TestAcceptFindingsMakesNoModelCall(t *testing.T) {
 	if cs.Status != domain.ChangeSetApproved {
 		t.Fatalf("change set is %q, want approved", cs.Status)
 	}
-	if cs.ReviewID != "" {
-		t.Errorf("review_id was stamped (%q); no review ran, and the event log is the trail", cs.ReviewID)
+	// review_id is unchanged from the one execute-time review -- neither the
+	// refused plain approve nor accept-findings ran another one and
+	// re-stamped it.
+	if cs.ReviewID != originalReviewID {
+		t.Errorf("review_id changed (%q -> %q); a review ran again, and this is meant to be an accept, not a retry", originalReviewID, cs.ReviewID)
 	}
 }
 

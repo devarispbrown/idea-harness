@@ -106,6 +106,75 @@ type EventRow struct {
 // CreatedAt converts the stored unix-ms timestamp to time.Time.
 func (e EventRow) CreatedAt() time.Time { return time.UnixMilli(e.CreatedAtMS) }
 
+// ListEventsForInitiative returns events with seq > sinceSeq that belong to
+// initiativeID, ordered by seq ascending (C1/JTBD 6 fix). Events carry no
+// initiative_id of their own, so each aggregate type is joined back to its
+// owning table's initiative_id -- the same scoping BuildTimeline uses for
+// change_set/decision events, extended here to every aggregate BuildChanged
+// narrates. Before this, BuildChanged called ListEvents (the whole project,
+// every initiative) and "what changed" for one initiative could report
+// another's counts entirely.
+func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, sinceSeq int64, limit int) ([]EventRow, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := db.sql.QueryContext(ctx, `
+		SELECT e.seq, e.id, e.aggregate_type, e.aggregate_id, e.actor, e.correlation_id, e.causation_id, e.operation, e.event_type, e.payload_digest, e.created_at
+		FROM events e WHERE e.seq > ? AND (
+			(e.aggregate_type = 'initiative' AND e.aggregate_id = ?)
+			OR (e.aggregate_type = 'assertion' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM assertions WHERE initiative_id = ?)))
+			OR (e.aggregate_type = 'requirement' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM requirements WHERE initiative_id = ?)))
+			OR (e.aggregate_type = 'decision' AND e.aggregate_id IN (SELECT id FROM decisions WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'artifact' AND e.aggregate_id IN (SELECT id FROM artifacts WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'question' AND e.aggregate_id IN (SELECT id FROM questions WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'finding' AND e.aggregate_id IN (SELECT id FROM findings WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'change_set' AND e.aggregate_id IN (SELECT id FROM change_sets WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'task' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM tasks WHERE initiative_id = ?)))
+			OR (e.aggregate_type = 'verification_evidence' AND e.aggregate_id IN (SELECT id FROM verification_evidence WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'stale_item' AND e.aggregate_id IN (SELECT id FROM stale_marks WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'context_doc' AND e.aggregate_id IN (SELECT id FROM context_docs WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'doc_comment' AND e.aggregate_id IN (SELECT id FROM doc_comments WHERE initiative_id = ?))
+		)
+		ORDER BY e.seq ASC LIMIT ?`,
+		// M2, review fix: SupersedeRequirements/SupersedeAssertions record
+		// their bulk event with aggregate_id = the INITIATIVE id, not any one
+		// requirement/assertion id, so the per-row subquery alone never
+		// matched it -- "requirements.superseded"/"assertions.superseded"
+		// silently disappeared from What Changed. The `e.aggregate_id = ?`
+		// direct match catches that shape; the subquery still catches every
+		// per-row event. verification_evidence, stale_item, context_doc and
+		// doc_comment were not covered by any clause at all.
+		//
+		// MEDIUM fix: `task` gets the same direct-match escape hatch as
+		// assertion/requirement, for the identical reason -- SplitTask now
+		// records its own "task.split" event keyed on the INITIATIVE id
+		// (split.go), not the original task's id, because the original is
+		// deleted in the same transaction and a subquery-only match could
+		// never read an event keyed on a row that no longer exists.
+		sinceSeq, initiativeID,
+		initiativeID, initiativeID,
+		initiativeID, initiativeID,
+		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
+		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
+		limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list events for initiative: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]EventRow, 0)
+	for rows.Next() {
+		var e EventRow
+		if err := rows.Scan(&e.Seq, &e.ID, &e.AggregateType, &e.AggregateID, &e.Actor,
+			&e.CorrelationID, &e.CausationID, &e.Operation, &e.EventType, &e.PayloadDigest,
+			&e.CreatedAtMS); err != nil {
+			return nil, fmt.Errorf("store: scan event: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // MaxEventSeq returns the current maximum event sequence (0 if empty).
 func (db *DB) MaxEventSeq(ctx context.Context) (int64, error) {
 	var seq sql.NullInt64

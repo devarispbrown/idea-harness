@@ -92,6 +92,28 @@ func operationResource(operationID, action string) string {
 	return p
 }
 
+// decisionResource builds a project-scoped decision path with its segments
+// escaped. Decisions are resolved/reopened at the project level
+// (POST .../projects/{projectId}/decisions/{id}/...), not under an
+// initiative, unlike the list route.
+func decisionResource(projectID, decisionID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/decisions/" + url.PathEscape(decisionID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
+// questionResource builds a project-scoped question path with its segments
+// escaped, matching decisionResource.
+func questionResource(projectID, questionID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/questions/" + url.PathEscape(questionID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
 // client talks to the daemon API.
 type client struct {
 	baseURL string
@@ -111,12 +133,38 @@ func newClient() (*client, error) {
 	}, nil
 }
 
+// timeoutHint wraps a client-side HTTP timeout (net.Error.Timeout()) into a
+// message naming what was still in flight, that the daemon keeps running
+// actions in the background past this client's own timeout, and how to check
+// whether it finished -- rather than the bare "context deadline exceeded"
+// (ICP re-run item C). Returns err unchanged when it is not a timeout.
+//
+// This is not a substitute for making the action itself fast: item A's fix
+// (the change-set review runs once, at execute time, not on every plain
+// `approve`) is what actually keeps `idea review <CHG-n> approve` under this
+// client's timeout in the first place. This is the backstop for whatever
+// else is slow enough to hit it -- consistent with this codebase's existing
+// pattern of a long action running as an operation the CLI can poll
+// (`idea execute`/`idea next`'s wait loop): on a client timeout there IS an
+// operation (or, for a synchronous action, a resource) to go check, and the
+// message says so instead of leaving the user staring at a raw Go error.
+func timeoutHint(req *http.Request, timeout time.Duration, err error) error {
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() {
+		return err
+	}
+	return fmt.Errorf("request to %s %s timed out after %s, but the daemon does not cancel work just because this client stopped waiting -- "+
+		"it is very likely still running. `idea status` shows the initiative's current state once it finishes; `idea watch` follows it live; "+
+		"if it started a background operation, `idea cancel <op-id>` stops it",
+		req.Method, req.URL.Path, timeout)
+}
+
 // send executes a prepared request and decodes a JSON response into out (if
 // non-nil). Shared by do and doMultipart so error handling stays in one place.
 func (c *client) send(req *http.Request, out any) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return timeoutHint(req, c.http.Timeout, err)
 	}
 	defer resp.Body.Close()
 
@@ -195,7 +243,7 @@ func (c *client) doRaw(method, path string) (string, error) {
 	req.Header.Set("X-Idea-Token", c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", timeoutHint(req, c.http.Timeout, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {

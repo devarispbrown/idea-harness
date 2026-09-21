@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 )
 
 func fakeImageCache(st imageState) *imagePresenceCache {
@@ -177,5 +178,48 @@ func TestAnUnknownImageStateDoesNotBlock(t *testing.T) {
 	st := rt.executorStatus(hermesProject("anthropic/claude-sonnet-5", map[string]string{"ANTHROPIC_API_KEY": "k"}), "hermes", true)
 	if st.Problem != "" || st.Note == "" {
 		t.Errorf("status = %+v, want a note and no problem", st)
+	}
+}
+
+// gpt-4.1-mini was the ICP walkthrough's motivating example (hermes +
+// gpt-4.1-mini failed every time), but the root cause was fixable
+// (hermescfg.go now declares model.context_length explicitly for it), so the
+// Build page no longer blocks it -- only the usual untested-model note.
+func TestExecutorStatusDoesNotBlockGPT41MiniNowThatContextLengthIsDeclared(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	rt := &Runtime{images: fakeImageCache(imagePresent)}
+	st := rt.executorStatus(hermesProject("openai/gpt-4.1-mini", nil), "hermes", true)
+	if st.Problem != "" {
+		t.Errorf("status = %+v, want no problem now that the root cause is fixed", st)
+	}
+}
+
+// A known-incompatible model blocks the Build page's run button exactly as it
+// would block `idea execute` -- the table exists for a combination that turns
+// out to be genuinely, unfixably incompatible (none are known as of this fix;
+// see internal/executor/compat.go).
+func TestExecutorStatusReportsAKnownIncompatibleModelAsAProblem(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	restore := executor.TestOnlySetKnownIncompatible("hermes", "openai/gpt-9-ghost", "a test fixture, not a real defect")
+	t.Cleanup(restore)
+	rt := &Runtime{images: fakeImageCache(imagePresent)}
+	st := rt.executorStatus(hermesProject("openai/gpt-9-ghost", nil), "hermes", true)
+	if st.Problem == "" || !strings.Contains(st.Problem, "gpt-9-ghost") {
+		t.Errorf("status = %+v, want a problem naming the incompatible model", st)
+	}
+}
+
+// An untested (neither known-bad nor verified) model is advisory only -- a
+// Note, same severity as "image not pulled yet" -- since most real models
+// nobody has run through --smoke yet are perfectly fine.
+func TestExecutorStatusNotesAnUntestedModel(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	rt := &Runtime{images: fakeImageCache(imagePresent)}
+	st := rt.executorStatus(hermesProject("openai/some-new-model-nobody-has-tried", nil), "hermes", true)
+	if st.Problem != "" {
+		t.Errorf("an untested model blocked the run: %q", st.Problem)
+	}
+	if !strings.Contains(st.Note, "--smoke") {
+		t.Errorf("note does not recommend the smoke test: %q", st.Note)
 	}
 }

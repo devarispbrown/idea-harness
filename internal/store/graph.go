@@ -92,23 +92,67 @@ func scanGraphEdges(rows *sql.Rows) ([]domain.GraphEdge, error) {
 	return out, rows.Err()
 }
 
-// CreateTask inserts an execution-plan task and wires its `implements`
-// (task → requirement) and `depends_on` (task → task) edges in the same
-// transaction.
+// CreateTask inserts an execution-plan task and wires a single `implements`
+// (task → requirement) edge plus `depends_on` (task → task) edges in the same
+// transaction. A back-compat wrapper around CreateTaskMulti for the many
+// single-requirement call sites; new production code that may have more than
+// one requirement code should call CreateTaskMulti directly.
 func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirementID string, dependsOn []string) error {
-	return db.createTask(ctx, t, domain.EdgeImplements, implementsRequirementID, dependsOn)
+	var ids []string
+	if implementsRequirementID != "" {
+		ids = []string{implementsRequirementID}
+	}
+	return db.createTask(ctx, t, domain.EdgeImplements, ids, dependsOn)
+}
+
+// CreateTaskMulti inserts an execution-plan task and wires an `implements`
+// edge to each requirement it implements (N:M, review A4 #4: a task-level
+// requirement reference used to be a single free-text field matched against
+// exactly one Requirement.Code; a task may legitimately span several
+// requirements, and the planner should be able to say so). Duplicate or empty
+// ids are dropped rather than rejected -- the caller (runExecutionPlan / the
+// Plan-editing API) is responsible for surfacing an unresolved reference as
+// its own blocking finding before it ever reaches here.
+func (db *DB) CreateTaskMulti(ctx context.Context, t *domain.Task, implementsRequirementIDs []string, dependsOn []string) error {
+	return db.createTask(ctx, t, domain.EdgeImplements, implementsRequirementIDs, dependsOn)
 }
 
 // CreateVerificationTask creates a plan task whose purpose is verifying a
 // requirement, wired with a `verifies` edge (task → requirement).
 func (db *DB) CreateVerificationTask(ctx context.Context, t *domain.Task, requirementID string) error {
-	return db.createTask(ctx, t, domain.EdgeVerifies, requirementID, nil)
+	var ids []string
+	if requirementID != "" {
+		ids = []string{requirementID}
+	}
+	return db.createTask(ctx, t, domain.EdgeVerifies, ids, nil)
 }
 
 // createTask inserts a task (assigning code + position) and, when edgeType is
-// non-empty and targetID is set, wires that edge from the task to the target
-// requirement.
-func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetID string, dependsOn []string) error {
+// non-empty, wires that edge from the task to each non-empty, de-duplicated
+// id in targetIDs.
+func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.EdgeType, targetIDs []string, dependsOn []string) error {
+	// The id must be assigned before Event is built below (its AggregateID),
+	// not inside createTaskTx -- that used to happen in this function's own
+	// body, and the refactor that split createTaskTx out (review M4, to
+	// share it with SplitTask) must not silently start recording every
+	// task-creation event with an empty aggregate_id.
+	if t.ID == "" {
+		t.ID = id.New()
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   t.ID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.created",
+	}, func(tx *sql.Tx) error {
+		return db.createTaskTx(tx, t, edgeType, targetIDs, dependsOn)
+	})
+}
+
+// createTaskTx is createTask's body, tx-scoped, so a caller that needs
+// several task creations to share ONE transaction (SplitTask, review M4) can
+// call it directly instead of nesting separate Apply calls.
+func (db *DB) createTaskTx(tx *sql.Tx, t *domain.Task, edgeType domain.EdgeType, targetIDs []string, dependsOn []string) error {
 	if t.ID == "" {
 		t.ID = id.New()
 	}
@@ -121,38 +165,38 @@ func (db *DB) createTask(ctx context.Context, t *domain.Task, edgeType domain.Ed
 	if !t.Priority.Valid() {
 		t.Priority = domain.PriorityShould
 	}
-	return db.Apply(ctx, Event{
-		AggregateType: "task",
-		AggregateID:   t.ID,
-		Actor:         ActorOrchestrator,
-		EventType:     "task.created",
-	}, func(tx *sql.Tx) error {
-		if t.Code == "" {
-			code, err := nextTaskCode(tx, t.InitiativeID)
-			if err != nil {
-				return err
-			}
-			t.Code = code
-		}
-		pos, err := nextTaskPosition(tx, t.InitiativeID)
+	if t.Code == "" {
+		code, err := nextTaskCode(tx, t.InitiativeID)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`
-			INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
-			return err
-		}
-		var edges []EdgeToWrite
-		if edgeType != "" && targetID != "" {
+		t.Code = code
+	}
+	pos, err := nextTaskPosition(tx, t.InitiativeID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
+		return err
+	}
+	var edges []EdgeToWrite
+	if edgeType != "" {
+		seen := map[string]bool{}
+		for _, targetID := range targetIDs {
+			if targetID == "" || seen[targetID] {
+				continue
+			}
+			seen[targetID] = true
 			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: edgeType, ToType: "requirement", ToID: targetID})
 		}
-		for _, dep := range dependsOn {
-			edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
-		}
-		return db.wireEdges(tx, t.InitiativeID, edges)
-	})
+	}
+	for _, dep := range dependsOn {
+		edges = append(edges, EdgeToWrite{FromType: "task", FromID: t.ID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
+	}
+	return db.wireEdges(tx, t.InitiativeID, edges)
 }
 
 // AddTaskDependencies wires depends_on edges from taskID to each depTaskID in
@@ -172,6 +216,68 @@ func (db *DB) AddTaskDependencies(ctx context.Context, initiativeID, taskID stri
 		Actor:         ActorOrchestrator,
 		EventType:     "task.dependencies_added",
 	}, func(tx *sql.Tx) error {
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}
+
+// ReplaceTaskDependencies replaces a task's depends_on edges wholesale with
+// one per id in depTaskIDs (review B3: "set a task's depends_on"). An empty
+// depTaskIDs clears every dependency. Cycle validation is the caller's job
+// (it needs the whole initiative's graph, not just this one task's edges).
+func (db *DB) ReplaceTaskDependencies(ctx context.Context, initiativeID, taskID string, depTaskIDs []string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.dependencies_replaced",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			DELETE FROM graph_edges
+			WHERE initiative_id = ? AND from_type = 'task' AND from_id = ? AND edge_type = ? AND to_type = 'task'`,
+			initiativeID, taskID, string(domain.EdgeDependsOn)); err != nil {
+			return err
+		}
+		var edges []EdgeToWrite
+		seen := map[string]bool{}
+		for _, dep := range depTaskIDs {
+			if dep == "" || dep == taskID || seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: taskID, EdgeType: domain.EdgeDependsOn, ToType: "task", ToID: dep})
+		}
+		return db.wireEdges(tx, initiativeID, edges)
+	})
+}
+
+// ReplaceTaskRequirements replaces a task's `implements` edges with one per
+// requirement id given (N:M, review A4 #4). Used by the Plan-editing "add
+// task"/"update task" API so a task's requirement links can be set or
+// changed after creation. Requires at least one id -- callers must enforce
+// "at least one requirement when the plan is approved" before calling this;
+// it does not itself refuse an empty list.
+func (db *DB) ReplaceTaskRequirements(ctx context.Context, initiativeID, taskID string, requirementIDs []string) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "task",
+		AggregateID:   taskID,
+		Actor:         ActorOrchestrator,
+		EventType:     "task.requirements_replaced",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			DELETE FROM graph_edges
+			WHERE initiative_id = ? AND from_type = 'task' AND from_id = ? AND edge_type = ? AND to_type = 'requirement'`,
+			initiativeID, taskID, string(domain.EdgeImplements)); err != nil {
+			return err
+		}
+		var edges []EdgeToWrite
+		seen := map[string]bool{}
+		for _, rid := range requirementIDs {
+			if rid == "" || seen[rid] {
+				continue
+			}
+			seen[rid] = true
+			edges = append(edges, EdgeToWrite{FromType: "task", FromID: taskID, EdgeType: domain.EdgeImplements, ToType: "requirement", ToID: rid})
+		}
 		return db.wireEdges(tx, initiativeID, edges)
 	})
 }
@@ -235,6 +341,44 @@ func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) 
 	}
 	t.CreatedAt = time.UnixMilli(created)
 	return &t, nil
+}
+
+// TaskEdges returns one task's requirement_ids (the requirements it
+// implements, via `task --implements--> requirement` edges) and depends_on
+// (via `task --depends_on--> task` edges), for serializing them onto the Task
+// response (GET .../tasks and the merge/split/depends-on responses).
+func (db *DB) TaskEdges(ctx context.Context, initiativeID, taskID string) (requirementIDs, dependsOn []string, err error) {
+	edges, err := db.ListGraphEdgesFrom(ctx, initiativeID, "task", taskID)
+	if err != nil {
+		return nil, nil, err
+	}
+	requirementIDs = make([]string, 0)
+	dependsOn = make([]string, 0)
+	for _, e := range edges {
+		switch e.EdgeType {
+		case domain.EdgeImplements:
+			requirementIDs = append(requirementIDs, e.ToID)
+		case domain.EdgeDependsOn:
+			dependsOn = append(dependsOn, e.ToID)
+		}
+	}
+	return requirementIDs, dependsOn, nil
+}
+
+// AttachTaskEdges populates RequirementIDs/DependsOn on each of tasks in
+// place, from graph_edges (see TaskEdges). One query per task -- Plan pages
+// list at most a handful of tasks, so this trades a little redundancy for
+// reusing the same per-task helper the single-task handlers use.
+func (db *DB) AttachTaskEdges(ctx context.Context, initiativeID string, tasks []domain.Task) error {
+	for i := range tasks {
+		reqIDs, deps, err := db.TaskEdges(ctx, initiativeID, tasks[i].ID)
+		if err != nil {
+			return err
+		}
+		tasks[i].RequirementIDs = reqIDs
+		tasks[i].DependsOn = deps
+	}
+	return nil
 }
 
 // nextTaskPosition returns the ordinal for a new task within an initiative

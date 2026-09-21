@@ -3,16 +3,23 @@ idea-harness — a local-first AI product-development control plane
 Usage: idea <command>
 Commands:
   init [<dir>]         initialize a project (defaults to the current directory)
-  new "<idea>" [--no-wait] create an initiative and start the workflow
+  new "<idea>" [--no-wait] create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately)
   status [<initiative>] show initiative + current work
   changed [<initiative>] show What Changed since last look
   decisions            list open/blocked decisions
+  questions            list open/answered questions
+  answer <question> "<answer>" [<initiative>] answer an open question
+  resolve <decision> <option#>|"<resolution>" [<initiative>] resolve an open decision, by option number or free text
+  reopen-decision <decision> [<initiative>] return a resolved decision to open
+  accept-recommendations resolve every open decision with its own recommendation
+  triage               show the ranked "needs your judgment" view
   reviews              list review findings
-  model                list/set model providers (Gemini, OpenAI, …)
+  model [--provider <name>] [--all] show the current model + a curated set (Gemini, OpenAI, …)
+  model list [<provider>] [--all] list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider
   prd                  render the reviewed PRD in your terminal
   explain              show the Current Understanding
   export [kind]        export an artifact as markdown
-  advance              run Design → Execution Plan (M2)
+  advance [--wait]     run Design → Execution Plan (M2); returns a handle immediately unless --wait
   approve              accept the reviewed PRD as it stands
   revise               regenerate the PRD from the review findings
   approve-plan         accept the execution plan as it stands
@@ -23,19 +30,21 @@ Commands:
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents
   diff                 structured requirement/decision diff
-  execute              run the next ready task → change set
+  execute [--note <text>] [--wait] run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait
   reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
-  retry [<initiative>] [--model <provider/model>] [--no-wait] re-run a failed initiative
+  retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait] re-run a failed initiative; --note steers this retry (joins the framing prompt)
   changes              list change sets
   change <id>          show a change set
-  apply <id>           apply an approved change set
-  revert <id>          roll back a change set
-  review <id> <verdict> approve|reject|changes_requested
-  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence
+  apply <id> [--wait]  apply an approved (or reverted) change set; returns a handle immediately unless --wait
+  revert <id> [--wait] roll back a change set; returns a handle immediately unless --wait
+  pr [<initiative>]    open a pull request for the initiative's branch (git.branch_per_initiative)
+  pr checks <change-set-id> show the latest CI status via `gh pr checks`
+  review <id> <verdict> [--no-wait] approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
+  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
-  executors setup      wire a coding agent (hermes|omp)
+  executors setup [<kind>] wire a coding agent: hermes|omp, default hermes (or --kind)
   watch                watch a run live
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config

@@ -1,11 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { derivePhases, PHASE_LABELS, PHASE_PURPOSE, rollupPhaseSource } from "./phases";
 import type { InitiativeRollup } from "./phases";
 import { PHASES, type PhaseName } from "./router";
+import { get, resource } from "./api";
+import { displayTitle } from "./title";
+import { entriesSince, getLastVisit } from "./lastVisit";
+import { describeTimelineEntry, type TimelineEntry } from "./timeline";
 
 interface Initiative {
   id: string;
   title: string;
+  // Wave 3 (C1): see title.ts's displayTitle -- this was the ICP finding
+  // that "Home titles were the whole 600-character prompt."
+  short_title?: string;
   description: string;
   status: string;
 }
@@ -27,6 +34,7 @@ const STATUS_PILL: Record<string, { label: string; state: string }> = {
 };
 
 export default function ProductHome({
+  projectId,
   initiatives,
   attention,
   projectName,
@@ -34,6 +42,7 @@ export default function ProductHome({
   onCreate,
   onOpenSettings,
 }: {
+  projectId: string;
   initiatives: Initiative[];
   attention: InitiativeRollup[];
   projectName: string;
@@ -49,6 +58,50 @@ export default function ProductHome({
   const rollupById = new Map(attention.map((r) => [r.id, r]));
 
   const needYou = initiatives.filter((i) => i.status === "needs_human_judgment").length;
+
+  // "Since you were last here" (C1 / JTBD 6). For every initiative that has
+  // a recorded last-visit cursor (lastVisit.ts, localStorage), fetch its
+  // timeline since that cursor -- App.tsx advances the cursor to "now" the
+  // moment that initiative is actually opened, so this always reads the
+  // PREVIOUS visit's cutoff, never the one about to be set. A first-ever
+  // visit has no cursor and is skipped: there is nothing to compare against,
+  // and showing "everything" would read as a huge, undifferentiated backlog
+  // rather than "what's new".
+  const [sinceLastVisit, setSinceLastVisit] = useState<Record<string, TimelineEntry[]>>({});
+  const [expandedSince, setExpandedSince] = useState<Record<string, boolean>>({});
+  const initiativeIds = initiatives.map((i) => i.id).join(",");
+  useEffect(() => {
+    if (!projectId || !initiatives.length) return;
+    let cancelled = false;
+    (async () => {
+      const entries: [string, TimelineEntry[]][] = await Promise.all(
+        initiatives.map(async (i): Promise<[string, TimelineEntry[]]> => {
+          const since = getLastVisit(i.id);
+          if (!since) return [i.id, []];
+          try {
+            const list = await get<TimelineEntry[]>(
+              `${resource(projectId, i.id, "timeline")}?since=${encodeURIComponent(since)}`,
+            );
+            // Defensive re-filter (entriesSince): the backend's `?since=` is
+            // already the source of truth, but this is the same pure
+            // boundary check unit-tested in lastVisit.test.ts, applied here
+            // too rather than trusting an unfamiliar query param blindly.
+            return [i.id, entriesSince(list ?? [], since)];
+          } catch {
+            return [i.id, []];
+          }
+        }),
+      );
+      if (cancelled) return;
+      const map: Record<string, TimelineEntry[]> = {};
+      for (const [id, list] of entries) if (list.length > 0) map[id] = list;
+      setSinceLastVisit(map);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initiativeIds is the stable key for `initiatives`' identity.
+  }, [projectId, initiativeIds]);
 
   const submitIdea = () => {
     if (idea.trim()) onCreate(idea.trim());
@@ -103,11 +156,16 @@ export default function ProductHome({
               const phases: { phase: PhaseName; state: string }[] = rollup
                 ? derivePhases(rollupPhaseSource(rollup)).map((s) => ({ phase: s.phase, state: s.state }))
                 : [];
+              const since = sinceLastVisit[i.id] ?? [];
+              const isExpanded = !!expandedSince[i.id];
               return (
                 <section key={i.id} className="ph-card" onClick={() => onOpen(i.id)}>
                   <div className="ph-card-head">
                     <span className="ph-num">#{idx + 1}</span>
-                    <span className="ph-card-title">{i.title}</span>
+                    {/* C1 / JTBD 6: "Home titles were the whole 600-character
+                        prompt." The full idea is still available as the
+                        card's description; this is just the title shown. */}
+                    <span className="ph-card-title">{displayTitle(i)}</span>
                     {pill && <span className={`phase-pill pill-${pill.state}`}>{pill.label}</span>}
                   </div>
                   <div className="ph-bars">
@@ -118,6 +176,27 @@ export default function ProductHome({
                       </div>
                     ))}
                   </div>
+                  {since.length > 0 && (
+                    <button
+                      className="w3-since-last"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedSince((m) => ({ ...m, [i.id]: !m[i.id] }));
+                      }}
+                    >
+                      {since.length} update{since.length === 1 ? "" : "s"} since you were last here
+                      {isExpanded ? " ▾" : " ▸"}
+                    </button>
+                  )}
+                  {since.length > 0 && isExpanded && (
+                    <ul className="w3-timeline-list" onClick={(e) => e.stopPropagation()}>
+                      {since.map((entry, ei) => (
+                        <li key={ei} className="w3-timeline-row">
+                          <span>{describeTimelineEntry(entry)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
               );
             })}

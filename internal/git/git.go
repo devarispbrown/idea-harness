@@ -64,10 +64,15 @@ func Commit(ctx context.Context, workTree string, paths []string, message string
 		return "", fmt.Errorf("git: add: %w: %s", err, strings.TrimSpace(out))
 	}
 
-	// Nothing staged (empty diff) → nothing to commit. `git diff --cached
-	// --quiet` exits 0 with an empty index and 1 when changes are staged (both
-	// with and without an existing HEAD); any other exit code is a real error.
-	diffCmd := exec.CommandContext(ctx, BinPath, "diff", "--cached", "--quiet")
+	// Nothing staged in scope (empty diff) → nothing to commit. Scoped to
+	// paths with `-- <paths>` (not the whole index), so pre-staged content
+	// outside the change set can never make this look like there is
+	// something of OURS to commit when there is not (matching --only below).
+	// `git diff --cached --quiet` exits 0 with no staged change in scope and 1
+	// when there is one (both with and without an existing HEAD); any other
+	// exit code is a real error.
+	diffArgs := append([]string{"diff", "--cached", "--quiet", "--"}, paths...)
+	diffCmd := exec.CommandContext(ctx, BinPath, diffArgs...)
 	diffCmd.Dir = workTree
 	diffCmd.Env = env
 	if err := diffCmd.Run(); err == nil {
@@ -79,7 +84,13 @@ func Commit(ctx context.Context, workTree string, paths []string, message string
 		}
 	}
 
-	commitArgs := []string{"-c", "core.hooksPath=" + hooksDir, "commit", "-m", message}
+	// --only restricts the commit to exactly these pathspecs regardless of
+	// what else the index holds (review H2): `git add -- <paths>` above stages
+	// them onto whatever index already existed, so without --only a commit
+	// would also sweep in anything the USER had pre-staged before the daemon
+	// ever ran (a merge conflict resolution in progress, a partially staged
+	// unrelated change, ...) into the agent's own commit.
+	commitArgs := append([]string{"-c", "core.hooksPath=" + hooksDir, "commit", "--only", "-m", message, "--"}, paths...)
 	if out, err := runGit(ctx, workTree, env, commitArgs...); err != nil {
 		return "", fmt.Errorf("git: commit: %w: %s", err, strings.TrimSpace(out))
 	}
@@ -96,6 +107,41 @@ func Commit(ctx context.Context, workTree string, paths []string, message string
 func isRepo(workTree string) bool {
 	_, err := os.Stat(filepath.Join(workTree, ".git"))
 	return err == nil
+}
+
+// CurrentBranch returns the short name of the branch workTree currently has
+// checked out, or "" when workTree is not a repository, HEAD is detached, or
+// the branch otherwise cannot be determined. Best-effort and never an error a
+// caller must handle: it exists purely so a caller that is about to switch
+// branches (EnsureInitiativeBranch) can restore this one later if something
+// it does after the switch fails (review MEDIUM #4: a catch-up-commit or
+// change-set-commit failure after `checkout -b` used to leave the workspace
+// stranded on the initiative's branch instead of back where it started).
+func CurrentBranch(ctx context.Context, workTree string) string {
+	if !isRepo(workTree) {
+		return ""
+	}
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// CheckoutBranch switches workTree onto branch. A no-op (nil error) when
+// branch is "" (CurrentBranch could not determine what to restore to, most
+// often a detached HEAD -- nothing to switch back to) or workTree is not a
+// repository. Used to restore the branch CurrentBranch captured before a
+// later failure; callers restoring on an error path should treat this call's
+// own failure as best-effort and never let it mask the original error.
+func CheckoutBranch(ctx context.Context, workTree, branch string) error {
+	if branch == "" || !isRepo(workTree) {
+		return nil
+	}
+	if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", branch); err != nil {
+		return fmt.Errorf("git: checkout %s: %w: %s", branch, err, strings.TrimSpace(out))
+	}
+	return nil
 }
 
 // runGit executes the git binary with the sanitized environment and returns its

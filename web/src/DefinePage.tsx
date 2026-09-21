@@ -15,6 +15,7 @@ import {
 } from "./JudgmentCard";
 import { decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings } from "./judgmentScope";
 import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
+import { optionalLabel, partitionByTriage, type TriageItemLike } from "./triage";
 
 interface Artifact {
   id: string;
@@ -44,14 +45,29 @@ export default function DefinePage({
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [suggested, setSuggested] = useState<Record<string, string>>({});
+  // B4: null while triage hasn't loaded (or the daemon doesn't have the
+  // endpoint yet) -- distinct from "loaded, empty", so the fallback flat
+  // rendering below only kicks in when triage is genuinely unavailable.
+  const [triage, setTriage] = useState<TriageItemLike[] | null>(null);
+  // B4: "Accept all recommendations" -- resolved count and skipped
+  // code+reason pairs from the last call, shown until the next load replaces
+  // them. Reasons (review #2, ICP re-run) let a human see WHY a decision
+  // with options was left open -- no recommendation, no unique match, or a
+  // race with a concurrent resolve -- instead of a bare, uninformative count.
+  const [acceptResult, setAcceptResult] = useState<{
+    resolved: number;
+    skipped: { code: string; reason: string }[];
+  } | null>(null);
+  const [acceptError, setAcceptError] = useState("");
 
   const load = useCallback(async () => {
-    const [d, f, q, a, s] = await Promise.all([
+    const [d, f, q, a, s, t] = await Promise.all([
       get<DecisionItem[]>(resource(projectId, initiativeId, "decisions")).catch(() => []),
       get<FindingItem[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
       get<QuestionItem[]>(resource(projectId, initiativeId, "questions")).catch(() => []),
       get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
       get<SuggestedAnswer[]>(resource(projectId, initiativeId, "suggested-answers")).catch(() => []),
+      get<{ items: TriageItemLike[] }>(resource(projectId, initiativeId, "triage")).catch(() => null),
     ]);
     setDecisions(d ?? []);
     setFindings(f ?? []);
@@ -60,6 +76,7 @@ export default function DefinePage({
     const map: Record<string, string> = {};
     for (const sa of s ?? []) if (sa.question_id) map[sa.question_id] = sa.answer;
     setSuggested(map);
+    setTriage(t?.items ?? null);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -88,6 +105,20 @@ export default function DefinePage({
   const resolvedDecisions = prdDecisions.filter((d) => d.status !== "open");
   const resolvedFindings = prdFindings.filter((f) => !!f.disposition);
 
+  // B4 triage: cross-reference this phase's own open items (still scoped by
+  // judgmentScope.ts above -- triage ranks the WHOLE initiative, so this
+  // does not undo that scoping) against the top-3 `priority` ids. Falls back
+  // to showing everything under "Needs you" (no collapse) when triage
+  // hasn't loaded or the daemon doesn't have the endpoint yet -- degrade to
+  // the page's pre-wave-3 behavior, never to an empty list.
+  const triageItems = triage ?? [];
+  const decisionsSplit = partitionByTriage(openDecisions, triageItems);
+  const findingsSplit = partitionByTriage(openFindings, triageItems);
+  const questionsSplit = partitionByTriage(openQuestions, triageItems);
+  const hasTriage = triage !== null;
+  const optionalCount =
+    decisionsSplit.optional.length + findingsSplit.optional.length + questionsSplit.optional.length;
+
   // The current (latest) PRD version; /artifacts returns oldest-first.
   const prdVersions = artifacts.filter((a) => a.kind === "prd");
   const prdVersion = prdVersions.length ? Math.max(...prdVersions.map((a) => a.version)) : 0;
@@ -112,6 +143,33 @@ export default function DefinePage({
     await post(`/projects/${projectId}/questions/${id}/answer`, { answer });
     await load();
   };
+  // B4: "Accept all recommendations" -- answers the ICP round's "53 things
+  // need your judgment" in one call. Confirms first (this resolves every
+  // open decision on the initiative, not only Define's), then shows what
+  // was resolved vs. skipped (an open decision with no recommendation to
+  // accept).
+  const acceptAllRecommendations = async () => {
+    if (
+      !window.confirm(
+        `Accept the recommendation for every open decision on this initiative? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setAcceptError("");
+    setAcceptResult(null);
+    try {
+      const res = await post<{
+        resolved: string[];
+        skipped: { code: string; reason: string }[];
+      }>(resource(projectId, initiativeId, "decisions/accept-recommendations"), {});
+      setAcceptResult({ resolved: (res.resolved ?? []).length, skipped: res.skipped ?? [] });
+      await load();
+    } catch (e) {
+      setAcceptError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const suggest = async () => {
     await post(`/projects/${projectId}/initiatives/${initiativeId}/suggest-answers`, {});
     await new Promise((res) => setTimeout(res, 1500));
@@ -185,17 +243,64 @@ export default function DefinePage({
           <span className="muted">{openItemsNote(status, nextVersion, judgmentReason)}</span>
         </div>
       )}
+      {/* B4: "53 things need your judgment", then 82. Repeated questions. No
+          way to accept the recommendations." One call resolves every open
+          decision on the initiative with its own recommendation. */}
+      {openCount > 0 && (
+        <div className="row" style={{ marginBottom: 12 }}>
+          <button className="jc-secondary" onClick={acceptAllRecommendations}>
+            Accept all recommendations
+          </button>
+        </div>
+      )}
+      {acceptResult && (
+        <div className="ok-text">
+          <p>
+            Resolved {acceptResult.resolved}, skipped {acceptResult.skipped.length}
+            {acceptResult.skipped.length > 0 ? ":" : "."}
+          </p>
+          {acceptResult.skipped.length > 0 && (
+            <ul className="accept-recommendations-skipped">
+              {acceptResult.skipped.map((s) => (
+                <li key={s.code}>
+                  {s.code}: {s.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {acceptError && <p className="error">{acceptError}</p>}
       <div className="judgment-list">
-        {openDecisions.map((d) => (
+        {decisionsSplit.needsYou.map((d) => (
           <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
         ))}
-        {openFindings.map((f) => (
+        {findingsSplit.needsYou.map((f) => (
           <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
         ))}
-        {openQuestions.map((q) => (
+        {questionsSplit.needsYou.map((q) => (
           <QuestionCard key={q.id} q={q} suggested={suggested[q.id]} onAnswer={(a) => answerQuestion(q.id, a)} onSuggest={suggest} />
         ))}
       </div>
+      {/* Triage's collapsed remainder (B4): shown open, uncollapsed, only
+          while triage hasn't loaded yet -- otherwise a fresh page load would
+          hide every open item behind a closed <details> for a moment. */}
+      {optionalCount > 0 && (
+        <details className="w3-triage-optional" open={!hasTriage}>
+          <summary>{optionalLabel(optionalCount)}</summary>
+          <div className="judgment-list">
+            {decisionsSplit.optional.map((d) => (
+              <DecisionCard key={d.id} d={d} onResolve={(r) => resolveDecision(d.id, r)} onReopen={() => reopenDecision(d.id)} projectId={projectId} initiativeId={initiativeId} typeLabel={decisionTypeLabel(d.type)} />
+            ))}
+            {findingsSplit.optional.map((f) => (
+              <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
+            ))}
+            {questionsSplit.optional.map((q) => (
+              <QuestionCard key={q.id} q={q} suggested={suggested[q.id]} onAnswer={(a) => answerQuestion(q.id, a)} onSuggest={suggest} />
+            ))}
+          </div>
+        </details>
+      )}
       {(resolvedDecisions.length > 0 || resolvedFindings.length > 0) && (
         <>
           <div className="judgment-head">

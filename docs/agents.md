@@ -99,7 +99,63 @@ Two providers need more than a base URL:
 **Model ids go stale.** On 2026-09-17 Google returned 404 for `gemini-2.5-flash` and
 `gemini-2.5-pro` ("no longer available to new users"), while its model listing still showed them.
 A dead model id makes the agent exit without writing anything, and `--smoke` prints the provider's
-own error when that happens. Run `--smoke` whenever you change the model.
+own error when that happens. Run `--smoke` whenever you change the model. Both ids have since been
+removed from the bundled catalog (`internal/model/catalog.go`) so a new project cannot pick them up
+as a default; a real API call to any model id, dead or otherwise, now names the model in the error
+and says how to change it (`idea model set <provider>/<model>`, or Settings → Providers).
+
+### Hermes declares the model's context window explicitly
+
+Hermes Agent refuses to start below 64,000 tokens of context
+([FAQ](https://hermes-agent.nousresearch.com/docs/reference/faq)). Left to guess, it resolves a
+model's context window through its own chain — a config override, then a custom provider's
+per-model setting, a cached prior discovery, its own `/v1/models` query against the endpoint, and
+finally a model-family pattern falling back to 128K. Every provider here is wired into Hermes as an
+explicit `custom_provider` (see `hermescfg.go`'s own comment on why idea-harness does not rely on
+Hermes's built-in provider names), which gives that chain the least to go on — and for
+`openai/gpt-4.1-mini` its family-pattern guess landed under the 64k floor even though the model's
+real window is roughly 1M tokens, the same failure mode as
+[NousResearch/hermes-agent#24000](https://github.com/NousResearch/hermes-agent/issues/24000) (a
+custom endpoint falling back to 32,768 tokens). An ICP walkthrough hit exactly this: `hermes` +
+`openai/gpt-4.1-mini` failed deterministically, every run, with the agent refusing to start.
+
+The generated config now declares `model.context_length` explicitly instead of leaving Hermes to
+guess (`internal/model/catalog.go`'s `ContextWindowFor`, wired into `hermescfg.go`):
+
+- A handful of specific `provider/model` ids have a figure checked against that provider's own
+  model documentation (`ModelContextWindows` — `openai/gpt-4.1-mini` and `openai/gpt-4.1` are both
+  1,047,576; `openai/gpt-4o` and `openai/gpt-4o-mini` are 128,000; `openai/o3-mini` is 200,000).
+- Everything else gets a conservative per-provider default (`contextWindowFallback`): 128,000 for
+  OpenAI, DeepSeek and OpenRouter, 200,000 for Anthropic, 1,000,000 for Gemini — each already the
+  figure this codebase states in that provider's own `Capabilities.ContextLimit`, not a fresh guess,
+  and comfortably above the 64k floor.
+- Ollama gets no explicit value, deliberately: a local model's real context ranges from ~2k to over
+  1M depending entirely on what the operator pulled, so a blanket number here could just as easily
+  understate it (harmless) as overstate it (Hermes then sends a prompt the local server truncates or
+  rejects — a new, different failure). Ollama's endpoint can report its real context directly,
+  which is why Hermes's own docs single it out as the one case its auto-detection is actually
+  reliable for — so it is left to that.
+
+### Known executor/model compatibility
+
+`idea executors setup`, the Build page's run-readiness check, and `idea execute` itself all run a
+small, data-driven table (`internal/executor/compat.go`) before spending an image pull or a paid
+call on a model×executor combination already known not to work. As of this fix the table is empty:
+investigating `hermes` + `openai/gpt-4.1-mini` found the fixable root cause above rather than a
+genuine incompatibility, so it is not refused — it still gets the same "untested" advisory below,
+since nobody has actually run it through `--smoke` yet.
+
+| Kind | Model | Verdict | Why |
+|---|---|---|---|
+| `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
+| `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
+
+A row placed in the table stops `idea executors setup` and `idea execute` before anything runs,
+naming the model and why — reserved for a combination that turns out to be genuinely, unfixably
+incompatible, not a stand-in for "nobody has tried this yet" (that is what the untested warning is
+for). An untested combination is a warning, not a block, since most models nobody has run through
+`--smoke` yet work fine — `idea executors setup --smoke` and the Build page's **Run smoke test** are
+the way to confirm one before a real task depends on it.
 
 ### Manual (equivalent)
 
@@ -201,6 +257,113 @@ Choose **Start over** to discard them and begin from the workspace. Over the API
 `DELETE …/initiatives/{id}/partial-work`. Kept files are also discarded when the next task is a
 different one, and when a phase is reopened or the plan revised. Files that look like they hold a
 secret are never kept, and the Build page says so.
+
+The timeline's entry for a Stop reads "Run stopped: Execute initiative — Stopped by you" — never the
+raw `context canceled` the daemon's own log records internally (review defect F: the two used to be
+the same text, and "Execute initiative — context canceled" reads exactly like a crash for what was
+actually your own action). `daemon.log` and `GET /operations/{id}` still carry the real underlying
+error for debugging; only the timeline's human-facing detail is replaced.
+
+## Agent spend
+
+`GET .../initiatives/{id}/costs` reports the deterministic pipeline's model-call spend precisely
+(every phase call goes through the harness's own model registry, which always knows the price). The
+coding agent's own spend is different: OMP/Hermes run as an opaque subprocess in a container, and the
+harness only has whatever that subprocess printed to stdout (redacted, kept as the change set's
+`agent_output`) to work with.
+
+The harness tries two things, in order, against that text:
+
+1. An explicit dollar figure ("cost: $0.42", "total cost: $1.20") — used verbatim.
+2. Failing that, a reported token count (`input_tokens`/`output_tokens`, or the OpenAI-shaped
+   `prompt_tokens`/`completion_tokens`) — priced against the model catalog's own per-token rates
+   (`internal/model/pricing.go`, the same table `review.max_cost_usd` enforcement uses), via
+   `model.CostUSD`.
+
+Neither is guaranteed: an agent that prints neither leaves `agent.usd: null` with
+`agent.note: "agent spend not measured"` (`idea status` and the UI both show this as a caveat next
+to the total, not as a silent zero — review defect #5). A run's total cost is only ever reported
+once EVERY agent run in the initiative was priced one of these two ways; a partial sum would
+understate the real spend, which is worse than admitting it is not measured.
+
+**Follow-up, not yet done:** Hermes's CLI documents a `--usage-file <path>` flag that writes a
+machine-readable JSON usage report (`estimated_cost_usd`, `input_tokens`/`output_tokens`/
+`total_tokens`, `api_calls`, …) after a run — but it is documented against `hermes -z`
+(the standalone one-shot entry point), and this harness invokes `hermes chat --yolo -q ...`. Whether
+`--usage-file` (or an equivalent) is available in that exact invocation, and what changing the
+invocation to get it would risk breaking (the exact argv Hermes accepts has broken this integration
+silently before — see the `hermesArgs` comment in `internal/executor/agent.go`), needs verifying
+against a real Hermes container before being wired in. Until then, the stdout-scraping above is the
+whole story.
+
+## Live output during a run: what "silent for minutes" is, and is not
+
+A real founder-journey run watched the live output view (`GET .../agent-output`, backed by `docker
+logs --tail N` against the agent's own container — see `SandboxedAgentExecutor.tailLogs` in
+`internal/executor/agent.go`) go silent for 3.5+ minutes while Hermes was generating code, then Stop
+was clicked. This was investigated as a possible Hermes stdout-buffering problem — the concern being
+that a CLI built for an interactive terminal (spinners, progress lines) might fully buffer its output
+when stdout is a pipe rather than a TTY, so nothing reaches `docker logs` until the process exits or
+an internal buffer fills.
+
+Checked against Hermes's own published CLI reference
+(`https://hermes-agent.nousresearch.com/docs/reference/cli-commands` and `.../faq`), as this document
+insists on for every other Hermes argv detail after the `--in`/`--usage-file` incidents above:
+
+- Real, documented `hermes chat` flags exist for output verbosity and format: `-v`/`--verbose`,
+  `-Q`/`--quiet` (suppresses cosmetic output), and `--format stream-json` (structured JSONL "for
+  machine consumption"). A `display.tool_progress` setting (`off`/`new`/`all`/`verbose`) also exists,
+  but only in `~/.hermes/config.yaml` — there is no CLI flag for it.
+- **None of Hermes's own documentation describes any flag, including these, as affecting output
+  buffering or flush timing when stdout is redirected to a pipe or file rather than a TTY.** The docs
+  distinguish TTY vs. non-TTY only for one thing — whether `hermes chat` stays interactive or answers
+  and exits — never for I/O buffering.
+
+Given that, wiring in `--format stream-json` (the most plausible-sounding candidate, since a
+machine-consumption format is likely to be written incrementally) would be exactly the kind of
+argv guess that has broken this integration silently before (`--in`, above). It would also be a much
+larger change than this one question needs: `agent_output`'s consumers today — `scrubAgentLog`'s
+noise filtering, the cost-scraping regexes above, and the plain-text UI/CLI rendering — all assume
+free text, not JSON Lines, and switching formats would need to touch all three.
+
+The 3.5-minute silence is equally, and more mundanely, explained by the agent genuinely having
+nothing to show: `docker logs` only ever reflects what the container actually printed, and a coding
+agent mid-generation between tool calls (or waiting on its own model's response) prints nothing to
+print. The captured live-output snapshot from that exact run showed the agent still in its read/
+search phase (`search_files`, `read_file`, `session_search`) with no write yet at the moment of Stop
+— consistent with slow generation, not a buffering bug caught in the act.
+
+**Follow-up, not yet done:** confirming this either way needs a real Hermes container with stdout
+piped (not a TTY) and a known-slow prompt, watching whether *any* output line appears before the
+process exits. Until that is done, no flag is added to `hermesArgs` on the strength of a plausible
+name alone.
+
+## Toolchains: the agent's image doesn't need one, and shouldn't install one
+
+The OMP/Hermes agent image only needs to contain the agent CLI itself. It does **not** need a Go,
+Node, Python, or Rust toolchain: the harness runs its own build/test checks after every task, in a
+*separate*, network-isolated sandbox (`check.image`, `internal/executor/sandbox.go`) — never inside
+the agent's own container. `network: disabled` in `harness.yaml` does not change this either way; see
+[`configuration.md`](configuration.md#harnessyaml) for what that setting actually governs.
+
+A real run surfaced the failure mode this invites: given network egress (which the agent container
+has, deliberately, to reach its own model API — see
+[`security-model.md`](security-model.md#what-this-does-not-protect-against)) but no toolchain, an agent asked to
+verify its own Go code ran `go build`/`go test` by downloading a full Go toolchain into the
+workspace. That toolchain (~14,300 files under `.tools/`) then got swept up as though it were part
+of the change set, which is a separate, now-fixed defect (see the `.gitignore`-aware collector and
+sanity cap in `internal/fsdiff`). The right fix is upstream of that: the implementation brief
+(`runPlanner`, `internal/workflow/execute.go`) now names the harness's own detected (or configured)
+build/test commands and tells the agent not to install a toolchain, compiler, or SDK to verify its
+own work — the harness already will, right after.
+
+**Follow-up, not yet done:** offering the check image's own toolchain to the agent container
+directly (e.g. a read-only bind mount of a matching toolchain layer, or running the agent from the
+same base image as `check.image`) would remove even the temptation, and might be cheap for the
+common case where `executor.image` and the derived/configured `check.image` are the same toolchain
+family. It isn't implemented here — it changes how the agent container and the check sandbox relate
+to each other, which is more than this fix's scope — but it's a reasonable next step if this keeps
+recurring in practice.
 
 ## Security / trust tradeoff — read this before wiring an agent
 

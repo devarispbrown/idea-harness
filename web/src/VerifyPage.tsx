@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
-import { hasBuiltSomething, stripSourceTag, verifiedRequirementCount } from "./verify";
+import {
+  confirmableRequirementCodes,
+  type EvidenceTest,
+  evidenceSummary,
+  hasBuiltSomething,
+  hasConfirmableEvidence,
+  stripSourceTag,
+  verifiedRequirementCount,
+} from "./verify";
 
 interface Criterion {
   metric: string;
@@ -14,9 +22,16 @@ interface Requirement {
   statement: string;
   status: string;
   acceptance_criteria: Criterion[];
+  // evidence_tests (task 7, C2 wire contract): the test names mapped to this
+  // requirement and whether each passed. Optional so this still works
+  // against a daemon that hasn't shipped it yet.
+  evidence_tests?: EvidenceTest[];
 }
 interface ChangeSetStatus {
   status: string;
+  // no_op (H8 fix): a no-op applied change set touched nothing -- hasBuiltSomething
+  // (verify.ts) reads this so "built" is never true from one alone.
+  no_op?: boolean;
 }
 
 export default function VerifyPage({
@@ -30,6 +45,7 @@ export default function VerifyPage({
   const [changeSets, setChangeSets] = useState<ChangeSetStatus[]>([]);
   const [note, setNote] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const load = useCallback(async () => {
     const [r, c] = await Promise.all([
@@ -63,6 +79,33 @@ export default function VerifyPage({
     }
   };
 
+  // confirmPassingTests (task 7) posts the human sign-off for every
+  // criterion whose mapped tests all passed -- a passing check is evidence,
+  // but a human still confirms it; nothing is auto-verified. H1: a
+  // confirmation dialog names exactly which requirement codes are about to
+  // flip, so this is never a surprise one-click action.
+  const confirmPassingTests = async () => {
+    if (
+      !window.confirm(
+        `Confirm ${confirmCandidates.length} requirement${confirmCandidates.length === 1 ? "" : "s"} whose tests all passed?\n\n${confirmCandidates.join(", ")}`,
+      )
+    ) {
+      return;
+    }
+    setError("");
+    setConfirmBusy(true);
+    try {
+      await post(`/projects/${projectId}/initiatives/${initiativeId}/verify`, {
+        confirm_passing_tests: true,
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
+
   const generateTask = async (r: Requirement) => {
     setError("");
     try {
@@ -93,6 +136,18 @@ export default function VerifyPage({
   // before anything has been built and applied, there is nothing to check
   // yet (K).
   const built = hasBuiltSomething(changeSets);
+  // task 7 / H1: only offered when it would actually confirm something -- a
+  // passing test somewhere doesn't mean every requirement has one -- AND
+  // once something has actually been built and applied. Manual Pass/Fail
+  // already gates on `built` for exactly this reason: confirming against
+  // code that never landed is meaningless, whatever the check output says.
+  const confirmCandidates = confirmableRequirementCodes(verifiableReqs);
+  // hasConfirmableEvidence (LOW fix, release-gate report): this predicate had
+  // zero production callers -- the button was gated on
+  // `confirmCandidates.length > 0` instead, which is the same rule
+  // (isConfirmCandidate) computed twice. Wired in here rather than deleted:
+  // it's the clearer, named form of exactly the check this page needs.
+  const canConfirmPassingTests = built && hasConfirmableEvidence(verifiableReqs);
 
   return (
     <div className="phase-page">
@@ -113,6 +168,20 @@ export default function VerifyPage({
           Pass/Fail unlocks once a task has been built and its change set applied — there's
           nothing to check against yet.
         </p>
+      )}
+
+      {/* task 7: the human sign-off, labelled as exactly that -- passing
+          tests are evidence, but this button is what records a human
+          confirming it, not an automatic verification. */}
+      {canConfirmPassingTests && (
+        <div className="verify-confirm-all">
+          <button className="cs-green" disabled={confirmBusy} onClick={confirmPassingTests}>
+            {confirmBusy ? "Confirming…" : "Confirm all with passing tests"}
+          </button>
+          <span className="muted verify-confirm-all-note">
+            Human sign-off: confirms every criterion whose mapped tests all passed.
+          </span>
+        </div>
       )}
 
       <div className="verify-list">
@@ -143,6 +212,13 @@ export default function VerifyPage({
                   </div>
                 ))}
               </div>
+              {/* task 7: evidence_tests per requirement -- a passing check is
+                  evidence, shown before the human decides anything.
+                  Criteria with no passing-test evidence at all keep the
+                  manual Pass/Fail below with nothing extra to show here. */}
+              {evidenceSummary(r.evidence_tests) && (
+                <p className="verify-evidence">{evidenceSummary(r.evidence_tests)}</p>
+              )}
               {!verified && !waived && r.acceptance_criteria.length > 0 && (
                 <div className="verify-pass">
                   <input

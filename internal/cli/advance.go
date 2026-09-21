@@ -14,6 +14,14 @@ type cliTask struct {
 	Statement string `json:"statement"`
 	Status    string `json:"status"`
 	Priority  string `json:"priority"`
+	// RequirementIDs/DependsOn mirror domain.Task's own fields (ICP re-run
+	// gap: the API has always returned both, but this DTO dropped them
+	// silently, so `idea tasks --json` -- the one surface a plan-editing
+	// script has, since there is no CLI verb for add/merge/split/depends-on/
+	// reorder -- could not see a task's requirement traceability or
+	// dependencies at all, and a caller had to fall back to raw HTTP).
+	RequirementIDs []string `json:"requirement_ids"`
+	DependsOn      []string `json:"depends_on"`
 }
 
 // resolveInitiative returns the initiative id (args[0] or the newest).
@@ -68,8 +76,16 @@ func cmdAdvance(a cmdArgs, stdout, stderr io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ advance started")+" "+code(iniID))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		if err := waitIfRequested(a, c, projectID, iniID, opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
+		return nil
 	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil

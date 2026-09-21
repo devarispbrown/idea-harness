@@ -96,14 +96,21 @@ func DeterministicChecks(initiativeID string, reqs []domain.Requirement) []domai
 }
 
 // EvaluateApproval implements the approval bar (§11): an initiative may not be
-// approved while any critical/high finding is not dispositioned as fixed or
-// (human) accepted_risk.
+// approved while any critical/high finding is not resolved (Finding.
+// ResolvesBlocking -- fixed, accepted_risk, or a human's rejected on a
+// reviewer's own judgment call; see its doc comment, ICP re-run defect #2).
+// An Advisory finding never blocks, whatever its severity (review B1's
+// rigor-cap note, and review B2's "about code this change set did not
+// touch").
 func EvaluateApproval(findings []domain.Finding) (blocked bool, reason string) {
 	for _, f := range findings {
+		if f.Advisory {
+			continue
+		}
 		if !f.Severity.Blocking() {
 			continue
 		}
-		if f.Disposition != domain.DispositionFixed && f.Disposition != domain.DispositionAcceptedRisk {
+		if !f.ResolvesBlocking() {
 			return true, fmt.Sprintf("open %s finding: %s", f.Severity, f.Finding)
 		}
 	}
@@ -143,6 +150,17 @@ func ParseFindings(reviewRunID, targetType, targetID string, obj map[string]any)
 			Evidence:       str(m["evidence"]),
 			Impact:         str(m["impact"]),
 			Recommendation: str(m["recommendation"]),
+			Path:           str(m["path"]),
+			// InDiff defaults to true (assume in-diff) when the reviewer omits
+			// it entirely: B2's self-report only demotes a finding when the
+			// reviewer actively says it is NOT about the diff. A reviewer that
+			// does not participate in this field at all (an older prompt, a
+			// scripted/demo response) must not have every finding it raises
+			// silently downgraded to advisory.
+			InDiff: true,
+		}
+		if b, ok := m["in_diff"].(bool); ok {
+			f.InDiff = b
 		}
 		if !f.Severity.Valid() {
 			return nil, fmt.Errorf("review: invalid severity %q", f.Severity)

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -445,5 +446,774 @@ func TestPlanReviewFindingsTargetThePlan(t *testing.T) {
 		if f.TargetType != PlanFindingTarget {
 			t.Errorf("%s finding targets %q, not the plan", f.Category, f.TargetType)
 		}
+	}
+}
+
+// TestActiveDecisionsExcludesSuperseded mirrors the existing activeRequirements
+// unit test (review A2): decisions are open | decided | superseded, and only
+// superseded is excluded from design/plan inputs.
+func TestActiveDecisionsExcludesSuperseded(t *testing.T) {
+	decs := []domain.Decision{
+		{ID: "1", Status: domain.DecisionOpen},
+		{ID: "2", Status: domain.DecisionDecided},
+		{ID: "3", Status: domain.DecisionSuperseded},
+	}
+	got := activeDecisions(decs)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 active decisions, got %d: %+v", len(got), got)
+	}
+	for _, d := range got {
+		if d.Status == domain.DecisionSuperseded {
+			t.Fatalf("superseded decision leaked through: %+v", d)
+		}
+	}
+}
+
+// TestExecutionPlanExcludesSupersededInputsAndBlocksSupersededCitation is the
+// review A2 acceptance test: a newer requirement contradicts a decided
+// decision. The plan inputs must carry the decided decision and NOT the
+// superseded requirement, and a plan citing the superseded requirement's code
+// must be blocked.
+func TestExecutionPlanExcludesSupersededInputsAndBlocksSupersededCitation(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+
+	// A decided decision: "use Postgres" (not "MongoDB").
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which database?", Options: []string{"Postgres", "MongoDB"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	// An old requirement, now superseded.
+	oldReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "Store data in a legacy flat file format",
+		Priority: domain.PriorityMust, AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, oldReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeRequirements(ctx, ini.ID, "test-cycle"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The newer, active requirement.
+	newReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "Persist data reliably in a managed database",
+		Priority: domain.PriorityMust, AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, newReq); err != nil {
+		t.Fatal(err)
+	}
+
+	// The model's plan cites the SUPERSEDED requirement's code.
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[{"title":"Do it","statement":"work","requirement":"`+oldReq.Code+`","priority":"must"}]}`)
+
+	err := eng.runExecutionPlan(ctx, ini.ID)
+	if !errors.Is(err, errUnresolvedDependencies) {
+		t.Fatalf("expected errUnresolvedDependencies for a plan citing a superseded requirement, got %v", err)
+	}
+
+	// The rendered inputs must carry the decided decision and the active
+	// requirement, and exclude the superseded one.
+	var sys string
+	for _, c := range fp.Calls() {
+		if c.JSONSchemaName == "execution_plan" {
+			sys = c.System
+		}
+	}
+	if sys == "" {
+		t.Fatal("expected an execution_plan model call")
+	}
+	if !strings.Contains(sys, "Persist data reliably") {
+		t.Error("expected the active requirement in the plan inputs")
+	}
+	if strings.Contains(sys, oldReq.Statement) {
+		t.Error("expected the superseded requirement NOT to be in the plan inputs")
+	}
+	if !strings.Contains(sys, "Postgres") {
+		t.Error("expected the decided decision's resolution in the plan inputs")
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Category == "plan_traceability" && f.Severity.Blocking() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a blocking plan_traceability finding for citing a superseded requirement, got %+v", findings)
+	}
+}
+
+// TestUnresolvedRequirementReferenceFailsLoudly is the review A4 #1 root-cause
+// test: before the fix, runExecutionPlan matched the model's free-text
+// requirement field against Requirement.Code and, on a miss, passed an empty
+// target id to createTask, which silently skipped wiring the edge -- nothing
+// was recorded anywhere, unlike an unresolved depends_on. This uses the fake
+// provider with a mismatched requirement field to prove the fix: a genuinely
+// unresolvable reference now fails loudly.
+func TestUnresolvedRequirementReferenceFailsLoudly(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "Be fast", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// The model's free-text requirement field does not match any Requirement.Code.
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[{"title":"Do it","statement":"work","requirement":"REQ-9-does-not-exist","priority":"must"}]}`)
+
+	err := eng.runExecutionPlan(ctx, ini.ID)
+	if !errors.Is(err, errUnresolvedDependencies) {
+		t.Fatalf("expected the unresolved requirement reference to fail loudly, got %v", err)
+	}
+
+	tasks, err := db.ListTasks(ctx, ini.ID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d (err=%v)", len(tasks), err)
+	}
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "task", tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeImplements {
+			t.Fatal("expected no implements edge for an unresolved requirement reference")
+		}
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Category == "plan_traceability" && f.Severity.Blocking() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a blocking plan_traceability finding, got %+v", findings)
+	}
+}
+
+// TestRequirementReferenceToleratesFormatting proves the tolerant matching
+// (review A4 #4): trimmed, case-insensitive, and a "REQ-3: title" form.
+func TestRequirementReferenceToleratesFormatting(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "Be fast", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[{"title":"Do it","statement":"work","requirement":"  `+strings.ToLower(req.Code)+` : some title  ","priority":"must"}]}`)
+
+	if err := eng.runExecutionPlan(ctx, ini.ID); err != nil {
+		t.Fatalf("expected tolerant matching to resolve, got %v", err)
+	}
+	tasks, _ := db.ListTasks(ctx, ini.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	edges, _ := db.ListGraphEdgesFrom(ctx, ini.ID, "task", tasks[0].ID)
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeImplements && e.ToID == req.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the tolerant-matched requirement to be wired, got %+v", edges)
+	}
+}
+
+// TestTaskImplementsMultipleRequirements is the review A4 #4 N:M test: a task
+// may implement several requirements via the `requirements` array.
+func TestTaskImplementsMultipleRequirements(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req1 := &domain.Requirement{InitiativeID: ini.ID, Statement: "First", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req1); err != nil {
+		t.Fatal(err)
+	}
+	req2 := &domain.Requirement{InitiativeID: ini.ID, Statement: "Second", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req2); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[{"title":"Do it","statement":"work","requirements":["`+req1.Code+`","`+req2.Code+`"],"priority":"must"}]}`)
+
+	if err := eng.runExecutionPlan(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.ListTasks(ctx, ini.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	edges, _ := db.ListGraphEdgesFrom(ctx, ini.ID, "task", tasks[0].ID)
+	got := map[string]bool{}
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeImplements {
+			got[e.ToID] = true
+		}
+	}
+	if !got[req1.ID] || !got[req2.ID] {
+		t.Fatalf("expected implements edges to both requirements, got %+v", edges)
+	}
+}
+
+// TestDeterministicPlanChecksFlagSupersededCitationInProse covers the prose
+// form of review A2's "cites a superseded requirement code": the task's
+// structured requirement correctly points at the ACTIVE requirement, but its
+// own text still names the superseded code.
+func TestDeterministicPlanChecksFlagSupersededCitationInProse(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	oldReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "old", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, oldReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SupersedeRequirements(ctx, ini.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	newReq := &domain.Requirement{InitiativeID: ini.ID, Statement: "new", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, newReq); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Follow up on " + oldReq.Code,
+		Statement: "This depends on the old " + oldReq.Code + " approach.", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, newReq.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := eng.deterministicPlanChecks(ctx, ini.ID)
+	found := false
+	for _, f := range findings {
+		if f.Category == "plan_traceability" && f.Severity.Blocking() && strings.Contains(f.Finding, oldReq.Code) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a blocking plan_traceability finding for the prose citation, got %+v", findings)
+	}
+}
+
+// TestDeterministicPlanChecksFlagsDecisionContradictionAdvisory covers the
+// advisory-only heuristic (review A2 #3): a task whose words overlap a
+// decided decision's REJECTED option more than its resolution.
+func TestDeterministicPlanChecksFlagsDecisionContradictionAdvisory(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which database?", Options: []string{"Postgres", "MongoDB"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "Persist data", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	contradicting := &domain.Task{InitiativeID: ini.ID, Title: "Switch storage to MongoDB",
+		Statement: "Migrate the storage layer to MongoDB for flexibility.", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, contradicting, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	aligned := &domain.Task{InitiativeID: ini.ID, Title: "Set up Postgres schema",
+		Statement: "Create the Postgres schema for the storage layer.", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, aligned, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := eng.deterministicPlanChecks(ctx, ini.ID)
+	var advisoryFor map[string]bool = map[string]bool{}
+	for _, f := range findings {
+		if f.Category == "plan_traceability" && !f.Severity.Blocking() {
+			if strings.Contains(f.Finding, contradicting.Code) {
+				advisoryFor[contradicting.Code] = true
+			}
+			if strings.Contains(f.Finding, aligned.Code) {
+				advisoryFor[aligned.Code] = true
+			}
+		}
+	}
+	if !advisoryFor[contradicting.Code] {
+		t.Fatalf("expected an advisory plan_traceability finding for the contradicting task, got %+v", findings)
+	}
+	if advisoryFor[aligned.Code] {
+		t.Fatalf("did not expect the aligned task to be flagged, got %+v", findings)
+	}
+}
+
+// TestReopenDecisionMarksDependentsStaleAndImpactShowsThem is the review A4 #5
+// acceptance test: apply a change set, change (reopen) a decision it depends
+// on, and impact lists the requirement, task and CHG, and guidance flags it.
+func TestReopenDecisionMarksDependentsStaleAndImpactShowsThem(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which database?", Options: []string{"Postgres", "MongoDB"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "Persist data", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := &domain.ChangeSet{InitiativeID: ini.ID, TaskID: task.ID, PatchDigest: "d"}
+	if err := db.CreateChangeSet(ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct{ from, to domain.ChangeSetStatus }{
+		{domain.ChangeSetDraft, domain.ChangeSetChecksRunning},
+		{domain.ChangeSetChecksRunning, domain.ChangeSetReviewRequired},
+		{domain.ChangeSetReviewRequired, domain.ChangeSetApproved},
+		{domain.ChangeSetApproved, domain.ChangeSetApplying},
+	} {
+		if err := db.TransitionChangeSet(ctx, cs.ID, step.from, step.to, "test"); err != nil {
+			t.Fatalf("transition %s -> %s: %v", step.from, step.to, err)
+		}
+	}
+	if err := db.MarkChangeSetApplied(ctx, cs.ID, "digest", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before the decision changes, impact(decision) has no dependents at all --
+	// this is the exact bug: "impact decision DEC-9 said 'No dependents found'".
+	before, err := eng.Impact(ctx, ini.ID, "decision", dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) == 0 {
+		t.Fatal("expected impact(decision) to already show the requirement via derived_from (sanity check)")
+	}
+
+	// Change the decision: reopen it.
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleTargets := map[string]bool{}
+	for _, s := range stale {
+		staleTargets[s.TargetType+":"+s.TargetID] = true
+	}
+	for _, want := range []string{"requirement:" + req.ID, "task:" + task.ID, "change_set:" + cs.ID} {
+		if !staleTargets[want] {
+			t.Fatalf("expected %s to be marked stale, got %+v", want, stale)
+		}
+	}
+
+	// impact(decision) now lists the requirement, task and change set, each
+	// staled.
+	impact, err := eng.Impact(ctx, ini.ID, "decision", dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStale := map[string]string{}
+	for _, it := range impact {
+		gotStale[it.FromType+":"+it.FromID] = it.Staleness
+	}
+	for _, want := range []string{"requirement:" + req.ID, "task:" + task.ID, "change_set:" + cs.ID} {
+		if gotStale[want] != "stale" {
+			t.Fatalf("expected %s staleness=stale in impact(decision), got %+v", want, impact)
+		}
+	}
+}
+
+// TestClearStaleItemsForInitiativeOnRevisePlan proves the clearing half of
+// review A4 #5: re-planning clears the stale state -- narrowed by review M5
+// to task/change-set marks only. A requirement mark survives revise-plan,
+// since regenerating the plan does not re-verify the requirement itself
+// against the decision that changed.
+func TestClearStaleItemsForInitiativeOnRevisePlan(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "Persist data", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement", Statement: "build", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark it stale directly (bypassing a decision reopen, which is exercised
+	// elsewhere) to isolate the clearing behaviour under test.
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which database?", Options: []string{"Postgres", "MongoDB"}}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WireRequirementDerivedFromDecision(ctx, ini.ID, req.ID, dec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Postgres", "human"); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := db.ListStaleItems(ctx, ini.ID); err != nil || len(items) == 0 {
+		t.Fatalf("expected stale items before revise-plan, got %d (err=%v)", len(items), err)
+	}
+
+	if _, err := eng.RevisePlan(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// review M5: revise-plan must clear task/change-set marks but leave a
+	// requirement mark active.
+	if len(items) != 1 || items[0].TargetType != "requirement" {
+		t.Fatalf("expected only the requirement's stale mark to survive revise-plan, got %+v", items)
+	}
+}
+
+// TestQuickRigorPlanReviewCycleAlwaysNeedsHumanJudgment is review C2's
+// headline case: rigor only ever relaxes the ADVERSARIAL reviewer's
+// findings. A dependency cycle -- a deterministic plan check -- must always
+// go through EvaluateApproval/needs_human_judgment, at every rigor. Before
+// the fix, `blocked && rigor != RigorQuick` skipped straight to
+// PlanApproved at quick, which is exactly the "vertical slice asks for 2-4
+// tasks, calibrates to quick, cycle goes through with no human step" failure
+// the review describes.
+func TestQuickRigorPlanReviewCycleAlwaysNeedsHumanJudgment(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3, Rigor: "quick"},
+	})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Statement: "req", Priority: domain.PriorityMust,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{{Metric: "m", Target: "t", Condition: "c"}}}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// A depends on B and B depends on A: a 2-node cycle.
+	fp.SetResponse("execution_plan", `{"summary":"plan","tasks":[`+
+		`{"title":"A","statement":"a","requirement":"`+req.Code+`","priority":"must","depends_on":["B"]},`+
+		`{"title":"B","statement":"b","requirement":"`+req.Code+`","priority":"must","depends_on":["A"]}`+
+		`]}`)
+	if err := eng.runExecutionPlan(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := eng.runExecutionPlanReview(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.InitiativeNeedsHumanJudgment {
+		t.Fatalf("a dependency cycle must always require human judgment, even at quick rigor, got %q", status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawCycle := false
+	for _, f := range findings {
+		if strings.Contains(f.Finding, "cycle") {
+			sawCycle = true
+			if f.Advisory {
+				t.Errorf("a deterministic cycle finding must never be marked Advisory by rigor: %+v", f)
+			}
+		}
+	}
+	if !sawCycle {
+		t.Fatal("expected a dependency-cycle finding to be recorded")
+	}
+}
+
+// TestArchitectureDecisionWiresRequirementProvenance is a real founder-journey
+// defect: architecture/design-stage decisions carried no derived_from edge to
+// anything, so resolving or reopening one marked no dependent requirement,
+// task or change set stale, and /impact reported none -- DEC-2..DEC-5 in that
+// run had empty provenance, and TASK-2 kept the title "token-bucket" after the
+// human chose "fixed-window". The fix wires requirement --derived_from-->
+// decision from the decision's own `requirements` code references (added to
+// the Architecture/ProductDesign schemas), the same way runProductDefinition
+// wires a PRD requirement's `decision` reference.
+func TestArchitectureDecisionWiresRequirementProvenance(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	req := &domain.Requirement{InitiativeID: ini.ID, Code: "REQ-2", Statement: "Per-key rate limit", Priority: domain.PriorityMust}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("architecture", `{
+		"summary": "s",
+		"components": [{"name": "c", "responsibility": "r"}],
+		"decisions": [{
+			"question": "Which rate-limiting algorithm should be used?",
+			"options": ["Token bucket", "Fixed window"],
+			"recommendation": "Token bucket",
+			"requirements": ["REQ-2"]
+		}]
+	}`)
+
+	if err := eng.runArchitecture(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil || len(decs) != 1 {
+		t.Fatalf("expected one decision, got %d (err=%v)", len(decs), err)
+	}
+	dec := decs[0]
+	if dec.Type != domain.DecisionArchitecture {
+		t.Fatalf("expected an architecture decision, got %q", dec.Type)
+	}
+
+	edges, err := db.ListGraphEdgesFrom(ctx, ini.ID, "requirement", req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wired := false
+	for _, e := range edges {
+		if e.EdgeType == domain.EdgeDerivedFrom && e.ToType == "decision" && e.ToID == dec.ID {
+			wired = true
+		}
+	}
+	if !wired {
+		t.Fatalf("expected requirement %s derived_from decision %s, got edges %+v", req.ID, dec.ID, edges)
+	}
+
+	// Resolve, build a task on the requirement, then reopen: the cascade
+	// (decision <- requirement <- task, review A4 #5) must now have something
+	// to walk from, exactly as it does for a PRD-phase decision.
+	if err := db.ResolveDecision(ctx, dec.ID, "Token bucket", "human"); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement rate limiting", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, req.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReopenDecision(ctx, dec.ID, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := db.ListStaleItems(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleTargets := map[string]bool{}
+	for _, s := range stale {
+		staleTargets[s.TargetType+":"+s.TargetID] = true
+	}
+	for _, want := range []string{"requirement:" + req.ID, "task:" + task.ID} {
+		if !staleTargets[want] {
+			t.Fatalf("expected %s marked stale after reopening the architecture decision, got %+v", want, stale)
+		}
+	}
+
+	impact, err := eng.Impact(ctx, ini.ID, "decision", dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact) == 0 {
+		t.Fatal(`expected /impact to list dependents for an architecture decision, not "No dependents found"`)
+	}
+}
+
+// TestArchitectureDoesNotReraiseAnAnsweredQuestion is the other half of the
+// same real founder-journey defect: the human answered "API keys come from an
+// environment variable, never a file" in define, and the architecture phase
+// re-asked essentially the same question as a fresh Decision, recommending a
+// config file -- because createDesignDecision never consulted the questions
+// table at all, unlike runProductDefinition's own createDecisionIfNew. A
+// design-stage decision matching an ANSWERED question must not be created.
+func TestArchitectureDoesNotReraiseAnAnsweredQuestion(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	q := &domain.Question{InitiativeID: ini.ID, Question: "What format/source should be used for startup configuration of API keys and limits?"}
+	if err := db.CreateQuestion(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	digest := eng.storeBlob("Environment variables, never a file.")
+	if err := db.AnswerQuestion(ctx, q.ID, digest, "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	fp.SetResponse("architecture", `{
+		"summary": "s",
+		"components": [{"name": "c", "responsibility": "r"}],
+		"decisions": [{
+			"question": "What format/source should be used for startup configuration of API keys and limits?",
+			"options": ["YAML/JSON config file", "Environment variables"],
+			"recommendation": "YAML/JSON config file",
+			"requirements": []
+		}]
+	}`)
+
+	if err := eng.runArchitecture(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 0 {
+		t.Fatalf("expected no decision to be raised over an already-answered question, got %+v", decs)
+	}
+
+	events, err := db.ListEvents(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		if e.EventType == "question.reraised_answered" && e.AggregateID == q.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a question.reraised_answered event linking the re-ask to the answered question")
+	}
+}
+
+// TestArchitectureDissentsFromAnOpenDecisionButNotADecidedOne pins the other
+// side of createDesignDecision's dissent rule: a fresh, disagreeing
+// recommendation is a genuine dissent (§8) against an OPEN decision another
+// role raised, but not against one a human has already resolved -- the
+// prompt itself says a decided human decision is authoritative, so recording
+// a "dissent" there would be a model arguing with a human, not two roles
+// disagreeing with each other.
+func TestArchitectureDissentsFromAnOpenDecisionButNotADecidedOne(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	dec := &domain.Decision{InitiativeID: ini.ID, Type: domain.DecisionArchitecture, Question: "Which rate-limiting algorithm should be used?",
+		Options: []string{"Token bucket", "Fixed window"}, Recommendation: "Token bucket"}
+	if err := db.CreateDecision(ctx, dec); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResolveDecision(ctx, dec.ID, "Token bucket", "human"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.createDesignDecision(ctx, ini.ID, RoleProductDesigner, domain.DecisionArchitecture,
+		"Which rate-limiting algorithm should be used?", []string{"Token bucket", "Fixed window"}, "Fixed window", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	decs, err := db.ListDecisions(ctx, ini.ID)
+	if err != nil || len(decs) != 1 {
+		t.Fatalf("expected the decided decision to stay singular, got %d (err=%v)", len(decs), err)
+	}
+	if decs[0].Recommendation != "Token bucket" || decs[0].Resolution != "Token bucket" {
+		t.Fatalf("a decided decision must not be overwritten by a later phase's disagreement, got %+v", decs[0])
+	}
+	dissents, err := db.ListDissents(ctx, dec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dissents) != 0 {
+		t.Fatalf("a disagreement with an already-DECIDED human decision is not a dissent, got %+v", dissents)
 	}
 }

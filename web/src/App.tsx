@@ -18,6 +18,10 @@ import DesignPage from "./DesignPage";
 import DecisionPage from "./DecisionPage";
 import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
+import ChangedPage from "./ChangedPage";
+import QueuePage from "./QueuePage";
+import StaleBanner from "./StaleBanner";
+import TimelinePanel from "./TimelinePanel";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -35,6 +39,10 @@ import {
 import { PHASES, currentRoute, navigate, phaseHref, type Route, type PhaseName } from "./router";
 import { daemonDownAfterPoll, daemonLostMessage } from "./daemonStatus";
 import { verifiedRequirementCount } from "./verify";
+import type { StaleItemRef } from "./staleItems";
+import type { CostsView } from "./cost";
+import type { TimelineEntry } from "./timeline";
+import { setLastVisit } from "./lastVisit";
 
 interface Project {
   id: string;
@@ -45,6 +53,10 @@ interface Project {
 interface Initiative {
   id: string;
   title: string;
+  // Wave 3 (C1): a short, generated title (<= 60 chars). Optional -- a
+  // pre-wave-3 daemon, or a row created before this field existed, sends
+  // none, and every read of it falls back to `title` via displayTitle().
+  short_title?: string;
   description: string;
   status: string;
   failure_reason?: string;
@@ -84,6 +96,13 @@ export default function App() {
   const [attention, setAttention] = useState<InitiativeRollup[]>([]);
   const [verifiedRequirements, setVerifiedRequirements] = useState(0);
   const [initiativesLoaded, setInitiativesLoaded] = useState(false);
+  // Wave 3: stale items (A4 #5), cost/time (C3) and the timeline (C1) for
+  // whichever initiative is currently open. Empty/null until it loads or
+  // when the initiative has none -- every consumer treats that the same as
+  // "nothing to show" rather than distinguishing the two.
+  const [staleItems, setStaleItems] = useState<StaleItemRef[]>([]);
+  const [costs, setCosts] = useState<CostsView | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
   const [daemonDown, setDaemonDown] = useState(false);
 
@@ -175,6 +194,31 @@ export default function App() {
     );
   }, [reportOutcome]);
 
+  // Wave 3: stale items (guidance's stale_items, A4 #5), cost/time (C3) and
+  // the timeline panel (C1) -- three endpoints the surfaces worker is
+  // landing alongside this UI. Same allSettled shape as loadInitiativeData
+  // above: each keeps the last good value it had on any individual failure,
+  // and only a NetworkError on any of the three counts as the daemon being
+  // down (M4). A daemon that predates one of these endpoints answers with an
+  // ordinary HTTP error, not a NetworkError, so it never flips the banner --
+  // that item's state just stays empty/absent, which every consumer below
+  // already renders nothing (or a degraded state) for.
+  const loadWave3Data = useCallback(async (pid: string, iniId: string) => {
+    const settled = await Promise.allSettled([
+      get<{ stale_items?: StaleItemRef[] }>(resource(pid, iniId, "guidance")),
+      get<CostsView>(resource(pid, iniId, "costs")),
+      get<TimelineEntry[]>(resource(pid, iniId, "timeline")),
+    ]);
+    const [g, c, t] = settled;
+    if (g.status === "fulfilled") setStaleItems(g.value?.stale_items ?? []);
+    if (c.status === "fulfilled") setCosts(c.value ?? null);
+    if (t.status === "fulfilled") setTimeline(t.value ?? []);
+    reportOutcome(
+      "wave3-data",
+      settled.some((x) => x.status === "rejected" && x.reason instanceof NetworkError),
+    );
+  }, [reportOutcome]);
+
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
@@ -206,7 +250,10 @@ export default function App() {
   }, []);
 
   const initiativeId =
-    route.name !== "home" && route.name !== "settings" && route.name !== "not-found"
+    route.name !== "home" &&
+    route.name !== "settings" &&
+    route.name !== "not-found" &&
+    route.name !== "queue"
       ? route.id
       : "";
   const currentInitiative = initiativeId
@@ -217,12 +264,41 @@ export default function App() {
   useEffect(() => {
     if (projectId && currentInitiativeId) {
       loadInitiativeData(projectId, currentInitiativeId);
+      loadWave3Data(projectId, currentInitiativeId);
     }
     // A poller that stops must stop voting. Leaving the initiative kept its
     // last "network error" in the combined decision, so after the daemon came
     // back the banner stayed up until the initiative was opened again.
-    return () => forgetOutcome("initiative-data");
-  }, [projectId, currentInitiativeId, loadInitiativeData, forgetOutcome]);
+    return () => {
+      forgetOutcome("initiative-data");
+      forgetOutcome("wave3-data");
+    };
+  }, [projectId, currentInitiativeId, loadInitiativeData, loadWave3Data, forgetOutcome]);
+
+  // "Since you were last here" (C1): record this visit's end so, next time
+  // Home is viewed, entriesSince() can show what changed after that moment.
+  // ProductHome reads the cursor's PREVIOUS value before this effect ever
+  // runs, since it can only be on Home while currentInitiativeId is empty.
+  //
+  // M7, review fix: stamps on cleanup (leaving this initiative, whether by
+  // navigating away or unmounting), with a fresh timestamp, so everything
+  // that happened DURING a visit -- the user's own actions, a run finishing
+  // while they watched -- correctly counts as seen too.
+  //
+  // LOW fix (release-gate report): this used to ALSO stamp on entry, which
+  // consumed the unread cursor immediately on arrival, before anything had
+  // actually been shown. Opening an initiative and leaving a moment later --
+  // a misclick, a wrong initiative in a long list -- advanced the cursor to
+  // "now" regardless, so every entry between the previous visit and that
+  // instant was irrecoverably marked seen even though nothing was read. The
+  // exit-only stamp still records "everything up to when I looked away",
+  // whatever the visit's length, without that false-positive on a fast
+  // in-and-out.
+  useEffect(() => {
+    return () => {
+      if (currentInitiativeId) setLastVisit(currentInitiativeId, new Date().toISOString());
+    };
+  }, [currentInitiativeId]);
 
   // Poll for freshness (SSE live-update arrives with the running-state work).
   useEffect(() => {
@@ -230,10 +306,13 @@ export default function App() {
     const id = setInterval(() => {
       loadInitiatives(projectId);
       loadAttention(projectId);
-      if (currentInitiativeId) loadInitiativeData(projectId, currentInitiativeId);
+      if (currentInitiativeId) {
+        loadInitiativeData(projectId, currentInitiativeId);
+        loadWave3Data(projectId, currentInitiativeId);
+      }
     }, 2500);
     return () => clearInterval(id);
-  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData]);
+  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData, loadWave3Data]);
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",
@@ -262,6 +341,20 @@ export default function App() {
       navigate(`#/i/${created.initiative_id}/explore`);
     } catch {
       /* surfaced below */
+    }
+  };
+
+  // ackStale (A4 #5): clears one stale mark. Optimistic removal so the
+  // banner updates immediately; a refusal (already cleared, wrong
+  // initiative) just gets picked up on the next poll rather than a visible
+  // error for what is, at worst, a stale click.
+  const ackStale = async (staleId: string) => {
+    if (!projectId || !currentInitiativeId) return;
+    setStaleItems((items) => items.filter((i) => i.stale_id !== staleId));
+    try {
+      await post(resource(projectId, currentInitiativeId, `stale/${staleId}/ack`), {});
+    } catch {
+      loadWave3Data(projectId, currentInitiativeId);
     }
   };
 
@@ -350,10 +443,17 @@ export default function App() {
           inbox={inbox}
           modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
           modelDot={modelDot}
+          costs={costs}
           onNavigate={navigate}
         />
 
         <main className="phase-main">
+          {/* A4 #5 / JTBD 5: visible from every phase, not only the one
+              where the stale mark happened to originate. */}
+          {currentInitiativeId && staleItems.length > 0 && (
+            <StaleBanner initiativeId={currentInitiativeId} items={staleItems} onAck={ackStale} />
+          )}
+
           {currentInitiativeId && currentInitiative?.status === "failed" && (
             <FailedBanner
               projectId={projectId}
@@ -367,8 +467,15 @@ export default function App() {
             <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
           )}
 
+          {/* C1 / JTBD 6: "no useful 'what changed'" -- a compact panel on
+              every phase, with a link to the full history. */}
+          {currentInitiativeId && timeline.length > 0 && (
+            <TimelinePanel initiativeId={currentInitiativeId} entries={timeline} />
+          )}
+
           {route.name === "home" && (
             <ProductHome
+              projectId={projectId}
               initiatives={initiatives}
               attention={attention}
               projectName={project?.name ?? ""}
@@ -476,6 +583,10 @@ export default function App() {
         {route.name === "diff" && (
           <ArtifactDiffPage projectId={projectId} from={route.from} to={route.to} />
         )}
+        {route.name === "changed" && (
+          <ChangedPage projectId={projectId} initiativeId={route.id} />
+        )}
+        {route.name === "queue" && <QueuePage projectId={projectId} />}
         </main>
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />

@@ -1,25 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
+  advisoryBacklogLabel,
   appliedOutcomeLabel,
+  appliedPillLabel,
   approveErrorMessage,
   sortFindingsForCard,
   buildFailure,
   buildHeaderMeta,
+  canOverrideSecret,
   conflictCause,
   diffChangeTypeLabel,
   errMessage,
+  executeRequestBody,
   findingCategoryLabel,
+  gitPrErrorMessage,
   hasNoFilesChanged,
   isOperationInFlight,
   isWholeFileRewrite,
   latestOperationOfType,
   noDiffMessage,
+  notASecretConfirmCopy,
+  partitionAdvisory,
   patchLines,
+  prOverallLabel,
+  prOverallState,
   resolveRunningTask,
+  reviewNeverCompleted,
+  revertRefusalMessage,
   runButtonState,
   runningTitle,
   shouldResetRetryBusy,
+  stageOrTitle,
   stoppedMessage,
+  stripWorkflowPrefix,
 } from "./buildLogic";
 
 describe("isOperationInFlight", () => {
@@ -442,6 +455,48 @@ describe("appliedOutcomeLabel", () => {
   });
 });
 
+describe("reviewNeverCompleted (H8 fix)", () => {
+  it("is true for a review_required change set with no review_completed_at", () => {
+    expect(reviewNeverCompleted({ status: "review_required" })).toBe(true);
+    expect(reviewNeverCompleted({ status: "review_required", review_completed_at: undefined })).toBe(
+      true,
+    );
+  });
+
+  it("is false once review_completed_at is set", () => {
+    expect(
+      reviewNeverCompleted({ status: "review_required", review_completed_at: "2026-09-18T12:00:00Z" }),
+    ).toBe(false);
+  });
+
+  it("is false for any other status, whatever review_completed_at says", () => {
+    expect(reviewNeverCompleted({ status: "approved" })).toBe(false);
+    expect(reviewNeverCompleted({ status: "applied" })).toBe(false);
+    expect(reviewNeverCompleted({ status: "reverted" })).toBe(false);
+  });
+});
+
+describe("appliedPillLabel (H8 fix)", () => {
+  it("labels a no_op change set honestly, ahead of everything else", () => {
+    expect(appliedPillLabel(true, false, "container", "anthropic/claude-sonnet-4")).toBe(
+      "No file changes",
+    );
+    // no_op outranks the agent_output-derived noFilesChanged heuristic too.
+    expect(appliedPillLabel(true, true, "internal", undefined)).toBe("No file changes");
+  });
+
+  it("falls through to the agent_output heuristic when no_op is false", () => {
+    expect(appliedPillLabel(false, true, "container", "anthropic/claude-sonnet-4")).toBe(
+      "No changes",
+    );
+  });
+
+  it("falls through to appliedOutcomeLabel when neither signal fired", () => {
+    expect(appliedPillLabel(false, false, "container", "anthropic/claude-sonnet-4")).toBe("SHIPPED");
+    expect(appliedPillLabel(false, false, "internal", undefined)).toBe("Placeholder change (demo)");
+  });
+});
+
 describe("buildHeaderMeta", () => {
   it("says placeholder code only for the internal executor", () => {
     expect(buildHeaderMeta("internal")).toBe("internal executor · placeholder code");
@@ -467,5 +522,181 @@ describe("sortFindingsForCard", () => {
       "review/high",
       "review/observation",
     ]);
+  });
+});
+
+describe("stripWorkflowPrefix", () => {
+  it("drops a leading 'workflow: ' prefix", () => {
+    expect(stripWorkflowPrefix("workflow: revert refused: web/src/a.ts changed since apply")).toBe(
+      "revert refused: web/src/a.ts changed since apply",
+    );
+  });
+
+  it("leaves text with no such prefix untouched", () => {
+    expect(stripWorkflowPrefix("revert refused: web/src/a.ts changed since apply")).toBe(
+      "revert refused: web/src/a.ts changed since apply",
+    );
+  });
+});
+
+describe("revertRefusalMessage (task 4)", () => {
+  it("passes the backend's file-naming, advice-carrying message through readably", () => {
+    const raw =
+      "workflow: revert CHG-1 refused: web/src/App.tsx, web/src/api.ts changed since apply; " +
+      "re-approve and re-apply a new change set instead of reverting this one";
+    expect(revertRefusalMessage(raw)).toBe(
+      "revert CHG-1 refused: web/src/App.tsx, web/src/api.ts changed since apply; " +
+        "re-approve and re-apply a new change set instead of reverting this one",
+    );
+  });
+
+  it("still names the files even with no workflow prefix", () => {
+    const raw = "revert refused: web/src/App.tsx changed since apply";
+    expect(revertRefusalMessage(raw)).toBe(raw);
+  });
+});
+
+describe("canOverrideSecret (task 1)", () => {
+  it("is true only for an overridable secret_sweep finding", () => {
+    expect(canOverrideSecret({ category: "secret_sweep", secret_overridable: true })).toBe(true);
+  });
+
+  it("is false for a secret_sweep finding drawn from configured secrets", () => {
+    expect(canOverrideSecret({ category: "secret_sweep", secret_overridable: false })).toBe(false);
+  });
+
+  it("is false for any other category, whatever secret_overridable says", () => {
+    expect(canOverrideSecret({ category: "review", secret_overridable: true })).toBe(false);
+  });
+
+  it("is false when secret_overridable is absent", () => {
+    expect(canOverrideSecret({ category: "secret_sweep" })).toBe(false);
+  });
+});
+
+describe("notASecretConfirmCopy (task 1)", () => {
+  it("names the file and mentions Settings as where to revoke it", () => {
+    const copy = notASecretConfirmCopy("src/config.ts:12");
+    expect(copy).toContain("src/config.ts:12");
+    expect(copy).toContain("Settings");
+    expect(copy).toContain("from now on");
+  });
+
+  it("still reads sensibly with no path", () => {
+    const copy = notASecretConfirmCopy(undefined);
+    expect(copy).toContain("Settings");
+  });
+});
+
+describe("partitionAdvisory (task 2)", () => {
+  it("splits advisory findings out from blocking ones", () => {
+    const blocker = { advisory: false, id: "a" };
+    const backlog1 = { advisory: true, id: "b" };
+    const backlog2 = { advisory: true, id: "c" };
+    const { blocking, advisory } = partitionAdvisory([blocker, backlog1, backlog2]);
+    expect(blocking).toEqual([blocker]);
+    expect(advisory).toEqual([backlog1, backlog2]);
+  });
+
+  it("treats an absent advisory flag as blocking", () => {
+    const f: { id: string; advisory?: boolean } = { id: "a" };
+    expect(partitionAdvisory([f]).blocking).toEqual([f]);
+  });
+});
+
+describe("advisoryBacklogLabel (task 2)", () => {
+  it("names the count and says it never blocks", () => {
+    expect(advisoryBacklogLabel(3)).toBe("Backlog (3) — noted, not blocking");
+  });
+
+  it("still reads correctly at zero", () => {
+    expect(advisoryBacklogLabel(0)).toBe("Backlog (0) — noted, not blocking");
+  });
+});
+
+describe("prOverallLabel / prOverallState (task 3)", () => {
+  it("labels every PRChecksResult.overall value", () => {
+    expect(prOverallLabel("success")).toBe("All checks passed");
+    expect(prOverallLabel("failure")).toBe("Checks failed");
+    expect(prOverallLabel("pending")).toBe("Checks running");
+    expect(prOverallLabel("none")).toBe("No checks reported");
+  });
+
+  it("falls back to the raw value for anything unrecognized", () => {
+    expect(prOverallLabel("weird")).toBe("weird");
+  });
+
+  it("maps overall onto this app's pill states", () => {
+    expect(prOverallState("success")).toBe("verified");
+    expect(prOverallState("failure")).toBe("failing");
+    expect(prOverallState("pending")).toBe("running");
+    expect(prOverallState("none")).toBe("inactive");
+  });
+});
+
+describe("gitPrErrorMessage (task 3)", () => {
+  it("explains a missing gh CLI", () => {
+    expect(gitPrErrorMessage("exec: \"gh\": executable file not found in $PATH")).toContain(
+      "GitHub CLI (gh) isn't installed",
+    );
+  });
+
+  it("explains a missing dedicated branch", () => {
+    expect(gitPrErrorMessage("workflow: initiative has no dedicated branch yet")).toContain(
+      "git.branch_per_initiative",
+    );
+  });
+
+  it("explains no pull request yet, for pr-checks", () => {
+    expect(gitPrErrorMessage("no pull request exists yet for this initiative")).toContain(
+      "Create one first",
+    );
+  });
+
+  it("passes an unrecognized 409 through, minus the workflow prefix", () => {
+    expect(gitPrErrorMessage("workflow: something else entirely")).toBe("something else entirely");
+  });
+});
+
+describe("executeRequestBody (task 5)", () => {
+  it("is empty when neither fresh nor a note is given", () => {
+    expect(executeRequestBody(false, "")).toEqual({});
+  });
+
+  it("trims and includes a note", () => {
+    expect(executeRequestBody(false, "  please use the mock client  ")).toEqual({
+      note: "please use the mock client",
+    });
+  });
+
+  it("omits note entirely for a blank/whitespace-only note", () => {
+    expect(executeRequestBody(false, "   ")).toEqual({});
+  });
+
+  it("includes fresh only when discarding partial work, alongside a note", () => {
+    expect(executeRequestBody(true, "retry without the cache")).toEqual({
+      fresh: true,
+      note: "retry without the cache",
+    });
+  });
+});
+
+describe("stageOrTitle (task 8)", () => {
+  const labels = { execute_initiative: "Executing the plan" };
+
+  it("prefers the operation's own stage when present", () => {
+    expect(stageOrTitle("Reviewing the plan, cycle 2", "execute_initiative", labels, null)).toBe(
+      "Reviewing the plan, cycle 2",
+    );
+  });
+
+  it("falls back to runningTitle when stage is absent", () => {
+    expect(stageOrTitle(undefined, "execute_initiative", labels, { id: "t1", human_id: "TASK-2", title: "Add rate limiting" })).toBe(
+      "Running TASK-2: Add rate limiting",
+    );
+  });
+
+  it("falls back when stage is blank", () => {
+    expect(stageOrTitle("   ", "execute_initiative", labels, null)).toBe("Executing the plan");
   });
 });

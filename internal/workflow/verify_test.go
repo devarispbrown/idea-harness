@@ -75,6 +75,51 @@ func TestVerifyInitiativeGate(t *testing.T) {
 	}
 }
 
+// TestHasOpenBlockingFindingsSkipsAdvisory is review C1: an Advisory finding
+// must never block completion, however severe and however undisposed --
+// that's the whole point of marking a quick-accepted finding Advisory rather
+// than leaving it a plain open blocker. Before the fix, a quick-accepted
+// critical/high finding wedged the initiative: approval succeeded, and
+// verify/complete then refused forever with no way to un-stick it.
+func TestHasOpenBlockingFindingsSkipsAdvisory(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID, TargetType: "prd", TargetID: iniID,
+		Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "c", Finding: "quick-accepted", Recommendation: "r",
+		Advisory: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocking {
+		t.Fatal("an Advisory finding must never be blocking, regardless of severity or disposition")
+	}
+
+	// A non-advisory finding of the same severity still blocks, proving the
+	// skip is keyed on Advisory and not accidentally on something else.
+	if err := db.CreateFinding(ctx, &domain.Finding{
+		InitiativeID: iniID, TargetType: "prd", TargetID: iniID,
+		Severity: domain.SeverityCritical, Confidence: domain.ConfidenceHigh,
+		Category: "c", Finding: "real blocker", Recommendation: "r",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocking2, err := eng.hasOpenBlockingFindings(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocking2 {
+		t.Fatal("a non-advisory undisposed critical finding must still block")
+	}
+}
+
 func TestPartialCoverageNotVerified(t *testing.T) {
 	eng, db, iniID := newVerifyFixture(t)
 	ctx := context.Background()
@@ -356,5 +401,82 @@ func TestFailOnVerifiedRequirementSticksAndCanBeWaived(t *testing.T) {
 	}
 	if ini.Status != domain.InitiativeComplete {
 		t.Fatalf("status = %q, want complete (waived skipped)", ini.Status)
+	}
+}
+
+// TestUnverifyThenBareVerifyDoesNotReverify is review H1, the exact sequence
+// named in the review: human pass -> verify -> revert -> verify. Before the
+// fix, UnverifyRequirement flipped status back to approved but left the pass
+// evidence rows in place; PassedCriterionKeys is status-blind, so a bare
+// `idea verify` with nothing new on disk re-marked the requirement (and the
+// initiative) verified/complete from stale evidence.
+//
+// Mutation-check: remove the verification_evidence DELETE from
+// UnverifyRequirement's transaction, and this fails at the final assertion.
+func TestUnverifyThenBareVerifyDoesNotReverify(t *testing.T) {
+	eng, db, iniID := newVerifyFixture(t)
+	ctx := context.Background()
+
+	req := &domain.Requirement{
+		InitiativeID: iniID, Statement: "Retain audit logs for 90 days", Priority: domain.PriorityMust,
+		Status: domain.RequirementApproved,
+		AcceptanceCriteria: []domain.AcceptanceCriterion{
+			{Metric: "retention", Target: "90d", Condition: "audit log store"},
+		},
+	}
+	if err := db.CreateRequirement(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RecordHumanPass(ctx, iniID, req.Code, "looks good", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementVerified {
+		t.Fatalf("requirement status = %q, want verified", reqs[0].Status)
+	}
+
+	// Revert: the change set that verified it is reverted.
+	if err := db.UnverifyRequirement(ctx, req.ID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err = db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status != domain.RequirementApproved {
+		t.Fatalf("requirement status after revert = %q, want approved", reqs[0].Status)
+	}
+	passed, err := db.PassedCriterionKeys(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(passed) != 0 {
+		t.Fatalf("pass evidence survived UnverifyRequirement: %v", passed)
+	}
+
+	// Bare re-verify: nothing new happened on disk.
+	if err := eng.VerifyInitiative(ctx, iniID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err = db.ListRequirements(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Status == domain.RequirementVerified {
+		t.Fatal("a bare re-verify (no new evidence) re-marked the requirement verified after a revert")
+	}
+	ini, err := db.GetInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ini.Status == domain.InitiativeComplete {
+		t.Fatal("initiative reported complete on stale evidence after a revert")
 	}
 }

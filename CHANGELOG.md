@@ -9,6 +9,1572 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-21
+
+### Changed — BREAKING
+
+| Was | Now |
+|---|---|
+| `projection.BuildGuidance(ini, understanding)` | `projection.BuildGuidance(ini, understanding, recentChangeSets)` — an internal Go API, not an HTTP contract; the daemon's own caller is the only one affected and is updated. Pass `nil` for the old behavior. |
+| `workflow.similarJudgment`'s near-duplicate threshold: overlap-over-shorter-side ≥ 0.6 | token-Jaccard similarity ≥ 0.85 after normalization (review B4, adopted #8) — a stricter, more accurate measure; some previously-merged near-duplicates (e.g. two decisions sharing only a couple of common words) now stay distinct. |
+| `DELETE .../tasks/{taskId}` on a task with dependents: `{"error":"another task depends on this task; remove that dependency first"}` | `{"error":"TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies first, or delete them too."}` — still a 409 with the same JSON error shape, now naming the dependents. |
+| Adding or editing a task with no requirement reference succeeded silently | `POST`/`PATCH` task now **requires** naming at least one requirement (`requirement_ids`, merged with the single `implements` field); a task may now implement more than one requirement (N:M) via `CreateTaskMulti`. |
+| A vocabulary marker (`password`, `token`, `secret`, `auth`, and similar words) anywhere in a patch hard-blocked the change set, with no file, no line, and no way past it | Raises a non-blocking `sensitive_area` finding instead; only a real credential value still blocks. |
+| Approving a change set whose adversarial review never ran (the run was stopped during the review) succeeded, and applying it shipped code no reviewer had seen | `POST .../change-sets/{id}/review` with `approved`, `--accept-findings` and apply all refuse while `review_completed_at` is unset, naming `idea review <id> rerun` (a fresh, paid review) as the way forward. A change set created before this release predates review tracking and says so rather than claiming it was cancelled. |
+| `idea verify --json` exited 0 even when the verification gate was unmet, so it could not gate a script (the human-readable form already exited non-zero) | Both forms exit non-zero on an unmet gate. `--json` still prints the same payload on stdout; the human message goes to stderr. |
+
+### Added
+
+- **The CLI judgment loop.** `internal/cli` had no caller for
+  `POST …/questions/{id}/answer` or `POST …/decisions/{id}/resolve` — an
+  evaluator had to reach past the CLI into raw HTTP to answer a question or
+  resolve a decision, though `idea decisions` lists them and guidance says
+  "Resolve open decisions". New commands: `idea questions` (lists them, with
+  a short id-prefix reference since questions have no human code),
+  `idea answer <question> "<answer>"`, `idea resolve <decision>
+  <option#>|"<resolution>"` (an option can be named by its 1-based index or by
+  free text), `idea reopen-decision <decision>` (the reopen route existed with
+  no CLI caller either), `idea accept-recommendations` (the daemon's own batch
+  escape, review B4/#8), and `idea triage` (its ranked view). Guidance's
+  "Resolve open decisions"/"Resolve open questions" now name the commands
+  that actually do it.
+- **`idea model` filtering.** The bare command printed every model of every
+  configured provider (~8k tokens on a real run) with no way to see less.
+  `idea model` now shows the current selection plus a curated set (5) of each
+  provider's models by default, with a hint naming the escapes:
+  `idea model list --all` (every model of every provider, the old behaviour)
+  and `idea model list <provider>` / `idea model --provider <name>` (one
+  provider in full).
+- **`--wait`, opt-in on `advance`/`execute`/`apply`/`revert`.** These return a
+  handle immediately while `idea new` blocks and streams progress by
+  default — a real inconsistency, but flipping `idea new`'s own default would
+  reopen the race its own doc comment describes fixing (the README's quick
+  start: the very next command used to see the initiative still `running`).
+  Both defaults stay, and the vocabulary is **not** uniform across commands:
+  `advance`/`execute`/`apply`/`revert` accept only `--wait` (opt into
+  blocking, since they return a handle by default); `retry`/`reopen-phase`
+  accept only `--no-wait` (opt out of blocking, since they wait by default,
+  same as `idea new`); `idea new` alone accepts both spellings (`--wait`
+  restates its own default as a no-op, `--no-wait` opts out of it). A command
+  not named above does not accept either flag.
+
+- **A human can disposition a `secret_sweep` finding `not_a_secret`.** This
+  allowlists the finding's fingerprint (a per-project HMAC of the matched
+  value's capture group, never the value) for the project, with the actor and time
+  recorded; the sweep ignores an allowlisted fingerprint from then on, at both
+  Execute and Apply. `GET /api/v1/projects/{projectId}/secret-allowlist` lists
+  entries (fingerprint prefix, kind, path at the time, actor, created_at);
+  `DELETE …/secret-allowlist/{id}` revokes one.
+- **Revert refuses to erase an edit made after apply** (review A3). An ICP
+  user's comment added to a file after apply was silently erased by a revert
+  that never checked the workspace. `RevertChangeSet` now compares every
+  touched file against the change set's post-image before writing anything —
+  the mirror of apply's own pre-image check (`fsdiff.StaleBase`) — and refuses,
+  naming the files, if any changed: `revert refused: the workspace changed
+  since CHG-3 was applied: src/app.js: it was edited in the workspace after
+  apply; commit or discard your edits to src/app.js, then revert`. No `--force`
+  option. `POST …/change-sets/{id}/revert` answers a synchronous `409`
+  (`fsdiff.StalePost`, `Engine.RevertBlockedReason`) instead of starting an
+  operation that can only fail in the background.
+- **`git_commit` guards** (review C4, adopted #2). The commit-on-apply path now refuses — and
+  records why as `git_commit_warning` on the change set, leaving the apply itself to succeed exactly
+  as it would with `git_commit` off — when HEAD is detached, a rebase/merge/cherry-pick is in
+  progress, or the current branch is the repository's default branch and `git.allow_default_branch`
+  is not set. Hooks stay disabled for every agent commit either way (unchanged, now documented in
+  `docs/configuration.md`). `git.allow_default_branch` (new config field).
+- **`git.branch_per_initiative`** (opt-in, C4 piece 2). An initiative's first apply creates and
+  checks out `idea/<slug-of-its-title>`; every later change set for that initiative commits to the
+  same branch (`initiative.git_branch`, new API field), never whatever was checked out before. If
+  the workspace has uncommitted changes outside the change set's own files, the branch switch — and
+  so the commit — is skipped, with a warning, rather than carrying an unrelated edit onto a new
+  branch.
+- **`idea pr`** (C4 piece 3). Pushes an initiative's dedicated branch and opens a pull request via
+  `gh pr create`, with a body built from the initiative (PRD summary, change sets, verification
+  progress); idempotent (`initiative.pr_url`, new API field). `idea pr checks <change-set-id>` shows
+  the latest CI status via `gh pr checks` (`GET …/change-sets/{id}/pr-checks`). A missing `gh`
+  answers a clear 409 rather than an opaque exec error.
+- **The check sandbox image is derived from the project's toolchain** when `check.image` is not
+  configured (review C5): `.nvmrc`/`package.json` `engines.node` → `node:<major>`, `go.mod`'s `go`
+  directive → `golang:<ver>`, `.python-version` → `python:<ver>`. Only when detection is
+  unambiguous — a version range, a non-numeric tag, or more than one recognized toolchain still
+  fails closed exactly as an unconfigured image always has. The image (derived or configured) is
+  shown on every build/test check finding.
+
+- **`review.rigor: auto|quick|standard|thorough`** (new `harness.yaml` field,
+  default `auto`). Auto calibrates from a cheap project-size walk (file
+  count/LOC, the seed's own ignore rules) and the change size (requirement
+  count for the PRD/plan review, file count for the change-set review): a
+  small project and a small change get `quick`; a large project or a large
+  change gets `thorough`; everything else is `standard`. An unmeasured
+  workspace (no workspace yet) is treated as unknown, not small, and never
+  auto-selects `quick`. Documented in `docs/configuration.md` ("Review
+  rigor"). This is the ICP round's own root cause answered directly: a
+  60-line toy app's review loop demanded ABNF grammars and audit schemas and
+  produced 36, then 70, then 82 findings, never converging.
+- **A per-cycle findings cap**, by rigor level: `quick` 5, `standard` 10,
+  `thorough` 20. The highest-severity findings are kept; a dropped-count
+  advisory finding records how many were not shown.
+- **`quick` converges in one pass.** The PRD and plan review loops run
+  exactly one cycle at `quick` rigor and accept regardless of outcome — the
+  adversarial reviewer's findings stand as advisories (never falsely
+  dispositioned `fixed`) rather than gating approval or triggering a revise
+  cycle. The change-set review is not relaxed the same way — critical/high
+  findings in the diff block at every rigor level; `quick` only means one
+  review pass and a smaller findings cap (see Fixed, below). A
+  system-deny check (secret sweep, host-exec, blob-digest mismatch) is
+  unaffected at every rigor level — it is a security invariant, not a rigor
+  knob.
+- **The reviewer, PRD-author, framing ("explore") and planner prompts now
+  receive the project's measured scale, detected stack (from `go.mod`,
+  `package.json`, `Cargo.toml`, etc.), effective rigor, and — capped at 4000
+  bytes — the project's own conventions doc (a CONVENTIONS.md or
+  CONTRIBUTING.md file, when one exists)**, with an explicit instruction to
+  judge proportionately and, for the PRD/framing
+  prompts, not to add infrastructure (a database, a queue, a cache) the
+  project does not already have unless the idea itself asks for it (review
+  B5).
+- **The planner prompt now targets 2-4 vertical-slice tasks**, each shipping
+  working end-to-end functionality, rather than one task per layer or per
+  requirement — one task per requirement only when the plan is genuinely
+  that granular (review B3).
+- **Plan-editing endpoints** (review B3): `POST
+  …/initiatives/{id}/tasks/{taskId}/depends-on` sets a task's `depends_on`
+  wholesale, refusing a change that would introduce a cycle anywhere in the
+  graph; `POST …/initiatives/{id}/tasks/{taskId}/split` splits one task into
+  two or more, each defaulting to the original's requirements and inheriting
+  its dependencies; `POST …/initiatives/{id}/tasks/merge` merges two tasks —
+  requirements union onto the survivor, statements concatenate, every
+  dependency edge rewires onto the survivor, and the merged task is deleted.
+  All three share the existing task-editable guard.
+- **A change-set review finding can name its file and self-report whether it
+  is in the diff** (`path`, `in_diff` on the change-set review schema and on
+  `Finding`; review B2, adopted #5). Deterministically: a `path` that is not
+  one of the change set's files is `advisory` ("about code this change set
+  did not touch"); with no `path`, the reviewer's own `in_diff` decides
+  (defaulting to `true`, so a reviewer that never sets it is unaffected),
+  noted `"unverified"` either way. `Finding.advisory` (new field, along with
+  `path`/`in_diff`) never blocks approval regardless of severity — this is
+  the same field the rigor cap's dropped-count note uses, doubling as a
+  simple backlog marker (migration 29).
+- **Near-duplicate decisions and questions are merged at creation**, not only
+  at display (review B4, adopted #8): same `DecisionType` (for decisions) and
+  a token-Jaccard similarity of at least 0.85 after normalization
+  (`workflow.jaccardSimilarity`, reusing `dedup.go`'s `tokenize`/
+  `normalizeJudgment`) — replacing the old 0.6-of-shorter-side overlap
+  measure, which wrongly merged genuinely distinct judgments ("which
+  database?" vs. "which cache?" is now correctly kept apart: Jaccard 0.5). A
+  question that matches one already answered is not re-created; a
+  `question.reraised_answered` event links the re-raising to the answered
+  original.
+- **`POST …/initiatives/{id}/decisions/accept-recommendations`** resolves
+  every open decision with its own recommendation, actor `human`, in one call
+  (review B4) — the ICP round's "53 things need your judgment" answered
+  directly. A decision with no recommendation is left open and named in
+  `skipped`.
+- **`GET …/initiatives/{id}/triage`** ranks open decisions, questions and
+  blocking findings by impact (blocking, then severity, then dependents
+  count) and labels the top 3 `priority`, the rest `optional` (review B4).
+- **A readable 409 on task delete** (review B3): naming every dependent task
+  by code, e.g. `TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it.
+  Remove those dependencies first, or delete them too.` — it used to be the
+  undifferentiated `another task depends on this task; remove that
+  dependency first`.
+- **Guidance is honest after a fresh change-set failure** (review C6).
+  `projection.BuildGuidance` now takes the initiative's recent change sets
+  (signature change, `BuildGuidance(ini, understanding, recentChangeSets)`;
+  the daemon's `/guidance` handler is the only caller, updated) and, when the
+  latest one was rejected, had changes requested, or conflicted, names it and
+  the next step instead of the unconditional "The reviewed plan is ready to
+  build" a `plan_approved` initiative used to get regardless.
+
+- **A per-initiative "what changed" timeline in human language** (C1, JTBD 6). `GET
+  …/initiatives/{id}/timeline?since=` returns `[{at, kind, title, detail, ref}]`, newest first,
+  scoped to the initiative throughout — the old `idea changed` read the whole project's event log
+  with no initiative filter at all and could report another initiative's counts, and narrated only
+  raw event type names ("`change_set.status_changed`") for anything it did not special-case. Entries
+  read like "CHG-4 applied: rate limiting (2 files)", "CHG-3 denied: a credential at
+  src/keys.js:14", "DEC-2 reopened: which database?", "2 requirements may be invalid", "execute
+  initiative failed". `idea changed` now calls this endpoint; `GET …/initiatives/{id}/changed` (and
+  the web What Changed widget built on it) is unchanged except that it, too, is now correctly scoped
+  to the initiative it is asked about.
+- **Short initiative titles** (C1). `Initiative.short_title` (≤ 60 chars) is generated
+  deterministically on create from the idea's full text: its first sentence or clause, a common
+  lead-in ("I want to", "Build", "Add", …) dropped, trimmed at a word boundary. `title`/`description`
+  keep the full prompt; clients show `short_title || title`. An initiative created before this field
+  existed gets one generated and persisted the first time it is read (`GET …/initiatives`/`GET
+  …/initiatives/{id}`), identically every time (migration 31).
+- **Evidence from tests** (C2). Each requirement in `GET …/initiatives/{id}/requirements` gains
+  `evidence_tests: [{name, status, change_set}]`: tests the verification plan names for it, or
+  whose name contains its code, resolved against the most recently parsed "tests" check output
+  across the initiative's change sets. The verification-design schema's `hooks` items may now name
+  `tests: [names]`, recovered from the rendered verification-plan artifact. Parsing covers `node
+  --test` (TAP `ok`/`not ok`), `go test -v` (`--- PASS`/`--- FAIL`), `pytest -v`, and jest-style
+  `✓`/`✗` lines, best effort. `POST …/initiatives/{id}/verify {"confirm_passing_tests": true}`
+  confirms every requirement whose mapped tests all passed, through the existing human-evidence
+  path with the actor set to `human` — nothing is ever auto-verified without this explicit request.
+  `idea verify --confirm-passing-tests` calls it.
+- **Cost and time** (C3). `GET …/initiatives/{id}/costs` returns `{total_usd, by_phase: [{phase,
+  usd, seconds, calls}], agent: {runs, seconds, usd, note}}` from the run records: model calls are
+  now attributed to their initiative and workflow stage (`runs.initiative_id`/`runs.stage`,
+  migration 31), so spend/time can be grouped by phase. Agent (coding) run spend is parsed
+  best-effort from the agent's own console output when every counted run's cost could be recovered;
+  otherwise `usd: null` with `note: "agent spend not measured"` — never a partial or guessed total.
+  `idea status` prints the initiative's total spend and time. Operations gain `stage` (e.g. "Writing
+  the PRD", "Reviewing the PRD (cycle 2)", "Agent running TASK-2", "Running checks"), set by a
+  callback as the engine moves between steps; the CLI's wait loop prints it in place of a bare
+  "still working…".
+- **"Rerun with a note to the agent"** (D-a). `POST …/initiatives/{id}/execute` and `POST
+  …/initiatives/{id}/retry` accept an optional `note`, decoded as leniently as `fresh`. On execute
+  it is appended to the implementer's brief and recorded on the agent run. Retry re-runs
+  framing→research→PRD→review rather than the implementer, so there is no implementer brief for it
+  to join at that stage; there, the note joins the framing prompt that restarts the pipeline and is
+  recorded on that run instead. `idea execute --note <text>` / `idea retry --note <text>`.
+- **A cross-initiative "needs you" queue** (D-b). `GET /api/v1/projects/{projectId}/queue` returns
+  `[{initiative_id, short_title, kind, label, rank, href}]` covering every initiative in the
+  project: open blocking decisions, change sets awaiting review, conflicts, denials, stale items,
+  and verifications ready to confirm — ranked blocking first, then by age.
+- **`git_allow_default_branch`, `git_branch_per_initiative` and `review_rigor` round-trip through
+  `GET`/`PUT …/providers`** alongside `git_commit` (these were already the config fields underneath;
+  the endpoint had no way to read or write them). `review_rigor` is validated against
+  `auto|quick|standard|thorough`.
+
+### Changed
+
+- **`security.FindCredential`'s catalog now names a kind and exposes a stable
+  value capture group per pattern** (`security.FindCredentialsInFile`,
+  `security.Fingerprint`), so a match can be located, named and fingerprinted
+  without ever returning the value itself.
+- **`docs/security-model.md`** documents `secret_sweep` as conditionally
+  overridable by the `not_a_secret` disposition, mirroring
+  `review_open_blocking` — the only two system-deny conditions a human may
+  overrule.
+
+- **Only live inputs reach design and plan (review A2).** Design, product
+  design, verification design, the execution plan, and plan review used to
+  see every requirement and decision ever raised, including ones a later
+  review cycle superseded and decided human decisions the model then treated
+  as still open for debate. They now see only `activeRequirements` (already
+  used by the M1 loop) and the equivalent `activeDecisions`. A deterministic
+  check blocks the plan (`plan_traceability`, target `execution_plan`) when a
+  task's own text cites a superseded requirement code; a second, advisory-only
+  check flags a task whose words overlap a decided decision's rejected option
+  more than its actual resolution (a heuristic, documented as such on the
+  finding's `note`).
+- **Generated tasks were silently missing their `implements` edge (review A4,
+  JTBD 5).** Root cause: `runExecutionPlan` matched the model's free-text
+  requirement reference against `Requirement.Code` and, on a miss, passed an
+  empty target id to `createTask`, which wires nothing and records nothing —
+  unlike an unresolved `depends_on`, which already failed loudly. A task's
+  requirement reference (`requirement` for compatibility, plus the new
+  `requirements` array) now resolves tolerantly (trimmed, case-insensitive,
+  "REQ-3: title" forms) and, on a genuine miss, raises a blocking
+  `plan_traceability` finding and parks the initiative for re-planning, the
+  same way `depends_on` does.
+- **A task can implement more than one requirement (N:M).** `CreateTaskMulti`
+  and the `add task` / `update task` API (`requirement_ids`, merged with the
+  single `implements` field) wire an `implements` edge to each. Adding or
+  editing a task now requires naming at least one requirement.
+- **`impact`/`why` reached a dead end at a task (review A4).** A task's change
+  sets are linked by `ChangeSet.TaskID`, not a graph edge, so `impact
+  requirement REQ-n` or `impact decision DEC-n` could reach the task and never
+  the change sets built from it. `Impact`/`ImpactCounts` now include a task's
+  change sets as synthetic dependents.
+- **Reopening a decided decision now marks its dependents stale.** The
+  requirements that cite it, their tasks, and the applied change sets for
+  those tasks are marked stale (a new `stale_marks` table/primitive) and
+  surfaced as `stale_items` on `GET …/guidance` (with a "N items may be
+  invalid since DEC-n changed" sentence naming the re-plan/review path) and as
+  `staleness: "stale"` on `GET …/impact`. Re-planning (`revise-plan` /
+  `reopen-phase`) clears every stale item for the initiative; `POST
+  …/stale/{staleId}/ack` clears one explicitly.
+
+### Fixed
+
+- **The change-set adversarial review could truncate on a real diff and wedge
+  the initiative behind an unreachable remediation.** Observed with a real
+  model (claude-sonnet-5) on an 11-file, ~26 KB diff: the review failed
+  twice, identically, with `model: output truncated at the token budget …
+  raise the stage budget or use a model with a larger output ceiling`. The
+  suggested fix was unreachable — `MaxOutput` was a hardcoded provider
+  constant (16384 for Anthropic and OpenAI, 8192 for Gemini) that
+  `review.max_tokens` never touched — and once truncated, the change set sat
+  in `review_required` with no completed review: `idea execute` refused to
+  re-run the task (the never-completed-review guard) and `idea review <id>
+  approve --accept-findings` refused too, because it still required a
+  completed review. Fixed at all three layers:
+  1. **Capability accuracy.** Every provider's real, currently-documented
+     output ceiling is now used per model instead of one guessed constant —
+     Claude Sonnet 5/Opus 5/Fable 5.1/Opus 4.8 raise to 128,000 (Haiku
+     4.5/Sonnet 4.5 stay at their real 64,000), current OpenAI models raise to
+     128,000/32,768/100,000 depending on the model (gpt-4o/gpt-4o-mini stay at
+     16,384, their real ceiling), and Gemini's 3.x Flash models raise to
+     65,536 — verified against each provider's own model documentation, not
+     guessed from a price tier.
+  2. **`review.max_tokens` is now reachable.** It used to be read in exactly
+     one place — a post-hoc check that could only *fail* a stage whose output
+     exceeded it — and never raised what was actually requested. Setting it
+     now directly overrides the request budget sent for every stage (still
+     bounded by the model's real ceiling above), and a truncation error now
+     names it as the fix instead of the old, unreachable "raise the stage
+     budget".
+  3. **No wedge, no silent truncation.** A truncated reply is retried once
+     with a smaller ask (fewer findings, more concise) before giving up. If a
+     change-set review still cannot complete, that is now recorded explicitly
+     on the change set (never silently) instead of failing the whole run: the
+     task is still marked done, and `idea review <id> approve
+     --accept-findings` is the supported, explicit way forward — a change set
+     whose review was simply never attempted (e.g. a cancelled operation)
+     still refuses exactly as before, so an unreviewed change set still
+     cannot be silently approved.
+- **A real Anthropic truncation (and the same class of reply from OpenAI or
+  Gemini) never became `model.ErrTruncated`, bypassing the recovery above.**
+  A follow-up live probe found that when `claude-sonnet-5` is cut off before
+  it finishes reasoning, it can return a lone `thinking` block with no text
+  block at all — observed on the wire as `stop_reason: max_tokens` with zero
+  text content. `anthropic.go` checked for empty content *before* checking
+  `stop_reason`, so this reply produced a generic `anthropic: empty content
+  (stop_reason=max_tokens, …)` error instead of `model.ErrTruncated`: no
+  retry-with-a-smaller-ask, no `review_unavailable_reason` recorded, and
+  `idea review <id> approve --accept-findings` refused with "likely
+  cancelled mid-review" — a truncation reported as a cancellation, with the
+  documented escape unreachable. The same ordering hazard existed in
+  `openai.go` (empty message content before `finish_reason=length`) and
+  `gemini.go` (empty parts before `finishReason=MAX_TOKENS`). All three now
+  check the provider's own finish/stop reason first, so a length-stop with
+  empty or thinking-only content is always reported as truncated.
+- **The review stage's default output-token ask was still the flat 16,384 it
+  had before the capability-accuracy fix above, so the same truncation
+  recurred by default.** Removing the old hardcoded per-provider clamp only
+  helped once a caller actually asked for more than 16,384; nothing did,
+  until a human hand-edited `review.max_tokens` in `harness.yaml`. The
+  review stage's default ask is now derived from the model's own verified
+  output ceiling (capped at 32,000 — the same size as the PRD stage's own
+  want, chosen so the default is not itself a full-ceiling ask on every
+  call, which would be needlessly slow and expensive for the common case),
+  so a `claude-sonnet-5` review now defaults to 32,000 instead of 16,384.
+  `review.max_tokens` still overrides this default outright when set.
+- **Architecture/design-stage decisions carried no provenance.** Resolving or
+  reopening one marked no dependent requirement/task/change-set stale, and
+  `/impact` reported "No dependents found" — on a real run, DEC-2..DEC-5 (all
+  raised in architecture/design) had empty provenance, and TASK-2 kept the
+  title "token-bucket" after the human chose "fixed-window". PRD-phase
+  decisions wire a requirement's own `decision` citation
+  (`runProductDefinition` / `WireRequirementDerivedFromDecision`);
+  architecture/design decisions (`createDesignDecision`) never wired anything.
+  The `Architecture`/`ProductDesign` schemas' decision items now carry an
+  optional `requirements` field (the Requirement code(s) the decision shapes),
+  and `createDesignDecision` wires `requirement --derived_from--> decision`
+  from it, deduplicated against edges already wired so a decision merged
+  across both phases is not double-wired (which would double-count it in
+  `/triage`'s dependents tally).
+- **A later design phase re-asked a question the human had already
+  answered.** On the same run, the human answered "API keys come from an
+  environment variable, never a file" in `define`; the architecture phase
+  re-asked essentially the same question as a fresh Decision (DEC-3) and
+  recommended a config file. `createDesignDecision` never consulted the
+  questions table at all (unlike `runProductDefinition`'s own
+  `createDecisionIfNew`) and matched existing decisions by exact normalized
+  text only, not the fuzzy `similarDecision` match the PRD phase uses. It now
+  checks answered questions first (a match is a no-op, recording the same
+  `question.reraised_answered` event `createQuestionIfNew` does, so the audit
+  trail shows the re-ask rather than nothing) and matches existing decisions
+  by `similarDecision`; a match against an already-DECIDED decision wires any
+  newly-cited requirements to it and returns rather than recording a
+  "dissent" against a human's own resolved choice. The architecture/product
+  design prompts now also receive the initiative's questions
+  (`renderQuestionsWithAnswers`, previously PRD-only) and are told not to
+  re-raise one that already exists, open or answered.
+- **Guidance recommended `idea revise-plan` before any plan existed.** A PRD
+  decision reopened while the initiative was still `approved` (no
+  design/plan phase run yet) marks its requirement stale immediately, and the
+  stale-items advice on `/guidance` named `idea revise-plan` unconditionally —
+  a command that refuses outright in that status ("no plan to revise ... no
+  execution plan exists yet"). The advice now only names `revise-plan` (or,
+  when a change set already holds work, explains why it is unavailable and
+  what to do instead — review M5, unchanged) once the initiative actually has
+  a plan (`plan_approved`/`needs_human_judgment`); before that it says the
+  stale items will be incorporated when the plan is generated.
+- **`idea pr` told you to enable a setting you had already enabled.** With
+  `git.branch_per_initiative` already on and no change set applied yet (so no
+  `GitCommitWarning` to name either), the error still said "enable
+  git.branch_per_initiative and apply a change set first" — review defect D's
+  fix for the *specific-reason* case still `%w`-wrapped the generic
+  `ErrNoInitiativeBranch` sentinel, which reproduces its full text regardless
+  of what came after it. Both the specific-reason and the plain "nothing
+  applied yet" cases now get their own message naming the actual missing
+  precondition (`noInitiativeBranchError`, `Unwrap`s to the same sentinel so
+  `errors.Is` classification is unchanged) instead of repeating "enable
+  git.branch_per_initiative".
+- **Every user Stop logged `level=ERROR msg="execute failed" err="context
+  canceled"`.** `CancelOperation`'s cancellation unwinds the in-flight call as
+  a plain `context canceled` error, and `failOperation` logged that at ERROR
+  alongside a genuine failure — so an ordinary click on Stop read like a
+  crash in the daemon log. A cancellation now logs "stopped by you" at INFO;
+  a real failure (the operation was not cancelled) still logs at ERROR with
+  its original message.
+
+
+- **The placeholder/entropy work silently weakened REDACTION, not just
+  detection (Critical).** `RedactString` (the blob store's own redactor)
+  filtered every catalog match through the same validity gate used to decide
+  whether to raise a FINDING — which for most patterns includes a
+  placeholder-vocabulary/low-entropy check — so a real secret that merely
+  *looked* like a placeholder (a Slack token whose numeric ID segments
+  produced a 4-digit run by chance, `DB_PASSWORD=latestProdPw9xK2` —
+  `containsPlaceholderWord`'s old bare substring check let `"test"` match
+  inside `latest`) passed through into persisted artifacts, findings and
+  agent output completely unmasked. Fixed: `RedactString` now redacts every
+  raw regex match unconditionally (a narrow structural exclusion remains for
+  the generic assignment rule's own variable-reference/function-call/
+  template checks, which were never about placeholders); `containsPlaceholderWord`
+  now compares whole word/segments, never substrings; and the placeholder-
+  shape check (`isPlaceholderShape`, a repeated-character run or low
+  entropy) no longer applies to any provider-specific format at all — a
+  Monte-Carlo run over 200k random well-formed keys per format found it
+  missed a real secret 1 in 68 times for Slack, 1 in 3,200 for AWS, and 1 in
+  6,100–9,500 for the rest, because the vendor prefix is already the
+  evidence a match is real. Every provider-specific pattern now always
+  raises a finding too (`Overridable`, so a human can still dismiss an
+  obvious placeholder).
+- **A PRD revision re-pointed a requirement's statement while keeping
+  `verified` and its evidence (Critical).** `ReviseInitiative` matched
+  requirements by code and blind-`UpdateRequirement`'d statement/
+  acceptance_criteria, leaving `status`, `verified_at` and every
+  `verification_evidence` row untouched — and revise is claimable from
+  `complete`, so an initiative could report `complete`, on surviving human
+  evidence, for a statement that no longer exists. `UpdateRequirement` now
+  resets a changed requirement's status to `approved`, clears `verified_at`,
+  and deletes its verification evidence, all in the same transaction as the
+  statement/criteria update — but only once the requirement has left draft,
+  so a still-in-review PRD revision cannot jump a requirement past the
+  review gate it hasn't passed yet. Separately, a revision response naming
+  the same requirement code twice used to last-writer-win silently
+  (`priorByCode` matched by lookup, not consumed); it's now refused outright.
+- **`UnverifyRequirement` left pass evidence in place after a revert
+  (High).** Reverting a change set flips a verified requirement back to
+  `approved`, but `PassedCriterionKeys` is status-blind and counts every
+  pass row regardless of age — so a bare `idea verify` with nothing new on
+  disk re-marked the requirement (and the initiative) verified/complete from
+  evidence that predated the revert. `UnverifyRequirement` now clears the
+  requirement's verification evidence in the same transaction as the status
+  reset.
+- **Migration 31 left `runs.initiative_id = ''` for every pre-upgrade row
+  (High).** `ListModelPhaseCosts`/`ListAgentRunStats` both filter
+  `WHERE r.initiative_id = ?`, so an initiative that existed before that
+  upgrade permanently reported $0.00 / 0 calls from `GET .../costs` even
+  though the spend still sits in `run_manifests`. Migration 35 backfills it
+  from the product graph: a run's `initiative_id` is recovered from any
+  `produced_by` edge pointing at it (`graph_edges WHERE to_type = 'run'`),
+  when one exists.
+- **Two security guards raised critical blocking findings with no
+  placeholder gate at all (High, over-blocking).** `bearer token` and
+  `URL userinfo credential` had no validator whatsoever — no entropy,
+  placeholder, template, or test-path gate — so
+  `Bearer YOUR_TOKEN_HERE_XXXXXXXXXX` and
+  `mysql://root:examplepass@127.0.0.1/db` raised a critical blocking finding
+  even in a `*_test.go` file. Both now get the same placeholder/template/
+  test-path treatment the generic "credential assignment" rule already had,
+  while a realistic bearer token or DSN password still blocks everywhere.
+  `docs/security-model.md` no longer claims the placeholder/entropy gate
+  covers every provider pattern (it never applies to a provider-prefixed
+  format at all now, per the Critical fix above).
+- **`maskValue` revealed 50% of a 16-character secret (Low).**
+  `Hq7zR2mVx9LpQwEr` → `Hq7z…QwEr` in `SecretPreview` on every finding.
+  Scaled down: nothing is revealed below 16 characters (unchanged), at most
+  1 character per side from 16–23 characters, and the previous
+  `min(4, len/4)` reveal only starts at 24 characters.
+
+
+- **`lockPlanEdit` covered the handlers but not the writers it was meant to
+  exclude (Critical).** `RevisePlanInitiative`/`ReopenPhaseInitiative` call
+  `DeleteTasksForInitiative` without ever taking the per-initiative
+  plan-edit lock, and every Plan-editing handler read the initiative
+  *before* taking that lock and then guarded against that stale snapshot —
+  so a concurrent `add-task` could answer 200 OK for a task a revise/reopen
+  in flight had already wiped. Fixed: those three entry points now take the
+  same lock around their claim, and every handler re-reads the initiative
+  *after* acquiring it (`lockPlanEditFresh`) instead of trusting the
+  pre-lock read; request bodies are decoded before the lock/guard, not
+  between them.
+- **Reloading a project's config raced roughly twenty unsynchronized readers
+  (High).** `ReloadProject` mutated a `*projectRuntime`'s fields
+  (cfg/registry/redactor/blobs) in place under `r.mu`, while every HTTP
+  handler read them off a `*projectRuntime` it already held with no lock of
+  its own — proven by the race detector against handlers.go's provider/
+  redaction/queue/evidence call sites. `ReloadProject` now builds a fresh
+  `*projectRuntime` and swaps the map entry instead (engine, DB and the
+  plan-edit lock registry are carried over unchanged); `workflow.Engine`
+  gained its own `cfgMu` so `Run`/`Advance`/`Retry`/`RevisePlan`/`Resume`/
+  `ReopenPhase` and their helpers read a consistent snapshot instead of the
+  raw, unguarded fields. `idea resume` also now records an operation row (it
+  previously ran with none), so a reload can no longer land mid-review-loop
+  and a crash mid-resume is no longer invisible to the startup sweep.
+- **Retry could resume from a phase whose persistence never finished
+  (High).** `runFraming`/`runResearch`/`runProductDefinition` commit their
+  phase's artifact and then write its real payload (assertions/requirements/
+  decisions/questions) as separate, cancellable store calls on the same
+  context — a Stop between the artifact commit and that payload (proven:
+  "Stop after 6 of 20 `CreateRequirement` calls") left the artifact durable
+  and the payload truncated. `completedPhases` then saw "artifact exists"
+  and skipped the phase entirely on retry, building review/architecture/plan
+  from a silently truncated set at real model cost. Each phase's payload
+  writes now run under `context.WithoutCancel` once its own model call has
+  already returned and been billed, so a cancellation from that point stops
+  the *next* phase, not this one's already-earned result.
+- **Two claim-integrity gaps allowed two pipelines on one initiative
+  (High).** `VerifyInitiative` ran with no synchronization of its own, so it
+  could reach `CompleteInitiative` while `Execute`/`ApplyChangeSet`/
+  `RevertChangeSet` were still actively mutating files — proven: a
+  concurrent verify completed the initiative mid-apply, after which `idea
+  revise` (which legally claims `running` FROM `complete`) claimed it out
+  from under the still-running apply, and apply's own unconditional release
+  then overwrote revise's live claim on completion. `VerifyInitiative` now
+  takes the same engine mutex those three hold for their whole duration, and
+  apply/execute/revert's release-back-to-prior-status is now a CAS
+  (`ReleaseInitiativeClaim`, `WHERE status = 'running'`) so it can no longer
+  stomp a legitimate write that landed while it waited. Separately, a panic
+  in an operation that never claims the initiative at all
+  (`SuggestAnswersInitiative`) used to call `FailInitiative` unconditionally
+  on whatever initiative id its row carried, which could fail a live,
+  unrelated claim out from under it; `failOperationAfterPanic` now only
+  releases for operation types that actually claim.
+- **`RecordHumanEvidence` was not atomic (Medium).** Clearing prior
+  verification evidence, recording a fresh human judgment per acceptance
+  criterion, and the resulting requirement-status transition ran as N+2
+  separate transactions; a crash between any two of them destroyed the old
+  judgment without recording the new one. Now one transaction.
+- **Stale marks were never garbage-collected (Medium).** A requirement's
+  mark survived its own supersession and a change set's mark survived
+  revert/reject — display-only noise, but permanent. Superseding a
+  requirement and reverting/rejecting a change set now clear that target's
+  own active stale mark(s) in the same transaction as the state change.
+- **Concurrent first-open of an un-migrated database failed roughly 3 of 4
+  times (Medium).** The per-migration "already applied?" check ran as a
+  standalone `SELECT` outside any transaction, so two connections opening
+  the same fresh database for the first time could both see "not yet
+  applied" before either committed and both run the same DDL — the second
+  then re-running `ALTER TABLE … ADD COLUMN` (etc.) a SQLite had already
+  applied. Each migration now claims its version by `INSERT`ing into
+  `schema_migrations` (its primary key) *before* running its DDL, so a
+  losing connection hits a constraint violation instead of repeating work;
+  `configure()` also retries the journal-mode pragma a few times on
+  `SQLITE_BUSY`/`LOCKED`, the same lock two first-opens can transiently
+  contend on.
+
+
+- **`evidence_tests` mapped almost nothing on a real run, across two
+  compounding bugs.** A real test's name almost never contains its
+  requirement's code (`TestRateLimiterAllowsWithinBudget` for a per-key-
+  rate-limiting requirement has no "REQ-5" in it anywhere), so the original
+  name-contains-code tier left `evidence_tests` null on every requirement
+  despite `go test ./...` passing 15 tests. `ComputeEvidenceTests` gained a
+  third tier (`taskDerivedTests`/`decodePatch`): test functions found in
+  test/spec files touched by the applied, check-passed change set of a task
+  that `implements` the requirement (a task→requirement edge, never a guess
+  at what the task was for). That tier was itself broken from the day it
+  shipped: it resolved against the redacted `blobs` store, but a change
+  set's patch manifest and file content are only ever written to `rawBlobs`
+  (see `workflow.Engine.contentBlobs`) — so every patch lookup silently
+  missed and it mapped nothing on any real run either, until
+  `ComputeEvidenceTests`/`BuildQueue` were changed to take both stores
+  explicitly (an unreadable patch/file now logs a warning instead of failing
+  silently). Separately, the other tiers were also broken against REAL check
+  output: `checkCommand` always prepends a human-readable `image: ...` (and
+  sometimes a `<config> not configured; detected ...`) line before a
+  `go test -json` stream, and `looksLikeGoTestJSON` required the *first*
+  line to be JSON — so real evidence never parsed as JSON at all and fell
+  through to a free-text parser that finds nothing in a stream of
+  `{"Action":...}` lines; it now scans every line for a recognized `go test`
+  test2json `Action`. The skip reason for a genuinely unmapped requirement
+  now says so — "no tests are mapped to REQ-n; ..." — instead of the
+  misleading "not every mapped test passed", which reads as a test failure
+  when nothing was ever mapped at all. A new end-to-end test
+  (`internal/daemon/evidence_two_store_test.go`) uses the real two-store
+  daemon setup and real (prefixed) `go test -json` evidence throughout.
+- **`git.branch_per_initiative` did nothing unless `git_commit` was also
+  set**, though its own name and doc never said a second flag was needed;
+  `idea pr`'s own error told a user to "enable git.branch_per_initiative and
+  apply a change set first" with no mention of one. Setting
+  `git.branch_per_initiative` alone is now sufficient to commit. Also: a
+  fresh, still-untracked `.idea-harness/` (harness.yaml, project.yaml,
+  roles/) and files from this same initiative's own earlier applied change
+  sets (applied while `git_commit` was off) used to refuse every later apply
+  forever with "uncommitted changes outside this change set" — `.idea-harness/`
+  never counts as dirty for this guard now, and the earlier change sets' own
+  files are caught up onto the initiative's branch as their own commit
+  instead of blocking. `idea init` now writes `.idea-harness/.gitignore`
+  (ignoring only the harness's own scratch state, never the committable
+  config), and `idea pr`'s error names the specific reason (a guard refusal,
+  an unrelated dirty file) when one was already recorded, instead of only
+  repeating the generic advice.
+- **Stop/continue was unverifiable.** `capturePartial` logged nothing at all
+  on its "nothing to keep" path (a genuinely empty diff, e.g. Stop landing
+  before the agent had written anything), making it indistinguishable from
+  "never ran" or "silently failed" — it now logs its outcome on every path.
+  The timeline's entry for a user-initiated Stop showed the raw
+  `context canceled` the daemon unwinds internally ("Execute initiative —
+  context canceled"), reading exactly like a crash; it now says "Stopped by
+  you". Separately, `docker logs --tail 100` followed by `scrubAgentLog`
+  dropping blank/noise lines left only ~70 real lines of `agent_output` on a
+  real run, short of the 100 documented and requested — `tailLogs` now asks
+  for a generous multiple of raw lines up front so the requested count
+  reliably survives scrubbing. Hermes's own CLI documentation was checked for
+  a streaming/verbose flag that might explain output going silent for
+  minutes at a time; none is documented as affecting buffering when stdout is
+  piped rather than a TTY, so nothing was guessed into `hermesArgs` — see
+  `docs/agents.md`'s "Live output during a run" section for the full
+  investigation and what would still need verifying against a real container.
+- **A temporary `.idea-harness-<random>` file could appear directly beside a
+  user's own tracked files during apply/revert.** `fsdiff.writeAtomic` staged
+  its atomic-write temp file in the destination's own directory
+  (`os.CreateTemp(filepath.Dir(dest), ".idea-harness-*")`); an interrupted
+  daemon (crash, kill, container OOM) between the write and the rename could
+  leave it there, indistinguishable from a real file to `git status`. It now
+  stages through `.idea-harness/tmp/` (excluded from every snapshot/diff by
+  name already, and from the branch-per-initiative dirty check as of this
+  release), staying on the same filesystem as the destination so the final
+  rename is still atomic.
+
+- **The change-set adversarial review now runs once, when the change set is
+  created, not again on every `idea review <CHG-n> approve`.** A founder-
+  journey run spent 64% of its model budget re-running the reviewer on every
+  plain `approve` call (15s–2.5min each), and since a model reviewer is not a
+  fixed point, a finding a human had just marked `rejected` came back
+  reworded at the same severity, so approval never converged without
+  `--accept-findings`. The review now runs inside `Execute`, immediately
+  after checks pass and the change set's content is fixed (its `PatchDigest`
+  never changes afterward); `idea review <CHG-n> approve` (without
+  `--accept-findings`) now only evaluates the findings already on the change
+  set plus whatever the human has since dispositioned — the same gate
+  `--accept-findings` already ran through — and makes no model call. A new
+  `Engine.inheritDispositionFromPrior` carries a human's disposition of a
+  finding forward onto a near-duplicate (same target type, path, category,
+  and similar text) raised by a later, legitimate re-review of the same
+  subject (`idea revise`'s PRD re-review, `idea revise-plan`/
+  `idea reopen-phase`'s plan re-review), so a reworded twin of an
+  already-judged finding does not silently re-block approval there either.
+- **`idea review <CHG-n> approve` no longer risks a client-side timeout
+  outliving a fast-enough server action, and a client timeout now says the
+  action is likely still running and how to check.** The fix above already
+  removes the model call that made this endpoint slow; as a backstop, the
+  CLI now translates any client-side HTTP timeout into a message naming the
+  request that timed out and pointing at `idea status`, `idea watch`, and
+  `idea cancel <op-id>` instead of a bare "context deadline exceeded".
+- **Reverting a change set now returns its task to `proposed` so `idea
+  execute` can re-run it**, when no other applied change set for the same
+  task still implements it. Previously the task stayed `done` forever after
+  a revert, so `idea execute` printed "✓ execute started" and then failed
+  "no ready tasks ... (dependencies not satisfied)" in the background, with
+  no documented way back short of editing the database. `idea execute`
+  (and the daemon's execute endpoint) now also checks synchronously, before
+  launching, whether a ready task exists at all, and refuses with a clear
+  message (naming `idea verify` when every task is done) instead of
+  accepting and failing asynchronously.
+- **`idea status`/`/guidance` now say "Review CHG-n" or "Apply CHG-n" instead
+  of "run the next task" while a change set is awaiting the human's own
+  review or apply**, and say "Run `idea verify`" once every task is done
+  instead of repeating "run the next task" forever with nothing left to
+  run. `LatestChangeSetsPerActiveTask` no longer excludes a `done` task's
+  change set — `Execute` marks a task `done` as soon as its change set
+  passes checks, before it is reviewed, approved, or applied, so the old
+  exclusion hid exactly the change set guidance most needed to report.
+- **Decisions and answered questions now reach the implementer.** A
+  founder-journey run answered "keys in an env var" and the implementer
+  built a JSON config file instead, because nothing in the planner's model
+  inputs, or the brief it produces, ever named a resolved decision or an
+  answered question — and `AnswerQuestion`'s answer text (content-addressed,
+  keyed by a digest) was never actually read back anywhere, only whether a
+  question was "answered". `runPlanner`'s prompt and the deterministic
+  implementer brief now both include resolved decisions and answered
+  questions (with their real answer text, via the new
+  `Engine.renderQuestionsWithAnswers`/`resolvedDecisionsAndAnswers`).
+  Resolving a decision after a plan/tasks/change sets were already built on
+  it (possible once quick rigor lets a plan through with an open decision)
+  now marks those requirements/tasks/applied change sets stale, the same
+  way reopening a decided decision already did. Guidance shown while
+  proceeding past PRD/plan approval also now names any still-open
+  decisions/questions instead of saying nothing about them — advisory only,
+  since an open decision/question is a normal, expected state mid-workflow
+  and must not itself block approval.
+- **Stopping a run during Execute's adversarial review left a change set
+  that was approvable and appliable with NO adversarial findings, and its
+  task never marked done — so `idea execute` re-picked the same task
+  forever.** Cancelling mid-review (`workflow: review: anthropic: ... context
+  canceled`) errored out of `Execute` right after the checks-running →
+  review_required transition but before the reviewer ever produced findings
+  or `SetTaskStatus(TaskDone)` ran; a real founder-journey run then found the
+  resulting change set approvable and appliable with only mechanical-check
+  observations (build/tests/patch-applies/workspace-copy), never an
+  adversarial pass, while its task stayed `proposed` and a later `idea
+  execute` picked it again and produced a duplicate change set. A change set
+  now records `review_completed_at` (migration 33), set the one time
+  `store.SetChangeSetReview` actually records a finished review;
+  `idea review <CHG-n> approve` refuses a change set whose review never
+  completed, naming the new `idea review <CHG-n> rerun` (an explicit, paid,
+  user-initiated re-run of the reviewer — the round-3 fix's "approve makes
+  no model call" property is unchanged for a review that already completed).
+  `idea execute`/`Execute` also now refuses to re-pick a task that still has
+  an unreviewed, unresolved change set sitting in `review_required`, naming
+  the same `rerun` command, instead of spending another implementer run on a
+  duplicate. `idea status`/`/guidance` name the same situation instead of
+  pointing at `approve`, which would just refuse.
+- **A no-op change set (zero file changes) counted as "an applied change set
+  implementing" its task.** A real founder-journey run's no-op agent attempt
+  produced an empty change set that was still approved and applied; when the
+  task's real, later change set was reverted, the task stayed `done` and
+  guidance said "Every task has an applied change set. Run `idea verify`"
+  while the actual feature was gone from disk — `taskHasAppliedChangeSet`
+  saw the empty change set still applied and never reopened the task. A
+  change set now records `no_op` (migration 34, `Execute` sets it from
+  `len(files) == 0`) and a new `domain.ChangeSet.ImplementsTask()` (applied
+  AND not `no_op`) is the one predicate a task's dependency-readiness check
+  (`taskHasAppliedChangeSet`), verification-evidence eligibility
+  (`eligibleChangeSets`, `confirmPassingTests`), staleness propagation
+  (`decisionDependents`), and `next`/guidance's "ready to verify" check now
+  all share — a no-op change set may still be approved, applied and reverted
+  like any other (the existing "approve the empty change set if the task was
+  already done" escape hatch is unchanged); only what it counts AS changes.
+- **A reverted change set could never be applied again**
+  (`cannot be applied from status reverted`), so recovering from a revert
+  always cost a full agent run even when the reverted content was still
+  exactly what was wanted. `reverted` → `applying` is now a legal
+  transition; re-apply runs through `ApplyChangeSet`'s existing staleness
+  (`fsdiff.StaleBase`) and secret-sweep guards exactly as a fresh approved
+  change set does, and a failed re-apply attempt recovers back to
+  `reverted`, not `approved`, so it never misrepresents a change set that
+  was genuinely applied and rolled back once already.
+- **The AWS secret access key sweep missed the credential in JSON.** A real
+  founder-journey run's `config/deploy.json` had `"aws_access_key_id":
+  "AKIA…"` (caught — that pattern matches the value's own `AKIA…` shape, so
+  JSON quoting around the key never mattered to it) directly above
+  `"aws_secret_access_key": "<40-char secret>"`, which produced no finding
+  at all: the `AWS_SECRET_ACCESS_KEY` pattern matched the keyword, not the
+  value, and required `\s*[:=]` immediately after it — but a JSON key's own
+  closing quote sits there instead. The pattern now accepts an optional
+  `["']?` right after the keyword, mirroring the generic credential-
+  assignment rule's own JSON handling; shell/env and YAML forms (no quote
+  there) are unaffected. Table tests cover the JSON, YAML and env-var forms
+  with a real-shaped 40-character value, and confirm a placeholder body
+  (a repeated-character run or low-entropy value) still stays quiet.
+- **`go test` (and other toolchains) can now actually pass inside the check
+  sandbox.** Docker's default `--tmpfs /tmp` is `noexec`, so a compiled test
+  binary — `go test`'s own, jest's native transforms, a cargo build script,
+  pytest's compiled extensions — could be written but never executed:
+  `fork/exec /tmp/go-build.../x.test: permission denied`, even though the
+  build itself succeeded. `internal/executor/sandbox.go`'s `/tmp` and
+  `/tmp/cache` tmpfs mounts are now `rw,exec,nosuid,size=1g`, with `TMPDIR`/
+  `GOTMPDIR` pointed at them explicitly; the rest of the container hardening
+  (`--network none`, read-only root, dropped capabilities, no-new-privileges,
+  resource limits) is unchanged. A real-Docker regression test
+  (`TestContainerSandboxGoTestExecutes`, skipped when Docker is unavailable)
+  runs `go test` on a tiny module inside the check sandbox and asserts it
+  passes.
+- **The change-set collector no longer sweeps up an agent's downloaded
+  toolchain.** An ICP run's agent downloaded a full Go toolchain into its
+  work root (`.tools/`, ~14,300 files), which the after-run snapshot captured
+  whole: 79 false secret-sweep findings and a diff endpoint that did not
+  respond in 100s. `fsdiff.Snapshot` now always excludes a documented list of
+  well-known cache/toolchain directories (`.git`, `node_modules`, `.tools`,
+  `.venv`, `target`, …) and, via the new `fsdiff.WithWorkspaceIgnore` option,
+  the workspace's own `.gitignore` (`git check-ignore` when the workspace is
+  a git repository, a best-effort matcher otherwise); the after-run snapshot
+  in `execute.go`/`runstate.go` additionally applies `fsdiff.WithSanityCap`
+  (3,000 files / 150 MiB), failing the run with a clear, actionable message
+  instead of hanging. `GET .../change-sets/{id}/diff` is also now bounded on
+  its own terms (`RenderPatchPage`/`StructuredDiffPage`, capped at 500 files
+  with a `total_files`/`truncated` count), so a change set persisted before
+  this fix — or simply a large one — cannot hang that endpoint either.
+- **The implementer's container never needed a toolchain, and now the brief
+  says so.** `network: disabled` in `harness.yaml` only ever governed the
+  research pipeline's offline mode — never the coding agent's network access
+  (always on, deliberately, to reach its model API) or the check sandbox's
+  (always off, unconditionally) — but nothing said so, and an ICP run's agent
+  downloaded a Go toolchain believing it needed one. `docs/configuration.md`
+  and the `NetworkPolicy` doc comment now say plainly what the setting does
+  and does not govern; the implementation brief (`runPlanner`,
+  `internal/workflow/execute.go`) now names the harness's own detected (or
+  configured) build/test commands and tells the agent not to install a
+  toolchain, compiler, or SDK — the harness runs its own checks, in an
+  isolated sandbox, right after. Offering the check image's own toolchain to
+  the agent container is documented as a follow-up (`docs/agents.md`), not
+  implemented here.
+- **A hand-edited `harness.yaml` now takes effect on the next request, not at
+  the next daemon restart.** `ReloadProject` previously only ran when the
+  daemon itself had just written the file (the provider/executor settings
+  endpoints); a hand edit — e.g. to `test_cmd` — was invisible to
+  execute/checks until the daemon was restarted, because nothing ever
+  re-read the file for a project whose runtime was already cached.
+  `Runtime.EnsureProject` (every HTTP handler's single choke point for
+  resolving a project) now compares `harness.yaml`'s mtime against the one
+  recorded at last load and reloads automatically when it changed; a reload
+  that cannot safely happen right now (an operation in flight) is logged and
+  deferred to the next request rather than failing the current one.
+- **`/costs` no longer reports a bare, misleadingly-precise total when agent
+  spend isn't measured.** Six real Sonnet runs correctly returned
+  `agent.usd: null` with `agent.note: "agent spend not measured"` from the
+  API, but `idea status` decoded neither field and printed
+  `spend: $0.0032` — the model-phase cost alone, read as the initiative's
+  total. It now prints `spend: $0.0032 (model phases only; agent spend not
+  measured) · time: ...` whenever there were real agent runs and their cost
+  isn't captured (the web UI already showed this correctly). Separately,
+  when an agent run reports token counts (`input_tokens`/`output_tokens`, or
+  the OpenAI-shaped `prompt_tokens`/`completion_tokens`) without an explicit
+  dollar figure, the cost is now computed from the model catalog's own
+  per-token pricing (`model.CostUSD`) instead of falling back to "not
+  measured". Wiring Hermes's documented `--usage-file` usage-report flag in
+  is a follow-up (`docs/agents.md`): it is documented against `hermes -z`,
+  not the `hermes chat --yolo -q ...` invocation used here, and needs
+  verifying against a real Hermes container first.
+
+- **`idea executors setup` honors the positional kind.** `idea executors setup
+  omp --yes` silently ignored the positional argument and configured
+  `hermes`, with no error and nothing in `--help` explaining that `--kind` was
+  the only way to choose. The positional and `--kind` are now both accepted
+  (a disagreement between them is refused), and `idea help` / `docs/cli.md`
+  show `executors setup [<kind>]`.
+- **A retired/unavailable model 404s with a clear, actionable error.**
+  `gemini-2.5-flash` and `gemini-2.5-pro` return 404 "no longer available to
+  new users" and have been removed from the bundled catalog (they were kept,
+  deprioritized, by an earlier fix, which was not enough — an ICP walkthrough
+  still hit exactly this 404). Every provider's 404 now names the model and
+  says how to change it (`idea model set <provider>/<model>`, or Settings →
+  Providers) instead of a bare `status 404`.
+- **Hermes declares the model's context window explicitly, instead of
+  guessing.** `hermes` + `openai/gpt-4.1-mini` failed deterministically, every
+  run: Hermes Agent refuses to start below 64,000 tokens of context, every
+  provider here is wired into Hermes as an explicit `custom_provider` (see
+  `hermescfg.go`), and without a declared `model.context_length` Hermes's own
+  auto-detection has the least to go on and guessed under its floor for this
+  model — even though gpt-4.1-mini's real window is roughly 1M tokens. The
+  generated config now sets `model.context_length` from a verified figure
+  (`internal/model/catalog.go`'s `ModelContextWindows`, checked against
+  OpenAI's own docs, for `gpt-4.1`/`gpt-4.1-mini`/`gpt-4o`/`gpt-4o-mini`/
+  `o3-mini`) or a conservative per-provider default for everything else
+  (`contextWindowFallback`; Ollama is left to Hermes's own — reliable, for a
+  local server — auto-detection, since a blanket default there could
+  overstate a small local model's real context). This fixed the root cause
+  rather than the symptom, so `idea executors setup`, the Build page, and
+  `idea execute` no longer refuse the combination — it gets the same
+  "untested, run `--smoke`" advisory as any other unverified model. The
+  small, data-driven known-incompatible table (`internal/executor/compat.go`)
+  used to name gpt-4.1-mini as a refused combination; it is now empty and
+  stays in place for the next combination that turns out to be genuinely,
+  unfixably incompatible rather than the same shape of bug.
+  See `docs/agents.md`, "Hermes declares the model's context window
+  explicitly" and "Known executor/model compatibility".
+- **`idea retry` resumes after the last completed phase instead of restarting
+  framing from scratch.** A provider failure mid-PRD-authoring, followed by
+  `idea retry`, used to re-run framing and research unconditionally even
+  though both had already succeeded — re-asking framing's clarifying
+  questions and re-running research for no reason, which looked, from the
+  outside, like the human's prior answers had been discarded. Retry now
+  checks which of the idea-brief/research-brief/PRD artifacts already exist
+  and resumes right after the last one, so an already-succeeded phase is
+  never redone and decisions/questions already on the initiative reach
+  product definition exactly as before. Transient provider errors (429/500/
+  502/503/504/529, "overloaded", "rate limit", …) were already retried with
+  backoff inside the model call itself before this fix, including 503 — that
+  half of the ICP finding did not reproduce, and is now pinned by a test that
+  drives a real 503 through the HTTP transport.
+- **The secret sweep no longer blocks on a bare word.** `password`, `token`,
+  `secret`, `auth` and similar vocabulary markers used to hard-reject a change
+  set anywhere they appeared in a patch, with no file or line and no way past
+  it — the ICP finding that stopped a per-user-API-keys-with-rate-limiting
+  feature from ever landing. They now raise a non-blocking `sensitive_area`
+  finding instead; only a real credential value still blocks.
+- **A secret-sweep denial names where.** The blocking `secret_sweep` finding
+  now reads `path:line: looks like <kind>` (e.g. `src/keys.js:14: looks like
+  an OpenAI API key`) instead of a bare "blocking risk signal detected", and
+  never echoes the value. The apply-time re-sweep and the stopped-run
+  kept-files sweep match.
+- **Re-running a denied task's initiative is no longer refused with a 409**
+  (this did not reproduce against the ordinary "wait for the denied execute's
+  operation, then execute again" path; a permanent regression test
+  (`TestReRunAfterDenialSucceeds`) now guards it either way).
+- **The denial's copy no longer promises a re-plan that never happens.** "The
+  task will be re-planned" is now "Run the task again."
+- **An advisory finding no longer wedges `idea verify`.** A quick-accepted
+  critical/high finding used to be saved as a plain open blocker: approval
+  succeeded, and verify/complete then refused forever with no way to
+  un-stick the initiative. `hasOpenBlockingFindings` now skips every
+  `Advisory` finding, and the PRD/plan quick-accept paths mark the
+  adversarial reviewer's findings `Advisory=true` before persisting them.
+  Triage now shows advisory findings too, as non-blocking, instead of
+  hiding them from disposition entirely.
+- **Rigor can no longer auto-approve a structural plan or PRD defect.** A
+  dependency cycle, an untraced task, a superseded-requirement citation, a
+  duplicate REQ code, or a missing/vague acceptance criterion always goes
+  through `needs_human_judgment`, at every rigor level — quick no longer
+  skips straight to approval just because a small vertical slice
+  calibrated to it. Rigor now only ever relaxes the adversarial reviewer's
+  own findings.
+- **The findings cap never drops a real blocker.** A non-advisory
+  critical/high finding is now always kept, however far over the cap the
+  cycle's findings are; only advisory findings and lower severities are
+  capped, non-advisory before advisory, then by severity. The drop-note no
+  longer falsely claims only "lower-severity" findings were cut.
+- **Change-set review no longer relaxes at `quick`.** Critical/high
+  findings in the diff now block at every rigor level; `quick` means one
+  review pass and a smaller findings cap (5), not "no gate". Change-size
+  calibration now also counts changed lines (not just files), closing the
+  gap where a 3-file, 10,000-line change calibrated to `quick` on file
+  count alone.
+- **The in-diff check no longer fails open.** A finding's `path` is now
+  normalized (`path.Clean`, stripped `./`/`a/`/`b/` prefixes, a trailing
+  `:N`, a workspace-absolute prefix) before being compared against the
+  change set's own files, and a path that still doesn't match falls back
+  to the reviewer's own `in_diff` self-report instead of being silently
+  demoted to advisory. A patch that fails to load now fails the review
+  instead of being treated as an empty file set.
+- **Secret masking reveals less, and masks every match on a line.**
+  `maskValue` now reveals at most `min(4, len/4)` characters per side, and
+  nothing at all under 16 characters (the old 8-character floor revealed
+  8 of a 9-character value's own characters). A masked-line preview now
+  masks every credential match on the line, not just the finding's own
+  value, and the evidence saved for a `secret_sweep` finding is redacted
+  again before being persisted.
+- **The credential-assignment regex has far fewer false positives, and a
+  few new true positives.** `const token = authToken`, `password = newPassword`,
+  `api_key = settings.API_KEY_FROM_ENV`, and a `${VAR}`-interpolated value
+  no longer match; `SECRET_KEY = "..."`, a `pwd` keyword, a dotted
+  `client_secret=` value, and `scheme://user:pass@host` URL credentials
+  now do.
+- **Branch-per-initiative no longer risks reverting local commits.** A new
+  initiative branch is now created from the LOCAL default branch
+  (`refs/heads/<default>`), never the remote-tracking `origin/HEAD`, which
+  could be behind unpushed local commits and silently revert every file
+  outside the change set to origin's older version. When the working tree
+  isn't already at that commit, the branch is created from current HEAD
+  instead (never switching the tree), with a warning surfaced as the
+  change set's `git_commit_warning`. Default-branch detection no longer
+  consults `init.defaultBranch` (a global git setting, not a statement
+  about this repository) or guesses `develop`.
+- **Merging a task can no longer delete the survivor or create a cycle.**
+  `task_ids: [A, A]` (a self-merge) is now refused with 400 instead of
+  deleting the named survivor; a merge that would introduce a dependency
+  cycle in the task graph is refused, writing nothing; a task that
+  depended on both merged tasks no longer gets two identical `depends_on`
+  edges to the survivor. The whole merge is now one store transaction.
+- **Splitting a task no longer half-applies on a bad replacement.** Every
+  replacement task's title and `requirement_ids` are now validated before
+  any task is created, and the whole split (creating the replacements,
+  rewiring dependents, deleting the original) is one store transaction.
+  `requirement_ids: []` (explicitly empty) is now rejected rather than
+  silently producing a task with no requirement.
+- **Plan edits (add/update/delete/cancel/reorder task, set `depends_on`,
+  merge, split) are now serialized per initiative.** Two concurrent
+  `set depends_on` requests (A→B and B→A) used to each pass their own
+  cycle check before either write landed, and together create a cycle.
+  `set depends_on` additionally re-checks for a cycle inside the same
+  transaction as the write. A body with no `depends_on` field (or a
+  misspelled one) is now refused with 400 instead of silently clearing
+  every existing dependency.
+- **Fuzzy decision/question dedup no longer breaks requirement wiring, or
+  merges questions that differ only by a number.** A requirement citing a
+  decision that merged into an earlier one (different exact wording, same
+  Jaccard-similar judgment) is now correctly wired via `derived_from` — the
+  merge now reports which decision id it resolved to, used directly instead
+  of re-matching by (possibly mismatched) text afterward. `tokenize` no
+  longer drops numeric tokens under 3 characters, so "Support Python 3.11?"
+  and "Support Python 3.12?" (and similar quantity-only differences) are no
+  longer treated as the same question.
+- **`accept-recommendations` no longer records an answer a decision never
+  offered.** A recommendation is now mapped onto a unique matching option
+  (or skipped) when the decision has options, matching the single-resolve
+  path's own guard. A decision a concurrent single-resolve call answers in
+  the meantime is now treated as skipped rather than a `500` that aborted
+  the rest of the batch.
+- **Guidance no longer hides or gets stuck on a rejected change set.** The
+  Recommended Next Move used to look only at the initiative's globally last
+  change set: a rejected change set on one task was hidden the moment ANY
+  other task's change set was created afterward, and stayed stuck reporting
+  "Resolve CHG-n" forever once its own task was cancelled or deleted.
+  Guidance now considers the latest change set per still-active task.
+- **`idea pr` now works from a `gh repo fork --clone` checkout.** That
+  layout sets `origin` to the fork and `upstream` to the parent, with no
+  per-branch remote config; the PR's `--head` now correctly gets the
+  `owner:branch` form gh needs whenever the push remote's owner differs
+  from `upstream`'s (falling back to `origin`'s owner when there is no
+  `upstream` remote), instead of only ever comparing against `origin`'s own
+  owner.
+- **A revert refusal now names the change set to revert first correctly.**
+  When more than one later change set touched the same file, the advice
+  named the earliest of them; following it just produced a second refusal,
+  since a still-later change set was what was actually sitting on top. It
+  now names the latest.
+- **CONVENTIONS.md content is now labeled untrusted in prompts.** It is
+  read from the live workspace, which an earlier agent-applied change set
+  could have edited to steer later reviews; it is now wrapped in an
+  explicit untrusted-data marker wherever it's included, and its
+  truncation now cuts on a UTF-8 rune boundary instead of a raw byte
+  offset.
+- **Migration 32** sets `findings.secret_overridable = 0` where
+  `secret_kind = 'configured secret value'`, a follow-up to migration 30.
+  It does not (and cannot) recompute HMAC fingerprints for pre-migration-30
+  `secret_allowlist` rows recorded under the old bare-sha256 scheme —
+  there is no key to invert a hash with — so any "not a secret" exemption
+  granted before a project's HMAC key existed is orphaned and **must be
+  re-granted** after upgrading.
+
+- **The secret allowlist can no longer be tricked into passing a configured secret.** A finding now
+  carries `secret_overridable` (`Finding.SecretOverridable`): `false` for a value drawn from the
+  project's own configured secrets, and `SetFindingDisposition` refuses `not_a_secret` outright
+  when it is `false`, rather than merely letting the sweep re-deny the value on the next scan.
+  Allowlist entries are scoped to `(fingerprint, path)` instead of fingerprint alone (a value
+  allowlisted in one file still blocks in another), enforced by a unique index and upsert. A
+  finding's `secret_fingerprint` is now a per-project HMAC (`project_state` table, new) instead of a
+  bare sha256, so the same secret no longer fingerprints identically across every installation that
+  ever saw it. Findings carry a masked `secret_preview` (first/last 4 characters) and their
+  `evidence` is now the source line with the value replaced by that mask, instead of a generic
+  placeholder.
+- **The deterministic-check output sweep (build/test command output) now honors the allowlist.** It
+  previously ran a bare credential-detected boolean with no override path; a value a human already
+  allowlisted (e.g. a test fixture the test runner prints back) is now recognized there too, and a
+  denial reads `in the output of <check>: looks like <kind>`.
+- **The credential-assignment pattern catches named forms it used to miss**: `{"password":
+  "..."}` (a quote before the colon), `DB_PASSWORD=...`, `AWS_SECRET_ACCESS_KEY=...` (its own
+  dedicated rule) and `client_secret: ...` — all missed before because the old pattern required a
+  word boundary immediately before the keyword, which never fires between an underscore and the
+  following word. Tightened to require the value look like a literal (quoted, or unquoted without
+  parens/dots/etc.), so `token = getenv(...)` and `const token = req.headers...` still do not match.
+- **The branch-per-initiative dirty check no longer sees a new nested directory, or a path with a
+  space, as a workspace it can never touch again.** `git status --porcelain` (default mode)
+  collapsed a brand-new directory to a single `?? dir/` entry and left special characters quoted;
+  switched to `--porcelain=v1 -z --untracked-files=all`, which lists every file individually and
+  never quotes.
+- **A branch-per-initiative switch (or creation) now checks for someone else's uncommitted edits in
+  both directions**, not just when creating the branch for the first time; a brand-new initiative
+  branch is created from the repository's default branch, never from whatever HEAD happens to be
+  checked out (which may be a different initiative's own branch). The commit-on-apply guards
+  (merge/rebase/cherry-pick/detached HEAD) now run *before* any branch switch, and only the
+  default-branch check runs after it, against whatever branch ends up checked out. The commit
+  itself now uses `git commit --only -- <paths>`, so content the user had already staged before the
+  daemon ran can never enter the agent's commit.
+- **`idea pr` passes `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, `XDG_CONFIG_HOME`, `GH_HOST` and `GH_TOKEN`**
+  through to both `git push` and `gh`, pushes to the branch's configured upstream remote (falling
+  back to `origin`), and gives `gh pr create --head` the `owner:branch` form when the push remote is
+  a `github.com` fork under a different owner than `origin`.
+
+- **Reopening a second decision against an already-stale target no longer disappears.** Stale marks
+  are now keyed on `(target, decision)` instead of target alone, so acknowledging one decision's
+  mark leaves another decision's mark on the same target active. Marking dependents stale now
+  happens in the same transaction as the decision reopen (previously two separate transactions,
+  so a crash between them could leave a decision reopened with nothing marked stale).
+  `ClearStaleItemsForInitiative` (used by `revise-plan`/re-opening a phase) now clears only task and
+  change-set marks, never a requirement mark — regenerating the plan does not re-verify the
+  requirement itself against the decision that changed. The `/guidance` "why" no longer points at
+  `idea revise-plan` when a change set already holds work (revise-plan refuses in that state);
+  it advises acknowledging the items or re-running the affected tasks instead.
+- **Revert's advice said "commit or discard" your edits**, but committing does not change a file's
+  bytes and cannot make the byte-for-byte post-image comparison pass. Now says "discard (or
+  stash)". When a *later* change set is what actually touched the file (not a manual edit), the
+  advice now names it — "revert CHG-4 first" — instead of wrongly suggesting the human discard what
+  is really that change set's own work. The `stale_post` finding this refusal records is now
+  observation-level (was `high`), so it no longer blocks completing the initiative.
+- **Toolchain detection no longer treats a Node version range as a single version.** `>=24`, `<21`
+  and `^18||^20` (and caret/tilde ranges like `^18.2.0`) used to be silently accepted as if they
+  named one version; now refused and left undetected, exactly like any other ambiguous marker.
+  `go.mod`'s `toolchain go1.x` line (when present) is now preferred over the `go` directive, since
+  it is what a `go` invocation actually builds with.
+- **`handleUpdateTask` validated `priority` after already replacing a task's requirement links**, so
+  an invalid `priority` in the same PATCH request returned 400 with the links already replaced.
+  Every field now validates before either write runs. Referencing a superseded requirement in
+  `requirement_ids` is now refused, naming an active requirement with the identical statement when
+  one exists.
+- **`Impact`'s change-set label read "CHG CHG-3"** (the human-readable id already includes the
+  prefix); fixed. Both `Impact`'s list and `ImpactCounts`' "blocks N" now exclude a rejected or
+  superseded change set — dead, and not actually blocking anything.
+- **Credential findings are deduped on `(path, line, fingerprint)`**: the same value at the same
+  spot could match more than one pattern (or both a known value and a pattern) and was reported
+  once per match.
+- **`sensitive_area` is raised at most once per change set** (previously once per sweep pass, so a
+  retried apply could pile up several near-identical advisory findings). The vocabulary-marker
+  catalog was narrowed to `auth`/`secret`/`token`/`password` — `api_key`, bare `https://`/`http://`,
+  `payment`, `credit card` and `ssn` were dropped as noise for what this scan gates (a change set
+  that merely linked to a website, or mentioned billing/PII in ordinary product copy, no longer
+  gets flagged). This also means the initiative-level risk tier (`idea risk`) can no longer be
+  floored by a payment/PII word or a bare URL alone.
+- **The system-deny card's copy said a rejected change set "cannot be approved, overridden, or
+  applied" unconditionally**, but a `secret_sweep` deny specifically can be overridden (disposition
+  the finding "not a secret"); the copy now says so for that case.
+- **The demo provider could cite a superseded requirement code.** `firstRequirementCode` now
+  prefers a code found in the compiled "requirements" context section over one merely mentioned
+  elsewhere (e.g. decision history naming a code since superseded).
+
+- **`confirm_passing_tests` could verify a requirement whose tests failed, never ran, or belonged
+  to another requirement** (C1). Evidence now comes only from the latest `tests` finding of each
+  task's latest change set, and only when that change set is applied (not reverted, rejected, or
+  superseded) and its own check exited 0. A test the verification plan names that is missing from
+  the check output now counts as failed, never silently dropped. Fallback code matching (a test
+  name containing a requirement's code) is now a word-boundary match, so `REQ-1` can no longer pick
+  up `REQ-10`'s test. Check output for a `tests` check is no longer truncated at 2000 bytes before
+  parsing.
+- **A coding agent's own test output could forge a passing result** (C2). A test name's parsed
+  result is now sticky-fail: once any occurrence of it reads as failed, a later line claiming it
+  passed can never overturn that, in either order. A `go test` check command now runs with
+  `-json` appended, so a Go result is read from `go test`'s own structured event stream (exact
+  package + test identity) rather than scraped from `-v` text; the text parser remains as a
+  fallback for other formats and gains the same sticky-fail rule, plus a guard against a result for
+  a test name whose own start marker never appeared once real markers are present in the stream.
+- **`confirm_passing_tests` could overwrite a human's recorded fail or waiver, abort mid-loop
+  leaving partial writes, or run with nothing built** (C3/H2/H4). It now only ever touches a
+  requirement that is `approved` (never `draft`, `removed`, or one already carrying a human
+  verdict), has acceptance criteria, and requires at least one applied change set for the
+  initiative. One ineligible requirement is skipped and reported, never aborting the rest; the
+  response now includes `confirmed` and `skipped` (with a reason) so a caller sees exactly what
+  happened. The Verify page's "Confirm all with passing tests" button is gated on something having
+  actually been built and applied (same as manual Pass/Fail), and its confirmation dialog now
+  names the exact requirement codes about to be flipped.
+- **Rejected change sets and unconfirmable requirements stayed in the "needs you" queue forever**
+  (H3/H4). A denial now shows only for the latest change set of its task, and only when a finding
+  on it carries a real system deny code — never a plain human reject, a plain check failure, or an
+  attempt since superseded by a later one on the same task. "Ready to confirm" now mirrors
+  `confirm_passing_tests`' own eligibility (`approved` only). A `complete` or `failed` initiative no
+  longer contributes anything to the queue.
+- **`pr_url` and a PR check's `link` were rendered as `href` with no scheme check** (H5): a
+  non-`http(s)` value (`gh` output, a third-party CI provider) now renders as plain text instead of
+  a clickable link.
+- **Queue `rank` was the internal `tier·2^59 + ms` sort key**, well past JavaScript's safe-integer
+  range, rendering as a garbled number (H6). It is now a small 1..N ordinal (1 = most urgent); the
+  UI no longer displays a raw internal number.
+- **Marking one initiative's "what changed" seen could hide another initiative's own unseen
+  changes** (M1): `POST …/seen` gained an optional `initiative_id`, writing a per-initiative cursor
+  (`ui:<initiativeId>`) instead of the one shared project-wide cursor; omitted, it keeps writing
+  that project-wide cursor exactly as before.
+- **The initiative-scoped event query silently dropped several event types** (M2):
+  `requirements.superseded`/`assertions.superseded` (recorded against the initiative id, which the
+  per-row subquery never matched) and `verification_evidence`, `stale_item`, `context_doc`,
+  `doc_comment` (not covered by any clause at all) now all appear in "what changed" again.
+- **Timeline entries mislabeled several rejections "denied"** (M3): a plain check failure
+  (build/tests) and the restart-reconcile sweep (an interrupted run recovering, no findings of its
+  own) now read `change_set_rejected` like a human reject would; `change_set_denied` is reserved for
+  a finding that actually carries a system deny code. A `phase_completed` entry is no longer emitted
+  for a `->running` resume or a `->failed` transition (already reported once as `run_failed`).
+- **`POST …/retry` required `model` even when only `note` was sent**, rejecting it with `400 model
+  is required` despite already being documented as decoded leniently (M4). `model` is now genuinely
+  optional; an absent or blank value falls back to the initiative's configured default, as before.
+- **Costs were understated** (M5): a model call's manifest now records the accumulated cost across
+  every retried attempt (not just the last one), and a model run that ultimately fails still writes
+  a manifest for whatever it actually spent. `describeImage` vision calls now get a real run and
+  manifest of their own, so their spend appears under `GET …/costs` instead of only being charged
+  against the shared budget with no attribution.
+- **The agent cost regex was too loose** (M6): it now requires a `$` (a bare `cost: 10` in
+  incidental output is no longer read as a dollar figure), and prefers an explicit "total cost"
+  label or else the LAST plain cost line, instead of the first one found anywhere. The "not
+  measured" fallback now compares against the actual agent run count, not the change-set count, so
+  a placeholder/demo change set alongside one real, fully-measured run no longer reads as
+  unmeasured.
+- **"Since you were last here" stamped only the moment an initiative was opened**, so everything
+  that happened during that visit — including the user's own actions — still read as new next time
+  (M7). It now also stamps on leaving.
+- **The Settings allowlist UI read a field the backend never sends** (M8): `fingerprint_prefix` is
+  now `fingerprint` (the field actually sent), truncated for display client-side.
+- Parser/UI polish: a TAP name containing `#` is no longer truncated at it (only a real `SKIP`/`TODO`
+  directive is stripped); a `go test` package-summary line whose package path starts with a digit
+  (e.g. `1password/foo`) is no longer misread as a TAP result; a pytest `ERROR` row now counts as
+  failed instead of being ignored; a `[tests: …]` list is no longer cut at the first `]` inside a
+  name. The "what changed" day grouping now buckets by the viewer's own local calendar day, not UTC.
+  A timeline entry whose `ref` names a change set or decision is now a real, keyboard-reachable link
+  to it. Queue rows are real `<button>`s (previously a bare `<li onClick>`, unreachable by keyboard
+  or a screen reader). `StaleBanner` uses `role="status"` instead of `role="alert"`. The web cost
+  line now includes agent seconds in its time figure, matching `idea status`. An operation's `stage`
+  is now cleared once it reaches a terminal status (succeeded, failed, or cancelled), instead of
+  showing the last step it was on forever after. `GET .../costs`' `by_phase` is now ordered by the
+  pipeline's own step order, not alphabetically by raw stage key.
+
+- **A secret-sweep denial left the diff viewer with nothing to show.** A
+  change set the secret sweep denied never had its raw file content persisted
+  (by design — the raw store must never carry a rejected secret value), which
+  left `GET …/change-sets/{id}/diff` reporting the content as an opaque,
+  0-byte "unreadable" for every file, even after a human dispositioned the
+  finding `not_a_secret`. It now persists a MASKED stand-in instead (every
+  detected secret span replaced, never the raw value), served with
+  `redacted: true` and an honest note — "content withheld because it
+  contained a secret; showing masked" — instead of a blank file. The
+  `not_a_secret` override itself already worked end to end (a re-execute of
+  the identical content passes the sweep); it is now also proven by a
+  dedicated regression test.
+- **`POST …/decisions/accept-recommendations` skipped nearly every decision
+  with options**, because the model's recommendation prose almost never
+  matched an option verbatim. The matcher now also accepts a
+  case/whitespace/punctuation-tolerant match, one text containing the other,
+  and a positional reference ("Option B", "Choice 2", a bare letter or
+  number) — choosing only when exactly one option matches, otherwise leaving
+  the decision open. `skipped` is now a list of `{code, reason}` (was a bare
+  code list), naming why each one was left open. The PRD/architecture/
+  product-design decision schemas now also instruct the model to answer with
+  an option's exact text or its index.
+- **`depends_on` rejected a task's own id**, accepting only its title or code
+  despite being documented as taking "titles, codes, or ids" — the resolver's
+  lookup table was built from title and code alone. A task id now resolves
+  first (exact match), before falling back to a normalized title/code match.
+- **"Plan approved" was re-recorded on every build cycle.** The execute/
+  apply/revert claim mechanism releases an initiative back to the status it
+  found it in (`SetInitiativeStatus`, an unconditional write), which
+  round-trips an already-`plan_approved` initiative through
+  `plan_approved → running → plan_approved` on every single execute — and
+  each release wrote its own timeline milestone. The timeline now collapses
+  a release back to the SAME phase the initiative already occupied; a
+  genuine change of phase still shows.
+- **An unconfigured build/test check reported `not_applicable` even for an
+  obvious, single-toolchain project.** `build_cmd`/`test_cmd` are now derived
+  from the project's own toolchain markers when left unconfigured and exactly
+  one toolchain is unambiguously recognized — `go.mod` → `go build ./...` /
+  `go test ./...`, `package.json` `scripts.build`/`scripts.test` → `<pm> run
+  build` / `<pm> test`, `pyproject.toml` → `pytest`, `Cargo.toml` → `cargo
+  build` / `cargo test` — mirroring the existing `check.image` detection. The
+  detected command is shown on the check's finding, labeled "detected" and
+  naming the marker it came from, and always overridable by setting
+  `build_cmd`/`test_cmd` explicitly. See "Check auto-detection" in
+  [`docs/configuration.md`](docs/configuration.md).
+- **The implementer could generate code in the wrong language for the
+  project.** Nothing in the implementation brief — the implementer's entire
+  prompt — said what stack the project was already in, or that files must be
+  written to disk rather than pasted in a chat response. The brief now always
+  carries the project's detected stack (or an explicit "new project"/
+  "stack could not be detected" note) and a hard instruction to write files,
+  not paste code, regardless of what the planner model itself chose to
+  include.
+
+- **`review.rigor: auto` could never calibrate the PRD to `quick`, however
+  small the idea.** Calibration read the PRD's OWN requirement count, and the
+  PM model reliably writes 9+ requirements regardless of idea size — so a
+  single-feature idea on an 89-line service still calibrated to `standard`,
+  blocked three review cycles on findings like "no statistical rigor /
+  sample size / confidence level" and "test machine specs undefined", and
+  ended non-converged. PRD-authoring and PRD-review rigor is now calibrated
+  from the idea's own word count and the project's scale — never from
+  anything the PRD step itself produces — and is stable across revise
+  cycles. See "Review rigor" in
+  [`docs/configuration.md`](docs/configuration.md) for the thresholds.
+- **The PRD prompt now targets a requirement count scaled to project/idea
+  size** (3–6 for a small idea on a small project, up to 10–20 at `thorough`)
+  and tells the model acceptance criteria must be testable by the project's
+  own tests or a manual check — not statistical sample sizes, confidence
+  levels, named hardware/test-machine specs, or percentile SLOs, unless the
+  idea itself asks for performance work.
+- **The PRD adversarial reviewer's prompt now states the rigor and project
+  scale it is reviewing at**, and at `quick`/`standard` rigor reserves "high"
+  severity for ambiguity that would cause a wrong or unsafe implementation —
+  measurement methodology, statistical rigor and hardware/environment specs
+  are now at most "low" there, unless the requirement under review is itself
+  a performance SLO the idea asked for.
+- **A PRD revision churned every requirement's code on every cycle**, even
+  when only fixing one finding: the revise step superseded the entire active
+  set and had the model rewrite it from scratch, so a converged PRD's
+  requirements never kept a stable code across cycles and every review round
+  showed a brand-new set. A revision now updates a requirement in place
+  (same id, same code — preserving its `derived_from`/`produced_by` graph
+  edges) when the model's response cites the requirement's exact existing
+  code, and only supersedes the requirements this cycle's response actually
+  drops.
+- **Two near-duplicate decisions asked with different wording across review
+  rounds no longer create separate DEC rows.** Decision dedupe merges on
+  text similarity alone (≥0.85 token Jaccard); a real re-run had the model
+  re-ask the same choice with enough wording drift to fall short of that on
+  its own each round. It now also merges when the question text is still
+  recognizably the same subject (≥0.5 token Jaccard) AND the two decisions
+  offer materially the same options (≥0.7 token Jaccard) — a same-subject
+  signal that options rarely drift on even when wording does. Two decisions
+  that merely share generic options (e.g. both a plain yes/no) but are about
+  unrelated subjects still do not merge; the text floor guards against it.
+- **The change-set adversarial reviewer's prompt now requires a concrete
+  failure input.** A real run's one "high" finding on an already-`TrimSpace`d
+  value ("whitespace manipulation") had no specific line, path, or input
+  that would actually trigger it. Every finding must now cite the specific
+  line/path and a concrete failure input or scenario; a speculative concern
+  with no concrete trigger is at most low severity and advisory. Existing
+  rigor gating (critical/high in-diff blocks, out-of-diff is advisory) is
+  unchanged.
+
+- **The secret sweep blocked ordinary feature code.** A generic "credential
+  assignment" match — `"secret": "..."` in a `*_test.go` fixture, a comment
+  naming a header's shape (`// X-API-Key: <id>:<secret>`) — and three
+  example Stripe-shaped keys with obviously-fake bodies (`sk_live_...0000`,
+  `...1111`, `...2222`) in a `config.json` all blocked, and `not_a_secret`
+  only allowlists the exact (fingerprint, path) a human already saw, so it
+  could not help the next file. Three independent mechanisms now apply
+  (`internal/security`): a placeholder/low-entropy shape check (a 4+
+  identical-character run, or Shannon entropy under 2.5 bits/char) excludes
+  a match everywhere, for every provider-specific format as well as the
+  generic rule; a placeholder-word/sequential-fill check, scoped to the
+  generic rule only, excludes `example`/`test`/`dummy`/`fake`/`placeholder`/
+  `changeme`/`xxx` and a value that IS essentially one long sequential run;
+  and a generic-rule match in a `*_test.go`/`.spec.`/`.test.`/`test(s)`/
+  `testdata`/`fixtures`/`__tests__` path is downgraded to advisory (visible,
+  never blocking) rather than excluded outright. A comment/template
+  placeholder (`<secret>`, `<id>:<secret>`, `${...}`, `{{...}}`) never
+  matches at all. A provider-specific format or a configured secret value
+  still blocks unconditionally, test path or not — see
+  [`docs/security-model.md`](docs/security-model.md).
+- **Dispositioning a reviewer false positive `rejected` blocked approval
+  permanently.** Only `fixed`/`accepted_risk` cleared a blocking finding;
+  `rejected` — a human's own "this finding is wrong" judgment — did not, so
+  `approve --accept-findings` kept failing with a message recommending
+  itself. `Finding.ResolvesBlocking` now also resolves a blocking finding
+  when a HUMAN set `rejected` on a reviewer's own judgment call (no system
+  deny code) — `EvaluateApproval` and `denyReviewOpenBlocking` both use it.
+  A SYSTEM-set `rejected` (a failing build/test check, a secret_sweep or
+  other deny-coded finding) is unaffected and keeps blocking exactly as
+  before — "system deny beats human approve". `POST .../findings/{id}/
+  disposition` now also returns a `warning` when `rejected` was recorded on
+  a deny-coded finding that still blocks.
+- **Reopening a decision could produce 0 stale items and an empty `/impact`
+  for a requirement that plainly covered its subject**, while surfacing only
+  requirements a later PRD revision had already superseded/removed. A
+  superseded requirement keeps its old `derived_from` edge forever
+  (`SupersedeRequirements` marks the row removed, it does not delete it or
+  its edges); `decisionDependents` never filtered by requirement liveness,
+  so a decision's reopen surfaced only long-dead requirements instead of
+  whatever live one now covers its subject — it now skips a removed/
+  superseded requirement, mirroring the filter `workflow.Impact` already
+  applied. Separately, the requirement→decision wiring now also matches a
+  requirement's `decision` reference against every decision on record for
+  the initiative, not just the ones raised in the same PRD cycle, so a
+  requirement regenerated in a later revise cycle that still names a
+  standing (already-decided, not re-raised) decision gets wired to it.
+- **Guidance for a change set the secret sweep denied said only "a check or
+  the review found a problem it would not pass"** — true, but not the actual
+  cause. `GET .../guidance` now names it when the rejection is a
+  `secret_sweep` denial: the file (or "in the output of `<check>`") and kind
+  of secret, never the value, plus the `not_a_secret` disposition route when
+  the match is overridable. Separately, timeline copy read "a API key" —
+  `indefiniteArticle` now picks "a"/"an" correctly across the secret-kind
+  catalog, including the acronyms a naive vowel-letter check gets wrong in
+  both directions ("an AWS ...", but "a URL ...").
+
+- **Four backend fixes never reached the web UI** (release-gate review H8).
+  A change set whose adversarial review never completed
+  (`review_completed_at` unset) rendered the same Approve buttons as a
+  normally-reviewed one, both of which the backend refuses unconditionally —
+  the card now explains the state and offers "Re-run the review (costs a
+  model call)" (`POST .../review {"verdict":"rerun"}`), the backend's own
+  documented escape. A `reverted` change set rendered a pill and no buttons
+  at all, though the backend already accepts re-apply from that status —
+  it now offers "Re-apply". An applied `no_op` change set (zero file
+  changes) read "SHIPPED", and Verify offered "Confirm all with passing
+  tests" that the backend refused for every requirement — the pill now says
+  "No file changes", and `hasBuiltSomething` (gating both Pass/Fail and the
+  confirm button) no longer counts a no-op change set as something built.
+  "Reject and re-run" started a fresh agent run even when the reject itself
+  failed with a 409 (`runAction` used to swallow the error and always
+  resolve); it now only runs when the reject actually succeeded.
+- **`idea verify --json` exited 0 on an unmet gate** (release-gate review
+  H10). `runVerify` returned the JSON payload before computing the
+  `failOnUnmet` gate at all, so the only machine-readable form of this
+  command could never fail — directly contradicting
+  `docs/demo-greenfield.md`'s "an unmet gate exits non-zero, so `idea
+  verify` is usable in a script." The JSON payload is unchanged; the gate
+  now runs before returning, under `--json` exactly as it already did for
+  the human-readable output.
+- **`docs/quickstart.md` and `README.md` said, in bold, that no CLI verb
+  resolves a decision or answers a question** (release-gate review H9) —
+  true when written, false since the CLI judgment loop shipped
+  (`idea answer`/`resolve`/`reopen-decision`/`accept-recommendations`/
+  `triage`, above). Both now describe the real commands; dispositioning a
+  review finding is still correctly described as web-UI/API only, since no
+  CLI verb exists for that.
+- **"Since you were last here" consumed the unread cursor on a fast
+  in-and-out.** The M7 fix above (stamping on leaving an initiative, not
+  only on entry) left the ENTRY stamp in place too, which advanced the
+  cursor to "now" the instant an initiative was opened — before anything
+  had actually been shown. Opening the wrong initiative in a long list and
+  immediately leaving silently marked every entry since the previous visit
+  as seen, irrecoverably. The cursor now advances only on leaving.
+- **`groupTriage`'s defensive top-3 cap on "needs you" had no production
+  caller.** `partitionByTriage` (DefinePage's actual per-category split)
+  trusted every triage row marked `priority` unconditionally, so a backend
+  that ever marked a 4th item priority would have grown "Needs you" past 3
+  with nothing to catch it. `partitionByTriage` now derives its priority set
+  from `groupTriage`'s capped list instead of the raw triage response.
+  Separately, `hasConfirmableEvidence` (the Verify page's "is there anything
+  to confirm" predicate) also had no caller — VerifyPage now uses it instead
+  of recomputing the same rule inline.
+- **`TestOnlySetKnownIncompatible`** (`internal/executor/compat.go`) mutates
+  package-level state with no synchronization and was exported from the
+  production build with only a doc-comment saying not to call it outside a
+  test. It now panics via `testing.Testing()` when called from anything
+  other than a test binary — three other packages' tests call it directly
+  (Go does not link one package's `_test.go` files into another's build, so
+  it cannot simply move into one), so this is the enforcement a file rename
+  can't provide here.
+- **The adversarial reviewer read the harness's own redaction as a syntax
+  error and raised a blocking false-positive critical (ICP re-run 5, D1,
+  High).** An advisory (test-fixture) secret in a diff shown to the reviewer
+  was masked to `const [REDACTED]` — `RedactString`'s generic
+  "credential assignment" pattern matches an identifier PREFIX before its
+  keyword, so `AuthFixtureSecret = "<value>"` (the keyword "Secret" inside
+  the identifier itself) pulled the identifier, `=` and quotes into the
+  match, and `redact()` replaced the WHOLE match, not just the value. The
+  reviewer, never told redaction happens, reported at `confidence: high`
+  that the file "contains an invalid Go const declaration that will not
+  compile, breaking the entire main package" — blocking approval — while
+  `go build ./...` and `go test ./...` passed on the same change set and
+  `gofmt -e` parsed the file cleanly. Fixed two ways: `redact()` now masks
+  only the matched pattern's own capturing group (every catalog pattern's
+  doc comment already promised this is what the group wraps), so
+  `const AuthFixtureSecret = "[REDACTED]"` stays valid Go and reads
+  unambiguously as a withheld value rather than an absent one; and the
+  adversarial reviewer's own prompt now says plainly that credential-shaped
+  values are masked before it sees the diff, that a `[REDACTED]` span is a
+  withheld value and not missing/malformed source, and that it must not
+  raise a finding about the syntax, validity or type of one. Prevention via
+  the prompt plus a legible placeholder was chosen over a post-hoc
+  finding-filter: the harness cannot know every way a model might phrase a
+  "this doesn't parse" objection, but it can make the thing being objected
+  to actually parse.
+- **`idea review <id> rerun` exceeded the CLI's 60s HTTP timeout on every
+  invocation (ICP re-run 5, D2, Medium).** The adversarial review it runs is
+  a real model call — observed 1m12s–1m38s across four founder-journey
+  observations — and used to run synchronously inside the HTTP handler
+  (detached from the request's own cancellation, but not from the CLI's own
+  `http.Client{Timeout: 60 * time.Second}`): the daemon always finished the
+  review, but the CLI reported a timeout error every time, so a brand-new
+  command of this release appeared to fail on every use even though the
+  work always completed. `rerun` is now an async operation
+  (`RerunChangeSetReviewInitiative`), the same 202 + `operation_id` shape
+  `idea apply`/`idea execute` already use; the CLI waits on it by default
+  (the same reasoning `idea retry` already waits by default: the command's
+  entire job is completing a review, so a client-side timeout must never
+  again be mistaken for the review itself failing), reports success once
+  the operation actually succeeds, and understands `--no-wait`/`idea
+  cancel`/`idea watch` like every other long-running command.
+- **The adversarial review — the most expensive phase of `idea execute`,
+  1–1.5 minutes — was never reported as its own stage (ICP re-run 5, D3,
+  Low).** `setStage` was called for "Planning", "Agent running" and "Running
+  checks", but not for the review that follows, so a polled operation's
+  `stage` read "Running checks" for the review's entire duration even
+  though the daemon log already recorded `stage=review` for it. Both call
+  sites (`Execute`, `RerunChangeSetReview`) now call
+  `setStage(ctx, initiativeID, "Running adversarial review")` first.
+- **`idea changes` labelled a never-reviewed change set "needs your
+  approval" (ICP re-run 5, D4, Low).** The same `review_required` status
+  `idea status`'s guidance already, correctly, described as "never finished
+  its adversarial review" (`domain.ChangeSet.ReviewCompleted`/
+  `ReviewNeverCompletedCause`) — there is nothing to approve yet in that
+  state, and `idea review <id> approve` refuses it and names `rerun`. The
+  API's change-set list now carries `review_completed_at`, and `idea
+  changes` uses the same wording `idea status` does whenever it is nil.
+- **`idea execute` printed "✓ execute started" before a synchronous
+  precondition guard could still reject the run (ICP re-run 5, D5, Low).**
+  Several of Execute's own guards — another open change set, executor
+  resolution, the trust-tier gate, a prior change set of the same task left
+  mid-review or as an unresolved no-op — ran only inside the async
+  `launchOperation` goroutine, strictly after the daemon had already
+  answered 202 and the CLI had already printed its success line; a
+  real founder-journey run hit exactly this (a task whose only change set
+  never finished its adversarial review) and it failed in under a
+  millisecond, at zero model cost, immediately after the "started" line
+  printed. `Engine.ExecutePrecondition` now runs the same read-only checks
+  synchronously, before the operation is ever created, so a run this cheap
+  a guard would refuse anyway is refused synchronously with nothing printed
+  as having started; Execute's own copies remain the backstop for the race
+  window between the two.
+- **`idea tasks --json` omitted `requirement_ids` and `depends_on`** even
+  though `GET .../tasks` has always returned both (ICP re-run 5 gap): the
+  CLI's `cliTask` DTO simply dropped them, so a script had no way to see a
+  task's requirement traceability or dependencies short of raw HTTP — which
+  is exactly what the evaluator had to fall back to for plan edits, since
+  there is no CLI verb for add/merge/split/depends-on/reorder either (see
+  `docs/plans/deferred.md`). Both fields are now on `cliTask` and reach
+  `idea tasks --json` unchanged.
+- **`idea pr` dumped a raw git error on a repository with no remote
+  configured** (ICP re-run 5 gap): `pushRemote`'s "origin" fallback named a
+  remote that did not exist, so `git push -u origin <branch>` failed with
+  git's own unclassified text ("'origin' does not appear to be a git
+  repository"). `pushRemote` now checks the remote actually exists before
+  ever shelling out to `git push`, and a push that still fails on a
+  missing-remote message (a branch's own `branch.<name>.remote` naming a
+  remote since removed) is classified the same way; both surface as a new
+  `git.ErrNoRemote`, reported as "this repository has no remote configured;
+  add one (e.g. `git remote add origin <url>`) and push the branch, then
+  run `idea pr` again" rather than git's raw output.
+
+### Fixed — whole-branch adversarial review follow-up (MEDIUM/LOW backlog)
+
+- **Migration 34's `no_op` default is now backfilled for pre-migration change
+  sets**, not left at its conservative `false` forever. The patch manifest was
+  persisted unconditionally before that migration existed, so the true file
+  count is one blob read, not lost — done once per project, at daemon start
+  (not inside the migration itself, which is plain SQL text with no blob-store
+  access), gated by a persisted `project_state` marker so it never re-scans.
+- **Migration 33's "never finished its adversarial review" messages
+  no longer call a pre-upgrade row "likely cancelled mid-review."** Before the
+  upgrade, `review_completed_at` didn't exist and nothing was cancelled; a
+  change set's `PredatesReviewTracking` (compared against when migration 33
+  itself was applied to this database) now picks the right explanation on all
+  four surfaces: Execute's re-pick refusal, the approve refusal, `GET
+  .../guidance`, and `applyStateMessage`.
+- **`PATCH .../tasks/reorder` no longer answers `requirement_ids`/`depends_on`
+  as `null`** — it now calls `AttachTaskEdges` like every other task response.
+  `TestResponsesMatchTheirDeclaredSchema` now also drives PATCH/POST
+  plan-editing endpoints, not only GETs.
+- **The catch-up commit (`git.branch_per_initiative`) no longer sweeps a
+  user's own hand-edit into a commit titled as the harness's own catch-up**:
+  each catch-up path's on-disk content is checked against the digest the
+  recorded change set actually wrote there, and the branch switch refuses
+  (naming the stale path) rather than committing drifted content. Separately,
+  if the change set's own commit fails after `checkout -b` already switched
+  the workspace onto the initiative's branch, the branch is now restored to
+  what was checked out before, instead of leaving the workspace stranded
+  there alongside the reported failure.
+- **Decision dedup's same-subject text floor is now a strict `>`, not `>=`.**
+  "Which database should we use?" vs. "Which cache should we use?" — the
+  canonical kept-apart pair this code and this file's own history already
+  cite at Jaccard 0.5 — merged anyway whenever the two decisions also
+  happened to offer near-identical options, because the floor comparison let
+  a text similarity of exactly 0.5 fall through to the options check.
+- **A renamed provider's context window is resolved correctly again.**
+  `model.ContextWindowFor`'s tables are keyed on the six built-in provider
+  names; a `providers:` entry renamed to something else (`providers:
+  openai-work:`, this project's own documented example) now resolves via its
+  base URL against the built-in presets (`config.PresetForBaseURL`) instead
+  of returning 0 and reproducing the Hermes-refuses-to-start-below-64k
+  failure the context-length fix exists to prevent.
+- **`demo.block_review_cycles`'s clamp to `review.max_cycles` no longer skips
+  itself when some other `review.*` field is configured.** `max_cycles`'s
+  raw value can legitimately sit at `0` (unset) while still being enforced as
+  3 by the engine; the clamp now uses `ReviewConfig.EffectiveMaxCycles()` —
+  the same effective value the engine itself computes — instead of the raw
+  field.
+- **`docs/configuration.md` corrections:** `executor.image`'s `alpine:3.20`
+  default is per-`executor.kind` (`container` only; `hermes` defaults to the
+  pinned Hermes image; `omp` has none and refuses every execute); a `.env`
+  edit is never picked up by the daemon's harness.yaml-mtime auto-reload on
+  its own; and a brand-new `git.branch_per_initiative` branch is created from
+  current HEAD (not the repository's default branch) whenever HEAD has
+  diverged from that default, not never.
+- Sandbox `/tmp`/`/tmp/cache` tmpfs mounts keep `nodev` alongside `exec`
+  (dropped in the same change that added `exec`).
+- The daemon's HTTP server now sets `ReadHeaderTimeout`/`ReadTimeout`/
+  `IdleTimeout` (10s/30s/120s) so a stalled client can no longer tie up a
+  connection indefinitely; `WriteTimeout` is deliberately left unbounded so
+  it never cuts `GET .../events`'s SSE stream.
+- `store.ErrDependsOnCycle`/`ErrSelfMerge`/`ErrMergeCycle` — the three
+  sentinel errors whose `Error()` text a handler surfaces verbatim in a 400
+  body — no longer carry the package's internal `store: ` prefix into that
+  response. `docs/openapi.yaml`'s merge/split `400` descriptions now also
+  name every cause the handlers actually return, not just the first one.
+- Single-sourced two duplicated helpers: `internal/domain.TrimToWordBoundary`
+  is now the one word-boundary-cut implementation (`internal/projection`'s
+  `truncateWords` wraps it and adds only the ellipsis GenerateShortTitle
+  deliberately doesn't want); `store.ListStaleItems`/`ListAllStaleMarks`
+  share one query+scan helper instead of a 35-line duplicate differing only
+  in one `WHERE` clause.
+- Fixed the flaky `TestClientTimeoutNamesTheActionAndHowToCheck`
+  (`internal/cli`): the hanging listener's accepted connection is now kept
+  referenced (and explicitly closed in `Cleanup`) instead of discarded, so
+  its finalizer can no longer close the socket — sending the client an
+  unexpected RST instead of the deadline-exceeded timeout the test expects —
+  before the 50ms client timeout fires.
+- `docs/security.md` now lists the redactor's actual full pattern catalog
+  (it previously named roughly a third of it), cross-checked against
+  `internal/security.credentialCatalog` by a new test so the two cannot
+  silently drift apart again; `docs/security-model.md` now documents
+  `isPlaceholderShape`'s 200-character scope explicitly (applies to short,
+  flat values; a long match like a PEM block or JWT is exempt, never the
+  reverse).
+
 ## [0.5.1] - 2026-09-18
 
 ### Added

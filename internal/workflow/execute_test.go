@@ -14,7 +14,10 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/fsdiff"
 	"github.com/devarispbrown/idea-harness/internal/model"
+	"github.com/devarispbrown/idea-harness/internal/security"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -170,7 +173,110 @@ func TestStructuredDiffCarriesAUnifiedPatch(t *testing.T) {
 	}
 }
 
-func TestExecuteRejectsOnSecretMarker(t *testing.T) {
+// TestRunPlannerBriefNamesDetectedStackAndFileInstruction is defect #6 from
+// the ICP re-run: the implementer generated Python for a Go project because
+// nothing in its brief -- req.Brief goes to the coding agent CLI verbatim --
+// said what stack the project was already in, or even that files should be
+// written to disk rather than pasted in the response. Covers all three
+// runPlanner branches: a detected stack, a brand-new project, and an
+// existing-but-undetected one.
+func TestRunPlannerBriefNamesDetectedStackAndFileInstruction(t *testing.T) {
+	t.Run("detected stack", func(t *testing.T) {
+		fp := model.NewFakeProvider()
+		eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+		eng.SetWorkRoot(t.TempDir())
+		eng.SetWorkspaceRoot(t.TempDir())
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		ini := &domain.Initiative{Title: "x", Description: "x"}
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, ini.ID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "Go") {
+			t.Errorf("brief does not name the detected stack: %q", brief)
+		}
+		if !strings.Contains(brief, "never introduce a different language") {
+			t.Errorf("brief is missing the stack-fidelity instruction: %q", brief)
+		}
+		if !strings.Contains(brief, "Write your changes directly to files") {
+			t.Errorf("brief is missing the write-files-not-chat instruction: %q", brief)
+		}
+
+		// The planner MODEL itself also saw the detected stack, not just the
+		// orchestrator-appended tail: its own brief should be grounded in
+		// what actually exists, not invent a different project from nothing.
+		var sawStackInPrompt bool
+		for _, call := range fp.Calls() {
+			if call.JSONSchemaName == "implementation_brief" && strings.Contains(call.System, "Go") {
+				sawStackInPrompt = true
+			}
+		}
+		if !sawStackInPrompt {
+			t.Error("the planner model's own system prompt did not carry the detected stack")
+		}
+	})
+
+	t.Run("new project", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t) // empty workspace root: no markers at all
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "new project with no existing code") {
+			t.Errorf("brief does not acknowledge a brand-new project: %q", brief)
+		}
+		if !strings.Contains(brief, "Write your changes directly to files") {
+			t.Errorf("brief is missing the write-files-not-chat instruction: %q", brief)
+		}
+	})
+
+	t.Run("existing but undetected stack", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t)
+		ctx := context.Background()
+		// A file exists, but none of stackMarkers' root files are among them.
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "README.md"), []byte("hello\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "could not be auto-detected") {
+			t.Errorf("brief does not acknowledge an undetected stack: %q", brief)
+		}
+		if !strings.Contains(brief, "do not introduce a new one") {
+			t.Errorf("brief is missing the match-existing-files instruction: %q", brief)
+		}
+	})
+}
+
+// TestExecuteDoesNotRejectOnSecretMarkerAlone is the ICP-round fix (review
+// D2/A1): a bare vocabulary word -- password/token/secret/auth and similar --
+// anywhere in the produced patch no longer blocks the change set. It used to
+// (see git history), with no override and no file or line, which is exactly
+// what stopped the ICP journey's per-user-API-keys-with-rate-limiting feature
+// from ever landing. The word still surfaces, but only as a non-blocking
+// "sensitive area" finding for the reviewer.
+func TestExecuteDoesNotRejectOnSecretMarkerAlone(t *testing.T) {
 	eng, db, iniID := newExecuteFixture(t)
 	ctx := context.Background()
 
@@ -183,23 +289,437 @@ func TestExecuteRejectsOnSecretMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs.Status != domain.ChangeSetRejected {
-		t.Fatalf("expected rejected (secret marker), got %q", cs.Status)
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("a bare vocabulary marker must not block; got %q", cs.Status)
 	}
 
-	// The rejection must be traceable via a blocking secret_sweep finding.
 	findings, err := db.ListFindingsByInitiative(ctx, iniID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blocked bool
+	var advisory, blocked bool
 	for _, f := range findings {
-		if f.TargetID == cs.ID && f.Category == "secret_sweep" && f.Severity == domain.SeverityCritical {
+		if f.TargetID != cs.ID {
+			continue
+		}
+		if f.Category == "sensitive_area" {
+			advisory = true
+			if f.Severity.Blocking() {
+				t.Errorf("the sensitive_area finding must not block: %+v", f)
+			}
+		}
+		if f.Category == "secret_sweep" {
 			blocked = true
 		}
 	}
-	if !blocked {
+	if !advisory {
+		t.Fatal("expected a non-blocking sensitive_area finding naming the marker")
+	}
+	if blocked {
+		t.Fatal("a bare vocabulary marker must not raise a secret_sweep finding")
+	}
+}
+
+// TestSensitiveAreaFindingCreatedAtMostOnce is the low-priority review item:
+// createSensitiveAreaFinding is called from both Execute's own sweep and the
+// apply-time re-sweep (ApplyChangeSet), and a retried apply calls the latter
+// again -- none of which should pile up a second, third, ... near-identical
+// advisory finding on the same change set. Mutation-check: remove the
+// "already recorded" early-return in createSensitiveAreaFinding, and this
+// fails.
+func TestSensitiveAreaFindingCreatedAtMostOnce(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Store password in vault", Statement: "secret", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Call createSensitiveAreaFinding again directly, simulating a second
+	// pass over the same change set (e.g. a retried apply's re-sweep) with
+	// signals still detected.
+	signals := []domain.RiskSignal{{Name: "credential", Detected: true}}
+	if err := eng.createSensitiveAreaFinding(ctx, iniID, cs.ID, signals, "second pass"); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range findings {
+		if f.Category == "sensitive_area" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("sensitive_area findings on %s = %d, want exactly 1", cs.ID, n)
+	}
+}
+
+// TestExecuteRejectsOnRealCredential is the other half: a real credential
+// VALUE (a known key format) still blocks, and the denial names where -- the
+// path:line -- and the kind of secret, never the value itself (review #2).
+func TestExecuteRejectsOnRealCredential(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key AKIAIOSFODNN7EXAMPLE", Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (real credential), got %q", cs.Status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *domain.Finding
+	for i := range findings {
+		if findings[i].TargetID == cs.ID && findings[i].Category == "secret_sweep" && findings[i].Severity == domain.SeverityCritical {
+			f = &findings[i]
+		}
+	}
+	if f == nil {
 		t.Fatal("expected a critical secret_sweep finding explaining the rejection")
+	}
+	if !strings.Contains(f.Finding, ":") || !strings.Contains(f.Finding, "AWS access key ID") {
+		t.Errorf("the denial must name path:line and the kind of secret: %q", f.Finding)
+	}
+	if strings.Contains(f.Finding, "AKIAIOSFODNN7EXAMPLE") || strings.Contains(f.Evidence, "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("the denial must never echo the credential value: %+v", f)
+	}
+	if f.SecretFingerprint == "" {
+		t.Error("expected a secret fingerprint to be recorded for a possible override")
+	}
+	if f.SecretKind != "AWS access key ID" {
+		t.Errorf("SecretKind = %q, want %q", f.SecretKind, "AWS access key ID")
+	}
+	// The deny code is what makes this a system-deny the review's
+	// --accept-findings flag cannot sign off (denyReviewOpenBlocking keys on
+	// Code != ""). Mutation-check for sweepDenyCode: make it always return "",
+	// and this fails.
+	if f.Code != domain.DenyCodeSecretSweep {
+		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeSecretSweep)
+	}
+}
+
+// TestRejectedChangeSetShowsMaskedDiff is defect #1 from the ICP re-run: a
+// change set the secret sweep denies used to have NOTHING to show in the diff
+// viewer -- persistDiff is skipped on denial (by design: the raw bytes must
+// never reach the redaction-free raw store), which left StructuredDiff's
+// Content empty (Size 0) and RenderPatch's flat text reading "<path>
+// (unreadable)" for every file, indistinguishable from a genuine read error.
+// The fix persists a MASKED stand-in (persistRedactedDiff) so the human can
+// see what was blocked. Mutation-check: skip the `else` branch that calls
+// persistRedactedDiff in Execute, or make persistRedactedDiff a no-op, and
+// this fails (Redacted stays false / Content stays empty).
+func TestRejectedChangeSetShowsMaskedDiff(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	const secret = "AKIAIOSFODNN7EXAMPLE"
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key " + secret, Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected, got %q", cs.Status)
+	}
+
+	files := eng.StructuredDiff(&cs)
+	if len(files) == 0 {
+		t.Fatal("expected at least one file on the denied change set")
+	}
+	for _, f := range files {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if !f.Redacted {
+			t.Errorf("file %q: Redacted = false, want true for a denied change set", f.Path)
+		}
+		if f.Size == 0 || f.Content == "" {
+			t.Errorf("file %q: content withheld entirely (Size=%d) -- expected masked stand-in content", f.Path, f.Size)
+		}
+		if strings.Contains(f.Content, secret) {
+			t.Errorf("file %q: masked content still carries the raw secret value: %q", f.Path, f.Content)
+		}
+		if f.PatchNote == "" || !strings.Contains(f.PatchNote, "secret") {
+			t.Errorf("file %q: PatchNote = %q, want an honest explanation naming the secret withholding", f.Path, f.PatchNote)
+		}
+		if f.Patch != "" {
+			t.Errorf("file %q: expected no computed patch against masked content, got %q", f.Path, f.Patch)
+		}
+	}
+
+	rendered := eng.RenderPatch(&cs)
+	if strings.Contains(rendered, "(unreadable)") {
+		t.Errorf("RenderPatch still reports the withheld content as an opaque read failure: %q", rendered)
+	}
+	if strings.Contains(rendered, secret) {
+		t.Errorf("RenderPatch leaked the raw secret value: %q", rendered)
+	}
+	if !strings.Contains(rendered, "withheld") {
+		t.Errorf("RenderPatch does not explain why the content is withheld: %q", rendered)
+	}
+
+	// Disposition the finding "not a secret": the SAME (already-rejected, now
+	// terminal) change set must keep showing its masked content -- overriding
+	// the disposition does not retroactively materialize raw bytes that were
+	// never written -- and a re-execute of the identical content must now pass.
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category == "secret_sweep" {
+			findingID = f.ID
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+
+	stillThere, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterOverride := eng.StructuredDiff(stillThere)
+	for _, f := range afterOverride {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if !f.Redacted || f.Content == "" {
+			t.Errorf("file %q: masked diff regressed after the not_a_secret override: %+v", f.Path, f)
+		}
+	}
+
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("the allowlisted fingerprint still rejected the re-run: %+v", cs2)
+	}
+	files2 := eng.StructuredDiff(&cs2)
+	for _, f := range files2 {
+		if f.ChangeType == string(domain.FileDeleted) {
+			continue
+		}
+		if f.Redacted {
+			t.Errorf("file %q: a passing re-run should show real content, not masked: %+v", f.Path, f)
+		}
+	}
+}
+
+// TestNotASecretDispositionUnblocksFutureExecutes is the review changes #1
+// override exercised at the engine layer: disposition the raised finding
+// not_a_secret, then confirm a re-execute of the identical content is no
+// longer rejected. Mutation-check for filterAllowlisted (internal/workflow/
+// execute.go): break it to keep every match regardless of the allowlist, and
+// this fails.
+func TestNotASecretDispositionUnblocksFutureExecutes(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key AKIAIOSFODNN7EXAMPLE", Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected, got %q", cs.Status)
+	}
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category == "secret_sweep" {
+			findingID = f.ID
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+
+	// The task was reopened on rejection (SetTaskStatus -> proposed); the
+	// re-run picks it up again and produces the identical content.
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("the allowlisted fingerprint still rejected the re-run: %+v", cs2)
+	}
+}
+
+// TestDedupeCredentialFindings is the low-priority review item: the same
+// value at the same (path, line) can match more than one catalog pattern (or
+// both a known value and a pattern), and must be reported once, not once per
+// pattern that happened to match. Mutation-check: make dedupeCredentialFindings
+// a no-op (`return matches`), and this fails.
+func TestDedupeCredentialFindings(t *testing.T) {
+	dup := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "AWS access key ID", Overridable: true}
+	dupAgain := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-1", Kind: "credential assignment", Overridable: true}
+	sameLineDifferentValue := security.CredentialFinding{Path: "a.go", Line: 5, Fingerprint: "fp-2", Overridable: true}
+	differentLine := security.CredentialFinding{Path: "a.go", Line: 6, Fingerprint: "fp-1", Overridable: true}
+	differentPath := security.CredentialFinding{Path: "b.go", Line: 5, Fingerprint: "fp-1", Overridable: true}
+	knownValueFirst := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: false, Kind: "configured secret value"}
+	patternSameSpot := security.CredentialFinding{Path: "c.go", Line: 1, Fingerprint: "fp-known", Overridable: true, Kind: "API key"}
+
+	out := dedupeCredentialFindings([]security.CredentialFinding{
+		dup, dupAgain, sameLineDifferentValue, differentLine, differentPath, knownValueFirst, patternSameSpot,
+	})
+	if len(out) != 5 {
+		t.Fatalf("dedupeCredentialFindings returned %d matches, want 5 (dup/dupAgain collapsed, and known/pattern at the same spot collapsed): %+v", len(out), out)
+	}
+	// The first occurrence at (a.go, 5, fp-1) must be the one kept.
+	for _, m := range out {
+		if m.Path == "a.go" && m.Line == 5 && m.Fingerprint == "fp-1" && m.Kind != dup.Kind {
+			t.Errorf("expected the first occurrence's Kind %q to survive, got %q", dup.Kind, m.Kind)
+		}
+		// A known-value match must survive over a same-spot pattern match, not
+		// the reverse (review H3's Overridable=false invariant, reinforced by
+		// dedup order).
+		if m.Path == "c.go" && !m.Overridable && m.Kind != "configured secret value" {
+			t.Errorf("expected the known-value match to survive at c.go:1, got %+v", m)
+		}
+	}
+}
+
+// TestFilterAllowlistedScopedToPath is review H3, tested directly against
+// the pure function: an allowlisted (fingerprint, path) pair must not
+// suppress the SAME fingerprint at a DIFFERENT path.
+func TestFilterAllowlistedScopedToPath(t *testing.T) {
+	allowed := map[string]bool{store.AllowlistKey("fp-1", "tests/fixture.js"): true}
+	matches := []security.CredentialFinding{
+		{Path: "tests/fixture.js", Fingerprint: "fp-1", Overridable: true},
+		{Path: "src/prod.js", Fingerprint: "fp-1", Overridable: true},
+	}
+	out := filterAllowlisted(matches, allowed)
+	if len(out) != 1 || out[0].Path != "src/prod.js" {
+		t.Fatalf("filterAllowlisted = %+v, want only src/prod.js to survive", out)
+	}
+}
+
+// TestFilterAllowlistedNeverDropsAKnownValueMatch is review H3: even when
+// the pattern-shaped match for the identical value+path was allowlisted (so
+// its fingerprint+path IS in allowed), a known-value (Overridable=false)
+// match with the same fingerprint+path must still survive -- a configured
+// secret is never eligible for the override regardless of what a pattern
+// match at the same fingerprint was allowlisted as. Mutation-check: drop
+// `m.Overridable &&` from filterAllowlisted's condition, and this fails.
+func TestFilterAllowlistedNeverDropsAKnownValueMatch(t *testing.T) {
+	allowed := map[string]bool{store.AllowlistKey("fp-shared", "src/config.go"): true}
+	matches := []security.CredentialFinding{
+		{Path: "src/config.go", Fingerprint: "fp-shared", Overridable: false, Kind: "configured secret value"},
+	}
+	out := filterAllowlisted(matches, allowed)
+	if len(out) != 1 {
+		t.Fatalf("filterAllowlisted dropped a non-overridable match: %+v", out)
+	}
+}
+
+// TestConfiguredSecretValueIsNeverAllowlistable is the Overridable=false
+// invariant (review changes #1, inverted by review H3): a value drawn from
+// the project's own configured secrets (the executor's resolved key, via the
+// engine's redactor) is never eligible for the not_a_secret override at all
+// -- unlike a pattern-shaped match, it is not a "might be a false positive"
+// shape, it is a real credential by construction, and the store itself now
+// refuses the disposition outright (persisted secret_overridable=false)
+// rather than merely have the sweep re-deny it later. Mutation-check: remove
+// the `!secretOverridable` refusal from SetFindingDisposition, or drop
+// `m.Overridable &&` from filterAllowlisted's condition, and this fails.
+func TestConfiguredSecretValueIsNeverAllowlistable(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	const known = "super-secret-configured-value-0001"
+	eng.SetRedactor(security.NewRedactor(known))
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Add key " + known, Statement: "x", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("setup: expected rejected on a configured secret value, got %q", cs.Status)
+	}
+	findings, err := db.ListFindingsByInitiative(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category != "secret_sweep" {
+			continue
+		}
+		findingID = f.ID
+		if f.SecretKind != "configured secret value" {
+			t.Errorf("SecretKind = %q, want %q", f.SecretKind, "configured secret value")
+		}
+		if f.SecretOverridable {
+			t.Errorf("SecretOverridable = true, want false for a configured secret value")
+		}
+	}
+	if findingID == "" {
+		t.Fatal("setup: no secret_sweep finding")
+	}
+	// The store now knows this finding is not eligible for the override at
+	// all, and refuses the disposition outright.
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err == nil {
+		t.Fatal("want SetFindingDisposition to refuse not_a_secret on a configured secret value, got nil error")
+	}
+
+	// The refused disposition must not have written an allowlist entry either
+	// (belt and suspenders on top of the store-level refusal above).
+	allowed, err := db.SecretAllowlistFingerprints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allowed) != 0 {
+		t.Fatalf("SecretAllowlistFingerprints = %v, want empty: the refused disposition must not have allowlisted anything", allowed)
+	}
+
+	// The sweep must still deny the identical content again.
+	cs2, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status != domain.ChangeSetRejected {
+		t.Fatalf("a configured secret value must still be denied, got %q", cs2.Status)
 	}
 }
 
@@ -314,6 +834,80 @@ func TestReviewApproveThenApply(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "task: Implement core") {
 		t.Fatalf("hello.txt = %q, want it to contain %q", string(data), "task: Implement core")
+	}
+}
+
+// TestApplyResweepDeniesAGrownCatalog is the apply-time defense-in-depth case
+// (review D2/A1: "keep the apply-time re-sweep consistent with the execute-
+// time sweep"): a value that passed the sweep at execute time can still be
+// denied at apply if the project's configured secrets grew in between (a key
+// rotated into .env, say). It must be denied the same way execute denies one
+// -- a critical secret_sweep finding naming path:line and kind, the change set
+// recovers to rejected, and the task reopens -- not applied to the workspace.
+func TestApplyResweepDeniesAGrownCatalog(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// No redactor yet: this passes the execute-time sweep cleanly.
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The catalog "grows" between execute and apply: a value the produced
+	// content happens to contain is now a configured secret.
+	eng.SetRedactor(security.NewRedactor("Implement core"))
+
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err == nil {
+		t.Fatal("expected apply to be denied by the grown catalog")
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected the change set recovered to rejected, got %q", got.Status)
+	}
+	gotTask, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.Status != domain.TaskProposed {
+		t.Fatalf("expected the task reopened to proposed, got %q", gotTask.Status)
+	}
+	if _, err := os.Stat(filepath.Join(eng.workspaceRoot, "hello.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the workspace must not have been mutated: stat hello.txt = %v", err)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *domain.Finding
+	for i := range findings {
+		if findings[i].Category == "secret_sweep" {
+			f = &findings[i]
+		}
+	}
+	if f == nil {
+		t.Fatal("expected a secret_sweep finding from the apply-time re-sweep")
+	}
+	if !strings.Contains(f.Finding, "hello.txt:") {
+		t.Errorf("the denial must name path:line, got %q", f.Finding)
+	}
+	if f.SecretKind != "configured secret value" {
+		t.Errorf("SecretKind = %q, want %q", f.SecretKind, "configured secret value")
+	}
+	if f.Code != domain.DenyCodeSecretSweep {
+		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeSecretSweep)
 	}
 }
 
@@ -496,6 +1090,161 @@ func TestExecutePassesConfiguredBuild(t *testing.T) {
 	}
 	if cs.Status != domain.ChangeSetReviewRequired {
 		t.Fatalf("expected review_required (build passes), got %q", cs.Status)
+	}
+}
+
+// TestExecuteDetectsCheckCommandsFromGoMod is defect #5 from the ICP re-run:
+// with no build_cmd/test_cmd configured, an obvious go.mod project used to
+// report both checks not_applicable instead of running the toolchain's own
+// build/test commands. Leaves BuildCmd/TestCmd empty with a real go.mod in
+// the workspace and asserts both checks actually RAN (never not_applicable)
+// against the real `go build`/`go test` commands, each naming go.mod as
+// where the command was detected from. It does not assert pass/fail: the
+// sandbox's own exec permissions for a compiled test binary are an
+// environment detail this test does not control, and are not what defect #5
+// is about -- only that detection engaged instead of skipping the check
+// entirely.
+func TestExecuteDetectsCheckCommandsFromGoMod(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network: config.NetworkDisabled,
+		Review:  config.ReviewConfig{MaxCycles: 3},
+		// check.image left unconfigured too: golang:1.25 is derived from the
+		// SAME go.mod, exactly as a real unconfigured project would see.
+	})
+	eng.SetWorkRoot(t.TempDir())
+	workspaceRoot := t.TempDir()
+	eng.SetWorkspaceRoot(workspaceRoot)
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]domain.Finding{}
+	for _, f := range findings {
+		if f.TargetID == cs.ID {
+			got[f.Category] = f
+		}
+	}
+	for _, c := range []string{"build", "tests"} {
+		f, ok := got[c]
+		if !ok {
+			t.Fatalf("missing a %s finding: %+v", c, findings)
+		}
+		if f.Disposition == domain.DispositionNotApplicable {
+			t.Errorf("%s should not be not_applicable: a go.mod command should have been detected: %+v", c, f)
+		}
+		if !strings.Contains(f.Evidence, "detected") || !strings.Contains(f.Evidence, "go.mod") {
+			t.Errorf("%s evidence should say the command was detected from go.mod: %q", c, f.Evidence)
+		}
+	}
+	// The build check compiles the real, valid package this test wrote: it
+	// must actually pass, proving the detected command is not just present
+	// but genuinely runnable, not merely non-empty.
+	if got["build"].Severity.Blocking() {
+		t.Errorf("the detected `go build ./...` should pass against a valid package: %+v", got["build"])
+	}
+}
+
+// TestExecuteRejectsCredentialInCheckOutput is review M2: a credential
+// printed by the build/test command's own output must deny the change set
+// via the same catalog + allowlist path file content gets -- a dedicated
+// secret_sweep finding named "in the output of <check>", never the value.
+// Before the fix, this used a bare detectCredential boolean with no
+// allowlist filter and no dedicated finding at all.
+func TestExecuteRejectsCredentialInCheckOutput(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+	const fixtureKey = "AKIA1234567890ABCDEF"
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{
+		Network:  config.NetworkDisabled,
+		Review:   config.ReviewConfig{MaxCycles: 3},
+		Check:    config.CheckConfig{Image: "alpine:3.20"},
+		BuildCmd: "echo " + fixtureKey,
+	})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (credential in check output), got %q", cs.Status)
+	}
+
+	findings, err := db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findingID string
+	for _, f := range findings {
+		if f.Category != "secret_sweep" {
+			continue
+		}
+		if !strings.Contains(f.Finding, "in the output of build") {
+			continue
+		}
+		findingID = f.ID
+		if strings.Contains(f.Finding, fixtureKey) || strings.Contains(f.Evidence, fixtureKey) {
+			t.Errorf("the denial must never echo the credential value: %+v", f)
+		}
+		if f.SecretPath != "output of build" {
+			t.Errorf("SecretPath = %q, want %q", f.SecretPath, "output of build")
+		}
+		if !f.SecretOverridable {
+			t.Error("a pattern-shaped match in check output should be Overridable")
+		}
+	}
+	if findingID == "" {
+		t.Fatalf("no 'in the output of build' secret_sweep finding among: %+v", findings)
+	}
+
+	// review M2's other half: allowlisting that finding must let an identical
+	// re-run pass, exactly like a file-content match.
+	if err := db.SetFindingDisposition(ctx, findingID, domain.DispositionNotASecret, store.HumanActor); err != nil {
+		t.Fatalf("disposition not_a_secret: %v", err)
+	}
+	cs2, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs2.Status == domain.ChangeSetRejected {
+		t.Fatalf("an allowlisted fixture value printed by the build command must pass, got %q", cs2.Status)
 	}
 }
 
@@ -819,6 +1568,41 @@ func TestKeyedProviderWithoutAKeyIsRefused(t *testing.T) {
 	}
 }
 
+// gpt-4.1-mini was the ICP walkthrough's motivating example (hermes +
+// gpt-4.1-mini failed deterministically), but the root cause turned out to be
+// fixable (hermescfg.go now declares model.context_length explicitly for it
+// -- see execute.go's compat-check comment and model.ContextWindowFor), not a
+// genuine incompatibility, so selectExecutor no longer refuses it.
+func TestSelectExecutorAcceptsGPT41MiniNowThatContextLengthIsDeclared(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-4.1-mini"},
+	}}
+	if _, err := e.selectExecutor(); err != nil {
+		t.Errorf("selectExecutor refused gpt-4.1-mini, though its root cause is fixed: %v", err)
+	}
+}
+
+// A row placed in the known-incompatible table is still refused before the
+// container starts (docs/agents.md, "Known executor/model compatibility") --
+// the table exists for a combination that turns out to be genuinely,
+// unfixably incompatible (none are known as of this fix; see compat.go).
+func TestSelectExecutorRefusesAKnownIncompatibleModel(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	restore := executor.TestOnlySetKnownIncompatible("hermes", "openai/gpt-9-ghost", "a test fixture, not a real defect")
+	t.Cleanup(restore)
+	e := &Engine{cfg: config.HarnessConfig{
+		Executor: config.ExecutorConfig{Kind: config.ExecutorHermes, Model: "openai/gpt-9-ghost"},
+	}}
+	_, err := e.selectExecutor()
+	if err == nil {
+		t.Fatal("a known-incompatible executor/model combination was accepted")
+	}
+	if !strings.Contains(err.Error(), "gpt-9-ghost") {
+		t.Errorf("the refusal does not name the model: %v", err)
+	}
+}
+
 // Every provider this project presets must reach the coding agent.
 func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
 	for _, p := range config.Presets {
@@ -832,4 +1616,180 @@ func TestEveryPresetProviderCanLaunchTheAgent(t *testing.T) {
 			t.Errorf("%s cannot launch the coding agent: %v", p.Key, err)
 		}
 	}
+}
+
+// TestIsGoTestCommand pins which test_cmd strings checkCommand re-runs with
+// `-json` (C1/C2, review fix: prefer go test's own structured output over
+// scraping `-v` text). Only a literal `go test ...` invocation qualifies --
+// a wrapper or a different runner that merely mentions "go test" in passing
+// must not be rewritten.
+func TestIsGoTestCommand(t *testing.T) {
+	cases := map[string]bool{
+		"go test ./...":                    true,
+		"go test -race ./...":              true,
+		"go test -v ./... -run TestFoo":    true,
+		"gotestsum -- ./...":               false,
+		"make test":                        false,
+		"echo 'go test ./...' && go build": false,
+		"":                                 false,
+		"go build ./...":                   false,
+	}
+	for cmd, want := range cases {
+		if got := isGoTestCommand(cmd); got != want {
+			t.Errorf("isGoTestCommand(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+// TestTruncateOutputN mutation-checks the cap boundary and the "tests"
+// category's much larger cap (review C1 fix: "parse before truncating" --
+// the old fixed 2000-byte cap silently cut a real suite's output mid-test).
+func TestTruncateOutputN(t *testing.T) {
+	if got := truncateOutputN("short", 2000); got != "short" {
+		t.Errorf("under the cap must be returned unchanged, got %q", got)
+	}
+	long := strings.Repeat("x", 2001)
+	got := truncateOutputN(long, 2000)
+	wantLen := 2000 + len("…") // "…" is a multi-byte rune
+	if len(got) != wantLen || !strings.HasSuffix(got, "…") {
+		t.Errorf("over the cap must be cut to exactly the cap plus an ellipsis, got len=%d (want %d) suffix=%q", len(got), wantLen, got[max(0, len(got)-3):])
+	}
+	if truncateOutput(long) != got {
+		t.Error("truncateOutput must be truncateOutputN at the general 2000-byte cap")
+	}
+	// The tests-only cap is far larger: a realistic suite's full -v output
+	// (well under 2 MiB) must survive completely untruncated.
+	realistic := strings.Repeat("=== RUN TestX\n--- PASS: TestX (0.00s)\n", 5000) // ~190KB
+	if truncateOutputN(realistic, testsOutputCap) != realistic {
+		t.Error("a realistic test suite's output must not be truncated at the tests-only cap")
+	}
+}
+
+// TestDiffEndpointPagingCapsFileCount is a regression test for review defect
+// #2's "make the diff endpoint bounded ... so it never hangs": a change set
+// with far more files than maxDiffEndpointFiles must still return promptly,
+// with a truncated (but non-empty) rendering and the change set's true file
+// count so a client can say "showing N of Total" rather than the request
+// simply hanging until every file was redacted and diffed.
+func TestDiffEndpointPagingCapsFileCount(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+	task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	digest, err := eng.contentBlobs().Put([]byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const fileCount = maxDiffEndpointFiles + 200
+	files := make([]domain.FileChange, fileCount)
+	for i := range files {
+		files[i] = domain.FileChange{
+			Path: strconv.Itoa(i) + ".txt", Digest: digest, Mode: "file", ChangeType: domain.FileAdded,
+		}
+	}
+	patchDigest, err := eng.persistPatch(fsdiff.Patch{Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &domain.ChangeSet{InitiativeID: iniID, TaskID: task.ID, PatchDigest: patchDigest}
+
+	sfiles, total := eng.StructuredDiffPage(cs)
+	if total != fileCount {
+		t.Fatalf("StructuredDiffPage total = %d, want %d", total, fileCount)
+	}
+	if len(sfiles) != maxDiffEndpointFiles {
+		t.Fatalf("StructuredDiffPage returned %d files, want the cap %d", len(sfiles), maxDiffEndpointFiles)
+	}
+
+	rendered, total2 := eng.RenderPatchPage(cs)
+	if total2 != fileCount {
+		t.Fatalf("RenderPatchPage total = %d, want %d", total2, fileCount)
+	}
+	if !strings.Contains(rendered, "showing 500 of 700") {
+		t.Errorf("RenderPatchPage output should note truncation, got a %d-byte string without it", len(rendered))
+	}
+}
+
+// TestRunPlannerBriefTellsTheAgentNotToInstallAToolchain is a regression test
+// for review defect #3: an agent given network egress (to reach its own model
+// API) but no toolchain in its container downloaded a full Go toolchain into
+// the workspace to run its own build/test, producing the ~14,300-file
+// explosion behind review defect #2. The brief must name the harness's own
+// detected check commands and tell the agent not to install one.
+func TestRunPlannerBriefTellsTheAgentNotToInstallAToolchain(t *testing.T) {
+	t.Run("detected commands are named", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t)
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "go build ./...") || !strings.Contains(brief, "go test ./...") {
+			t.Errorf("brief does not name the detected build/test commands: %q", brief)
+		}
+		if !strings.Contains(brief, "Do not install a toolchain") {
+			t.Errorf("brief is missing the do-not-install-a-toolchain instruction: %q", brief)
+		}
+		if !strings.Contains(brief, "no network access") {
+			t.Errorf("brief does not describe the check sandbox as network-isolated: %q", brief)
+		}
+	})
+
+	t.Run("configured commands take precedence over detected", func(t *testing.T) {
+		fp := model.NewFakeProvider()
+		eng, db := newTestEngine(t, fp, config.HarnessConfig{
+			Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3},
+			BuildCmd: "make build", TestCmd: "make test",
+		})
+		eng.SetWorkRoot(t.TempDir())
+		eng.SetWorkspaceRoot(t.TempDir())
+		if err := os.WriteFile(filepath.Join(eng.workspaceRoot, "go.mod"), []byte("module example.com/x\n\ngo 1.25\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		ini := &domain.Initiative{Title: "x", Description: "x"}
+		if err := db.CreateInitiative(ctx, ini); err != nil {
+			t.Fatal(err)
+		}
+		task := &domain.Task{InitiativeID: ini.ID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, ini.ID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "make build") || !strings.Contains(brief, "make test") {
+			t.Errorf("brief should name the configured commands, got: %q", brief)
+		}
+		if strings.Contains(brief, "go build ./...") {
+			t.Errorf("brief should not name the detected command once one is configured: %q", brief)
+		}
+	})
+
+	t.Run("no build/test command available", func(t *testing.T) {
+		eng, db, iniID := newExecuteFixture(t) // empty workspace: nothing detectable
+		ctx := context.Background()
+		task := &domain.Task{InitiativeID: iniID, Title: "t", Statement: "s", Priority: domain.PriorityMust}
+		if err := db.CreateTask(ctx, task, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		brief, err := eng.runPlanner(ctx, iniID, *task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(brief, "do not install a toolchain") {
+			t.Errorf("brief should still tell the agent not to install a toolchain when nothing was detected: %q", brief)
+		}
+	})
 }

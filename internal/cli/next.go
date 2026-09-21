@@ -139,6 +139,31 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 	}
 }
 
+// waitIfRequested is the shared half of `--wait`, opt-in on every long action
+// that otherwise returns a handle immediately (advance/execute/apply/revert).
+//
+// `idea new` blocks and streams progress by default while these return
+// instantly — a real inconsistency, but flipping `idea new`'s own default
+// would reopen the exact race its own doc comment describes fixing (the
+// README's own quick start: the very next command used to see the initiative
+// still `running`). So both defaults stay: `idea new` waits unless told
+// `--no-wait`, everything else returns a handle unless told `--wait` — but
+// every long action now understands the same `--wait`/`--no-wait`
+// vocabulary, and `idea new --wait` is accepted too (a no-op restating its
+// own default), so a script can spell "wait for this" the same way everywhere
+// rather than needing to know which commands default which way.
+//
+// iniID may be "" when the caller has no initiative id in hand (apply/revert
+// resolve a change set, not an initiative) -- waitForOperation's own use of it
+// is best-effort (a nicer failure message), and degrades to a generic one.
+func waitIfRequested(a cmdArgs, c *client, projectID, iniID, opID string, stdout io.Writer) error {
+	if opID == "" || !a.has("--wait") {
+		return nil
+	}
+	fmt.Fprintln(stdout, muted("waiting… (")+bold("idea watch")+muted(" follows it from another terminal; ^C returns you to the shell without cancelling it)"))
+	return waitForOperation(c, projectID, iniID, opID, stdout)
+}
+
 // waitForOperation polls one operation to a terminal state. A failed operation
 // is an error here rather than a silent continue: the loop must not carry on
 // past a step that did not do what it said.
@@ -150,6 +175,10 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 		var op struct {
 			Status string `json:"status"`
 			Type   string `json:"type"`
+			// Stage (C3, wave 3 contract) is the engine's current step, e.g.
+			// "Writing the PRD", "Agent running TASK-2". Printed in place of a
+			// bare "still working…" below, when the daemon has one to report.
+			Stage string `json:"stage"`
 		}
 		if err := c.do("GET", operationResource(opID, ""), nil, &op); err != nil {
 			return err
@@ -181,9 +210,13 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 		// black-holing endpoint produces ~15 minutes of total silence before
 		// anything is written anywhere the user looks.
 		if now := time.Now(); now.After(nextNote) {
+			label := "still working…"
+			if op.Stage != "" {
+				label = op.Stage + "…"
+			}
 			fmt.Fprintf(stdout, "%s\n", muted(fmt.Sprintf(
-				"  still working… %s elapsed (gives up at %s; `idea cancel %s` stops it)",
-				now.Sub(started).Round(time.Second), operationTimeout, opID)))
+				"  %s %s elapsed (gives up at %s; `idea cancel %s` stops it)",
+				label, now.Sub(started).Round(time.Second), operationTimeout, opID)))
 			nextNote = now.Add(progressNoteEvery)
 		}
 		if time.Now().After(deadline) {

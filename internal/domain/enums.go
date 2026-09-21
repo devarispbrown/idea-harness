@@ -158,7 +158,9 @@ func (r JudgmentReason) Valid() bool {
 	return false
 }
 
-// Disposition is the review-finding disposition (§15 seven-value enum).
+// Disposition is the review-finding disposition (§15 seven-value enum, plus
+// not_a_secret -- review changes #1 -- which is valid only on a secret_sweep
+// finding; store.SetFindingDisposition enforces that scoping, not this type).
 type Disposition string
 
 const (
@@ -169,12 +171,17 @@ const (
 	DispositionDeferred      Disposition = "deferred"
 	DispositionRejected      Disposition = "rejected"
 	DispositionMitigate      Disposition = "mitigate"
+	// DispositionNotASecret marks a secret_sweep finding's detected value as a
+	// false positive. Recording it also allowlists the value's fingerprint
+	// (never the value) for the project, so future sweeps ignore it (§ D2).
+	DispositionNotASecret Disposition = "not_a_secret"
 )
 
 func (d Disposition) Valid() bool {
 	switch d {
 	case DispositionFixed, DispositionAcceptedRisk, DispositionNotApplicable,
-		DispositionDuplicate, DispositionDeferred, DispositionRejected, DispositionMitigate:
+		DispositionDuplicate, DispositionDeferred, DispositionRejected, DispositionMitigate,
+		DispositionNotASecret:
 		return true
 	}
 	return false

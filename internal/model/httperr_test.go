@@ -60,6 +60,58 @@ func TestProviderErrorsCarryTheResponseBody(t *testing.T) {
 	}
 }
 
+// TestModelNotFoundErrorNamesTheModelAndHowToFixIt pins the ICP walkthrough
+// finding: a retired/unknown model id 404s at call time (a stale catalog
+// entry, or a config left pointing at a model the provider withdrew), and the
+// message must name the model and how to change it -- not just "status 404".
+func TestModelNotFoundErrorNamesTheModelAndHowToFixIt(t *testing.T) {
+	const upstream = `{"error":{"message":"The model ` + "`gemini-2.5-flash`" + ` is not available to your project"}}`
+
+	for _, c := range []struct {
+		name string
+		call func(baseURL string) error
+	}{
+		{"openai", func(u string) error {
+			_, err := NewOpenAI("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+		{"anthropic", func(u string) error {
+			_, err := NewAnthropic("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+		{"gemini", func(u string) error {
+			_, err := NewGemini("k", u).Complete(context.Background(), Request{Model: "gemini-2.5-flash", Messages: []Message{{Role: "user", Content: "hi"}}, MaxOutput: 100})
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(upstream))
+			}))
+			defer ts.Close()
+
+			err := c.call(ts.URL)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "gemini-2.5-flash") {
+				t.Errorf("error does not name the model that 404'd: %v", err)
+			}
+			if !strings.Contains(msg, "404") {
+				t.Errorf("error does not carry the status: %v", err)
+			}
+			if !strings.Contains(msg, "idea model set") {
+				t.Errorf("error does not say how to change the model: %v", err)
+			}
+			if !strings.Contains(msg, "not available to your project") {
+				t.Errorf("error discards the upstream body: %v", err)
+			}
+		})
+	}
+}
+
 // TestProviderErrorBodyIsScrubbed: a provider that echoes the request can echo
 // the credential with it. An error travels into logs, Findings and stored
 // artifacts, so a key must not travel with it.
@@ -187,6 +239,65 @@ func TestTruncationIsDetected(t *testing.T) {
 	}
 }
 
+// TestTruncationIsDetectedWhenContentIsEmpty pins D1 of the 2026-09-21
+// live-probe follow-up: TestTruncationIsDetected above already covers a
+// length-stop with SOME text content (a partial JSON string); this covers
+// the case actually observed on the wire, where the reply has NO text
+// content at all -- for Anthropic, a lone "thinking" block with a
+// length-stop and zero text blocks (observed: {"max_tokens": 4096,
+// "stop_reason": "max_tokens", "out_tokens": 4096, "blocks": [["thinking",
+// 0]]}). Before the fix, each provider checked for empty content BEFORE
+// checking its own finish/stop reason, so this exact shape produced a
+// generic "empty content" error that never satisfied
+// errors.Is(err, ErrTruncated) -- silently skipping runModel's
+// retry-with-a-smaller-ask and every layer built on top of it (see
+// internal/workflow/review_truncation_test.go's end-to-end pin of the same
+// defect through the real Anthropic client).
+//
+// Restoring the old check order (empty-content check before the finish/stop
+// reason check) in any of these three providers must fail this test.
+func TestTruncationIsDetectedWhenContentIsEmpty(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		call       func(u string) error
+	}{
+		{
+			name: "openai finish_reason=length, no message content",
+			body: `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"completion_tokens":4096}}`,
+			call: func(u string) error { _, err := NewOpenAI("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			// The exact shape observed on the wire: a lone thinking block
+			// (no "text" field, only "thinking"), so anthropicResponse
+			// decodes it with Text == "" and the concatenated content is
+			// empty even though the model produced 4096 tokens of output.
+			name: "anthropic stop_reason=max_tokens, lone thinking block",
+			body: `{"content":[{"type":"thinking","thinking":"partial reasoning, cut off"}],"stop_reason":"max_tokens","usage":{"output_tokens":4096}}`,
+			call: func(u string) error { _, err := NewAnthropic("k", u).Complete(context.Background(), req()); return err },
+		},
+		{
+			name: "gemini finishReason=MAX_TOKENS, no text parts",
+			body: `{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"candidatesTokenCount":4096}}`,
+			call: func(u string) error { _, err := NewGemini("k", u).Complete(context.Background(), req()); return err },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer ts.Close()
+
+			err := c.call(ts.URL)
+			if err == nil {
+				t.Fatal("a truncated, content-free reply was accepted as a successful one")
+			}
+			if !errors.Is(err, ErrTruncated) {
+				t.Fatalf("error does not wrap ErrTruncated (the empty-content check ran first): %v", err)
+			}
+		})
+	}
+}
+
 // TestAnUntruncatedReplyIsNotFlagged is the other direction: the ordinary stop
 // reason must pass through.
 func TestAnUntruncatedReplyIsNotFlagged(t *testing.T) {
@@ -196,5 +307,36 @@ func TestAnUntruncatedReplyIsNotFlagged(t *testing.T) {
 	defer ts.Close()
 	if _, err := NewOpenAI("k", ts.URL).Complete(context.Background(), req()); err != nil {
 		t.Fatalf("a complete reply was rejected: %v", err)
+	}
+}
+
+// TestTruncatedErrorNamesOnlyReachableActions is the "the error must never
+// recommend an action that cannot be taken" requirement (round-6 B1).
+// model.truncatedError used to say "raise the stage budget or use a model
+// with a larger output ceiling" -- and the first half was a dead end: no
+// config field in this codebase raised the number this package actually
+// sent (MaxOutput was a hardcoded provider constant, and harness.yaml's
+// review.max_tokens, the one field a human would try, was read nowhere near
+// here). This package has no idea whether a caller is even running inside
+// the workflow engine, so it must not name a workflow-level remediation
+// (review.max_tokens, harness.yaml) it cannot verify applies or exists --
+// that is workflow.wrapTruncationGuidance's job, one layer up, where it IS
+// reachable. This test pins truncatedError to naming only what is true and
+// actionable at ITS layer: which model, which provider, and the exact
+// budget that was hit.
+func TestTruncatedErrorNamesOnlyReachableActions(t *testing.T) {
+	err := truncatedError("anthropic", "claude-sonnet-5", 16384)
+	msg := err.Error()
+
+	for _, unreachable := range []string{"review.max_tokens", "harness.yaml", "raise the stage budget"} {
+		if strings.Contains(msg, unreachable) {
+			t.Errorf("truncatedError names %q, which this package cannot verify is reachable "+
+				"(that is workflow.wrapTruncationGuidance's job, one layer up): %q", unreachable, msg)
+		}
+	}
+	for _, fact := range []string{"anthropic", "claude-sonnet-5", "16384"} {
+		if !strings.Contains(msg, fact) {
+			t.Errorf("truncatedError does not name %q, a fact this layer does know: %q", fact, msg)
+		}
 	}
 }
