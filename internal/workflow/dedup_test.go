@@ -378,6 +378,30 @@ func TestSimilarDecisionKeepsFalseMergeProtection(t *testing.T) {
 	}
 }
 
+// TestSimilarDecisionKeepsDatabaseCachePairApartEvenWithMatchingOptions is
+// review MEDIUM #5, proven: the database/cache pair's text similarity lands
+// EXACTLY on sameSubjectTextFloor (2/4 = 0.5, per nearDuplicateThreshold's
+// own worked example), and with a `< sameSubjectTextFloor` early-return that
+// value fell through to the options check -- so a database/cache-style pair
+// that also happened to offer near-identical, generic options (here, both a
+// plain yes/no) merged anyway, contradicting the documented "correctly kept
+// apart" claim (this comment, and CHANGELOG.md). The floor must be strict.
+func TestSimilarDecisionKeepsDatabaseCachePairApartEvenWithMatchingOptions(t *testing.T) {
+	a, b := "Which database should we use?", "Which cache should we use?"
+	textSim := jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b))
+	if textSim != 0.5 {
+		t.Fatalf("test setup: text similarity = %v, want exactly 0.5 (the documented boundary case)", textSim)
+	}
+	opts := []string{"yes", "no"}
+	if optionsSimilarity(opts, opts) != 1 {
+		t.Fatal("test setup: identical options must have similarity 1")
+	}
+	if similarDecision(a, b, opts, opts) {
+		t.Fatalf("%q vs %q merged despite being the documented kept-apart pair, "+
+			"just because both happened to offer matching generic options (text=%v)", a, b, textSim)
+	}
+}
+
 // TestOptionsSimilarity pins the raw options metric independent of the merge
 // threshold, so a future threshold change cannot silently also change the
 // arithmetic (mirrors TestJaccardSimilarity for options lists).

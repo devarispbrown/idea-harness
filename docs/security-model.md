@@ -137,6 +137,13 @@ What remains, all in `internal/security` (`redact.go`):
   transitions), not substrings: an earlier version's bare `strings.Contains` let `"test"`
   silently suppress `latest`/`contest`/`greatest`/`attestation`/`protest`, and `"xxx"` suppress
   any value merely containing it anywhere.
+  `isPlaceholderShape` itself (review LOW #13) only ever applies to a captured value of 200
+  characters or fewer (`maxPlaceholderShapeLen`) — a short, flat token is exactly the shape a
+  repeated-character run or low aggregate entropy is meaningful evidence for. A value LONGER than
+  200 characters (a PEM block, a JWT) is exempt from this check entirely, never the reverse: it is
+  never *treated* as placeholder-shaped just for being long, it simply never asks the question at
+  all, since a repeated-character run or an aggregate entropy score is not a meaningful signal one
+  way or the other on a long, multi-part match.
 - **Test/fixture paths (`isTestFixturePath`, `CredentialFinding.Advisory`).** A GENERIC pattern
   match (credential assignment, bearer token, or URL userinfo credential — never a
   provider-specific format, never a configured secret value) found in a `*_test.go`,

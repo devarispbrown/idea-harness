@@ -33,6 +33,52 @@ func applyReviewCompletedAt(cs *domain.ChangeSet, v sql.NullInt64) {
 	cs.ReviewCompletedAt = &t
 }
 
+// reviewTrackingSince returns when migration 33 (review_completed_at) was
+// applied to this database, or ok=false if it somehow has not run yet (the
+// caller should then leave PredatesReviewTracking at its zero value, false,
+// rather than guess).
+func (db *DB) reviewTrackingSince(ctx context.Context) (t time.Time, ok bool, err error) {
+	var appliedMS int64
+	err = db.sql.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE version = 33`).Scan(&appliedMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return time.UnixMilli(appliedMS), true, nil
+}
+
+// setPredatesReviewTracking is the pure half of applyPredatesReviewTracking:
+// true when cs's review never completed AND cs was created strictly before
+// review-completion tracking (migration 33) existed in this database --
+// review_completed_at NULL is then the expected, permanent state for that
+// row, not a sign that anything was cancelled. Split out so a caller loading
+// many rows (ListChangeSets, ListChangeSetsByTask) looks up `since` once
+// rather than once per row.
+func setPredatesReviewTracking(cs *domain.ChangeSet, since time.Time, sinceOK bool) {
+	if cs.ReviewCompleted() || !sinceOK {
+		return
+	}
+	cs.PredatesReviewTracking = cs.CreatedAt.Before(since)
+}
+
+// applyPredatesReviewTracking sets cs.PredatesReviewTracking (review MEDIUM
+// #2) for a single change set already scanned from the database. See
+// setPredatesReviewTracking for the semantics; this variant does the
+// `since` lookup itself, for the single-row read paths.
+func (db *DB) applyPredatesReviewTracking(ctx context.Context, cs *domain.ChangeSet) error {
+	if cs.ReviewCompleted() {
+		return nil
+	}
+	since, ok, err := db.reviewTrackingSince(ctx)
+	if err != nil {
+		return err
+	}
+	setPredatesReviewTracking(cs, since, ok)
+	return nil
+}
+
 // CreateChangeSet inserts a change set, assigning its HumanID "CHG-N" from the
 // per-initiative change_sets counter, and appends its creation event.
 func (db *DB) CreateChangeSet(ctx context.Context, cs *domain.ChangeSet) error {
@@ -306,6 +352,9 @@ func (db *DB) GetChangeSet(ctx context.Context, changeSetID string) (*domain.Cha
 	}
 	cs.CreatedAt = time.UnixMilli(created)
 	applyReviewCompletedAt(&cs, reviewCompleted)
+	if err := db.applyPredatesReviewTracking(ctx, &cs); err != nil {
+		return nil, err
+	}
 	return &cs, nil
 }
 
@@ -342,10 +391,18 @@ func (db *DB) GetChangeSetByRef(ctx context.Context, ref string) (*domain.Change
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Close explicitly (defer above is then a harmless no-op / safety net):
+	// applyPredatesReviewTracking below runs its own query, and the pool is a
+	// single connection, so it would otherwise block forever waiting for the
+	// connection rows here is still holding (review MEDIUM #2 regression).
+	rows.Close()
 	switch count {
 	case 0:
 		return nil, notFound("change set", ref)
 	case 1:
+		if err := db.applyPredatesReviewTracking(ctx, found); err != nil {
+			return nil, err
+		}
 		return found, nil
 	default:
 		return nil, db.ambiguousChangeSet(ctx, ref, all)
@@ -385,6 +442,15 @@ func (db *DB) ambiguousChangeSet(ctx context.Context, ref string, candidates []d
 
 // ListChangeSetsByTask returns change sets for a task, oldest first.
 func (db *DB) ListChangeSetsByTask(ctx context.Context, taskID string) ([]domain.ChangeSet, error) {
+	// reviewTrackingSince runs its own query, so it must happen before rows
+	// below is opened, not while it's still open: the pool is one connection
+	// (single-writer SQLite), and a second query issued while rows still
+	// holds it would block forever waiting for a connection rows itself is
+	// holding (review MEDIUM #2 regression, caught by go test hanging).
+	since, sinceOK, sinceErr := db.reviewTrackingSince(ctx)
+	if sinceErr != nil {
+		return nil, sinceErr
+	}
 	rows, err := db.SQL().QueryContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE task_id = ? ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, err
@@ -400,6 +466,7 @@ func (db *DB) ListChangeSetsByTask(ctx context.Context, taskID string) ([]domain
 		}
 		cs.CreatedAt = time.UnixMilli(created)
 		applyReviewCompletedAt(&cs, reviewCompleted)
+		setPredatesReviewTracking(&cs, since, sinceOK)
 		out = append(out, cs)
 	}
 	return out, rows.Err()
@@ -407,6 +474,12 @@ func (db *DB) ListChangeSetsByTask(ctx context.Context, taskID string) ([]domain
 
 // ListChangeSets returns change sets for an initiative, oldest first.
 func (db *DB) ListChangeSets(ctx context.Context, initiativeID string) ([]domain.ChangeSet, error) {
+	// See ListChangeSetsByTask: this must run before rows is opened, not
+	// while it's held (single-connection pool).
+	since, sinceOK, sinceErr := db.reviewTrackingSince(ctx)
+	if sinceErr != nil {
+		return nil, sinceErr
+	}
 	rows, err := db.SQL().QueryContext(ctx, `SELECT `+changeSetColumns+` FROM change_sets WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -422,6 +495,7 @@ func (db *DB) ListChangeSets(ctx context.Context, initiativeID string) ([]domain
 		}
 		cs.CreatedAt = time.UnixMilli(created)
 		applyReviewCompletedAt(&cs, reviewCompleted)
+		setPredatesReviewTracking(&cs, since, sinceOK)
 		out = append(out, cs)
 	}
 	return out, rows.Err()

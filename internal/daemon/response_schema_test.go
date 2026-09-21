@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/devarispbrown/idea-harness/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,8 +62,14 @@ type openAPIDoc struct {
 	// Typed per method rather than map[string]operation: a path item also
 	// carries a `parameters:` sequence, which a map would try to decode as an
 	// operation and fail on.
+	//
+	// Post/Patch (review MEDIUM #3) exist so the mutating probes below can
+	// resolve a response schema the same way checkAllGETs does, rather than
+	// hand-rolling their own lookup.
 	Paths map[string]struct {
-		Get *openAPIOperation `yaml:"get"`
+		Get   *openAPIOperation `yaml:"get"`
+		Post  *openAPIOperation `yaml:"post"`
+		Patch *openAPIOperation `yaml:"patch"`
 	} `yaml:"paths"`
 }
 
@@ -108,10 +115,99 @@ func TestResponsesMatchTheirDeclaredSchema(t *testing.T) {
 		checked += checkAllGETs(t, doc, ts, token, fx.project, fx.ini, fx.cs)
 	}
 
+	// review MEDIUM #3: GET was the only method this axis ever drove, so
+	// handleUpdateTask (PATCH .../tasks/{taskId}) and handleReorderTasks
+	// (POST .../tasks/reorder) shipped answering requirement_ids/depends_on
+	// == null -- the spec types both `array`, never `null` -- and nothing
+	// caught it until a human read the diff. This is a curated set of
+	// mutating endpoints, not every POST/PATCH in the spec: an endpoint that
+	// launches an async operation, spends a model call, or mutates git state
+	// (execute, apply, revert, advance, revise, ...) isn't safe or
+	// meaningful to fire from a pure response-schema check, and its response
+	// is either an operation id (no interesting schema) or already covered
+	// via the GET that reads its result back. The plan-editing endpoints
+	// below return the mutated resource directly and are exactly the class
+	// that regressed.
+	checked += checkPlanEditingMutations(t, doc, rt, ts, token)
+
 	if checked == 0 {
 		t.Fatal("no response was checked against a schema; this test is not reading either side")
 	}
-	t.Logf("checked %d GET response(s) against their declared schema", checked)
+	t.Logf("checked %d response(s) against their declared schema", checked)
+}
+
+// checkPlanEditingMutations drives PATCH .../tasks/{taskId}, POST
+// .../tasks/reorder, and POST .../tasks/{taskId}/depends-on against a fresh,
+// still-editable plan-approved initiative, and validates each response
+// against the same OpenAPI schema checkAllGETs uses for a GET (review MEDIUM
+// #3). All three return a Task or []Task and are required, by the spec, to
+// carry requirement_ids/depends_on as arrays, never null.
+func checkPlanEditingMutations(t *testing.T, doc openAPIDoc, rt *Runtime, ts *httptest.Server, token string) int {
+	t.Helper()
+	projectID, iniID := newTestProjectInitiative(t, rt, ts, token)
+	pr, err := rt.EnsureProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+	req := &domain.Requirement{InitiativeID: iniID, Statement: "do the thing", Priority: domain.PriorityMust}
+	if err := pr.db.CreateRequirement(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	first := &domain.Task{InitiativeID: iniID, Title: "First", Statement: "s1", Priority: domain.PriorityMust}
+	if err := pr.db.CreateTaskMulti(t.Context(), first, []string{req.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	second := &domain.Task{InitiativeID: iniID, Title: "Second", Statement: "s2", Priority: domain.PriorityMust}
+	if err := pr.db.CreateTaskMulti(t.Context(), second, []string{req.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	checked := 0
+	base := ts.URL + "/api/v1/projects/" + projectID + "/initiatives/" + iniID
+
+	checked += checkOneMutation(t, doc, "/api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}", doc.Paths["/api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}"].Patch,
+		http.MethodPatch, base+"/tasks/"+first.ID, token, `{"title":"First (renamed)"}`)
+
+	checked += checkOneMutation(t, doc, "/api/v1/projects/{projectId}/initiatives/{id}/tasks/reorder", doc.Paths["/api/v1/projects/{projectId}/initiatives/{id}/tasks/reorder"].Post,
+		http.MethodPost, base+"/tasks/reorder", token, `{"task_ids":["`+second.ID+`","`+first.ID+`"]}`)
+
+	checked += checkOneMutation(t, doc, "/api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on", doc.Paths["/api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on"].Post,
+		http.MethodPost, base+"/tasks/"+second.ID+"/depends-on", token, `{"depends_on":["`+first.ID+`"]}`)
+
+	return checked
+}
+
+// checkOneMutation issues one mutating request and validates its 200 response
+// against op's declared schema, the same way checkAllGETs validates a GET.
+// Returns 0 (and skips) if op is nil, the spec has no 200 schema, or the
+// request itself didn't reach 200 -- mirroring checkAllGETs' "unreachable in
+// this fixture" tolerance, since this axis is about drift in a response that
+// exists, not about asserting every request succeeds (other tests already do
+// that for these endpoints).
+func checkOneMutation(t *testing.T, doc openAPIDoc, rawPath string, op *openAPIOperation, method, url, token, body string) int {
+	t.Helper()
+	if op == nil {
+		t.Fatalf("openapi.yaml has no %s operation for %s; the fixture and the spec have drifted", method, rawPath)
+	}
+	schema, ok := twoHundredSchema(op.Responses)
+	if !ok {
+		return 0
+	}
+	resolved, ok := resolve(doc, schema)
+	if !ok {
+		return 0
+	}
+	resp := doReq(t, method, url, token, "", body)
+	var decoded any
+	decErr := json.NewDecoder(resp.Body).Decode(&decoded)
+	status := resp.StatusCode
+	resp.Body.Close()
+	if status != http.StatusOK || decErr != nil {
+		t.Fatalf("%s %s: status=%d decErr=%v (fixture is expected to reach 200)", method, rawPath, status, decErr)
+	}
+	validate(t, doc, resolved, decoded, method+" "+rawPath, "")
+	return 1
 }
 
 func checkAllGETs(t *testing.T, doc openAPIDoc, ts *httptest.Server, token, projectID, iniID, csID string) int {

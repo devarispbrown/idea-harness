@@ -1901,6 +1901,15 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	// review MEDIUM #3: without this, every task in the response comes back
+	// with requirement_ids/depends_on == null (the now-required arrays are
+	// only populated by TaskEdges/AttachTaskEdges, never by ListTasks
+	// itself) -- a reorder looked like it had wiped every requirement link
+	// and dependency arrow until the client re-fetched with a separate GET.
+	if err := pr.db.AttachTaskEdges(r.Context(), ini.ID, list); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -3527,7 +3536,7 @@ func applyStateMessage(cs *domain.ChangeSet) string {
 		// it too, naming the same rerun. Say so here as well, so `idea apply`
 		// on it points the same direction as `idea review ... approve` would.
 		if !cs.ReviewCompleted() {
-			return "change set " + cs.HumanID + " never finished its adversarial review: `idea review " + cs.HumanID + " rerun`, then approve"
+			return "change set " + cs.HumanID + " never finished its adversarial review (" + cs.ReviewNeverCompletedCause() + "): `idea review " + cs.HumanID + " rerun`, then approve"
 		}
 		return "change set " + cs.HumanID + " needs approval first: `idea review " + cs.HumanID + " approve`"
 	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested:

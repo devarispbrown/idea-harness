@@ -179,9 +179,7 @@ func (e *Engine) redactSlice(ss []string) []string {
 
 // New builds an engine.
 func New(db *store.DB, blobs *blob.Store, registry *model.Registry, cfg config.HarnessConfig, log *slog.Logger) *Engine {
-	if cfg.Review.MaxCycles <= 0 {
-		cfg.Review.MaxCycles = 3
-	}
+	cfg.Review.MaxCycles = cfg.Review.EffectiveMaxCycles()
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -226,9 +224,7 @@ func (e *Engine) chargeUSD(cost float64) error {
 func (e *Engine) Reload(cfg config.HarnessConfig, registry *model.Registry, redactor *security.Redactor, blobs *blob.Store, dotEnv map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if cfg.Review.MaxCycles <= 0 {
-		cfg.Review.MaxCycles = 3
-	}
+	cfg.Review.MaxCycles = cfg.Review.EffectiveMaxCycles()
 	e.cfgMu.Lock()
 	// Swapped under the same lock as cfg, so a reader of the snapshot never
 	// pairs a new config with the old .env (or vice versa).

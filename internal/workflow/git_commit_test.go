@@ -296,6 +296,62 @@ func TestApplyGitCommitBranchPerInitiativeCreatesAndReuses(t *testing.T) {
 	}
 }
 
+// TestApplyGitCommitBranchPerInitiativeRestoresOriginalBranchOnCommitFailure
+// pins review MEDIUM #4's other half: `checkout -b idea/<slug>` succeeds
+// (EnsureInitiativeBranch completes the switch), but the change set's own
+// commit then genuinely fails -- forced here by configuring commit signing
+// with a nonexistent gpg program, so `git commit` fails for a reason that has
+// nothing to do with the checkout that already succeeded. Before the fix,
+// ApplyChangeSet restored the workspace's file content and marked the change
+// set conflicted, but left the repository checked out on the initiative's
+// branch instead of back on main.
+func TestApplyGitCommitBranchPerInitiativeRestoresOriginalBranchOnCommitFailure(t *testing.T) {
+	eng, db, iniID, workspace := realGitCommitFixture(t, "main", config.GitConfig{BranchPerInitiative: true})
+	// Force the eventual `git commit` to fail without touching `checkout`:
+	// commit.gpgsign tries to invoke gpg.program only at the commit step.
+	for _, args := range [][]string{
+		{"config", "commit.gpgsign", "true"},
+		{"config", "gpg.program", filepath.Join(t.TempDir(), "no-such-gpg-binary")},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workspace
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if got := gitOutTest(t, workspace, "symbolic-ref", "--short", "HEAD"); got != "main" {
+		t.Fatalf("test setup: HEAD = %q, want main before apply", got)
+	}
+
+	ctx := context.Background()
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, iniID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.ApplyChangeSet(ctx, iniID, cs.ID); err == nil {
+		t.Fatal("ApplyChangeSet succeeded, want the forced commit failure to surface")
+	}
+
+	got, err := db.GetChangeSet(ctx, cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChangeSetConflicted {
+		t.Fatalf("status = %q, want conflicted after the commit failure", got.Status)
+	}
+	if branch := gitOutTest(t, workspace, "symbolic-ref", "--short", "HEAD"); branch != "main" {
+		t.Fatalf("HEAD = %q after the commit failure, want main restored (review MEDIUM #4)", branch)
+	}
+}
+
 // TestApplyGitCommitImpliedByBranchPerInitiativeAlone reproduces the ICP
 // re-run's own defect D: git.branch_per_initiative did nothing at all unless
 // git_commit was ALSO set, even though `idea pr`'s own error told a user to

@@ -20,6 +20,11 @@ with a logged warning, while that project has an operation in flight (execute, a
 review, …), since swapping config out from under a running one is unsafe; it reloads on the request
 after that operation finishes.
 
+**This auto-reload watches `harness.yaml`'s mtime only — never `.env`'s** (review MEDIUM #7). A
+`.env` edit (rotating a key, adding a new provider's) is read fresh the next time something ALSO
+reloads `harness.yaml` (touching it, even with no content change, is enough) or the daemon restarts;
+by itself, it never reaches a running daemon. See "Secrets" below.
+
 ## `project.yaml`
 
 ```yaml
@@ -107,7 +112,7 @@ Top-level fields:
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
 | `providers` | provider map (fields below) | none |
 | `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | container image for the non-internal kinds | `alpine:3.20` |
+| `executor.image` | container image for the non-internal kinds. The default is **per-kind**, not one blanket value: `alpine:3.20` only for `kind: container`; the pinned `nousresearch/hermes-agent:…` for `kind: hermes`; `kind: omp` has no default image at all and refuses every execute until one is set | `alpine:3.20` for `container`, the pinned Hermes image for `hermes`, none for `omp` |
 | `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
 | `check.image` | image holding the project toolchain for the build/test checks | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check fails closed (see "Check auto-detection" below) |
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
@@ -235,9 +240,14 @@ an initiative's first apply, refusing if the workspace has uncommitted changes o
 set's own files — so a branch switch never carries someone else's in-progress edit along with it —
 whether that switch creates the branch for the first time or reuses one from a prior apply of the
 same initiative. A brand-new branch is created from the repository's default branch (resolved the
-same way as the default-branch guard above), never from whatever HEAD happens to be checked out,
-which may be a different initiative's own branch and would otherwise stack this initiative's commits
-on top of that unrelated one. Every later change set for the initiative commits there.
+same way as the default-branch guard above) **only when HEAD is already at that exact commit** —
+never from a DIFFERENT initiative's own branch, which would otherwise silently stack this
+initiative's commits on top of that unrelated one. When HEAD has diverged from the resolved default
+(unpushed local commits are the normal case for a local tool), branching from the default's commit
+would silently revert every file this change set doesn't touch to that older version, so it branches
+from current HEAD instead and reports a warning (surfaced as the change set's `git_commit_warning`)
+rather than doing that silently or refusing outright. Every later change set for the initiative
+commits there.
 
 Two things never count as "uncommitted changes outside the change set" for this guard (review defect
 D):
