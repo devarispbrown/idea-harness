@@ -34,6 +34,38 @@ func DefaultStateRoot() string {
 	return filepath.Join(home, ".local", "share", "idea-harness")
 }
 
+// newHTTPServer builds the daemon's *http.Server with sensible timeouts
+// (review LOW #9). Split out from Run so the timeout values themselves are
+// unit-testable without spinning up a real listener.
+//
+// An unbounded server had no defense against a client that opens a
+// connection and trickles headers/a body in slowly, or not at all -- tying
+// up a goroutine and a file descriptor indefinitely. Moot against an
+// attacker given loopback-only binding (enforced in Run, below), but free
+// protection against a genuinely stalled local client too (a laptop that
+// slept mid-request, a broken proxy).
+//
+// ReadHeaderTimeout/ReadTimeout/IdleTimeout are all safe to set without
+// touching GET /api/v1/projects/{id}/events, the one long-lived response
+// this server has (sse.go's SSE stream, open for as long as the browser tab
+// is): all three bound time spent reading a REQUEST or sitting idle between
+// requests on a keep-alive connection, never time spent inside a handler
+// writing a response.
+//
+// WriteTimeout is deliberately left unset (0, unbounded): Go arms it as a
+// hard wall-clock deadline covering the entire response write, with no
+// per-handler override, so any nonzero value here would eventually sever
+// that SSE stream out from under an open UI tab.
+func newHTTPServer(handler http.Handler, baseContext func(net.Listener) context.Context) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		BaseContext:       baseContext,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // Run starts the daemon HTTP server on addr (loopback) and blocks until the
 // server exits. onReady, if set, runs once this process owns the address and
 // the state directory -- the point at which it is THE daemon -- and is where
@@ -95,10 +127,7 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 	// tab's event stream held every stop for the full grace period.
 	base, cancelBase := context.WithCancel(context.Background())
 	defer cancelBase()
-	srv := &http.Server{
-		Handler:     NewServer(rt).Handler(),
-		BaseContext: func(net.Listener) context.Context { return base },
-	}
+	srv := newHTTPServer(NewServer(rt).Handler(), func(net.Listener) context.Context { return base })
 	srv.RegisterOnShutdown(cancelBase)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()

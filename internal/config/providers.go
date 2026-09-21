@@ -51,6 +51,32 @@ func PresetFor(key string) *Preset {
 	return nil
 }
 
+// PresetForBaseURL returns the preset whose BaseURL matches baseURL (a
+// trailing-slash-insensitive comparison), or nil if none does.
+//
+// This recovers a provider's underlying built-in KIND when its harness.yaml
+// key does not name one directly (review MEDIUM #6): a `providers:` entry can
+// be renamed to anything (`providers: openai-work: base_url:
+// https://api.openai.com/v1`, docs/configuration.md's own example shape),
+// and PresetFor("openai-work") is nil even though the endpoint is plainly
+// OpenAI's. A caller that needs to know WHICH of the six built-in providers
+// this actually talks to -- not just its wire Type, which only distinguishes
+// three API shapes and cannot tell deepseek/openrouter/ollama apart, all
+// ProviderOpenAI -- matches on BaseURL instead, since a renamed provider
+// still points at the same real endpoint.
+func PresetForBaseURL(baseURL string) *Preset {
+	base := strings.TrimRight(baseURL, "/")
+	if base == "" {
+		return nil
+	}
+	for i := range Presets {
+		if strings.TrimRight(Presets[i].BaseURL, "/") == base {
+			return &Presets[i]
+		}
+	}
+	return nil
+}
+
 // ResolveProvider derives the effective type, base URL, and key-env name for a
 // provider entry, falling back to the preset for known keys (§40).
 func ResolveProvider(key string, pc ProviderConfig) (ProviderType, string, string) {

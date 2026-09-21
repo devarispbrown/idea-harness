@@ -27,8 +27,17 @@ M1 threats and mitigations:
 
 - API keys are resolved from environment variables only; never stored in SQLite, BlobStore,
   events, artifacts, RunManifests, logs, or contexts.
-- The redactor covers PEM private keys, JWTs, AWS `AKIA…`, GitHub `ghp_…`, OpenAI `sk-…`, and
-  generic `key=`/`token=` patterns, plus any known secret values.
+- The redactor's full catalog (review LOW #13; see [`security-model.md`](security-model.md) for how
+  each rule decides a *finding*, as opposed to redaction, which is unconditional for every one of
+  these): PEM private keys, JWTs, AWS access key IDs (`AKIA…`) and AWS secret access keys
+  (`AWS_SECRET_ACCESS_KEY=…`), GitHub personal access tokens (`ghp_…`), GitHub fine-grained
+  personal access tokens (`github_pat_…`) and the other GitHub token kinds (`gh[ousr]_…`), GitLab
+  personal access tokens (`glpat-…`), Google API keys (`AIza…`), npm access tokens (`npm_…`),
+  OpenAI/Anthropic API keys (`sk-ant-…`, `sk-proj-…`, and related `sk-` prefixes), a bare `sk-`
+  OpenAI API key, Stripe secret keys (`sk_live_…`), Slack tokens (`xoxb-…` and the other
+  `xox[baprs]-…` kinds), bearer tokens (`Bearer …`), URL userinfo credentials
+  (`scheme://user:password@host`, e.g. a postgres/mysql DSN), a generic `key=`/`token=`-shaped
+  credential assignment, and any of the project's own configured secret values.
 - The canary-secret leak sweep (a canary secret injected as input must not appear in any store)
   is a required failure-injection test.
 

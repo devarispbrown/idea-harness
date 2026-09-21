@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -169,5 +170,18 @@ func TestSetTaskDependenciesRejectsCycleAgainstCurrentGraph(t *testing.T) {
 		if e.EdgeType == domain.EdgeDependsOn {
 			t.Fatalf("expected no depends_on edge written on refusal, got one to %s", e.ToID)
 		}
+	}
+}
+
+// TestErrDependsOnCycleHasNoInternalPrefix pins review LOW #10: the daemon
+// handler's OWN pre-check (wouldCycle) has its own, already-clean message
+// for the common case, but a race that defeats it reaches
+// SetTaskDependencies's ErrDependsOnCycle directly, and daemon/errors.go's
+// contract is that a storage-layer string never becomes the product's own
+// error message -- a literal "store: " prefix leaking through here
+// contradicted it.
+func TestErrDependsOnCycleHasNoInternalPrefix(t *testing.T) {
+	if got := ErrDependsOnCycle.Error(); strings.HasPrefix(got, "store:") {
+		t.Fatalf("ErrDependsOnCycle.Error() = %q, leaks the internal package prefix", got)
 	}
 }

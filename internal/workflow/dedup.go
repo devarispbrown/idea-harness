@@ -131,11 +131,23 @@ func similarJudgment(a, b string) bool {
 	return jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b)) >= nearDuplicateThreshold
 }
 
-// sameSubjectTextFloor is the minimum text-only Jaccard similarity (after
-// normalizeJudgment) required before two decisions' OPTIONS may count toward
-// a merge (review ICP re-run #2). Without this floor, two decisions that
-// merely happen to offer the same generic options -- both a plain "yes"/"no"
-// choice about entirely different subjects -- would merge on options alone.
+// sameSubjectTextFloor is the text-only Jaccard similarity (after
+// normalizeJudgment) two decisions' wording must EXCEED -- strictly, not
+// at-or-above -- before their OPTIONS may count toward a merge (review ICP
+// re-run #2). Without this floor, two decisions that merely happen to offer
+// the same generic options -- both a plain "yes"/"no" choice about entirely
+// different subjects -- would merge on options alone.
+//
+// Exclusive on purpose (review MEDIUM #5): "Which database should we use?"
+// vs "Which cache should we use?" is nearDuplicateThreshold's own worked
+// example of a pair that must stay apart, and it lands EXACTLY on 0.5 (2/4
+// tokens: {which, use} shared out of {which, database, use, cache}). Code and
+// comment used to disagree about which side of 0.5 that boundary fell on --
+// similarDecision's `< sameSubjectTextFloor` early-return let a textSim of
+// exactly 0.5 through to the options check, so a database/cache-style pair
+// that ALSO happened to offer near-identical options (e.g. both a plain
+// yes/no) merged anyway, contradicting this very comment. `>` here (see
+// similarDecision) closes that: 0.5 itself now fails the floor.
 const sameSubjectTextFloor = 0.5
 
 // sameSubjectOptionsThreshold is the options-only Jaccard similarity, on top
@@ -176,8 +188,12 @@ func similarDecision(aQuestion, bQuestion string, aOptions, bOptions []string) b
 	if similarJudgment(aQuestion, bQuestion) {
 		return true
 	}
+	// review MEDIUM #5: strictly greater than, not >=/< -- see
+	// sameSubjectTextFloor's comment. A textSim of exactly the floor (the
+	// database/cache pair's own 0.5) must fail here, not fall through to the
+	// options check.
 	textSim := jaccardSimilarity(normalizeJudgment(aQuestion), normalizeJudgment(bQuestion))
-	if textSim < sameSubjectTextFloor {
+	if textSim <= sameSubjectTextFloor {
 		return false
 	}
 	return optionsSimilarity(aOptions, bOptions) >= sameSubjectOptionsThreshold

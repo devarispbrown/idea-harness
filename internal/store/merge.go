@@ -13,13 +13,21 @@ import (
 // ErrSelfMerge is returned by MergeTasks when keepID == mergeID (review H4):
 // a self-merge used to pass both existence guards and then delete the
 // survivor, since nothing checked the two ids were distinct.
-var ErrSelfMerge = errors.New("store: cannot merge a task with itself")
+//
+// No "store: " prefix (review LOW #10): unlike most of this package's
+// sentinel errors, the handler surfaces THIS ONE's Error() text verbatim to
+// the API caller as a 400 body -- daemon/errors.go's whole contract is that
+// "the storage layer's own strings" never become the product's error
+// messages, and a literal "store: " leaking through here contradicted it for
+// the one sentinel that is genuinely meant to be read by a person.
+var ErrSelfMerge = errors.New("cannot merge a task with itself")
 
 // ErrMergeCycle is returned by MergeTasks, wrapped with the cycling task's
 // id, when the merge would introduce a dependency cycle (review H4). The
 // handler maps it to 400, the same as the depends-on endpoint's own cycle
-// refusal.
-var ErrMergeCycle = errors.New("store: merging would create a dependency cycle")
+// refusal, and surfaces its Error() text verbatim -- see ErrSelfMerge's
+// comment on why it carries no "store: " prefix (review LOW #10).
+var ErrMergeCycle = errors.New("merging would create a dependency cycle")
 
 // MergeTasks merges mergeID into keepID as ONE transaction (review H4). Every
 // step below -- and the cycle check -- runs inside it: the handler used to

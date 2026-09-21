@@ -99,6 +99,41 @@ func TestHermesConfigLeavesOllamaToAutoDetect(t *testing.T) {
 	}
 }
 
+// TestHermesConfigDeclaresContextLengthForARenamedProvider is review MEDIUM
+// #6, proven: model.ContextWindowFor's tables are keyed on the six built-in
+// provider names, but the harness.yaml provider key passed in here can be
+// anything -- `providers: openai-work:` pointing at api.openai.com is
+// docs/configuration.md's own example shape for a renamed provider. Before
+// the fix, ContextWindowFor("openai-work", ...) matched neither
+// ModelContextWindows nor contextWindowFallback and returned 0, so no
+// context_length was declared -- reproducing the exact Hermes-refuses-to
+// -start-below-64k failure the context_length fix exists to prevent, for any
+// operator who renames a provider instead of using the bare preset key.
+func TestHermesConfigDeclaresContextLengthForARenamedProvider(t *testing.T) {
+	cfg, err := hermesConfigYAML("openai-work", "https://api.openai.com/v1", "gpt-4.1-mini", "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cfg, "context_length: 1047576") {
+		t.Errorf("renamed provider %q at OpenAI's own base URL does not get OpenAI's context window:\n%s", "openai-work", cfg)
+	}
+}
+
+// TestHermesConfigLeavesAGenuinelyCustomProviderToAutoDetect: an endpoint
+// that matches none of the six built-in presets (a private gateway, a
+// self-hosted proxy) has no known context window to declare, so it falls
+// through to Hermes's own auto-detection -- the same, already-safe behavior
+// as before this fix, not a new guess.
+func TestHermesConfigLeavesAGenuinelyCustomProviderToAutoDetect(t *testing.T) {
+	cfg, err := hermesConfigYAML("my-gateway", "https://llm-gateway.internal.example/v1", "some-model", "GATEWAY_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg, "context_length") {
+		t.Errorf("a genuinely unrecognized provider/base URL must not get a guessed context_length:\n%s", cfg)
+	}
+}
+
 func TestHermesConfigRefusesAnUnusableProvider(t *testing.T) {
 	if _, err := hermesConfigYAML("", "https://x/v1", "m", ""); err == nil {
 		t.Error("an empty provider name was accepted")

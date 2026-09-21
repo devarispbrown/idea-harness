@@ -441,18 +441,16 @@ func plural(n int) string {
 }
 
 // truncateWords trims s to at most n runes at a word boundary, appending an
-// ellipsis when it had to cut.
+// ellipsis when it had to cut. The word-boundary cut itself is
+// domain.TrimToWordBoundary (review LOW #11: this used to carry its own,
+// independent copy of that algorithm, free to drift from it -- this
+// function's only remaining job is the ellipsis GenerateShortTitle's own use
+// of the shared cut deliberately does not want on a title).
 func truncateWords(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) <= n {
-		return string(r)
+	trimmed := strings.TrimSpace(s)
+	cut := domain.TrimToWordBoundary(trimmed, n)
+	if len([]rune(trimmed)) <= n {
+		return cut
 	}
-	cut := n
-	for cut > 0 && r[cut] != ' ' {
-		cut--
-	}
-	if cut == 0 {
-		cut = n
-	}
-	return strings.TrimSpace(string(r[:cut])) + "…"
+	return cut + "…"
 }

@@ -9,6 +9,28 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
+// TestTruncateWords pins review LOW #11: truncateWords wraps
+// domain.TrimToWordBoundary for the cut itself and adds only the ellipsis,
+// rather than carrying its own independent copy of the word-boundary
+// algorithm (which had already drifted from domain's on when it measured
+// length relative to trimming surrounding whitespace).
+func TestTruncateWords(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"short enough", 20, "short enough"},
+		{"cuts at the last space before n", 10, "cuts at…"},
+		{"  leading and trailing space  ", 40, "leading and trailing space"},
+	}
+	for _, c := range cases {
+		if got := truncateWords(c.in, c.n); got != c.want {
+			t.Errorf("truncateWords(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
 func openProjTestDB(t *testing.T) *store.DB {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.db"))

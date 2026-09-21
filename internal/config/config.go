@@ -54,6 +54,22 @@ type ReviewConfig struct {
 	Rigor string `json:"rigor,omitempty" yaml:"rigor,omitempty"`
 }
 
+// EffectiveMaxCycles is MaxCycles as the engine actually enforces it: any
+// value <= 0 (unset, or explicitly zero) coerces to 3, the same rule
+// workflow.New/Engine.Reload apply to their own copy of this config before
+// running a review loop. applyDefaults only defaults the raw field to 3 when
+// every review.* field is unset (review MEDIUM #7) -- a harness.yaml that
+// sets, say, max_tokens alongside max_cycles == 0 leaves the raw field at
+// zero -- so a caller that needs to know the true effective cap without
+// going through an *Engine (daemon.demoProvider's block_review_cycles clamp)
+// must call this, not read MaxCycles directly.
+func (r ReviewConfig) EffectiveMaxCycles() int {
+	if r.MaxCycles <= 0 {
+		return 3
+	}
+	return r.MaxCycles
+}
+
 // RigorLevels are review.rigor's allowed configured values.
 var RigorLevels = []string{"auto", "quick", "standard", "thorough"}
 

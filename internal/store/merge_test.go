@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -40,6 +41,27 @@ func TestMergeTasksRefusesSelfMerge(t *testing.T) {
 	}
 	if got.Title != "A" {
 		t.Fatalf("unexpected task state after refused self-merge: %+v", got)
+	}
+}
+
+// TestErrSelfMergeHasNoInternalPrefix pins review LOW #10: the daemon
+// handler surfaces this sentinel's Error() text verbatim in a 400 response
+// (its own pre-check catches the common case, but ErrSelfMerge is the
+// defense-in-depth layer a race could still reach), and daemon/errors.go's
+// whole contract is that "the storage layer's own strings" never become the
+// product's own error messages -- a literal "store: " prefix leaking
+// through here contradicted it.
+func TestErrSelfMergeHasNoInternalPrefix(t *testing.T) {
+	if got := ErrSelfMerge.Error(); strings.HasPrefix(got, "store:") {
+		t.Fatalf("ErrSelfMerge.Error() = %q, leaks the internal package prefix", got)
+	}
+}
+
+// TestErrMergeCycleHasNoInternalPrefix is ErrSelfMerge's counterpart for the
+// other sentinel this handler surfaces verbatim (review LOW #10).
+func TestErrMergeCycleHasNoInternalPrefix(t *testing.T) {
+	if got := ErrMergeCycle.Error(); strings.HasPrefix(got, "store:") {
+		t.Fatalf("ErrMergeCycle.Error() = %q, leaks the internal package prefix", got)
 	}
 }
 

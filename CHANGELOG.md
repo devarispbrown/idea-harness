@@ -1290,6 +1290,91 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   catalog, including the acronyms a naive vowel-letter check gets wrong in
   both directions ("an AWS ...", but "a URL ...").
 
+### Fixed — whole-branch adversarial review follow-up (MEDIUM/LOW backlog)
+
+- **Migration 34's `no_op` default is now backfilled for pre-migration change
+  sets**, not left at its conservative `false` forever. The patch manifest was
+  persisted unconditionally before that migration existed, so the true file
+  count is one blob read, not lost — done once per project, at daemon start
+  (not inside the migration itself, which is plain SQL text with no blob-store
+  access), gated by a persisted `project_state` marker so it never re-scans.
+- **Migration 33's "never finished its adversarial review" messages
+  no longer call a pre-upgrade row "likely cancelled mid-review."** Before the
+  upgrade, `review_completed_at` didn't exist and nothing was cancelled; a
+  change set's `PredatesReviewTracking` (compared against when migration 33
+  itself was applied to this database) now picks the right explanation on all
+  four surfaces: Execute's re-pick refusal, the approve refusal, `GET
+  .../guidance`, and `applyStateMessage`.
+- **`PATCH .../tasks/reorder` no longer answers `requirement_ids`/`depends_on`
+  as `null`** — it now calls `AttachTaskEdges` like every other task response.
+  `TestResponsesMatchTheirDeclaredSchema` now also drives PATCH/POST
+  plan-editing endpoints, not only GETs.
+- **The catch-up commit (`git.branch_per_initiative`) no longer sweeps a
+  user's own hand-edit into a commit titled as the harness's own catch-up**:
+  each catch-up path's on-disk content is checked against the digest the
+  recorded change set actually wrote there, and the branch switch refuses
+  (naming the stale path) rather than committing drifted content. Separately,
+  if the change set's own commit fails after `checkout -b` already switched
+  the workspace onto the initiative's branch, the branch is now restored to
+  what was checked out before, instead of leaving the workspace stranded
+  there alongside the reported failure.
+- **Decision dedup's same-subject text floor is now a strict `>`, not `>=`.**
+  "Which database should we use?" vs. "Which cache should we use?" — the
+  canonical kept-apart pair this code and this file's own history already
+  cite at Jaccard 0.5 — merged anyway whenever the two decisions also
+  happened to offer near-identical options, because the floor comparison let
+  a text similarity of exactly 0.5 fall through to the options check.
+- **A renamed provider's context window is resolved correctly again.**
+  `model.ContextWindowFor`'s tables are keyed on the six built-in provider
+  names; a `providers:` entry renamed to something else (`providers:
+  openai-work:`, this project's own documented example) now resolves via its
+  base URL against the built-in presets (`config.PresetForBaseURL`) instead
+  of returning 0 and reproducing the Hermes-refuses-to-start-below-64k
+  failure the context-length fix exists to prevent.
+- **`demo.block_review_cycles`'s clamp to `review.max_cycles` no longer skips
+  itself when some other `review.*` field is configured.** `max_cycles`'s
+  raw value can legitimately sit at `0` (unset) while still being enforced as
+  3 by the engine; the clamp now uses `ReviewConfig.EffectiveMaxCycles()` —
+  the same effective value the engine itself computes — instead of the raw
+  field.
+- **`docs/configuration.md` corrections:** `executor.image`'s `alpine:3.20`
+  default is per-`executor.kind` (`container` only; `hermes` defaults to the
+  pinned Hermes image; `omp` has none and refuses every execute); a `.env`
+  edit is never picked up by the daemon's harness.yaml-mtime auto-reload on
+  its own; and a brand-new `git.branch_per_initiative` branch is created from
+  current HEAD (not the repository's default branch) whenever HEAD has
+  diverged from that default, not never.
+- Sandbox `/tmp`/`/tmp/cache` tmpfs mounts keep `nodev` alongside `exec`
+  (dropped in the same change that added `exec`).
+- The daemon's HTTP server now sets `ReadHeaderTimeout`/`ReadTimeout`/
+  `IdleTimeout` (10s/30s/120s) so a stalled client can no longer tie up a
+  connection indefinitely; `WriteTimeout` is deliberately left unbounded so
+  it never cuts `GET .../events`'s SSE stream.
+- `store.ErrDependsOnCycle`/`ErrSelfMerge`/`ErrMergeCycle` — the three
+  sentinel errors whose `Error()` text a handler surfaces verbatim in a 400
+  body — no longer carry the package's internal `store: ` prefix into that
+  response. `docs/openapi.yaml`'s merge/split `400` descriptions now also
+  name every cause the handlers actually return, not just the first one.
+- Single-sourced two duplicated helpers: `internal/domain.TrimToWordBoundary`
+  is now the one word-boundary-cut implementation (`internal/projection`'s
+  `truncateWords` wraps it and adds only the ellipsis GenerateShortTitle
+  deliberately doesn't want); `store.ListStaleItems`/`ListAllStaleMarks`
+  share one query+scan helper instead of a 35-line duplicate differing only
+  in one `WHERE` clause.
+- Fixed the flaky `TestClientTimeoutNamesTheActionAndHowToCheck`
+  (`internal/cli`): the hanging listener's accepted connection is now kept
+  referenced (and explicitly closed in `Cleanup`) instead of discarded, so
+  its finalizer can no longer close the socket — sending the client an
+  unexpected RST instead of the deadline-exceeded timeout the test expects —
+  before the 50ms client timeout fires.
+- `docs/security.md` now lists the redactor's actual full pattern catalog
+  (it previously named roughly a third of it), cross-checked against
+  `internal/security.credentialCatalog` by a new test so the two cannot
+  silently drift apart again; `docs/security-model.md` now documents
+  `isPlaceholderShape`'s 200-character scope explicitly (applies to short,
+  flat values; a long match like a PEM block or JWT is exempt, never the
+  reverse).
+
 ## [0.5.1] - 2026-09-18
 
 ### Added
