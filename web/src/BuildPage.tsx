@@ -4,7 +4,7 @@ import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import {
   advisoryBacklogLabel,
-  appliedOutcomeLabel,
+  appliedPillLabel,
   approveErrorMessage,
   buildFailure,
   buildHeaderMeta,
@@ -25,8 +25,10 @@ import {
   patchLines,
   prOverallLabel,
   prOverallState,
+  reviewNeverCompleted,
   revertRefusalMessage,
   runButtonState,
+  stripWorkflowPrefix,
   type NextTask,
   type PartialWork,
   type PRChecksResultLike,
@@ -64,6 +66,17 @@ interface ChangeSet {
   // was skipped. Absent from a daemon that hasn't shipped it, or when
   // nothing was skipped.
   git_commit_warning?: string;
+  // no_op (H8 fix): true when the change set touched zero files
+  // (domain.ChangeSet.NoOp -- fsdiff found nothing to persist). An applied
+  // no_op change set is not "SHIPPED" and never implemented its task --
+  // appliedPillLabel and hasBuiltSomething (verify.ts) both read this.
+  no_op?: boolean;
+  // review_completed_at (H8 fix): unset means the adversarial review never
+  // actually finished for this change set (Execute's own review call
+  // errored, most often the run was cancelled mid-review) -- it carries only
+  // mechanical-check observations. Approve always 400s in review_required
+  // while this is unset; reviewNeverCompleted is the one place that reads it.
+  review_completed_at?: string;
 }
 interface Finding {
   id: string;
@@ -276,6 +289,12 @@ export default function BuildPage({
   // change set's own inline error, and always reloads after. Before this,
   // apply/revert/resolve had no try/catch at all -- a failure was a silent
   // dead click (E2).
+  // Returns whether fn() actually succeeded (H8 fix): a caller that chains a
+  // second action off this one -- rejectAndRerun below -- needs to know that,
+  // rather than treating "the promise settled" as "the request worked". This
+  // used to always resolve (the catch swallowed the error into inline state
+  // and there was nothing to return), so "Reject and re-run" started a fresh
+  // agent run even when the reject itself 409'd.
   const runAction = async (
     cs: ChangeSet,
     action: string,
@@ -285,12 +304,14 @@ export default function BuildPage({
     // needs the CLI-oriented prefix stripped, which is not what
     // approveErrorMessage's "approval blocked" pattern is for.
     formatError: (raw: string) => string = approveErrorMessage,
-  ) => {
+  ): Promise<boolean> => {
     setCsBusy((b) => ({ ...b, [cs.id]: action }));
     setCsError((e) => ({ ...e, [cs.id]: "" }));
+    let ok = true;
     try {
       await fn();
     } catch (e) {
+      ok = false;
       setCsError((prev) => ({ ...prev, [cs.id]: formatError(errMessage(e)) }));
     } finally {
       setCsBusy((b) => {
@@ -300,6 +321,7 @@ export default function BuildPage({
       });
       await load();
     }
+    return ok;
   };
 
   // acceptFindings signs off the adversarial reviewer's open findings on this
@@ -339,10 +361,27 @@ export default function BuildPage({
   // "Reject and re-run" did only the first half; the user then had to find
   // the Run button. It rejects, then starts the task again from the current
   // workspace.
+  //
+  // H8 fix: only when the reject actually succeeded. runAction used to
+  // always resolve even on a failed request (the error was swallowed into
+  // csError), so this ran a fresh, real agent run against a change set that
+  // was still sitting there conflicted after a 409 -- a paid run starting
+  // over an unresolved conflict it never actually cleared.
   const rejectAndRerun = async (cs: ChangeSet) => {
-    await resolveConflict(cs, "reject");
+    const rejected = await resolveConflict(cs, "reject");
+    if (!rejected) return;
     await runNext();
   };
+  // rerunReview (H8 fix) is the escape for a change set stuck in
+  // review_required whose adversarial review never actually completed
+  // (reviewNeverCompleted): POST .../review {"verdict":"rerun"} is a real,
+  // billed model call -- the button copy says so -- and is the only way this
+  // change set can ever leave review_required, since approve refuses it
+  // unconditionally in this state.
+  const rerunReview = (cs: ChangeSet) =>
+    runAction(cs, "rerun-review", async () => {
+      await post(`/projects/${projectId}/change-sets/${cs.id}/review`, { verdict: "rerun" });
+    }, stripWorkflowPrefix);
 
   // startExecute is Run/Continue and "Start over"'s shared body: both end in
   // the same POST .../execute, and only "Start over" first discards what a
@@ -732,9 +771,7 @@ export default function BuildPage({
         const noFiles = hasNoFilesChanged(csFindings);
         const pillLabel =
           cs.status === "applied"
-            ? noFiles
-              ? "No changes"
-              : appliedOutcomeLabel(cs.executor, cs.model)
+            ? appliedPillLabel(!!cs.no_op, noFiles, cs.executor, cs.model)
             : STATUS_PILL[cs.status]?.label ?? cs.status;
         return (
           <section key={cs.id} className="cs-card">
@@ -877,35 +914,70 @@ export default function BuildPage({
                 </div>
               </details>
             )}
+            {/* H8 fix: a change set whose adversarial review never completed
+                (Execute's own review call errored, most often the run was
+                cancelled mid-review) used to render the same four buttons as
+                a normally-reviewed one -- Approve and "Approve, accepting
+                findings" both 400 unconditionally in this state
+                (execute.go's ReviewCompleted() check runs before either
+                approve path), with no explanation and no route forward. */}
+            {cs.status === "review_required" && reviewNeverCompleted(cs) && (
+              <p className="muted cs-review-incomplete-note">
+                This change set's adversarial review never actually completed — most likely the run
+                that produced it was cancelled mid-review. It carries only mechanical check
+                observations, not a real review, so Approve will refuse until the review runs.
+              </p>
+            )}
             <div className="cs-actions">
-              {cs.status === "review_required" && (
-                <>
-                  <button className="cs-green" disabled={!!busyAction} onClick={() => review(cs, "approved")}>
-                    {busyAction === "approve" ? "Reviewing…" : "Approve"}
-                  </button>
-                  {/* The escape. Without it, a change set the reviewer will not
-                      pass has no route forward in this UI at all: Approve 400s,
-                      Request changes regenerates into the same block, and Reject
-                      throws the work away. */}
-                  <button
-                    className="cs-secondary"
-                    disabled={!!busyAction}
-                    onClick={() => review(cs, "approved", true)}
-                  >
-                    {busyAction === "approve-accept" ? "Reviewing…" : "Approve, accepting findings"}
-                  </button>
-                  <button
-                    className="cs-secondary"
-                    disabled={!!busyAction}
-                    onClick={() => review(cs, "changes_requested")}
-                  >
-                    {busyAction === "changes" ? "Requesting…" : "Request changes"}
-                  </button>
-                  <button className="cs-secondary" disabled={!!busyAction} onClick={() => review(cs, "rejected")}>
-                    {busyAction === "reject" ? "Rejecting…" : "Reject"}
-                  </button>
-                </>
-              )}
+              {cs.status === "review_required" &&
+                (reviewNeverCompleted(cs) ? (
+                  <>
+                    <button
+                      className="cs-green"
+                      disabled={!!busyAction}
+                      onClick={() => rerunReview(cs)}
+                    >
+                      {busyAction === "rerun-review" ? "Reviewing…" : "Re-run the review (costs a model call)"}
+                    </button>
+                    <button
+                      className="cs-secondary"
+                      disabled={!!busyAction}
+                      onClick={() => review(cs, "changes_requested")}
+                    >
+                      {busyAction === "changes" ? "Requesting…" : "Request changes"}
+                    </button>
+                    <button className="cs-secondary" disabled={!!busyAction} onClick={() => review(cs, "rejected")}>
+                      {busyAction === "reject" ? "Rejecting…" : "Reject"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="cs-green" disabled={!!busyAction} onClick={() => review(cs, "approved")}>
+                      {busyAction === "approve" ? "Reviewing…" : "Approve"}
+                    </button>
+                    {/* The escape. Without it, a change set the reviewer will not
+                        pass has no route forward in this UI at all: Approve 400s,
+                        Request changes regenerates into the same block, and Reject
+                        throws the work away. */}
+                    <button
+                      className="cs-secondary"
+                      disabled={!!busyAction}
+                      onClick={() => review(cs, "approved", true)}
+                    >
+                      {busyAction === "approve-accept" ? "Reviewing…" : "Approve, accepting findings"}
+                    </button>
+                    <button
+                      className="cs-secondary"
+                      disabled={!!busyAction}
+                      onClick={() => review(cs, "changes_requested")}
+                    >
+                      {busyAction === "changes" ? "Requesting…" : "Request changes"}
+                    </button>
+                    <button className="cs-secondary" disabled={!!busyAction} onClick={() => review(cs, "rejected")}>
+                      {busyAction === "reject" ? "Rejecting…" : "Reject"}
+                    </button>
+                  </>
+                ))}
               {cs.status === "approved" && (
                 <button className="cs-green" disabled={!!busyAction} onClick={() => apply(cs)}>
                   {busyAction === "apply" ? "Applying…" : "Apply"}
@@ -914,6 +986,17 @@ export default function BuildPage({
               {cs.status === "applied" && (
                 <button className="cs-danger" disabled={!!busyAction} onClick={() => setRevertTarget(cs)}>
                   Revert
+                </button>
+              )}
+              {/* H8 fix: the backend explicitly accepts re-apply from
+                  reverted (handlers.go's handleApplyChangeSet), subject to
+                  the same staleness/secret-sweep guards as a fresh approved
+                  change set -- this card used to render only the status pill
+                  and no buttons at all, a dead end for a state the backend
+                  already has a documented way out of. */}
+              {cs.status === "reverted" && (
+                <button className="cs-green" disabled={!!busyAction} onClick={() => apply(cs)}>
+                  {busyAction === "apply" ? "Applying…" : "Re-apply"}
                 </button>
               )}
               {/* task 5: a rejected change set used to be a dead end here --

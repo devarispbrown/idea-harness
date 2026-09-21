@@ -68,7 +68,7 @@ reason the file survived the round.
 |---|---|---|---|---|
 | Q1 | "the scripted demo waits 3" | No scripted demo exists in `scripts/` | `present:docs/quickstart.md:scripted demo` | fixed 6b275f5 |
 | Q2 | "the Context tab" | Explore → Grounding | `absent:docs/quickstart.md:Explore → Grounding` | fixed 6b275f5 |
-| Q3 | Decisions can be resolved from the CLI | No CLI path resolves a decision | `absent:docs/quickstart.md:no verb that resolves a decision` | fixed 6b275f5 |
+| Q3 | Decisions can be resolved from the CLI | True as of the round that shipped `answer`/`resolve`/`reopen-decision`/`accept-recommendations`/`triage` (`internal/cli/cli.go`) — the H9 release-gate finding was that this file and `README.md` still said, in bold, that no such verb existed, weeks after it shipped | `absent:docs/quickstart.md:Decisions and questions can be resolved from the CLI` | fixed icp-v06-h9 |
 | Q4 | `idea docs add` shown before `idea new` | Requires an initiative to exist | `absent:docs/quickstart.md:needs an initiative to attach to` | fixed 6b275f5 |
 | Q5 | Review-budget semantics | Contradicted `configuration.md`; both were wrong | `absent:docs/configuration.md:coerces any value` | fixed 6b275f5 |
 

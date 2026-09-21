@@ -65,8 +65,15 @@ func stopMidRun(t *testing.T, eng *Engine, iniID, path, content string) {
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			if path == "" {
-				time.Sleep(300 * time.Millisecond)
-				break
+				// Nothing to wait for on disk, but still wait for the agent
+				// itself to be running: a fixed delay raced the planner on a
+				// loaded machine, and cancelling before Start returned took a
+				// different path through Execute than the test is about.
+				if state, _ := eng.AgentOutput(context.Background(), iniID); state == LiveRunning {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+				continue
 			}
 			// The agent has started (Start returned; cancelling earlier kills
 			// `docker run` itself, and a run that never started keeps

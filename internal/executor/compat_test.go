@@ -95,6 +95,31 @@ func TestCheckModelCompatIgnoresAnEmptyModel(t *testing.T) {
 	}
 }
 
+// TestTestOnlySetKnownIncompatibleAppendsAndRestores exercises the seam
+// itself (LOW, release-gate report): internal/cli, internal/daemon and
+// internal/workflow each call this from their own package's tests, so
+// nothing in THIS package's suite previously did. testing.Testing() is true
+// here (this IS a test binary), so the guard must not panic and the row must
+// actually take effect and then come back out on restore.
+func TestTestOnlySetKnownIncompatibleAppendsAndRestores(t *testing.T) {
+	before := CheckModelCompat("omp", "openai/only-a-test-fixture")
+	if before.Blocked {
+		t.Fatal("fixture spec was already blocked before the row was added")
+	}
+
+	restore := TestOnlySetKnownIncompatible("omp", "openai/only-a-test-fixture", "planted by this test")
+	got := CheckModelCompat("omp", "openai/only-a-test-fixture")
+	if !got.Blocked || !contains(got.Message, "planted by this test") {
+		t.Fatalf("planted row was not enforced: %+v", got)
+	}
+
+	restore()
+	after := CheckModelCompat("omp", "openai/only-a-test-fixture")
+	if after.Blocked {
+		t.Fatalf("restore() left the fixture row in place: %+v", after)
+	}
+}
+
 func contains(s, substr string) bool {
 	for i := 0; i+len(substr) <= len(s); i++ {
 		if s[i:i+len(substr)] == substr {
