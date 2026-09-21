@@ -37,9 +37,28 @@ const maxErrBody = 2048
 // -free scrub rather than internal/security's catalog: internal/model must not
 // import it (security imports config, config imports model), and the failure
 // mode to avoid here is a key reaching a log, not a full redaction contract.
-func httpError(provider string, resp *http.Response) error {
+//
+// model is the id that was actually sent (req.Model), so a 404 -- which is
+// always the model id, every provider's own docs agree on that -- can name it
+// and say how to change it. An ICP walkthrough hit exactly this: a stale
+// catalog entry (gemini-2.5-flash, retired for new accounts) 404'd on the
+// first real call, and the message was indistinguishable from any other
+// non-200 status. Diagnosing "which config value do I even change" cost the
+// walkthrough real time that `idea model set <provider>/<model>` or Settings
+// -> Providers would have saved in one line.
+func httpError(provider, model string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 	msg := scrubForLog(string(body))
+	if resp.StatusCode == http.StatusNotFound {
+		detail := ""
+		if msg != "" {
+			detail = ": " + msg
+		}
+		return fmt.Errorf("%s: model %q not found (status 404)%s -- "+
+			"this model id is unknown, retired, or unavailable on your account; "+
+			"change it with `idea model set %s/<model>` (or Settings → Providers in the web UI)",
+			provider, model, detail, provider)
+	}
 	if msg == "" {
 		return fmt.Errorf("%s: status %d (no response body)", provider, resp.StatusCode)
 	}
@@ -118,16 +137,28 @@ func looksLikeSecret(field string) bool {
 // cause instead of a quietly diminished artifact.
 var ErrTruncated = errors.New("model: output truncated at the token budget")
 
-// truncatedError names the budget that was hit, because the fix is to raise it
-// or split the stage, and the reader needs the number.
-func truncatedError(provider string, maxOutput int) error {
-	return fmt.Errorf("%s: %w (max_output=%d); the reply was cut mid-structure, "+
-		"so it is not safe to use -- raise the stage budget or use a model with a larger output ceiling",
-		provider, ErrTruncated, maxOutput)
+// truncatedError names the model and the budget that was actually sent (not
+// the stage's raw "want" -- capOutput may already have reduced it), because
+// that is the number that was actually hit.
+//
+// It deliberately does NOT suggest a fix: this package has no idea whether
+// the caller can raise the ceiling, split the request, or is even running
+// inside the workflow engine at all, and a suggestion this layer cannot back
+// is exactly the defect being closed here (model.truncatedError used to say
+// "raise the stage budget", and harness.yaml's review.max_tokens -- the one
+// config field a human would try -- did nothing: internal/workflow/engine.go
+// computed the request's MaxOutput without ever reading it). The caller that
+// DOES know what is reachable (internal/workflow.wrapTruncationGuidance)
+// adds that guidance when it surfaces this to a human.
+func truncatedError(provider, model string, sentMaxOutput int) error {
+	return fmt.Errorf("%s: %w: model %q hit its %d-token output budget and was cut off mid-structure, "+
+		"so the reply is not safe to use", provider, ErrTruncated, model, sentMaxOutput)
 }
 
-// capOutput bounds a requested budget by what this provider declared it can
-// produce. A provider declaring 0 has stated no ceiling and is left alone.
+// capOutput bounds a requested budget by ceiling -- the model's real output
+// ceiling, already resolved by the caller (MaxOutputFor(req.Model, ...)) so
+// this function stays a pure, providerless clamp. A ceiling of 0 means "not
+// stated" and is left alone.
 //
 // This is deliberately duplicated with workflow.effectiveMaxOutput rather than
 // replacing it. The workflow cap is what lets a stage ask for more than one
@@ -140,9 +171,9 @@ func truncatedError(provider string, maxOutput int) error {
 // Capping here is safe only because truncation is now detected from the
 // provider's finish reason: a reply cut short raises ErrTruncated instead of
 // being quietly accepted.
-func capOutput(want int, caps Capabilities) int {
-	if caps.MaxOutput > 0 && want > caps.MaxOutput {
-		return caps.MaxOutput
+func capOutput(want, ceiling int) int {
+	if ceiling > 0 && want > ceiling {
+		return ceiling
 	}
 	return want
 }

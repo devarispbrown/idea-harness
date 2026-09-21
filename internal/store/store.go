@@ -6,10 +6,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite" // pure-Go SQLite driver
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // DB wraps a SQLite connection pool with the schema and event helpers.
@@ -66,11 +68,40 @@ func (db *DB) configure() error {
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",
 	} {
-		if _, err := db.sql.Exec(pragma); err != nil {
+		// review MEDIUM (concurrent first-open): switching journal mode
+		// needs an exclusive lock SQLite briefly cannot get while another
+		// connection is concurrently opening the same fresh file, and that
+		// specific failure mode is not one the DSN's busy_timeout pragma
+		// reliably covers (it applies to the connection's own later
+		// statements, not necessarily to this file-level mode change
+		// racing another connection's own first PRAGMA calls). A handful of
+		// short retries is the standard way around this exact, well-known
+		// SQLite quirk; the migration race itself (applyMigration, below in
+		// migrate.go) is fixed at the transaction level, not by retrying.
+		var err error
+		for attempt := 0; attempt < 10; attempt++ {
+			if _, err = db.sql.Exec(pragma); err == nil || !isBusy(err) {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+		}
+		if err != nil {
 			return fmt.Errorf("store: %s: %w", pragma, err)
 		}
 	}
 	return nil
+}
+
+// isBusy reports whether err is SQLite reporting the database (or a table
+// within it) locked by another connection -- transient, and worth a short
+// retry -- as opposed to a real failure.
+func isBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // Close closes the underlying database.

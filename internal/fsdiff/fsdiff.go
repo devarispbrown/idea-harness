@@ -89,14 +89,26 @@ var ErrControlPlanePath = errors.New("fsdiff: path is part of the harness contro
 // Symlinks are rejected via Lstat (not followed) so an untrusted executor cannot
 // plant a symlink to a host file and induce the daemon to read it (review:
 // v1 security boundary). A missing root yields an empty manifest.
-func Snapshot(root string) (Manifest, error) {
-	var m Manifest
+//
+// DefaultIgnoredDirNames (node_modules, .git, .tools, vendor, and other
+// well-known caches/toolchains) are always excluded, on top of the harness's
+// own control-plane paths, regardless of any option passed. WithWorkspaceIgnore
+// and WithSanityCap add the workspace's own .gitignore and a hard file/byte
+// ceiling on top of that (review defect #2).
+func Snapshot(root string, opts ...SnapshotOption) (Manifest, error) {
+	var cfg snapshotConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	var cands []snapshotCandidate
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if rel, relErr := filepath.Rel(root, p); relErr == nil && rel != "." && isControlPlane(rel) {
+			rel, relErr := filepath.Rel(root, p)
+			if relErr == nil && rel != "." && (isControlPlane(rel) || isDefaultIgnoredDir(d.Name())) {
 				return fs.SkipDir
 			}
 			return nil
@@ -115,20 +127,69 @@ func Snapshot(root string) (Manifest, error) {
 			return err
 		}
 		// Re-Lstat before reading: never follow a swapped-in symlink.
-		if fi, err := os.Lstat(p); err != nil {
-			return err
-		} else if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-			return nil
-		}
-		data, err := os.ReadFile(p)
+		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		m = append(m, Entry{Path: filepath.ToSlash(rel), Digest: blob.Digest(data)})
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return nil
+		}
+		cands = append(cands, snapshotCandidate{rel: filepath.ToSlash(rel), path: p, size: fi.Size()})
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("fsdiff: snapshot %s: %w", root, err)
+	}
+
+	if cfg.workspaceRoot != "" {
+		relPaths := make([]string, len(cands))
+		for i, c := range cands {
+			relPaths[i] = c.rel
+		}
+		wi, wiErr := loadWorkspaceIgnore(cfg.workspaceRoot, relPaths)
+		if wiErr == nil {
+			filtered := cands[:0]
+			for _, c := range cands {
+				if !wi.Ignore(c.rel) {
+					filtered = append(filtered, c)
+				}
+			}
+			cands = filtered
+		}
+	}
+
+	if cfg.maxFiles > 0 && len(cands) > cfg.maxFiles {
+		return nil, &SnapshotTooLargeError{
+			Root: root, FileCount: len(cands), MaxFiles: cfg.maxFiles,
+			Examples: exampleList(cands, 5),
+		}
+	}
+	if cfg.maxBytes > 0 {
+		var total int64
+		for _, c := range cands {
+			total += c.size
+		}
+		if total > cfg.maxBytes {
+			return nil, &SnapshotTooLargeError{
+				Root: root, FileCount: len(cands), TotalBytes: total, MaxBytes: cfg.maxBytes,
+				Examples: exampleList(cands, 5),
+			}
+		}
+	}
+
+	m := make(Manifest, 0, len(cands))
+	for _, c := range cands {
+		data, err := os.ReadFile(c.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Removed between the walk and the read (e.g. a concurrent
+				// writer); treat as absent rather than failing the whole
+				// snapshot.
+				continue
+			}
+			return nil, fmt.Errorf("fsdiff: snapshot %s: %w", root, err)
+		}
+		m = append(m, Entry{Path: c.rel, Digest: blob.Digest(data)})
 	}
 	sort.Slice(m, func(i, j int) bool { return m[i].Path < m[j].Path })
 	return m, nil
@@ -237,6 +298,61 @@ func StaleBase(root string, changes []domain.FileChange) []string {
 	return stale
 }
 
+// StalePost reports every change whose post-image no longer matches root, one
+// line per file. An empty result means a revert can restore the pre-image
+// without erasing anything written into the workspace after apply.
+//
+// This is StaleBase's mirror at the opposite end of a change set's life:
+// StaleBase protects an edit made BEFORE apply ran by comparing the workspace
+// against each change's BaseDigest; StalePost protects an edit made AFTER
+// apply ran by comparing the workspace against each change's Digest -- the
+// post-image apply itself wrote. Both refuse rather than overwrite, and both
+// write nothing when they refuse (review A3: an ICP user's comment added to
+// src/app.js after apply was silently erased by a revert that never looked).
+//
+// Keyed on ChangeType, like StaleBase: an add has nothing to compare on the
+// "base" side but everything on the "post" side, and a delete is the reverse.
+// A change with no ChangeType predates this check and is restored as before.
+func StalePost(root string, changes []domain.FileChange) []string {
+	var stale []string
+	for _, c := range changes {
+		if c.ChangeType == "" {
+			continue
+		}
+		dest, err := security.ResolveWithin(root, c.Path)
+		if err != nil {
+			stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+			continue
+		}
+		fi, err := os.Lstat(dest)
+		exists := err == nil
+		switch c.ChangeType {
+		case domain.FileDeleted:
+			if exists {
+				stale = append(stale, c.Path+": the change deleted it, but it exists in the workspace now")
+			}
+		case domain.FileAdded, domain.FileModified:
+			if !exists {
+				stale = append(stale, c.Path+": the change wrote it, but it is missing from the workspace now")
+				continue
+			}
+			if !fi.Mode().IsRegular() {
+				stale = append(stale, c.Path+": it is no longer a regular file in the workspace")
+				continue
+			}
+			data, err := os.ReadFile(dest)
+			if err != nil {
+				stale = append(stale, fmt.Sprintf("%s: %v", c.Path, err))
+				continue
+			}
+			if blob.Digest(data) != c.Digest {
+				stale = append(stale, c.Path+": it was edited in the workspace after apply")
+			}
+		}
+	}
+	return stale
+}
+
 // Prepare captures the pre-image of every touched path (persisting each via put)
 // WITHOUT mutating root. It returns the pre-image manifest so a caller can
 // persist it BEFORE any byte is written, making an interrupted apply recoverable
@@ -291,7 +407,7 @@ func Commit(root string, changes []domain.FileChange, get func(digest string) ([
 		if err != nil {
 			return fmt.Errorf("fsdiff: get %q: %w", c.Digest, err)
 		}
-		if err := writeAtomic(dest, content); err != nil {
+		if err := writeAtomic(root, dest, content); err != nil {
 			return fmt.Errorf("fsdiff: write %q: %w", c.Path, err)
 		}
 	}
@@ -330,18 +446,47 @@ func Restore(root string, pre Manifest, get func(digest string) ([]byte, error))
 		if err != nil {
 			return fmt.Errorf("fsdiff: restore get %q: %w", e.Digest, err)
 		}
-		if err := writeAtomic(dest, content); err != nil {
+		if err := writeAtomic(root, dest, content); err != nil {
 			return fmt.Errorf("fsdiff: restore write %q: %w", e.Path, err)
 		}
 	}
 	return nil
 }
 
-func writeAtomic(dest string, content []byte) error {
+// atomicTmpDir is where writeAtomic stages a file before renaming it into
+// place: root/.idea-harness/tmp, not the destination's own directory (review
+// defect I). A temp file used to be created directly beside dest -- e.g.
+// os.CreateTemp(filepath.Dir(dest), ".idea-harness-*") -- which, if the
+// process died between CreateTemp and the rename (a crash, a killed daemon,
+// the container losing power mid-apply), left a stray .idea-harness-<random>
+// entry sitting in the user's own tracked source tree, indistinguishable from
+// a real file to `git status` and easy to mistake for something the agent
+// wrote on purpose. root/.idea-harness/ is already excluded from every
+// snapshot/diff by name (fsdiff.DefaultIgnoredDirNames, isControlPlane) and,
+// as of the review defect D fix, from dirtyPathsOutside's dirty check too, so
+// an orphaned temp file here is invisible to git status, `idea diff`, and the
+// branch-per-initiative guard alike -- never mistaken for the agent's own
+// work and never blocking anything. os.Rename from here to dest stays a same-
+// filesystem, atomic rename as long as .idea-harness/ is on the same mount as
+// the rest of the workspace, true for the overwhelmingly common case (both
+// live under one repository checkout); an exotic setup that bind-mounts part
+// of a workspace onto a separate filesystem was never supported by the
+// original same-directory temp file either, since EVERY destination directory
+// would need to share a filesystem with SOME temp location for this pattern
+// to work at all.
+func atomicTmpDir(root string) string {
+	return filepath.Join(root, ".idea-harness", "tmp")
+}
+
+func writeAtomic(root, dest string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".idea-harness-*")
+	tmpDir := atomicTmpDir(root)
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(tmpDir, ".idea-harness-*")
 	if err != nil {
 		return err
 	}

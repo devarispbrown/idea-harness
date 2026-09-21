@@ -28,6 +28,32 @@ type cliChangeSet struct {
 	ReviewID       string `json:"review_id"`
 	GitCommitSHA   string `json:"git_commit_sha"`
 	CreatedAt      string `json:"created_at"`
+	// ReviewCompletedAt mirrors domain.ChangeSet.ReviewCompletedAt (omitted by
+	// the API when nil, same as there): non-nil once the adversarial reviewer
+	// has actually run for this change set. Used to distinguish "awaiting
+	// your approval" from "never finished its adversarial review" (ICP re-run
+	// D4) -- both surface as status review_required, and only this field
+	// tells them apart.
+	ReviewCompletedAt *string `json:"review_completed_at,omitempty"`
+}
+
+// changeSetReviewStatusLabel is cmdChanges's per-item status label (ICP
+// re-run D4): `idea changes` used to answer "needs your approval" for a
+// change set whose adversarial review never completed at all (most often
+// cancelled mid-review, per domain.ChangeSet.ReviewNeverCompletedCause) --
+// the same state `idea status`'s guidance already described correctly as
+// "never finished its adversarial review". There is nothing to approve yet
+// in that state (`idea review <id> approve` refuses it and names `rerun`),
+// so the two commands must not disagree about what to call it.
+func changeSetReviewStatusLabel(cs cliChangeSet) string {
+	if cs.Status == "review_required" && cs.ReviewCompletedAt == nil {
+		return "never finished its adversarial review"
+	}
+	label := humanStatus[cs.Status]
+	if label == "" {
+		return cs.Status
+	}
+	return label
 }
 
 // cliRiskSignal mirrors a risk signal.
@@ -67,16 +93,33 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// D-a, wave 3 contract: an optional note steering this one run, appended to
+	// the implementer's brief and recorded on the agent run. body stays an
+	// untyped nil (not a nil map[string]any) when there is no note: `do`
+	// checks `body != nil`, and a nil map boxed into `any` is a non-nil
+	// interface — that would send a literal JSON `null` body instead of none.
+	var body any
+	if note := a.value("--note"); note != "" {
+		body = map[string]any{"note": note}
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), body, &out); err != nil {
 		return err
 	}
 	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
 		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
 	}
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		if err := waitIfRequested(a, c, projectID, iniID, opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
+		return nil
 	}
 	fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
 	return nil
@@ -141,11 +184,7 @@ func cmdChanges(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, heading("Change Sets"))
 	for _, cs := range changes {
-		label := humanStatus[cs.Status]
-		if label == "" {
-			label = cs.Status
-		}
-		fmt.Fprintf(stdout, "  %s  %s\n", code(cs.HumanID), muted(label))
+		fmt.Fprintf(stdout, "  %s  %s\n", code(cs.HumanID), muted(changeSetReviewStatusLabel(cs)))
 	}
 	return nil
 }
@@ -191,11 +230,98 @@ func cmdRevert(a cmdArgs, stdout, stderr io.Writer) error {
 	return runChangeSetAction("revert", a, stdout)
 }
 
-// cmdReview applies a review verdict to a change set.
+// cliPRChecks mirrors the pr-checks API response (git.PRChecksResult).
+type cliPRChecks struct {
+	Overall string           `json:"overall"`
+	Checks  []cliCheckStatus `json:"checks"`
+}
+
+// cliCheckStatus mirrors one entry of git.PRChecksResult.Checks.
+type cliCheckStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Link  string `json:"link,omitempty"`
+}
+
+// cmdPR opens (idempotently) a pull request for an initiative's dedicated
+// branch, or with the "checks" subcommand, reports the latest CI status of a
+// change set's pull request (review C4 piece 3).
+func cmdPR(a cmdArgs, stdout, stderr io.Writer) error {
+	if a.sub == "checks" {
+		return cmdPRChecks(a, stdout)
+	}
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	iniID, err := resolveInitiative(c, projectID, a.positional)
+	if err != nil {
+		return err
+	}
+	var out map[string]string
+	if err := c.do("POST", initiativeResource(projectID, iniID, "pr"), nil, &out); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, out)
+	}
+	fmt.Fprintln(stdout, ok("✓ pull request")+" "+code(out["pr_url"]))
+	return nil
+}
+
+// cmdPRChecks shows the latest CI status of a change set's initiative's pull
+// request, via `idea pr checks <change-set-id>`.
+func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
+	positional := a.positional
+	if len(positional) < 1 {
+		return fmt.Errorf("usage: idea pr checks <change-set-id>")
+	}
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	var res cliPRChecks
+	if err := c.do("GET", changeSetResource(projectID, positional[0], "pr-checks"), nil, &res); err != nil {
+		return err
+	}
+	if a.has("--json") {
+		return dumpJSON(stdout, res)
+	}
+	if res.Overall == "none" {
+		fmt.Fprintln(stdout, muted("no CI checks reported yet"))
+		return nil
+	}
+	fmt.Fprintln(stdout, heading("CI status: ")+res.Overall)
+	for _, chk := range res.Checks {
+		fmt.Fprintf(stdout, "  %s  %s\n", chk.Name, chk.State)
+	}
+	return nil
+}
+
+// cmdReview applies a review verdict to a change set, or -- with "rerun" --
+// runs the adversarial reviewer again for a change set whose review never
+// completed the first time (ICP re-run defect #1: Execute's own review call
+// errored, most often cancelled mid-review, leaving only mechanical-check
+// observations behind). rerun is not itself a ChangeSet-state-machine
+// verdict, but it shares this command and endpoint.
+//
+// rerun is a real model call (ICP re-run D2: observed 1m12s-1m38s across
+// four founder-journey runs) and the daemon now runs it as an async
+// operation rather than inside the request -- running it inside the request
+// used to mean the daemon always finished the review while the CLI's own 60s
+// http.Client timed out waiting for the response, so a brand-new command
+// appeared to fail on every single use even though the work completed every
+// time. rerun therefore waits on the operation by default (the same
+// reasoning `idea retry` waits by default: it prints a start line and then
+// polls, so a client-side timeout can never again be mistaken for the review
+// itself failing); --no-wait returns a handle immediately instead, matching
+// every other long-running command's escape hatch. approve/reject/
+// changes_requested are unchanged: no model call, still answered
+// synchronously.
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested>")
+		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
 	}
 	verdict := positional[1]
 	switch verdict {
@@ -203,9 +329,9 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		verdict = "approved"
 	case "reject":
 		verdict = "rejected"
-	case "approved", "rejected", "changes_requested":
+	case "approved", "rejected", "changes_requested", "rerun":
 	default:
-		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested)", positional[1])
+		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -223,6 +349,23 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
 		return err
 	}
+	if verdict == "rerun" {
+		fmt.Fprintln(stdout, ok("✓ review rerun started")+" "+code(positional[0]))
+		opID := out["operation_id"]
+		if opID != "" {
+			fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+		}
+		if a.has("--no-wait") || opID == "" {
+			fmt.Fprintln(stdout, muted("watch progress: ")+bold("idea watch"))
+			return nil
+		}
+		fmt.Fprintln(stdout, muted("working… (")+bold("--no-wait")+muted(" returns immediately; ")+bold("idea watch")+muted(" follows it)"))
+		if err := waitForOperation(c, projectID, "", opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ review rerun complete")+" "+code(positional[0]))
+		return nil
+	}
 	line := ok("✓ review recorded") + " " + code(positional[0]) + " → " + verdict
 	if accepting {
 		line += " " + muted("(findings accepted)")
@@ -231,11 +374,14 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the result.
+// runChangeSetAction POSTs to /change-sets/{id}/{action} and prints the
+// result. `--wait` (item: long actions return a handle by default, `idea new`
+// is the one exception -- see waitIfRequested) blocks and streams progress
+// the same way `idea advance`/`idea execute --wait` do.
 func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea %s <id>", action)
+		return fmt.Errorf("usage: idea %s <id> [--wait]", action)
 	}
 	id := positional[0]
 	c, projectID, err := connect()
@@ -247,8 +393,17 @@ func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ "+action+" started")+" "+code(id))
-	if opID := out["operation_id"]; opID != "" {
+	opID := out["operation_id"]
+	if opID != "" {
 		fmt.Fprintln(stdout, muted("cancel with: ")+bold("idea cancel "+opID))
+	}
+	if a.has("--wait") {
+		// No initiative id in hand here (this resolves a change set, not an
+		// initiative) -- waitForOperation's use of it is best-effort only.
+		if err := waitIfRequested(a, c, projectID, "", opID, stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, ok("✓ done"))
 	}
 	return nil
 }
@@ -320,7 +475,20 @@ func cmdExecutors(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	// Flags come from the table's spec for `executors setup`; this used to be a
 	// hand-rolled loop, one of four that predated parseArgs.
-	kind := a.value("--kind")
+	//
+	// The kind can be given positionally (`executors setup omp`) or via --kind;
+	// `idea executors setup omp --yes` used to silently ignore the positional
+	// and default to hermes, because only a.value("--kind") was read. Both are
+	// accepted here, and a disagreement between them is refused rather than
+	// picking one silently.
+	positionalKind, flagKind := a.arg(0), a.value("--kind")
+	kind := positionalKind
+	if flagKind != "" {
+		if positionalKind != "" && positionalKind != flagKind {
+			return fmt.Errorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
+		}
+		kind = flagKind
+	}
 	if kind == "" {
 		kind = "hermes"
 	}
@@ -359,6 +527,17 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if model != "" {
 		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
 			return err
+		}
+		// Known-incompatible and untested combinations (docs/agents.md, "Known
+		// executor/model compatibility"): also checked before the pull. A known
+		// bad pairing (§ ICP walkthrough: hermes + gpt-4.1-mini failed every
+		// time) refuses outright; an untested one warns and points at --smoke,
+		// same as the model-warning above.
+		if compat := executor.CheckModelCompat(kind, model); compat.Message != "" {
+			if compat.Blocked {
+				return fmt.Errorf("%s", compat.Message)
+			}
+			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
 		}
 	}
 
@@ -441,6 +620,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	req := a.arg(0)
 	pass, fail, waive := a.has("--pass"), a.has("--fail"), a.has("--waive")
 	note := a.value("--note")
+	confirmPassingTests := a.has("--confirm-passing-tests")
 
 	// Validated before connect(), because the failure here is silence rather
 	// than an error: `idea verify --pass --note "checked manually"` with no
@@ -490,6 +670,13 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		// daemon resolve it and answer about the requirement that was asked for.
 		body = map[string]any{"requirement": req}
 	}
+	if confirmPassingTests {
+		// C2, wire contract: confirms every requirement whose mapped tests all
+		// passed, through the same human-evidence path, actor human. Combines
+		// cleanly with a single --pass/--fail/--waive above -- both run in the
+		// same gate call.
+		body["confirm_passing_tests"] = true
+	}
 	var out struct {
 		Status   string        `json:"status"`
 		Coverage []cliCoverage `json:"coverage"`
@@ -497,14 +684,15 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
 	}
-	if a.has("--json") {
-		return dumpJSON(stdout, out)
-	}
-	if req != "" && (pass || fail || waive) {
-		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
-	}
 	// Headline from the gate, not from the initiative's status. This said
 	// "✓ verified" even for a recorded failure.
+	//
+	// Computed BEFORE the --json branch below (H10 fix): `idea verify --json`
+	// used to `return dumpJSON(...)` here, before `unmet` even existed, so the
+	// only machine-readable form of this command always exited 0 -- silently
+	// contradicting the exact "an unmet gate exits non-zero, so idea verify is
+	// usable in a script" promise docs/demo-greenfield.md makes for this
+	// command, script-usability being the entire point of --json.
 	var unmet []string
 	for _, cov := range out.Coverage {
 		switch cov.Status {
@@ -518,6 +706,21 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 				unmet = append(unmet, fmt.Sprintf("%s %d/%d verified", cov.Code, cov.Pass, cov.Total))
 			}
 		}
+	}
+	if a.has("--json") {
+		// The JSON payload is unchanged (still just {status, coverage}) --
+		// only the exit code gains the same gate the human-readable path
+		// already applies below.
+		if err := dumpJSON(stdout, out); err != nil {
+			return err
+		}
+		if failOnUnmet && len(unmet) > 0 {
+			return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+		}
+		return nil
+	}
+	if req != "" && (pass || fail || waive) {
+		fmt.Fprintln(stdout, ok("✓ evidence recorded for")+" "+code(req))
 	}
 	if len(unmet) == 0 {
 		fmt.Fprintln(stdout, ok("✓ verified")+" "+muted("status:")+" "+code(out.Status))
@@ -586,8 +789,14 @@ func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
 		return fmt.Errorf("no model configured; set one with `idea model set <provider>/<model>` or pass --model")
 	}
 
+	// D-a, wave 3 contract: an optional note steering this retry, joining the
+	// framing prompt that restarts the pipeline and recorded on that run.
+	body := map[string]string{"model": model}
+	if note := a.value("--note"); note != "" {
+		body["note"] = note
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, "retry"), map[string]string{"model": model}, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, "retry"), body, &out); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ retry started")+" "+code(iniID)+" "+muted("on")+" "+accent(model))

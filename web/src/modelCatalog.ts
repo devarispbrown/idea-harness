@@ -37,8 +37,9 @@ export const CURATED_MODELS: Record<string, string[]> = {
     "gemini-3.8-flash",
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
+    // gemini-2.5-flash/gemini-2.5-pro removed 2026-09-19 (ICP walkthrough
+    // finding): both 404 for a new account (Google's own not-available-to-
+    // new-users response). See internal/model/catalog.go for the full note.
   ],
   deepseek: ["deepseek-v4-pro", "deepseek-flash", "deepseek-chat", "deepseek-reasoner"],
   openrouter: [

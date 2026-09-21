@@ -2,7 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // globalMigrations is the global.db schema (project registry + daemon meta).
@@ -519,10 +523,295 @@ ALTER TABLE change_sets ADD COLUMN executor TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE change_sets ADD COLUMN agent_output TEXT NOT NULL DEFAULT '';
 `,
+	// 23: secret_sweep findings carry WHERE the credential was found (secret_
+	// path/secret_kind) and a fingerprint of the value (never the value) so a
+	// human's "not a secret" disposition can allowlist it (review changes #1,
+	// ICP round). The disposition CHECK is widened to admit not_a_secret --
+	// SQLite cannot ALTER a CHECK in place, so the table is rebuilt again, as
+	// migration 6 did for `mitigate`.
+	`
+CREATE TABLE findings_new (
+	id                TEXT PRIMARY KEY,
+	initiative_id     TEXT NOT NULL DEFAULT '',
+	review_run_id     TEXT NOT NULL,
+	target_type       TEXT NOT NULL,
+	target_id         TEXT NOT NULL,
+	severity          TEXT NOT NULL,
+	confidence        TEXT NOT NULL,
+	category          TEXT NOT NULL,
+	code              TEXT NOT NULL DEFAULT '',
+	finding           TEXT NOT NULL,
+	evidence          TEXT NOT NULL,
+	impact            TEXT NOT NULL,
+	recommendation    TEXT NOT NULL,
+	disposition       TEXT,
+	disposition_actor TEXT NOT NULL,
+	note              TEXT NOT NULL DEFAULT '',
+	secret_fingerprint TEXT NOT NULL DEFAULT '',
+	secret_kind        TEXT NOT NULL DEFAULT '',
+	secret_path        TEXT NOT NULL DEFAULT '',
+	created_at        INTEGER NOT NULL,
+	CHECK (disposition IS NULL OR disposition IN ('fixed','accepted_risk','not_applicable','duplicate','deferred','rejected','mitigate','not_a_secret'))
+);
+INSERT INTO findings_new (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at)
+SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at FROM findings;
+DROP TABLE findings;
+ALTER TABLE findings_new RENAME TO findings;
+`,
+	// 24: the project-scoped "not a secret" allowlist (review changes #1). One
+	// row per human disposition, keyed by the fingerprint the sweep re-checks;
+	// path/kind are kept as they were AT THE TIME, for the Settings list, not
+	// as a live join back to the finding (which may since have been deleted
+	// with its change set's initiative).
+	`
+CREATE TABLE IF NOT EXISTS secret_allowlist (
+	id          TEXT PRIMARY KEY,
+	fingerprint TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	path        TEXT NOT NULL,
+	actor       TEXT NOT NULL,
+	created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint ON secret_allowlist(fingerprint);
+`,
+	// 25: stale_marks -- the staleness primitive (review A4 #5). A decided
+	// decision reopened (or re-resolved differently) after tasks/change sets
+	// were built on it marks the requirements that cite it, their tasks, and
+	// the applied change sets for those tasks, stale. `cleared_at IS NULL`
+	// selects the active marks; a mark clears via re-planning or an explicit
+	// human acknowledgement, never by deletion, so the record survives.
+	`
+CREATE TABLE IF NOT EXISTS stale_marks (
+	id            TEXT PRIMARY KEY,
+	initiative_id TEXT NOT NULL,
+	target_type   TEXT NOT NULL,
+	target_id     TEXT NOT NULL,
+	reason        TEXT NOT NULL,
+	decision_id   TEXT NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	cleared_at    INTEGER,
+	cleared_by    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_stale_marks_initiative ON stale_marks(initiative_id, cleared_at);
+CREATE INDEX IF NOT EXISTS idx_stale_marks_target ON stale_marks(initiative_id, target_type, target_id, cleared_at);
+`,
+	// 26: record why an applied change set was NOT committed even though
+	// git_commit is on (detached HEAD, a rebase/merge/cherry-pick in progress,
+	// or the repository's default branch without git.allow_default_branch --
+	// review C4, adopted #2). A guard refusal must never fail the apply itself,
+	// so the reason is recorded here instead, alongside git_commit_sha.
+	`
+ALTER TABLE change_sets ADD COLUMN git_commit_warning TEXT NOT NULL DEFAULT '';
+`,
+	// 27: the dedicated branch git.branch_per_initiative creates on an
+	// initiative's first apply (review C4 piece 2), so every later change set
+	// commits to the same branch rather than computing a fresh name each time.
+	`
+ALTER TABLE initiatives ADD COLUMN git_branch TEXT NOT NULL DEFAULT '';
+`,
+	// 28: the pull request `idea pr` opened for the initiative's branch
+	// (review C4 piece 3), so a repeat `idea pr` is idempotent instead of
+	// opening a second PR for the same branch.
+	`
+ALTER TABLE initiatives ADD COLUMN pr_url TEXT NOT NULL DEFAULT '';
+`,
+	// 29: change-set review findings carry an optional `path` and a reviewer
+	// self-reported `in_diff` (review B2, adopted #5), and any finding can be
+	// marked `advisory` -- non-blocking regardless of severity (review B1's
+	// rigor cap note, and B2's "about code this change set did not touch").
+	`
+ALTER TABLE findings ADD COLUMN path TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN in_diff INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE findings ADD COLUMN advisory INTEGER NOT NULL DEFAULT 0;
+`,
+	// 30: secret-allowlist safety (review H3/M1).
+	//
+	//   - project_state is a small per-project key/value table (state.db's
+	//     counterpart to global.db's daemon_meta) for the per-project HMAC key
+	//     Fingerprint now uses instead of a bare sha256, so a secret's
+	//     fingerprint is not the same, precomputable value across every
+	//     installation that ever saw it.
+	//   - findings.secret_overridable records whether a secret_sweep finding
+	//     is even eligible for the not_a_secret override (false for a match
+	//     drawn from the project's own configured secrets); defaults to 1
+	//     (true) so a pre-existing pattern-match finding is not retroactively
+	//     treated as a configured-secret match.
+	//   - findings.secret_preview carries the masked preview
+	//     (SecretPreview) of what a not_a_secret disposition would allowlist.
+	//   - secret_allowlist gets a unique index on (fingerprint, path) instead
+	//     of fingerprint alone (a value allowlisted in one file must still be
+	//     denied in another), with any pre-existing duplicate rows for the
+	//     same pair collapsed to one before the index is created.
+	`
+CREATE TABLE IF NOT EXISTS project_state (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+ALTER TABLE findings ADD COLUMN secret_overridable INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE findings ADD COLUMN secret_preview TEXT NOT NULL DEFAULT '';
+DELETE FROM secret_allowlist
+	WHERE rowid NOT IN (SELECT MIN(rowid) FROM secret_allowlist GROUP BY fingerprint, path);
+DROP INDEX IF EXISTS idx_secret_allowlist_fingerprint;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_allowlist_fingerprint_path ON secret_allowlist(fingerprint, path);
+`,
+	// 31: wave 3 (surfaces) -- C1 short titles, C3 cost/stage attribution
+	// (ICP round).
+	//
+	//   - initiatives.short_title: a deterministic, generated short label
+	//     (domain.GenerateShortTitle), backfilled lazily by GetInitiative/
+	//     ListInitiatives for rows written before this column existed.
+	//   - runs.initiative_id / runs.stage: attribute a model or agent run to
+	//     the initiative and workflow stage that produced it, so per-initiative
+	//     per-phase cost/time (GET .../costs) can be computed by joining
+	//     run_manifests back to runs -- previously runs carried neither, and a
+	//     run could not be attributed to an initiative at all.
+	//   - operations.stage: the engine's current step ("Writing the PRD",
+	//     "Agent running TASK-2", ...), set by a callback as the engine moves
+	//     between steps, so the CLI's wait loop can print it instead of a bare
+	//     "still working...".
+	`
+ALTER TABLE initiatives ADD COLUMN short_title TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN initiative_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN stage TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN note TEXT NOT NULL DEFAULT '';
+ALTER TABLE operations ADD COLUMN stage TEXT NOT NULL DEFAULT '';
+`,
+	// 32: review low-priority item, migration 30's follow-up. Migration 30
+	// switched Fingerprint from a bare sha256 to a per-project HMAC, and left
+	// every pre-existing configured-secret finding's secret_overridable at
+	// its column default (1/true). That default is harmless in practice --
+	// a configured-secret disposition is refused server-side regardless of
+	// this flag (see the store's not_a_secret guard), and the old
+	// fingerprint no longer matches anything post-upgrade anyway -- but it
+	// mis-describes the finding, and this sets the record straight rather
+	// than leaving it to that other guard alone.
+	//
+	// This does NOT (and cannot) recompute HMAC fingerprints for old
+	// sha256-fingerprinted secret_allowlist rows -- there is no key to
+	// invert a hash with, and the whole point of the per-project HMAC is
+	// that it cannot be recomputed from the old value without the project's
+	// key. Any "not a secret" exemption granted before this project's HMAC
+	// key existed is silently orphaned by migration 30 (its stored
+	// fingerprint never matches a newly-computed one again) and must be
+	// re-granted; see CHANGELOG.md.
+	`
+UPDATE findings SET secret_overridable = 0 WHERE secret_kind = 'configured secret value';
+`,
+	// 33: ICP re-run defect #1. review_completed_at records the one time the
+	// adversarial reviewer actually FINISHED for a change set, as opposed to
+	// the change set merely reaching review_required. Before this, a change
+	// set whose Execute-time review call errored (the operation was
+	// cancelled mid-review, the provider timed out, ...) after the
+	// checks-running -> review_required transition already happened was
+	// indistinguishable, in the stored state, from one that had genuinely
+	// converged with zero adversarial findings: `idea review CHG-n approve`
+	// happily approved it, and it was then appliable, with only mechanical
+	// check observations (build/tests/patch-applies/workspace-copy) ever
+	// having been recorded against it. NULL (unset) for every change set
+	// created before this migration and for one whose review has not yet
+	// completed; set once, in store.SetChangeSetReview, the only place a
+	// completed review is ever recorded.
+	`
+ALTER TABLE change_sets ADD COLUMN review_completed_at INTEGER;
+`,
+	// 34: ICP re-run defect #2. no_op marks a change set that touched zero
+	// files -- fsdiff.Diff found nothing between the before/after snapshots,
+	// because the agent decided the task was already done or its model call
+	// failed and it wrote nothing. Such a change set can still be reviewed,
+	// approved, applied and reverted like any other (the existing "approve
+	// the empty change set if the task was already done" escape hatch is
+	// unchanged) -- but an APPLIED no_op change set must never be counted as
+	// "this task is implemented": a real run produced exactly this (an empty
+	// change set for one task, counted as implementing it), and reverting
+	// the task's real, later change set left the task `done` and guidance
+	// insisting "every task has an applied change set" while the actual
+	// feature was gone from disk. 0 (false) for every change set created
+	// before this migration, which is the correct, conservative default:
+	// there is no way to recompute file counts for old rows without
+	// reloading and diffing every historical patch, and treating them all as
+	// "not no-op" preserves their existing, already-relied-upon behavior.
+	`
+ALTER TABLE change_sets ADD COLUMN no_op INTEGER NOT NULL DEFAULT 0;
+`,
+	// 35: review H5. Migration 31 added runs.initiative_id/stage so a model
+	// or agent run could be attributed to the initiative/phase that produced
+	// it, but left every PRE-EXISTING run row's initiative_id at the column
+	// default ('') -- nothing backfilled it. ListModelPhaseCosts and
+	// ListAgentRunStats (internal/projection/costs.go) both filter
+	// `WHERE r.initiative_id = ?`, so an initiative that existed before this
+	// upgrade permanently reports $0.00 / 0 calls from GET .../costs even
+	// though the spend still sits in run_manifests -- a wrong number, not a
+	// missing one, on money already burned.
+	//
+	// The initiative a run belongs to IS recoverable: every run this
+	// happened to (one created before migration 31 shipped) is still wired
+	// into the product graph by a produced_by edge from whatever it produced
+	// (a requirement, an assertion, an artifact version, ...) back to the
+	// run, and that edge's own initiative_id column names the initiative.
+	// One run can in principle be produced_by-linked from more than one
+	// aggregate (or, defensively, from more than one initiative, which
+	// should never happen but costs nothing to guard); MIN(...) picks
+	// deterministically rather than leaving the join's row order to define
+	// the result. A run with no such edge at all (never wired, or the edge
+	// itself predates the product graph) is left at '' exactly as before --
+	// there is nothing to recover it from.
+	`
+UPDATE runs SET initiative_id = (
+	SELECT MIN(e.initiative_id) FROM graph_edges e WHERE e.to_type = 'run' AND e.to_id = runs.id
+)
+WHERE initiative_id = '' AND EXISTS (
+	SELECT 1 FROM graph_edges e WHERE e.to_type = 'run' AND e.to_id = runs.id
+);
+`,
+	// 36: the adversarial-review truncation defect. Before this, a change set
+	// whose reviewer call genuinely ran but could never complete -- every
+	// attempt (including runModel's own reduced-ask retry) cut off at the
+	// model's output-token ceiling, model.ErrTruncated -- was recorded
+	// identically to one whose review was simply never attempted (the
+	// operation cancelled mid-review): both left review_completed_at NULL,
+	// and ReviewNeverCompletedCause's only answer was the generic "likely
+	// cancelled mid-review". `idea execute` then refused to re-run the task
+	// (the never-completed-review guard) AND `idea review <id> approve
+	// --accept-findings` refused too (TestApproveAcceptFindingsAlsoRefuses
+	// WhenReviewNeverCompleted deliberately pins that for the ordinary
+	// "never attempted" case) -- a real diff too large for the model's own
+	// ceiling had no way forward that did not mean hand-editing harness.yaml.
+	//
+	// review_unavailable_reason is set exactly once, by
+	// store.SetChangeSetReviewUnavailable, ONLY when the reviewer was
+	// genuinely attempted and explicitly could not finish -- never merely
+	// guessed. Its presence is what reviewChangeSet's approve path now
+	// checks to allow the ONE new, explicit, recorded escape:
+	// --accept-findings on a change set whose review never completed BUT
+	// carries this reason. A change set that was simply cancelled
+	// (review_unavailable_reason still '') keeps refusing exactly as before
+	// -- this migration narrows, not removes, the round-4 guarantee that an
+	// unreviewed change set cannot be silently approved.
+	`
+ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
 // schema_migrations.
+//
+// review MEDIUM: this exists-check used to run as a standalone SELECT
+// outside any transaction, and only THEN would applyMigration open its own
+// transaction to run the DDL and record the row. Two connections opening the
+// same un-migrated database for the first time concurrently (a real
+// scenario store.Open on its own does nothing to prevent -- EnsureProject's
+// single-flight is a daemon-layer guard, not one this package can rely on
+// every caller to provide) both read `exists=0` for version 1 before either
+// had committed, so both proceeded to applyMigration: whichever's write
+// transaction commits second then re-runs DDL SQLite had already applied
+// (e.g. `ALTER TABLE … ADD COLUMN` a second time) and fails outright.
+// Reproduced failing roughly 3 of 4 times under real concurrent opens.
+//
+// The fix is in applyMigration below: it no longer trusts a check made
+// outside its own transaction. This loop's exists check stays as a cheap
+// pre-filter (skipping an already-applied migration's transaction entirely
+// in the common, uncontended case) but is no longer load-bearing for
+// correctness.
 func (db *DB) migrate(list []string) error {
 	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
@@ -548,23 +837,54 @@ func (db *DB) migrate(list []string) error {
 	return nil
 }
 
+// applyMigration records version as applied FIRST, inside the transaction,
+// before running its DDL -- not after (review MEDIUM: concurrent first-open
+// race). schema_migrations.version is its PRIMARY KEY, so that INSERT is
+// itself the atomic claim: SQLite's own file locking serializes two
+// connections' concurrent write transactions (the busy_timeout already
+// configured on Open makes the second simply wait rather than error), and
+// once the second's INSERT finally runs, it either succeeds (this
+// connection won the race, or nobody has applied this version yet) or hits
+// a primary-key constraint violation (the OTHER connection already
+// committed this version while this one was waiting) -- reported here as
+// "already applied", not as a failure, and the DDL below is correctly
+// skipped rather than run a second time over a schema SQLite already
+// changed.
 func (db *DB) applyMigration(version int, sqlText string) error {
 	tx, err := db.sql.Begin()
 	if err != nil {
 		return fmt.Errorf("store: migrate %d begin: %w", version, err)
 	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, nowMS()); err != nil {
+		tx.Rollback()
+		if isUniqueOrPKViolation(err) {
+			// A concurrent first-open already applied this version while we
+			// were waiting for the write lock. Nothing to do.
+			return nil
+		}
+		return fmt.Errorf("store: migrate %d record: %w", version, err)
+	}
 	if _, err := tx.Exec(sqlText); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: migrate %d: %w", version, err)
-	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, nowMS()); err != nil {
-		tx.Rollback()
-		return fmt.Errorf("store: migrate %d record: %w", version, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: migrate %d commit: %w", version, err)
 	}
 	return nil
+}
+
+// isUniqueOrPKViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
+// constraint violation (any SQLITE_CONSTRAINT_* extended code masks down to
+// the base SQLITE_CONSTRAINT primary result code), as opposed to some other
+// failure (disk full, corruption, a genuinely malformed statement) that must
+// still surface as a real error.
+func isUniqueOrPKViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_CONSTRAINT
 }
 
 var _ = sql.ErrNoRows // keep database/sql import stable across edits

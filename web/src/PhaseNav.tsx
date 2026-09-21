@@ -1,6 +1,9 @@
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
 import { currentPill, type PhaseState } from "./phases";
+import { displayTitle } from "./title";
+import CostLine from "./CostLine";
+import type { CostsView } from "./cost";
 
 interface InboxItem {
   initiativeId: string;
@@ -8,7 +11,7 @@ interface InboxItem {
 }
 
 interface Props {
-  initiative: { id: string; title: string; status: string } | null;
+  initiative: { id: string; title: string; short_title?: string; status: string } | null;
   projectName: string;
   initiativeIndex: number; // 1-based
   initiativeCount: number;
@@ -17,6 +20,9 @@ interface Props {
   inbox: InboxItem[]; // empty → hidden
   modelChip: string;
   modelDot?: "ready" | "warn";
+  // C3: the compact spend-and-time line, omitted (no line shown) while it
+  // hasn't loaded or the daemon doesn't have the endpoint yet.
+  costs?: CostsView | null;
   onNavigate: (href: string) => void;
 }
 
@@ -30,6 +36,7 @@ export default function PhaseNav({
   inbox,
   modelChip,
   modelDot = "ready",
+  costs,
   onNavigate,
 }: Props) {
   const cur = initiative ? currentPill(initiative.status) : { pill: "", note: "" };
@@ -42,17 +49,23 @@ export default function PhaseNav({
       </button>
 
       {initiative && (
-        <button className="pn-initiative" onClick={() => onNavigate("#/")}>
-          <span className="pn-initiative-title">{initiative.title}</span>
-          <span className="pn-initiative-sub">
-            {projectName} · #{initiativeIndex} of {initiativeCount} ▾
-          </span>
-        </button>
+        <>
+          <button className="pn-initiative" onClick={() => onNavigate("#/")}>
+            <span className="pn-initiative-title">{displayTitle(initiative)}</span>
+            <span className="pn-initiative-sub">
+              {projectName} · #{initiativeIndex} of {initiativeCount} ▾
+            </span>
+          </button>
+          <CostLine costs={costs} />
+        </>
       )}
 
       {inbox.length > 0 && (
         <div className="pn-inbox">
-          <button className="pn-inbox-row" onClick={() => onNavigate("#/")}>
+          {/* D-b: this used to go back to Home, which showed the inbox
+              count but no way to act on any of it. It now opens the
+              cross-initiative "Needs you" queue those items rank into. */}
+          <button className="pn-inbox-row" onClick={() => onNavigate("#/queue")}>
             <span className="pn-inbox-label">Needs you elsewhere</span>
             <span className="pn-inbox-count">
               {inbox.reduce((n, i) => n + i.count, 0)}
@@ -113,6 +126,13 @@ export default function PhaseNav({
           {initiative && (
             <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/health`)}>
               Activity ↗
+            </button>
+          )}
+          {/* C1: "no useful 'what changed'" -- one click from anywhere in
+              the initiative to the full timeline. */}
+          {initiative && (
+            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/changed`)}>
+              What changed ↗
             </button>
           )}
         </div>

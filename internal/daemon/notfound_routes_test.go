@@ -53,8 +53,13 @@ var routeBodies = map[string]string{
 var wantStatus = map[string]int{
 	// Body validated before the lookup. Defensible, and reversing it buys a
 	// client nothing -- both are 4xx and both name the real problem.
+	//
+	// retry used to be in this list too: it required `model` before ever
+	// looking up the initiative, so a bogus id answered 400 "model is
+	// required" instead of 404. M4 (review fix) made `model` optional
+	// (lenient decoding, like `fresh` on /execute), which incidentally fixed
+	// this too -- a bogus id now reaches the real lookup and gets a real 404.
 	"POST /api/v1/projects/{projectId}/initiatives":                   http.StatusBadRequest,
-	"POST /api/v1/projects/{projectId}/initiatives/{id}/retry":        http.StatusBadRequest,
 	"POST /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase": http.StatusBadRequest,
 }
 
@@ -76,6 +81,7 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		"{taskId}":    "t-unused",
 		"{docId}":     "d-unused",
 		"{reqId}":     "REQ-1",
+		"{staleId}":   "s-unused",
 	}
 
 	routes := idRoutes(t)
@@ -193,6 +199,15 @@ func expectedKind(path, wildcard string) string {
 		return "doc"
 	case "{reqId}":
 		return "requirement"
+	}
+	if wildcard != "{id}" {
+		// An unlisted wildcard (e.g. {staleId}) has no fixed expected noun here;
+		// the loop below only knows how to name what precedes an `{id}` segment,
+		// and reusing it for the wrong wildcard misnamed the actual route under
+		// test. Falling through unconditionally made `{staleId}` inherit `{id}`'s
+		// "initiative" from the very next segment, which is a different pair
+		// entirely.
+		return ""
 	}
 	// {id} means whatever collection precedes it.
 	segs := strings.Split(strings.TrimPrefix(path, "/api/v1/"), "/")

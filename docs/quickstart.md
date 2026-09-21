@@ -149,12 +149,17 @@ needing your judgment.
 Run `idea status` any time to see where the initiative is, and `idea decisions` / `idea reviews`
 to inspect the judgment items the reviewer raised.
 
-**Resolving them is a web-UI (or API) action, not a CLI one.** `idea decisions` and `idea reviews`
-only *list*: the CLI command table has no verb that resolves a decision, answers a question, or
-dispositions a finding. Open `http://127.0.0.1:8787/` → the initiative's **Define** phase to accept a
-recommendation, pick another option, write your own, disposition a finding, or answer a question;
-the PRD then revises. For a clean first run you can leave them: an undecided decision goes into the
-next revise prompt carrying its recommendation rather than a resolution.
+**Decisions and questions can be resolved from the CLI.** `idea resolve <decision> <option#>|"<text>"`
+resolves a decision (by option number or free text), `idea answer <question> "<answer>"` answers a
+question, `idea reopen-decision <decision>` returns a resolved one to open, and
+`idea accept-recommendations` resolves every open decision with its own recommendation in one call.
+`idea triage` ranks everything needing your judgment — open decisions, questions, and blocking
+findings — across all three. **Dispositioning a review finding is still a web-UI (or API) action,
+not a CLI one**: there is no CLI verb for it yet. Open `http://127.0.0.1:8787/` → the initiative's
+**Define** phase to accept a recommendation, pick another option, write your own, disposition a
+finding, or answer a question there instead; the PRD then revises. For a clean first run you can
+leave decisions and questions unresolved too: an undecided decision goes into the next revise
+prompt carrying its recommendation rather than a resolution.
 
 ## 3. Design and plan (M2)
 
@@ -371,8 +376,9 @@ So rather than a number this document cannot support, here is how to get your ow
   first two — **not** on `max_cycles`, where the engine coerces any value `<= 0` to 3):
   `review.max_cost_usd` is a **cumulative** ceiling — the engine adds up every model call's cost and
   fails the call that crosses it, so the run stops; the total is per project and resets when the
-  daemon restarts. `review.max_tokens` is a **per-call** cap on a single response's output tokens,
-  not a running total. `review.max_cycles` bounds the most expensive variable in M1 — the M1 revise
+  daemon restarts. `review.max_tokens` is a **per-call** figure, not a running total: it sets the
+  output-token budget requested for every call and is checked against the response's actual usage.
+  `review.max_cycles` bounds the most expensive variable in M1 — the M1 revise
   loop (default 3). See [`docs/configuration.md`](configuration.md) for the full reference.
 - **The order of magnitude follows from the table above**: a low-double-digit count of structured
   calls for M1 + M2, each carrying a compiled context bundle rather than a whole repository. The

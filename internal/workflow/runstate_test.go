@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,7 +57,36 @@ func stopMidRun(t *testing.T, eng *Engine, iniID, path, content string) {
 	t.Setenv("FAKE_CONTENT", content)
 	t.Setenv("FAKE_HOLD", filepath.Join(t.TempDir(), "never"))
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+	// Cancel once the agent has written its file, not after a fixed delay:
+	// under -race on a loaded machine the planner can outlast 300 ms, and a
+	// cancel before the agent ran kept nothing -- a flake, not a defect.
+	written := filepath.Join(eng.workRoot, "work", iniID, path)
+	go func() {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if path == "" {
+				// Nothing to wait for on disk, but still wait for the agent
+				// itself to be running: a fixed delay raced the planner on a
+				// loaded machine, and cancelling before Start returned took a
+				// different path through Execute than the test is about.
+				if state, _ := eng.AgentOutput(context.Background(), iniID); state == LiveRunning {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			// The agent has started (Start returned; cancelling earlier kills
+			// `docker run` itself, and a run that never started keeps
+			// nothing) AND written its content -- content, not existence,
+			// since a modified file is already in the seeded work root.
+			state, _ := eng.AgentOutput(context.Background(), iniID)
+			if got, err := os.ReadFile(written); state == LiveRunning && err == nil && string(got) == content {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+	}()
 	if _, err := eng.Execute(ctx, iniID); err == nil {
 		t.Fatal("a stopped run produced a change set")
 	}
@@ -121,6 +152,36 @@ func TestRunAgainContinuesFromAStoppedRun(t *testing.T) {
 	}
 	if eng.PartialWork(iniID) != nil {
 		t.Error("the kept files were not cleared once carried")
+	}
+}
+
+// TestStopBeforeAnyWriteIsLoggedNotSilent reproduces the ICP re-run's own
+// defect F: a real Stop landed while the agent had only been reading files
+// (no write yet), so capturePartial's diff was genuinely empty -- correct
+// behavior -- but its early return logged NOTHING at all, on either the
+// success or the "nothing to keep" path. An operator watching daemon.log
+// after a Stop could not tell "capturePartial ran and found nothing to keep"
+// apart from "capturePartial never ran" or "it silently swallowed an error",
+// which is exactly the "Stop is unverifiable" complaint. capturePartial must
+// now say what it decided even when it keeps nothing.
+func TestStopBeforeAnyWriteIsLoggedNotSilent(t *testing.T) {
+	eng, iniID, _ := newScriptedFixture(t)
+	var logBuf bytes.Buffer
+	eng.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// path == "" tells stopMidRun to cancel shortly after the agent starts,
+	// without ever writing FAKE_WRITE -- the "nothing written yet" case.
+	stopMidRun(t, eng, iniID, "", "")
+
+	if pw := eng.PartialWork(iniID); pw != nil {
+		t.Fatalf("PartialWork = %+v, want nil: nothing was ever written", pw)
+	}
+	log := logBuf.String()
+	if !strings.Contains(log, "checking for files to keep") {
+		t.Errorf("daemon log = %q, want a line confirming capturePartial ran", log)
+	}
+	if !strings.Contains(log, "nothing to keep") {
+		t.Errorf("daemon log = %q, want a line saying capturePartial found nothing to keep", log)
 	}
 }
 

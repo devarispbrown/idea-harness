@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/config"
@@ -181,7 +184,32 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	g := projection.BuildGuidance(ini, u)
+	// Review C6: BuildGuidance's own signature change. Errors are swallowed to
+	// nil -- an initiative with no change sets yet (or a store hiccup) must
+	// not turn "recommended next move" into a 500; it just gets the old,
+	// change-set-agnostic guidance.
+	//
+	// M7: reduced to the latest change set per ACTIVE task before being
+	// handed to BuildGuidance, not the raw list -- see
+	// LatestChangeSetsPerActiveTask's and latestChangeSetOutcome's doc
+	// comments for why passing the raw list was wrong.
+	allChangeSets, _ := pr.db.ListChangeSets(r.Context(), ini.ID)
+	tasks, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	recentChangeSets := projection.LatestChangeSetsPerActiveTask(allChangeSets, tasks)
+	// ICP re-run defect G: "every task is done or cancelled" is the signal
+	// BuildGuidance needs to stop saying "run the next task" and point at
+	// Verify instead. Computed here, not inside BuildGuidance, for the same
+	// reason NextTask/RunBlockedReason are: BuildGuidance stays a pure
+	// function with no task-store access. Vacuously false with no tasks at
+	// all -- a plan with nothing built yet should never be told to verify.
+	allTasksDone := len(tasks) > 0
+	for _, t := range tasks {
+		if t.Status != domain.TaskDone && t.Status != domain.TaskCancelled {
+			allTasksDone = false
+			break
+		}
+	}
+	g := projection.BuildGuidance(ini, u, recentChangeSets, allTasksDone)
 
 	if nt, err := pr.engine.NextReadyTask(r.Context(), ini.ID); err == nil && nt != nil {
 		g.NextTask = &projection.NextTaskRef{ID: nt.ID, HumanID: nt.HumanID, Title: nt.Title}
@@ -203,27 +231,207 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
 	}
+	// Review A4 #5: "N items may be invalid since DEC-n changed", with the
+	// re-plan/review path named, plus the itemized list for the UI. Composed
+	// here for the same reason NextTask/RunBlockedReason/PartialWork are:
+	// BuildGuidance has no store access.
+	if items, err := pr.db.ListStaleItems(r.Context(), ini.ID); err == nil && len(items) > 0 {
+		refs := make([]projection.StaleItemRef, 0, len(items))
+		var codes []string
+		seenCode := map[string]bool{}
+		for _, it := range items {
+			label := s.staleItemLabel(r.Context(), pr, ini.ID, it)
+			refs = append(refs, projection.StaleItemRef{StaleID: it.ID, Type: it.TargetType, ID: it.TargetID, Label: label, Reason: it.Reason})
+			code, _, _ := strings.Cut(it.Reason, " ")
+			if code != "" && !seenCode[code] {
+				seenCode[code] = true
+				codes = append(codes, code)
+			}
+		}
+		g.StaleItems = refs
+		// review M5: `idea revise-plan` refuses once any change set holds work
+		// (workflow.changeSetsHoldingWork), so telling the user to run it here
+		// would just send them at a guaranteed refusal. Point at what is
+		// actually available instead: acknowledge the stale items, or re-run
+		// the affected tasks so their change sets are regenerated fresh.
+		//
+		// ICP re-run defect: this used to name `idea revise-plan` unconditionally,
+		// including on an initiative with no execution plan yet at all -- a PRD
+		// decision reopened while still `approved` marks its requirement stale
+		// immediately, before design or planning has even run. revise-plan
+		// itself refuses outright in every status but plan_approved and
+		// needs_human_judgment ("no plan to revise ... no execution plan exists
+		// yet"), so recommending it here sent the user straight at a guaranteed
+		// refusal -- and there is no change set to "re-run the affected tasks"
+		// of either, since tasks come from the same not-yet-generated plan.
+		var advice string
+		if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
+			advice = "Acknowledge the items; they will be incorporated when the execution plan is generated."
+		} else {
+			advice = "Run `idea revise-plan` and review before continuing, or acknowledge the items."
+			if cses, err := pr.db.ListChangeSets(r.Context(), ini.ID); err == nil {
+				for _, cs := range cses {
+					if cs.Status.HoldsWork() {
+						advice = "`idea revise-plan` is unavailable once a change set holds work; " +
+							"acknowledge the items, or re-run the affected tasks so their change sets are regenerated."
+						break
+					}
+				}
+			}
+		}
+		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. %s",
+			g.Why, len(items), strings.Join(codes, ", "), advice)
+	}
+	// ICP re-run defect #5: changeSetFailureWhy (BuildGuidance, no store
+	// access) can only say "a check or the review found a problem it would
+	// not pass" for a rejected change set -- true, but not what a human
+	// needs to act. When the rejection is a secret_sweep denial, name the
+	// actual cause here, where the findings are available: which file (or
+	// "in the output of <check>") and kind of secret, and the "not a secret"
+	// disposition route when the match is overridable.
+	for _, cs := range allChangeSets {
+		if cs.Status != domain.ChangeSetRejected || g.Action != "Resolve "+cs.HumanID {
+			continue
+		}
+		findings, ferr := pr.db.ListFindingsByTarget(r.Context(), "change_set", cs.ID)
+		if ferr != nil {
+			break
+		}
+		if detail := secretSweepGuidanceDetail(findings); detail != "" {
+			g.Why += " " + detail
+		}
+		break
+	}
 
 	writeJSON(w, http.StatusOK, g)
 }
 
-func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
-	pr, _, err := s.initiative(r)
+// secretSweepGuidanceDetail names the actual cause a rejected change set's
+// generic guidance ("a check or the review found a problem it would not
+// pass") otherwise leaves unsaid (ICP re-run defect #5): the secret sweep's
+// own finding already names path:line (or "in the output of <check>") and
+// the kind of secret, never the value itself, and an overridable
+// (pattern-shaped) match still has the not_a_secret route out. Returns "" --
+// leaving the generic message alone -- when the change set was not rejected
+// by the secret sweep at all (a failing build/test check, say).
+func secretSweepGuidanceDetail(findings []domain.Finding) string {
+	for _, f := range findings {
+		if f.Category != "secret_sweep" || f.Code != domain.DenyCodeSecretSweep {
+			continue
+		}
+		detail := fmt.Sprintf("The secret sweep denied it: %s.", f.Finding)
+		if f.SecretOverridable {
+			detail += " If this is not really a secret, `idea reviews` lets you disposition it \"not a secret\" to allow it."
+		}
+		return detail
+	}
+	return ""
+}
+
+// staleItemLabel resolves a human-readable label for a stale item, best-effort
+// (an empty label is omitted by the JSON tag, not an error).
+func (s *Server) staleItemLabel(ctx context.Context, pr *projectRuntime, initiativeID string, it domain.StaleItem) string {
+	switch it.TargetType {
+	case "requirement":
+		if req, err := pr.db.GetRequirementByRef(ctx, initiativeID, it.TargetID); err == nil {
+			return req.Code
+		}
+	case "task":
+		if t, err := pr.db.GetTask(ctx, it.TargetID); err == nil {
+			return t.Code
+		}
+	case "change_set":
+		if cs, err := pr.db.GetChangeSet(ctx, it.TargetID); err == nil {
+			return cs.HumanID
+		}
+	}
+	return ""
+}
+
+// handleAckStale explicitly acknowledges one stale item, clearing it (review
+// A4 #5: "explicitly acknowledging the item clears the stale state").
+func (s *Server) handleAckStale(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	if err := pr.db.ClearStaleItem(r.Context(), ini.ID, r.PathValue("staleId"), store.HumanActor); err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"cleared": true})
+}
+
+func (s *Server) handleChanged(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// M1, review fix: a per-initiative cursor ("ui:<iniID>"), not the single
+	// project-wide "ui" cursor. Marking initiative A seen used to advance the
+	// one shared cursor past initiative B's own lower, still-unseen sequence
+	// numbers, hiding B's changes the next time its own What Changed loaded.
 	since := int64(0)
-	cursor, err := pr.db.GetReadCursor(r.Context(), "ui")
+	cursor, err := pr.db.GetReadCursor(r.Context(), seenCursorKey(ini.ID))
 	if err == nil {
 		since = cursor
 	}
-	changed, err := projection.BuildChanged(r.Context(), pr.db, since, 200)
+	// Scoped to this initiative (C1/JTBD 6) -- see BuildChanged's doc comment.
+	// The response shape is unchanged ({groups, through}); web/DecisionPage.tsx
+	// still reads this endpoint that way.
+	changed, err := projection.BuildChanged(r.Context(), pr.db, ini.ID, since, 200)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, changed)
+}
+
+// handleTimeline returns an initiative's human-language "what changed"
+// timeline (C1, wave 3 contract): change sets applied/rejected/denied/
+// reverted, decisions changed, stale marks, run failures/stops, and completed
+// phases -- newest first. `idea changed` uses this, not handleChanged above
+// (which stays byte-compatible for the web What Changed widget).
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	since := int64(0)
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "since must be RFC3339")
+			return
+		}
+		since = t.UnixMilli()
+	}
+	entries, err := projection.BuildTimeline(r.Context(), pr.db, ini.ID, since, 0)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleCosts returns an initiative's spend/time summary (C3, wave 3
+// contract): per-phase model spend/time from the run records, and the
+// coding-agent run count/duration/spend separately.
+func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	costs, err := projection.BuildCosts(r.Context(), pr.db, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, costs)
 }
 
 // handleAttention returns a cross-initiative rollup (phase-derivation inputs
@@ -243,9 +451,42 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": rollups})
 }
 
-// handleMarkSeen writes the project's "ui" read cursor to the sequence the
-// client actually rendered (echoed from /changed's `through`), so What Changed
-// clears exactly what was shown and never events that arrived mid-read.
+// handleQueue returns the cross-initiative "needs you" queue (D-b, wave 3
+// contract): open blocking decisions, change sets awaiting review, conflicts,
+// denials, stale items, and verifications ready to confirm, ranked blocking
+// first and then by age.
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.project(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	items, err := projection.BuildQueue(r.Context(), pr.db, pr.blobs, pr.rawBlobs)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// seenCursorKey is the read-cursor key for one initiative's What Changed
+// "seen" mark (M1, review fix): "ui:<iniID>", never the bare project-wide
+// "ui" key handleMarkSeen still writes for a caller that sends no
+// initiative_id at all.
+func seenCursorKey(initiativeID string) string {
+	return "ui:" + initiativeID
+}
+
+// handleMarkSeen writes a read cursor to the sequence the client actually
+// rendered (echoed from /changed's `through`), so What Changed clears
+// exactly what was shown and never events that arrived mid-read.
+//
+// initiative_id (M1, review fix) scopes the cursor to that one initiative
+// ("ui:<iniID>") -- required to fix the bug where marking one initiative
+// seen silently advanced a single project-wide cursor past another
+// initiative's own lower, still-unseen sequence numbers. Optional and
+// backward compatible: a caller that sends none (the project-wide "ui" key)
+// keeps behaving exactly as before.
 func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -253,7 +494,8 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Through int64 `json:"through"`
+		Through      int64  `json:"through"`
+		InitiativeID string `json:"initiative_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Through < 0 {
 		writeError(w, http.StatusBadRequest, "through must be a non-negative integer")
@@ -267,7 +509,11 @@ func (s *Server) handleMarkSeen(w http.ResponseWriter, r *http.Request) {
 	if body.Through > maxSeq {
 		body.Through = maxSeq
 	}
-	if err := pr.db.SetReadCursor(r.Context(), "ui", body.Through); err != nil {
+	key := "ui"
+	if body.InitiativeID != "" {
+		key = seenCursorKey(body.InitiativeID)
+	}
+	if err := pr.db.SetReadCursor(r.Context(), key, body.Through); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -321,14 +567,23 @@ func (s *Server) handleRevise(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
+	// `note` (D-a, wave 3 contract) steers this one retry: joins the framing
+	// prompt that restarts the pipeline and is recorded on that run. Decoded
+	// leniently like `fresh` on /execute (M4, review fix: this used to reject
+	// `{"note":"x"}` with 400 "model is required" even though this very
+	// comment already promised the lenient decode) -- an old caller that
+	// never sends a body at all must keep working unchanged (an absent model
+	// falls back to the initiative's configured default, same as before),
+	// and a caller that sends only `note` must not have it read as
+	// "model": "" and rejected as if it never sent one.
 	var body struct {
 		Model string `json:"model"`
+		Note  string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Model) == "" {
-		writeError(w, http.StatusBadRequest, "model is required")
-		return
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
 	}
-	opID, err := s.rt.RetryInitiative(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model))
+	opID, err := s.rt.RetryInitiativeWithNote(r.Context(), projectID, initiativeID, strings.TrimSpace(body.Model), body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -488,6 +743,12 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 		Providers    map[string]config.ProviderConfig `json:"providers"`
 		Models       map[string]string                `json:"models"`
 		GitCommit    *bool                            `json:"git_commit"`
+		// GitAllowDefaultBranch/GitBranchPerInitiative/ReviewRigor (wave 3
+		// contract): harness.yaml git.allow_default_branch,
+		// git.branch_per_initiative and review.rigor, alongside git_commit.
+		GitAllowDefaultBranch  *bool   `json:"git_allow_default_branch"`
+		GitBranchPerInitiative *bool   `json:"git_branch_per_initiative"`
+		ReviewRigor            *string `json:"review_rigor"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -549,6 +810,19 @@ func (s *Server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 
 	if body.GitCommit != nil {
 		cfg.GitCommit = *body.GitCommit
+	}
+	if body.GitAllowDefaultBranch != nil {
+		cfg.Git.AllowDefaultBranch = *body.GitAllowDefaultBranch
+	}
+	if body.GitBranchPerInitiative != nil {
+		cfg.Git.BranchPerInitiative = *body.GitBranchPerInitiative
+	}
+	if body.ReviewRigor != nil {
+		if !config.ValidRigor(*body.ReviewRigor) {
+			writeError(w, http.StatusBadRequest, "review_rigor must be one of "+strings.Join(config.RigorLevels, "|"))
+			return
+		}
+		cfg.Review.Rigor = *body.ReviewRigor
 	}
 
 	// A model spec naming a provider that does not exist is rejected here rather
@@ -713,6 +987,282 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// optionRefRe matches a recommendation that names an option by position
+// instead of by text: "Option B", "Choice 2", "option #3", with optional
+// surrounding punctuation ("(B)", "2.", "B:"). Group 1 is the letter or
+// number. Used by matchRecommendationOption's index-reference path (review
+// #2, ICP re-run: the model's recommendation prose never matched an option
+// verbatim, so accept-recommendations skipped every decision that had
+// options).
+var optionRefRe = regexp.MustCompile(`(?i)^\(?(?:option|choice)\b\s*#?\s*([a-z]|[0-9]+)\b\)?\s*[.:)\-–—]?\s*.*$`)
+
+// bareIndexRe matches a recommendation that is NOTHING BUT a letter or number
+// reference ("B", "2", "(b)", "3.") -- accepted only when the option-keyword
+// form above didn't match, and only as the entire trimmed string, so an
+// option whose real text happens to be a single word is never misread as an
+// index.
+var bareIndexRe = regexp.MustCompile(`(?i)^\(?([a-z]|[0-9]+)\)?[.:]?$`)
+
+// optionIndexFromRef resolves a letter ("a".."z") or 1-based number token to
+// a 0-based index into an n-long options list, or (-1, false) if it names
+// nothing in range.
+func optionIndexFromRef(token string, n int) (int, bool) {
+	if len(token) == 1 && unicode.IsLetter(rune(token[0])) {
+		idx := int(unicode.ToUpper(rune(token[0])) - 'A')
+		if idx >= 0 && idx < n {
+			return idx, true
+		}
+		return -1, false
+	}
+	num, err := strconv.Atoi(token)
+	if err != nil {
+		return -1, false
+	}
+	idx := num - 1 // options are named 1-based ("Option 1") in prose.
+	if idx >= 0 && idx < n {
+		return idx, true
+	}
+	return -1, false
+}
+
+// normalizeForMatch folds recommendation/option text for a loose comparison:
+// lowercased, trimmed, internal whitespace collapsed, and every rune that is
+// neither a letter, digit nor space dropped -- so "Use Postgres." and "use
+// postgres" (or "use, postgres!") compare equal.
+func normalizeForMatch(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastSpace = false
+		case unicode.IsSpace(r):
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		default:
+			// Punctuation is dropped, not replaced by a space, so "don't" and
+			// "dont" compare equal along with "Use Postgres." and "use postgres".
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// matchRecommendationOption maps a decision's free-text Recommendation onto
+// one of its Options for accept-recommendations (review M3, and its ICP
+// re-run follow-up review #2): the single-resolve path (handleResolveDecision)
+// already refuses, via offers(), to record an answer that is not one of a
+// decision's options, and batch-accepting recommendations must not silently
+// bypass that guard just because there is no human present to notice.
+//
+// Tried in order, the first that resolves uniquely wins:
+//  1. An exact, verbatim match.
+//  2. An "Option B" / "Choice 2" / "(3)" style reference naming an option by
+//     position (optionRefRe) -- what the schema now asks the model to prefer.
+//  3. A bare letter/number ("B", "2") naming an option by position, when
+//     nothing else in the recommendation could itself be prose.
+//  4. Case/whitespace/punctuation-normalized equality (the common case: the
+//     model's own recommendation text drifts in casing/whitespace/punctuation
+//     from the option list it produced in the same response).
+//  5. One option containing the other after the same normalization -- the
+//     recommendation restates an option with extra framing ("I'd go with
+//     using Postgres for this" containing option "Use Postgres"), or an
+//     option is itself a prefix of a longer recommendation.
+//
+// Anything else -- no candidate at any step, or more than one -- is not
+// resolved automatically; reason explains why (empty when ok is true).
+func matchRecommendationOption(options []string, recommendation string) (matched string, ok bool, reason string) {
+	rec := strings.TrimSpace(recommendation)
+	if rec == "" {
+		return "", false, "no recommendation was given"
+	}
+	for _, o := range options {
+		if o == rec {
+			return o, true, ""
+		}
+	}
+	if m := optionRefRe.FindStringSubmatch(rec); m != nil {
+		if idx, ok := optionIndexFromRef(m[1], len(options)); ok {
+			return options[idx], true, ""
+		}
+	}
+	if m := bareIndexRe.FindStringSubmatch(rec); m != nil {
+		if idx, ok := optionIndexFromRef(m[1], len(options)); ok {
+			return options[idx], true, ""
+		}
+	}
+	normRec := normalizeForMatch(rec)
+	var exact []string
+	for _, o := range options {
+		if normalizeForMatch(o) == normRec {
+			exact = append(exact, o)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], true, ""
+	}
+	if len(exact) > 1 {
+		return "", false, "the recommendation matches more than one option once case/punctuation is ignored"
+	}
+	var contained []string
+	for _, o := range options {
+		no := normalizeForMatch(o)
+		if no == "" || normRec == "" {
+			continue
+		}
+		if strings.Contains(normRec, no) || strings.Contains(no, normRec) {
+			contained = append(contained, o)
+		}
+	}
+	if len(contained) == 1 {
+		return contained[0], true, ""
+	}
+	if len(contained) > 1 {
+		return "", false, "the recommendation is ambiguous between more than one option"
+	}
+	return "", false, "the recommendation does not match any option"
+}
+
+// skippedDecision names one decision handleAcceptRecommendations left open,
+// and why -- so a human (or the UI) can tell "no recommendation was given"
+// apart from "the recommendation didn't match any option" apart from "this
+// was resolved by someone else while the batch ran" (review #2, ICP re-run:
+// the endpoint used to return skipped as bare codes with no reason at all).
+type skippedDecision struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
+}
+
+// handleAcceptRecommendations resolves every open decision on an initiative
+// with its own recommendation, actor human (review B4, adopted #8): the "53
+// things need your judgment" problem the ICP round found, answered in one
+// call instead of one click per decision. A decision with no recommendation
+// (the model raised it without one) is left open and named in `skipped`,
+// with a reason.
+//
+// M3: when a decision has Options, the recommendation must map onto one of
+// them (matchRecommendationOption) -- recording it verbatim regardless
+// would record a choice the decision never offered, exactly what the
+// single-resolve path's offers() guard exists to prevent. And a decision
+// that a CONCURRENT single-resolve call answers between this handler's own
+// ListDecisions snapshot and its ResolveDecision call is treated as
+// skipped, not a 500 that aborts every decision after it in the loop.
+func (s *Server) handleAcceptRecommendations(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	decs, err := pr.db.ListDecisions(r.Context(), ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	resolved := []string{}
+	skipped := []skippedDecision{}
+	for _, d := range decs {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		didResolve, reason, err := s.acceptOneRecommendation(r.Context(), pr, d)
+		if err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if didResolve {
+			resolved = append(resolved, d.Code)
+		} else {
+			skipped = append(skipped, skippedDecision{Code: d.Code, Reason: reason})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resolved": resolved, "skipped": skipped})
+}
+
+// acceptOneRecommendation resolves one decision (already known Open as of
+// the caller's snapshot) with its own recommendation, for
+// handleAcceptRecommendations (review M3). Returns (true, "", nil) when
+// resolved; (false, reason, nil) when skipped -- no recommendation, a
+// recommendation that maps to no unique option, or a decision a CONCURRENT
+// request already resolved between the caller's snapshot and this call
+// (ResolveDecision then fails with "not open"; re-checked here via
+// GetDecision rather than treated as a hard failure that would abort the
+// rest of the batch) -- and a non-nil error only for a genuine store failure.
+func (s *Server) acceptOneRecommendation(ctx context.Context, pr *projectRuntime, d domain.Decision) (bool, string, error) {
+	rec := strings.TrimSpace(d.Recommendation)
+	if rec == "" {
+		return false, "no recommendation was given", nil
+	}
+	resolution := rec
+	if len(d.Options) > 0 {
+		matched, ok, reason := matchRecommendationOption(d.Options, rec)
+		if !ok {
+			return false, reason, nil
+		}
+		resolution = matched
+	}
+	if err := pr.db.ResolveDecision(ctx, d.ID, resolution, store.HumanActor); err != nil {
+		if cur, gerr := pr.db.GetDecision(ctx, d.ID); gerr == nil && cur.Status != domain.DecisionOpen {
+			return false, "resolved by someone else while this request ran", nil
+		}
+		return false, "", err
+	}
+	return true, "", nil
+}
+
+// handleTriage returns the ranked "what needs your judgment first" view
+// (review B4, adopted #8): the top 3 open decisions/questions/blocking
+// findings by impact, the rest labelled optional.
+func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	ctx := r.Context()
+	decs, err := pr.db.ListDecisions(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	questions, err := pr.db.ListQuestions(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	findings, err := pr.db.ListFindingsByInitiative(ctx, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Dependents: how many requirements cite each open decision, via the
+	// requirement --derived_from--> decision edge runProductDefinition wires.
+	// Questions have no such edge today, so they default to 0 dependents
+	// (they still rank by blocking/severity -- neither applies to a question,
+	// so this only affects tie-breaking among questions themselves).
+	dependents := map[string]int{}
+	for _, d := range decs {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		edges, err := pr.db.ListGraphEdgesTo(ctx, ini.ID, "decision", d.ID)
+		if err != nil {
+			continue
+		}
+		n := 0
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDerivedFrom {
+				n++
+			}
+		}
+		dependents[d.ID] = n
+	}
+	items := projection.BuildTriage(decs, questions, findings, dependents)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	pr, err := s.project(r)
 	if err != nil {
@@ -863,6 +1413,16 @@ func (s *Server) handleListRequirements(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// evidence_tests (C2, wave 3 contract): computed at read time, never
+	// persisted, so it is always as fresh as the last check run.
+	evidence, err := projection.ComputeEvidenceTests(r.Context(), pr.db, pr.blobs, pr.rawBlobs, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for i := range list {
+		list[i].EvidenceTests = evidence[list[i].ID]
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -894,6 +1454,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := pr.db.AttachTaskEdges(r.Context(), ini.ID, list); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 
@@ -902,6 +1466,30 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 // taskEditableGuard validates that an initiative's tasks are editable and (when
 // task is non-nil) that the specific task is mutable. It returns a user-facing
 // error otherwise.
+// lockPlanEditFresh acquires the per-initiative plan-edit lock and re-reads
+// the initiative under it (review C2). Without the re-read, every caller
+// below took the lock but then ran taskEditableGuard against the `ini` value
+// fetched before the lock was acquired: RevisePlanInitiative/
+// ReopenPhaseInitiative/AdvanceInitiative claim the initiative (status ->
+// running) and rewrite -- via DeleteTasksForInitiative -- every task, and
+// none of that took this lock, so a plan-edit request that read `ini` a
+// moment earlier saw a stale, still-editable status and proceeded to a 200
+// OK write against tasks that were deleted moments later. Re-reading here
+// closes that: once this lock is held, the initiative's current status and
+// its unfinished operations (both checked by taskEditableGuard) reflect
+// reality, because RevisePlanInitiative/ReopenPhaseInitiative/
+// AdvanceInitiative now take this same lock around their claim (see
+// runtime.go). Callers must defer the returned unlock func.
+func (s *Server) lockPlanEditFresh(ctx context.Context, pr *projectRuntime, initiativeID string) (domain.Initiative, func(), error) {
+	unlock := pr.lockPlanEdit(initiativeID)
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		unlock()
+		return domain.Initiative{}, nil, err
+	}
+	return ini, unlock, nil
+}
+
 func (s *Server) taskEditableGuard(ctx context.Context, pr *projectRuntime, ini domain.Initiative, task *domain.Task) error {
 	if ini.Status != domain.InitiativePlanApproved && ini.Status != domain.InitiativeNeedsHumanJudgment {
 		return fmt.Errorf("tasks are editable only after the plan is drafted and before it is executed")
@@ -940,41 +1528,54 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decode before taking the lock/guard (review C2): a client-controlled
+	// body read must not happen between the guard passing and the write,
+	// nor hold the per-initiative lock for longer than the write itself
+	// needs it.
 	var body struct {
-		Title      string   `json:"title"`
-		Statement  string   `json:"statement"`
-		Priority   string   `json:"priority"`
-		Estimate   string   `json:"estimate"`
-		Implements string   `json:"implements"`
-		DependsOn  []string `json:"depends_on"`
+		Title          string   `json:"title"`
+		Statement      string   `json:"statement"`
+		Priority       string   `json:"priority"`
+		Estimate       string   `json:"estimate"`
+		Implements     string   `json:"implements"`
+		RequirementIDs []string `json:"requirement_ids"`
+		DependsOn      []string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
 
-	// Resolve the implements requirement (by code or id) if given.
-	implementsID := ""
+	// Resolve the requirement reference(s): `implements` (single, kept for
+	// compatibility) plus `requirements_ids` (N:M, review A4 #3/#4). A task
+	// added after the plan is approved must name at least one -- unlike the
+	// planner's own unresolved-reference finding, this is refused synchronously
+	// rather than parked, since there is no plan-review cycle to catch it here.
+	var reqRefs []string
 	if body.Implements != "" {
-		reqs, err := pr.db.ListRequirements(r.Context(), ini.ID)
-		if err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		for _, req := range reqs {
-			if req.Code == body.Implements || req.ID == body.Implements {
-				implementsID = req.ID
-				break
-			}
-		}
-		if implementsID == "" {
-			writeError(w, http.StatusBadRequest, "implements references an unknown requirement")
-			return
-		}
+		reqRefs = append(reqRefs, body.Implements)
+	}
+	reqRefs = append(reqRefs, body.RequirementIDs...)
+	if len(reqRefs) == 0 {
+		writeError(w, http.StatusBadRequest, "requirement_ids is required (at least one)")
+		return
+	}
+	implementsIDs, err := s.resolveRequirementRefs(r.Context(), pr, ini.ID, reqRefs)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 
 	// Resolve depends_on titles to existing task ids.
@@ -995,11 +1596,90 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		Priority:     priority,
 		Estimate:     body.Estimate,
 	}
-	if err := pr.db.CreateTask(r.Context(), task, implementsID, depIDs); err != nil {
+	if err := pr.db.CreateTaskMulti(r.Context(), task, implementsIDs, depIDs); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	task.RequirementIDs, task.DependsOn = nonNilStrings(implementsIDs), nonNilStrings(depIDs)
 	writeJSON(w, http.StatusOK, task)
+}
+
+// nonNilStrings returns s, or an empty (non-nil) slice when s is nil, so a
+// Task's requirement_ids/depends_on always serialize as `[]`, never `null`.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// resolveRequirementRefs resolves each ref to a Requirement.ID, matching by
+// exact id or by NormalizeRequirementRef'd code (review A4 #4: trim,
+// case-insensitive, "REQ-3: title" forms). Duplicates are dropped; any ref
+// that resolves to nothing is a 400 naming it, mirroring `depends_on`'s own
+// unknown-reference refusal.
+func (s *Server) resolveRequirementRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
+	reqs, err := pr.db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	byCode := make(map[string]domain.Requirement, len(reqs))
+	byID := make(map[string]domain.Requirement, len(reqs))
+	for _, req := range reqs {
+		byCode[workflow.NormalizeRequirementRef(req.Code)] = req
+		byID[req.ID] = req
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		req, ok := byID[ref]
+		if !ok {
+			req, ok = byCode[workflow.NormalizeRequirementRef(ref)]
+		}
+		if !ok {
+			return nil, fmt.Errorf("requirement_ids references an unknown requirement %q", ref)
+		}
+		// review low-priority item: a superseded requirement is refused, not
+		// silently wired to a task as if it were still live.
+		//
+		// Requirement.SupersededBy is provenance (a run label like
+		// "human-revise" or "retry" -- see store.SupersedeRequirements), not a
+		// pointer to whatever requirement replaced it: there is no tracked 1:1
+		// successor link. The closest available signal is an active
+		// requirement with the IDENTICAL statement text, which is what a
+		// revise that regenerates the same requirement produces in practice;
+		// named when found, so the caller is not left to search for it by
+		// hand, but this is a heuristic, not a guarantee -- reworded
+		// requirements have no traceable successor at all.
+		if req.SupersededBy != "" {
+			if live := liveRequirementWithSameStatement(reqs, req); live != "" {
+				return nil, fmt.Errorf("requirement_ids references %q, which is superseded; %s appears to be its live continuation (same statement); use that instead", ref, live)
+			}
+			return nil, fmt.Errorf("requirement_ids references %q, which is superseded and has no active continuation", ref)
+		}
+		if !seen[req.ID] {
+			seen[req.ID] = true
+			out = append(out, req.ID)
+		}
+	}
+	return out, nil
+}
+
+// liveRequirementWithSameStatement returns the Code of an active requirement
+// (not removed, not itself superseded) among all whose Statement exactly
+// matches superseded's -- the closest available signal to "what replaced
+// this", given SupersededBy carries no successor id (see the caller). Returns
+// "" when no such requirement exists.
+func liveRequirementWithSameStatement(all []domain.Requirement, superseded domain.Requirement) string {
+	for _, r := range all {
+		if r.ID == superseded.ID || r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+			continue
+		}
+		if r.Statement == superseded.Statement {
+			return r.Code
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
@@ -1008,7 +1688,39 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention -- body validation jumping ahead of an id lookup needs to be
+	// a deliberate, listed exception, not a side effect of C2's reordering).
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	// Decode before taking the lock/guard (review C2): see handleAddTask.
+	var body struct {
+		Title          string   `json:"title"`
+		Statement      string   `json:"statement"`
+		Priority       string   `json:"priority"`
+		Estimate       string   `json:"estimate"`
+		RequirementIDs []string `json:"requirement_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	// Re-fetch the task under the lock too: taskEditableGuard's task-specific
+	// checks (status, existing change sets) must see current state, not the
+	// pre-lock read above (same C2 reasoning as the initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
@@ -1017,15 +1729,29 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
-	var body struct {
-		Title     string `json:"title"`
-		Statement string `json:"statement"`
-		Priority  string `json:"priority"`
-		Estimate  string `json:"estimate"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
+	// Everything here is validated (and, for requirement_ids, resolved to real
+	// ids) BEFORE either write below runs (review low-priority item): this
+	// handler used to replace the task's requirement edges FIRST and only
+	// validate priority afterward, so a bad `priority` value in the same
+	// request returned 400 after the edges were already replaced -- a
+	// half-applied PATCH the client's 400 gave no reason to suspect.
+	//
+	// requirement_ids is optional on PATCH: omitted (nil) leaves the task's
+	// existing requirement links untouched. Present, it replaces them
+	// entirely, and (review A4 #3) must name at least one -- clearing a task's
+	// last requirement is refused the same way adding one with none is.
+	var implementsIDs []string
+	replaceRequirements := body.RequirementIDs != nil
+	if replaceRequirements {
+		if len(body.RequirementIDs) == 0 {
+			writeError(w, http.StatusBadRequest, "requirement_ids is required (at least one)")
+			return
+		}
+		implementsIDs, err = s.resolveRequirementRefs(r.Context(), pr, ini.ID, body.RequirementIDs)
+		if err != nil {
+			s.writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	priority := task.Priority
 	if body.Priority != "" {
@@ -1044,6 +1770,14 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	if body.Statement != "" {
 		statement = pr.redactor.RedactString(body.Statement)
 	}
+
+	// Writes: only now, after every field above validated cleanly.
+	if replaceRequirements {
+		if err := pr.db.ReplaceTaskRequirements(r.Context(), ini.ID, task.ID, implementsIDs); err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	if err := pr.db.UpdateTask(r.Context(), ini.ID, task.ID, title, statement, priority, body.Estimate); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1056,6 +1790,10 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	if updated != nil {
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1065,6 +1803,14 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1074,17 +1820,18 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusConflict, err)
 		return
 	}
-	// Refuse if any other task depends on this one.
-	edges, err := pr.db.ListGraphEdgesTo(r.Context(), ini.ID, "task", task.ID)
-	if err != nil {
+	// Refuse if any other task depends on this one, naming which ones (review
+	// B3: the message was raw `{"error":"another task depends on this
+	// task…"}` -- true, and useless, since it never said which task or what
+	// to do about it).
+	if dependents, err := s.taskDependents(r.Context(), pr, ini.ID, task.ID); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
-	}
-	for _, e := range edges {
-		if e.EdgeType == domain.EdgeDependsOn {
-			writeError(w, http.StatusConflict, "another task depends on this task; remove that dependency first")
-			return
-		}
+	} else if len(dependents) > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"%s cannot be deleted: %s depend on it. Remove those dependencies first, or delete them too.",
+			task.Code, strings.Join(dependents, ", ")))
+		return
 	}
 	if err := pr.db.DeleteTask(r.Context(), ini.ID, task.ID); err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
@@ -1099,6 +1846,14 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
 	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
@@ -1121,10 +1876,7 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
-		s.writeErr(w, http.StatusConflict, err)
-		return
-	}
+	// Decode before taking the lock/guard (review C2): see handleAddTask.
 	var body struct {
 		TaskIDs []string `json:"task_ids"`
 	}
@@ -1132,12 +1884,400 @@ func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "task_ids is required")
 		return
 	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	if err := s.taskEditableGuard(r.Context(), pr, ini, nil); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
 	if err := pr.db.ReorderTasks(r.Context(), ini.ID, body.TaskIDs); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	list, _ := pr.db.ListTasks(r.Context(), ini.ID)
+	// review MEDIUM #3: without this, every task in the response comes back
+	// with requirement_ids/depends_on == null (the now-required arrays are
+	// only populated by TaskEdges/AttachTaskEdges, never by ListTasks
+	// itself) -- a reorder looked like it had wiped every requirement link
+	// and dependency arrow until the client re-fetched with a separate GET.
+	if err := pr.db.AttachTaskEdges(r.Context(), ini.ID, list); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// handleSetTaskDependsOn replaces a task's depends_on wholesale (review B3:
+// "set a task's depends_on (validate for cycles)"), refusing a set that would
+// create a dependency cycle. Unlike PATCH (which leaves depends_on untouched
+// when omitted), this endpoint's whole purpose is depends_on, so an empty
+// list is a legitimate request -- "make this task depend on nothing".
+func (s *Server) handleSetTaskDependsOn(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention; see handleUpdateTask).
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	// DependsOn is a pointer (review low-priority item): {} or a misspelled
+	// field name decodes to a nil field, which must be refused rather than
+	// silently treated as depends_on: [] and clearing every existing
+	// dependency. An explicitly empty array, {"depends_on": []}, decodes to
+	// a non-nil pointer to an empty slice and is still the legitimate "make
+	// this task depend on nothing" request the doc comment above describes.
+	//
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
+	var body struct {
+		DependsOn *[]string `json:"depends_on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.DependsOn == nil {
+		writeError(w, http.StatusBadRequest, "depends_on is required (use [] to clear all dependencies)")
+		return
+	}
+	// M5: serializes the guard check, wouldCycle, and the write against
+	// every other Plan-editing endpoint on this same initiative -- two
+	// concurrent set-depends_on requests (A->B and B->A) each used to pass
+	// wouldCycle against the graph as it stood before either write landed,
+	// and together create a cycle.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	// Re-fetch the task under the lock too (same C2 reasoning as the
+	// initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	depIDs, err := s.resolveTaskRefs(r.Context(), pr, ini.ID, *body.DependsOn)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	for _, id := range depIDs {
+		if id == task.ID {
+			writeError(w, http.StatusBadRequest, "a task cannot depend on itself")
+			return
+		}
+	}
+	if cycle, err := s.wouldCycle(r.Context(), pr, ini.ID, task.ID, depIDs); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if cycle != "" {
+		writeError(w, http.StatusBadRequest, "that dependency would create a cycle: "+cycle)
+		return
+	}
+	// M5: SetTaskDependencies re-checks for a cycle INSIDE the same
+	// transaction as the write, defense-in-depth beyond the pre-check above
+	// and lockPlanEdit's serialization (for any path to this write that
+	// isn't the pre-check's own wouldCycle call).
+	if err := pr.db.SetTaskDependencies(r.Context(), ini.ID, task.ID, depIDs); err != nil {
+		if errors.Is(err, store.ErrDependsOnCycle) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	updated, _ := pr.db.GetTask(r.Context(), task.ID)
+	if updated != nil {
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// wouldCycle reports whether replacing taskID's depends_on with newDeps would
+// introduce a dependency cycle anywhere in the initiative's task graph. It
+// builds the FULL graph (every task's current depends_on) with taskID's edges
+// swapped for newDeps, so a cycle introduced through some OTHER task is caught
+// too, not just a direct A-depends-on-A/B-depends-on-A-depends-on-B case.
+func (s *Server) wouldCycle(ctx context.Context, pr *projectRuntime, initiativeID, taskID string, newDeps []string) (string, error) {
+	tasks, err := pr.db.ListTasks(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	deps := map[string][]string{}
+	for _, t := range tasks {
+		if t.ID == taskID {
+			deps[t.ID] = newDeps
+			continue
+		}
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", t.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDependsOn {
+				deps[t.ID] = append(deps[t.ID], e.ToID)
+			}
+		}
+	}
+	return store.DetectTaskCycle(deps), nil
+}
+
+// handleMergeTasks merges two tasks into one (review B3): the requirements of
+// both are unioned onto the surviving (first-named) task, their statements
+// are concatenated, every dependency edge either task held is rewired onto
+// the survivor, and the second task is deleted.
+func (s *Server) handleMergeTasks(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
+	var body struct {
+		TaskIDs []string `json:"task_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.TaskIDs) != 2 {
+		writeError(w, http.StatusBadRequest, "task_ids must name exactly 2 tasks")
+		return
+	}
+	// H4: refuse a self-merge before even looking the tasks up -- task_ids:
+	// [A, A] used to pass both existence guards and then DeleteTask(A)
+	// deleted the survivor, leaving a null response.
+	if body.TaskIDs[0] == body.TaskIDs[1] {
+		writeError(w, http.StatusBadRequest, "task_ids must name two distinct tasks")
+		return
+	}
+	// M5: serializes the guard checks and MergeTasks's own cycle check
+	// against every other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	keep, err := pr.db.GetTask(r.Context(), body.TaskIDs[0])
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[0])
+		return
+	}
+	merge, err := pr.db.GetTask(r.Context(), body.TaskIDs[1])
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found: "+body.TaskIDs[1])
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, keep); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, merge); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+
+	// H4: the union/concat/rewire/delete below is now MergeTasks, ONE store
+	// transaction that also runs the cycle check against the FINAL graph
+	// before writing anything (a failure partway, or a concurrent request,
+	// used to leave a half-merged plan; there was also no cycle check at
+	// all, so A->B->C plus merging (A, C) could silently create A->B->A).
+	updated, err := pr.db.MergeTasks(r.Context(), ini.ID, keep.ID, merge.ID)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrSelfMerge):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, store.ErrMergeCycle):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	if updated != nil {
+		reqs, deps, _ := pr.db.TaskEdges(r.Context(), ini.ID, updated.ID)
+		updated.RequirementIDs, updated.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// taskRequirementIDs returns the union of the requirement ids two tasks each
+// implement (`implements` edges), for a merge (review B3).
+func (s *Server) taskRequirementIDs(ctx context.Context, pr *projectRuntime, initiativeID string, taskIDs ...string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range taskIDs {
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeImplements && !seen[e.ToID] {
+				seen[e.ToID] = true
+				out = append(out, e.ToID)
+			}
+		}
+	}
+	return out, nil
+}
+
+// unionTaskDeps returns the union of two tasks' own outgoing depends_on
+// (each other and self-references dropped), for a merge (review B3).
+func (s *Server) unionTaskDeps(ctx context.Context, pr *projectRuntime, initiativeID string, taskIDs ...string) ([]string, error) {
+	exclude := map[string]bool{}
+	for _, id := range taskIDs {
+		exclude[id] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range taskIDs {
+		edges, err := pr.db.ListGraphEdgesFrom(ctx, initiativeID, "task", id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range edges {
+			if e.EdgeType == domain.EdgeDependsOn && !exclude[e.ToID] && !seen[e.ToID] {
+				seen[e.ToID] = true
+				out = append(out, e.ToID)
+			}
+		}
+	}
+	return out, nil
+}
+
+// handleSplitTask splits one task into two or more (review B3). Each new
+// task's requirement_ids defaults to the original task's own requirements
+// when omitted. Every new task inherits the original's outgoing depends_on,
+// and anything that depended on the original now depends on ALL the new
+// tasks (a safe superset -- narrowing it is a follow-up `set depends_on`).
+// The original task is then deleted.
+func (s *Server) handleSplitTask(w http.ResponseWriter, r *http.Request) {
+	pr, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Look up the path task BEFORE decoding the body: a bogus {taskId} must
+	// answer 404 regardless of the body (TestEveryIDRouteAnswers404's
+	// convention; see handleUpdateTask).
+	task, err := pr.db.GetTask(r.Context(), r.PathValue("taskId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	// Decoded before taking the lock/guard (review C2): see handleAddTask.
+	var body struct {
+		Tasks []struct {
+			Title          string   `json:"title"`
+			Statement      string   `json:"statement"`
+			RequirementIDs []string `json:"requirement_ids"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Tasks) < 2 {
+		writeError(w, http.StatusBadRequest, "tasks must name at least 2 replacement tasks")
+		return
+	}
+	// M5: serializes the guard check through every write below against every
+	// other Plan-editing endpoint on this same initiative.
+	ini, unlock, err := s.lockPlanEditFresh(r.Context(), pr, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	defer unlock()
+	// Re-fetch the task under the lock too (same C2 reasoning as the
+	// initiative itself).
+	task, err = pr.db.GetTask(r.Context(), task.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := s.taskEditableGuard(r.Context(), pr, ini, task); err != nil {
+		s.writeErr(w, http.StatusConflict, err)
+		return
+	}
+
+	ctx := r.Context()
+	originalReqs, err := s.taskRequirementIDs(ctx, pr, ini.ID, task.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	originalDeps, err := s.unionTaskDeps(ctx, pr, ini.ID, task.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// M4: validate and resolve EVERY replacement task before any write. The
+	// old handler validated a spec's title and resolved its
+	// requirement_ids inside the same loop that created tasks one at a
+	// time, so an invalid second (or third...) spec returned 400 after the
+	// first replacement was already created and the original not yet
+	// deleted -- a half-applied split, the same bug this branch had already
+	// fixed for PATCH.
+	specs := make([]store.SplitTaskSpec, 0, len(body.Tasks))
+	for i, spec := range body.Tasks {
+		title := strings.TrimSpace(spec.Title)
+		if title == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d needs a title", i+1))
+			return
+		}
+		reqIDs := originalReqs
+		if spec.RequirementIDs != nil {
+			reqIDs, err = s.resolveRequirementRefs(ctx, pr, ini.ID, spec.RequirementIDs)
+			if err != nil {
+				s.writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		// M4: requirement_ids: [] (explicitly empty, non-nil) must not
+		// silently produce a task with no requirement -- "Added tasks take
+		// a requirement" -- and neither may originalReqs being empty (the
+		// original itself had none).
+		if len(reqIDs) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("replacement task %d (%q) needs at least one requirement", i+1, title))
+			return
+		}
+		specs = append(specs, store.SplitTaskSpec{
+			Title:          pr.redactor.RedactString(title),
+			Statement:      pr.redactor.RedactString(spec.Statement),
+			Priority:       task.Priority,
+			RequirementIDs: reqIDs,
+		})
+	}
+
+	// M4: every replacement's creation, the dependent rewiring, and the
+	// original's deletion now run inside SplitTask's one transaction.
+	created, err := pr.db.SplitTask(ctx, ini.ID, task.ID, specs, originalDeps)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, nt := range created {
+		reqs, deps, err := pr.db.TaskEdges(ctx, ini.ID, nt.ID)
+		if err != nil {
+			s.writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		nt.RequirementIDs, nt.DependsOn = nonNilStrings(reqs), nonNilStrings(deps)
+	}
+	writeJSON(w, http.StatusOK, created)
 }
 
 // handleGenerateVerificationTask creates a plan task whose purpose is verifying
@@ -1177,7 +2317,38 @@ func verificationStatement(r *domain.Requirement) string {
 	return strings.TrimSpace(b.String())
 }
 
-// resolveTaskRefs resolves task references (title, code, or id) to task ids.
+// taskDependents returns the human-readable codes of tasks whose depends_on
+// names taskID, for a readable delete refusal (review B3).
+func (s *Server) taskDependents(ctx context.Context, pr *projectRuntime, initiativeID, taskID string) ([]string, error) {
+	edges, err := pr.db.ListGraphEdgesTo(ctx, initiativeID, "task", taskID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range edges {
+		if e.EdgeType != domain.EdgeDependsOn {
+			continue
+		}
+		if t, err := pr.db.GetTask(ctx, e.FromID); err == nil {
+			out = append(out, t.Code)
+		} else {
+			out = append(out, e.FromID)
+		}
+	}
+	return out, nil
+}
+
+// resolveTaskRefs resolves task references (title, code, or id) to task ids,
+// as documented (docs/api.md's depends-on entry: "titles, codes, or ids").
+// Matched by exact id FIRST -- an id is never run through the
+// title/whitespace-folding normalization below, so a task whose id happens to
+// collide with another task's normalized title/code (astronomically unlikely,
+// but exact-id is unambiguous regardless) always resolves to itself -- then
+// falls back to a normalized title/code match. Before this, a task's own id
+// was never in byNorm at all: depends_on documented "titles, codes, or ids"
+// but only the first two worked, so `idea task depends-on <task-id>` (or any
+// caller passing ids, the least ambiguous ref a client could use) failed with
+// "unknown task" for every id (review #3, ICP re-run).
 func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initiativeID string, refs []string) ([]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -1187,14 +2358,19 @@ func (s *Server) resolveTaskRefs(ctx context.Context, pr *projectRuntime, initia
 		return nil, err
 	}
 	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	byID := make(map[string]string, len(tasks))
 	byNorm := map[string]string{}
 	for _, t := range tasks {
+		byID[t.ID] = t.ID
 		byNorm[norm(t.Title)] = t.ID
 		byNorm[norm(t.Code)] = t.ID
 	}
 	var out []string
 	for _, ref := range refs {
-		id, ok := byNorm[norm(ref)]
+		id, ok := byID[ref]
+		if !ok {
+			id, ok = byNorm[norm(ref)]
+		}
 		if !ok {
 			return nil, fmt.Errorf("depends_on references an unknown task %q", ref)
 		}
@@ -1888,11 +3064,27 @@ func (s *Server) handleFindingDisposition(w http.ResponseWriter, r *http.Request
 		return
 	}
 	disp := domain.Disposition(body.Disposition)
-	if err := pr.db.SetFindingDisposition(r.Context(), r.PathValue("id"), disp, store.HumanActor); err != nil {
+	findingID := r.PathValue("id")
+	if err := pr.db.SetFindingDisposition(r.Context(), findingID, disp, store.HumanActor); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "dispositioned"})
+	resp := map[string]string{"status": "dispositioned"}
+	// rejected resolves a reviewer's own judgment call (Code == "") the same
+	// as fixed/accepted_risk (Finding.ResolvesBlocking, ICP re-run defect
+	// #2), but a finding carrying a system deny code still blocks
+	// afterward -- "system deny beats human approve" -- so a 200 here would
+	// otherwise say nothing about that (the ICP re-run's own reported
+	// "returns 200 with no warning"). Best-effort: a failed re-read must not
+	// turn a successful disposition into an error response.
+	if disp == domain.DispositionRejected {
+		if f, err := pr.db.GetFinding(r.Context(), findingID); err == nil && f.Code != "" {
+			resp["warning"] = fmt.Sprintf(
+				"this finding carries system deny code %q; rejected does not clear it -- only fixing the underlying problem does",
+				f.Code)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleFindingNote records a free-text human note on a finding ("discuss").
@@ -1951,13 +3143,19 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	// ordinary run, which continues a stopped run's kept files. Decoded
 	// leniently on purpose: this endpoint has always ignored its body, and
 	// refusing one it used to accept would be a breaking change.
+	//
+	// `note` (D-a, wave 3 contract) steers this one rerun: appended to the
+	// implementer's brief and recorded on the run. Decoded just as leniently
+	// as `fresh` -- an old CLI/UI that never sends it must keep working
+	// unchanged.
 	var body struct {
-		Fresh bool `json:"fresh"`
+		Fresh bool   `json:"fresh"`
+		Note  string `json:"note"`
 	}
 	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
 		_ = json.Unmarshal(raw, &body)
 	}
-	opID, err := s.rt.ExecuteInitiativeFresh(r.Context(), projectID, initiativeID, body.Fresh)
+	opID, err := s.rt.ExecuteInitiativeFreshWithNote(r.Context(), projectID, initiativeID, body.Fresh, body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1994,6 +3192,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		Fail        bool   `json:"fail"`
 		Waived      bool   `json:"waived"`
 		Note        string `json:"note"`
+		// ConfirmPassingTests (C2, wire contract) confirms every criterion
+		// whose mapped tests all passed, via the same human-evidence path,
+		// actor human. Never inferred -- only this explicit request does it.
+		ConfirmPassingTests bool `json:"confirm_passing_tests"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -2013,13 +3215,21 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	// reported the whole-initiative gate and never mentioned REQ-99. The name is
 	// resolved inside RunVerificationGate, alongside the state check, so the two
 	// refusals have one precedence rather than depending on which field was set.
-	status, coverage, err := s.rt.RunVerificationGate(
-		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note)
+	status, coverage, confirmResult, err := s.rt.RunVerificationGateConfirmingTests(
+		r.Context(), projectID, initiativeID, body.Requirement, disposition, body.Note, body.ConfirmPassingTests)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "coverage": coverage})
+	resp := map[string]any{"status": status, "coverage": coverage}
+	// confirmed/skipped (C3/H2, wire contract addition) are present only when
+	// confirm_passing_tests was requested -- an ordinary pass/fail/waive call
+	// never touches them, so its response shape is unchanged.
+	if confirmResult != nil {
+		resp["confirmed"] = confirmResult.Confirmed
+		resp["skipped"] = confirmResult.Skipped
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleNext returns the deterministic next step for an initiative (§52).
@@ -2188,12 +3398,23 @@ func (s *Server) handleChangeSetDiff(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	// Bounded (review defect #2: "the diff endpoint that didn't respond in
+	// 100s"): RenderPatchPage/StructuredDiffPage cap the per-file redact-and-
+	// diff work at maxDiffEndpointFiles rather than processing every file of
+	// an arbitrarily large change set synchronously in this request.
+	// total_files/truncated are additive fields; a client reading only
+	// patch/files behaves exactly as before.
+	patch, total := pr.engine.RenderPatchPage(cs)
+	files, _ := pr.engine.StructuredDiffPage(cs)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"patch": pr.engine.RenderPatch(cs),
-		"files": pr.engine.StructuredDiff(cs),
+		"patch":       patch,
+		"files":       files,
+		"total_files": total,
+		"truncated":   total > len(files),
 	})
 }
 func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
 	pr, cs, err := s.changeSet(r)
 	if err != nil {
 		s.writeErr(w, http.StatusNotFound, err)
@@ -2219,17 +3440,54 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "verdict is required")
 		return
 	}
+	// "rerun" (ICP re-run defect #1) is not a verdict the ChangeSet state
+	// machine records -- it runs the adversarial reviewer again for a change
+	// set whose review never completed the first time (Execute's own review
+	// call errored, most often cancelled mid-review) and leaves the change
+	// set in review_required throughout, exactly where a normal review
+	// leaves it. It shares this endpoint rather than getting its own route
+	// because it takes the identical body shape and belongs in the same
+	// "act on this change set's review" surface a human already knows, not
+	// because it is itself a verdict.
+	//
+	// Async (ICP re-run D2): this is a real model call (observed 1m12s-1m38s
+	// across four founder-journey runs), and running it synchronously inside
+	// this handler used to mean the daemon always finished the work while the
+	// CLI's own 60s http.Client timed out waiting for the response -- a
+	// brand-new command that appeared to fail on every use. 202 + operation_id
+	// is the same shape `idea apply`/`idea execute` already answer with, so
+	// the CLI can wait/watch/cancel it instead of racing a fixed timeout.
+	if body.Verdict == "rerun" {
+		if body.AcceptFindings {
+			writeError(w, http.StatusBadRequest, "accept_findings does not apply to rerun")
+			return
+		}
+		opID, err := s.rt.RerunChangeSetReviewInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
+		if err != nil {
+			s.writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+		return
+	}
 	review := pr.engine.ReviewChangeSet
 	if body.AcceptFindings {
 		review = pr.engine.ReviewChangeSetAccepting
 	}
-	// E1: an "approved" verdict runs the adversarial reviewer synchronously,
-	// inside this request. That used to share the request's own context, so
-	// closing the browser tab -- which cancels it -- cancelled the review
-	// mid-flight and left "context canceled" in daemon.log with the change set
-	// stuck wherever it was. context.WithoutCancel detaches from the client's
-	// disconnect; the timeout is this process's own bound, generous enough
-	// for a real model call without hanging forever on a wedged provider.
+	// E1: an "approved" verdict used to run the adversarial reviewer
+	// synchronously, inside this request, and shared the request's own
+	// context, so closing the browser tab -- which cancels it -- cancelled
+	// the review mid-flight and left "context canceled" in daemon.log with
+	// the change set stuck wherever it was. Approve itself no longer calls
+	// the model at all (see reviewChangeSet's own comment); kept here anyway
+	// since nothing about verdict handling should depend on the request's own
+	// lifetime. "rerun" above is the one verdict that does call the model,
+	// and it is now async (RerunChangeSetReviewInitiative, ICP re-run D2),
+	// detached the same way via its own launchOperation background context
+	// rather than this one.
+	// context.WithoutCancel detaches from the client's disconnect; the
+	// timeout is this process's own bound, generous enough for a real model
+	// call without hanging forever on a wedged provider.
 	//
 	// It derives from the runtime's lifetime, not from nothing: detached
 	// from everything, a review kept the engine lock through `idea daemon
@@ -2256,7 +3514,12 @@ func (s *Server) handleApplyChangeSet(w http.ResponseWriter, r *http.Request) {
 	// caught here: launching the operation and failing in the background made
 	// `idea apply CHG-1` on an already-applied change set answer "✓ apply
 	// started" with the failure only visible in the log.
-	if cs.Status != domain.ChangeSetApproved {
+	//
+	// ChangeSetReverted is also accepted (ICP re-run defect #3): a reverted
+	// change set may be re-applied, subject to the same staleness and
+	// secret-sweep guards ApplyChangeSet already runs for a fresh approved
+	// one.
+	if cs.Status != domain.ChangeSetApproved && cs.Status != domain.ChangeSetReverted {
 		writeError(w, http.StatusConflict, applyStateMessage(cs))
 		return
 	}
@@ -2277,6 +3540,14 @@ func applyStateMessage(cs *domain.ChangeSet) string {
 	case domain.ChangeSetApplying:
 		return "change set " + cs.HumanID + " is being applied; `idea changes` shows when it lands"
 	case domain.ChangeSetReviewRequired:
+		// ICP re-run defect #1: a change set whose adversarial review never
+		// completed (Execute's own review call errored, most often cancelled
+		// mid-review) cannot usefully be told to approve -- approve refuses
+		// it too, naming the same rerun. Say so here as well, so `idea apply`
+		// on it points the same direction as `idea review ... approve` would.
+		if !cs.ReviewCompleted() {
+			return "change set " + cs.HumanID + " never finished its adversarial review (" + cs.ReviewNeverCompletedCause() + "): `idea review " + cs.HumanID + " rerun`, then approve"
+		}
 		return "change set " + cs.HumanID + " needs approval first: `idea review " + cs.HumanID + " approve`"
 	case domain.ChangeSetRejected, domain.ChangeSetChangesRequested:
 		return "change set " + cs.HumanID + " was " + string(cs.Status) + "; `idea reviews` shows why"
@@ -2331,6 +3602,46 @@ func (s *Server) handleRevertChangeSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
+}
+
+// handleCreatePR pushes an initiative's dedicated branch (git.branch_per_initiative)
+// and opens a pull request via `gh pr create` (review C4 piece 3). Synchronous,
+// unlike apply/execute/revert: it touches only git/GitHub state, not the
+// workspace tree, so there is nothing here that needs a background operation
+// or a claim on the initiative. Idempotent: a repeat call answers the same
+// `pr_url` rather than opening a second PR.
+func (s *Server) handleCreatePR(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	_, ini, err := s.initiative(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	url, err := s.rt.CreatePRForInitiative(r.Context(), projectID, ini.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"pr_url": url})
+}
+
+// handlePRChecks reports the latest CI status of a change set's initiative's
+// pull request via `gh pr checks` (review C4 piece 3). Scoped by change set
+// id since that is where the CLI and UI show it, though every change set of
+// one initiative shares the same PR and so the same result.
+func (s *Server) handlePRChecks(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	_, cs, err := s.changeSet(r)
+	if err != nil {
+		s.writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	res, err := s.rt.PRChecksForChangeSet(r.Context(), projectID, cs.ID)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleRisk computes the deterministic risk profile for an initiative from its

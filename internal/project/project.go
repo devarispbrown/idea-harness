@@ -19,6 +19,28 @@ const (
 	harnessYAML = "harness.yaml"
 )
 
+// gitignoreContent is written to .idea-harness/.gitignore by InitConfig
+// (review defect D). It draws the line between what belongs in the user's
+// history and what doesn't: project.yaml, harness.yaml, and roles/*.yaml are
+// portable config, meant to be committed like any other project file --
+// nothing here ignores them. tmp/ is the harness's own scratch space
+// (fsdiff's atomic-write staging area, internal/fsdiff.writeAtomic), never
+// meant to be committed at all, and standards/ policies/ schemas/ artifacts/
+// are empty placeholders until a user populates them, so there is nothing
+// there yet to make a decision about.
+//
+// Without this, a fresh .idea-harness/ is entirely untracked, and a
+// founder-journey run turning on git.branch_per_initiative before ever
+// running `git add .idea-harness` had EVERY apply refuse with "uncommitted
+// changes outside this change set" naming the harness's own config -- fixed
+// independently in internal/git (dirtyPathsOutside never reports a
+// .idea-harness/ path as dirty at all), but a .gitignore here is still the
+// right hygiene regardless: without it, a plain `git add -A` sweeps tmp/'s
+// scratch files into the user's own commit.
+const gitignoreContent = "# idea-harness's own scratch space -- never part of your project's history.\n" +
+	"# project.yaml, harness.yaml, and roles/ above are meant to be committed.\n" +
+	"/tmp/\n"
+
 var subdirs = []string{"roles", "standards", "policies", "schemas", "artifacts"}
 
 // InitConfig creates the portable .idea-harness/ tree in rootPath. It never
@@ -32,6 +54,13 @@ func InitConfig(rootPath string) error {
 		if err := os.MkdirAll(filepath.Join(dir, s), 0o755); err != nil {
 			return fmt.Errorf("project: mkdir %s: %w", s, err)
 		}
+	}
+
+	// .gitignore (review defect D): drawn between committable config
+	// (project.yaml, harness.yaml, roles/) and the harness's own local
+	// scratch state (tmp/) -- see gitignoreContent's doc comment.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0o644); err != nil {
+		return fmt.Errorf("project: write %s: %w", filepath.Join(dir, ".gitignore"), err)
 	}
 
 	// project.yaml

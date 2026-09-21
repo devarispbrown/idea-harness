@@ -16,19 +16,26 @@ if this file has drifted.
 | Command | What it does | Flags | `--json` |
 | --- | --- | --- | --- |
 | `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
-| `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow | `--doc`, `--no-wait` | no |
+| `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately) | `--doc`, `--no-wait`, `--wait` | no |
 | `idea status [<initiative>]` | show initiative + current work | `--json` | yes |
 | `idea changed [<initiative>]` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |
+| `idea questions` | list open/answered questions | `--json` | yes |
+| `idea answer <question> "<answer>" [<initiative>]` | answer an open question | none | takes no flags |
+| `idea resolve <decision> <option#>\|"<resolution>" [<initiative>]` | resolve an open decision, by option number or free text | none | takes no flags |
+| `idea reopen-decision <decision> [<initiative>]` | return a resolved decision to open | none | takes no flags |
+| `idea accept-recommendations` | resolve every open decision with its own recommendation | `--json` | yes |
+| `idea triage` | show the ranked "needs your judgment" view | `--json` | yes |
 | `idea reviews` | list review findings | `--json` | yes |
-| `idea model` | list/set model providers (Gemini, OpenAI, …) | `add --base-url`, `add --key-env`, `add --type`, `list`, `ls`, `set --role` | takes no flags |
+| `idea model [--provider <name>] [--all]` | show the current model + a curated set (Gemini, OpenAI, …) | `--all`, `--provider`, `add --base-url`, `add --key-env`, `add --type`, `list --all`, `list --provider`, `ls`, `set --role` | no |
+| `idea model list [<provider>] [--all]` | list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider | — | — |
 | `idea model ls <provider>` | list a provider's models live (falls back to the catalog offline) | — | — |
 | `idea model set <provider/model>` | set the default model (--role <role> sets one role only) | — | — |
 | `idea model add <name>` | add a provider (--type, --base-url, --key-env) | — | — |
 | `idea prd` | render the reviewed PRD in your terminal | none | takes no flags |
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |
-| `idea advance` | run Design → Execution Plan (M2) | none | takes no flags |
+| `idea advance [--wait]` | run Design → Execution Plan (M2); returns a handle immediately unless --wait | `--wait` | no |
 | `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
 | `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
 | `idea approve-plan` | accept the execution plan as it stands | none | takes no flags |
@@ -39,19 +46,21 @@ if this file has drifted.
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
-| `idea execute` | run the next ready task → change set | none | takes no flags |
+| `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
-| `idea retry [<initiative>] [--model <provider/model>] [--no-wait]` | re-run a failed initiative | `--model`, `--no-wait` | no |
+| `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative; --note steers this retry (joins the framing prompt) | `--model`, `--no-wait`, `--note` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
-| `idea apply <id>` | apply an approved change set | none | takes no flags |
-| `idea revert <id>` | roll back a change set | none | takes no flags |
-| `idea review <id> <verdict>` | approve\|reject\|changes_requested | `--accept-findings` | no |
-| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence | `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
+| `idea apply <id> [--wait]` | apply an approved (or reverted) change set; returns a handle immediately unless --wait | `--wait` | no |
+| `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
+| `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
+| `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
+| `idea review <id> <verdict> [--no-wait]` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait` | no |
+| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
 | `idea executors` | list executors + capabilities | `--json`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
-| `idea executors setup` | wire a coding agent (hermes\|omp) | — | — |
+| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp, default hermes (or --kind) | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
@@ -137,6 +146,32 @@ idea daemon         # then run `idea new` in another terminal
 ```
 
 The web UI shows a **Live activity** feed (the same events, polled on a timer — see [`ui.md`](ui.md)).
+
+## Apply and revert protect edits made outside the harness
+
+`idea apply` refuses to overwrite a file you edited in the workspace after the agent ran (it
+compares the workspace against the change set's pre-image). `idea revert` is the mirror at the
+other end: it refuses to erase a file you edited *after* apply, by comparing the workspace against
+the change set's post-image (review A3). Both write nothing when they refuse and both name the
+files:
+
+```
+$ idea revert CHG-3
+idea: revert refused: the workspace changed since CHG-3 was applied: src/app.js: it was edited in
+the workspace after apply; discard (or stash) your edits to src/app.js, then revert again
+```
+
+The advice is **discard (or stash)**, never "commit" (review M4): committing does not change a
+file's bytes, so it cannot make the byte-for-byte comparison above pass. If a *later* change set is
+what actually touched the file (not a manual edit), the advice names it instead —
+`revert CHG-4 first` — since discarding what is really CHG-4's own change would be wrong.
+
+There is no `--force`. The change set stays `applied`; act on the advice yourself, then run
+`idea revert` again. This is a synchronous `409`, not an operation that starts and fails in the
+background — see [`api.md`](api.md#errors) for the exact contract. The refusal also records a
+`stale_post` finding on the change set, at an observation (non-blocking) severity: it does not
+block completing the initiative (`idea verify`), since it names a workspace-vs-post-image mismatch
+to look at, not something a disposition resolves.
 
 ## How it works
 

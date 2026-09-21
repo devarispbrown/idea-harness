@@ -36,17 +36,25 @@ var asyncEntryPoints = map[string]entryPoint{
 			"but that is not a release of a claim it never took"},
 	"AdvanceInitiative": {true,
 		"workflow/advance.go sets a terminal status on success; failOperation on error"},
-	"ExecuteInitiativeFresh": {true,
-		"explicit release on both exits — the engine sets nothing (audit 4 P0)"},
+	"ExecuteInitiativeFreshWithNote": {true,
+		"explicit release on both exits — the engine sets nothing (audit 4 P0). " +
+			"ExecuteInitiativeFresh/ExecuteInitiative are thin wrappers around this " +
+			"one (D-a, wave 3 contract: the optional rerun note), so this is the " +
+			"row the AST scan finds"},
 	"ApplyChangeSetInitiative": {true,
 		"claims from every non-running state; explicit release on both exits"},
 	"RevertChangeSetInitiative": {true,
 		"claims from every non-running state; releases to plan_approved on success (the engine's own transition, since the revert unverifies a requirement) and to the prior status on error"},
-	"ReviseInitiative":      {true, "the engine reaches a terminal status; failOperation on error"},
-	"RetryInitiative":       {true, "the engine reaches a terminal status; failOperation on error"},
+	"ReviseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"RetryInitiativeWithNote": {true,
+		"the engine reaches a terminal status; failOperation on error. " +
+			"RetryInitiative is a thin wrapper around this one (D-a, wave 3 " +
+			"contract: the optional rerun note), so this is the row the AST scan finds"},
 	"ReopenPhaseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
 	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
 	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"RerunChangeSetReviewInitiative": {true,
+		"claims from every non-running state (ICP re-run D2: the adversarial review this runs is a real model call, now async rather than synchronous inside the request); explicit release on both exits"},
 	"SuggestAnswersInitiative": {false,
 		"checks existence and refuses while running, but does not take the claim — it only reads open questions and writes suggestions, so a concurrent advance is a provenance race rather than a corrupted tree. The existence check landed after audit 5; the claim itself is still recorded in docs/plans/deferred.md as C4"},
 }
@@ -168,16 +176,22 @@ func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 		// releasesItself is true where the goroutine calls release() rather than
 		// relying on failOperation to move the initiative off running.
 		releasesItself bool
+		// opType is the literal CreateOperation `type` string the real Runtime
+		// method passes (review H7: failOperationAfterPanic now gates its
+		// FailInitiative call on operationClaimsInitiative(op.Type), so this
+		// must be the production string, not the test's own short label, or
+		// every claimant here would be misclassified as non-claiming).
+		opType string
 	}{
-		{"advance", domain.InitiativeApproved, true, false},
-		{"execute", domain.InitiativePlanApproved, false, true},
-		{"revise", domain.InitiativePlanApproved, true, false},
-		{"retry", domain.InitiativeFailed, true, false},
-		{"reopen-phase", domain.InitiativePlanApproved, true, false},
-		{"revise-plan", domain.InitiativePlanApproved, true, false},
-		{"approve-plan", domain.InitiativeNeedsHumanJudgment, true, false},
-		{"apply", domain.InitiativePlanApproved, false, true},
-		{"revert", domain.InitiativePlanApproved, false, true},
+		{"advance", domain.InitiativeApproved, true, false, "advance_initiative"},
+		{"execute", domain.InitiativePlanApproved, false, true, "execute_initiative"},
+		{"revise", domain.InitiativePlanApproved, true, false, "revise_initiative"},
+		{"retry", domain.InitiativeFailed, true, false, "retry_initiative"},
+		{"reopen-phase", domain.InitiativePlanApproved, true, false, "reopen_phase"},
+		{"revise-plan", domain.InitiativePlanApproved, true, false, "revise_plan"},
+		{"approve-plan", domain.InitiativeNeedsHumanJudgment, true, false, "approve_plan"},
+		{"apply", domain.InitiativePlanApproved, false, true, "apply_change_set"},
+		{"revert", domain.InitiativePlanApproved, false, true, "revert_change_set"},
 	}
 
 	for _, c := range claimants {
@@ -194,7 +208,7 @@ func TestTerminalPathsReleaseTheClaim(t *testing.T) {
 				if err := pr.db.ClaimInitiativeRunning(ctx, iniID, c.from); err != nil {
 					t.Fatalf("could not claim from %s: %v", c.from, err)
 				}
-				opID, err := pr.db.CreateOperation(ctx, projectID, iniID, c.name)
+				opID, err := pr.db.CreateOperation(ctx, projectID, iniID, c.opType)
 				if err != nil {
 					t.Fatal(err)
 				}

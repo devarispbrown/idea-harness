@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, post, put } from "./api";
+import { del, get, post, put } from "./api";
 import {
   providerDetail,
   providerOptionSuffix,
@@ -41,9 +41,56 @@ interface Provider {
 interface ProvidersView {
   default_model: string;
   git_commit?: boolean;
+  // Wave 3 (D3/C4 review changes): the backend for these two is landing
+  // alongside this UI, so both are read with `??`/optional chaining and
+  // default to their safe "off" state when a daemon predates them —
+  // git_commit itself already followed this rule.
+  git_allow_default_branch?: boolean;
+  git_branch_per_initiative?: boolean;
+  // "Already shipped" per the wave-3 contract, but still optional here: a
+  // daemon whose harness.yaml predates review.rigor sends no field at all.
+  review_rigor?: string;
   demo?: boolean;
   providers: Provider[];
 }
+
+// SecretAllowlistEntry mirrors docs/openapi.yaml's SecretAllowlistEntry
+// (review changes #1): one human "not a secret" override, listed in
+// Settings so it can be seen and revoked instead of living forever as an
+// invisible standing exception.
+interface SecretAllowlistEntry {
+  id: string;
+  // M8, review fix: the backend actually sends `fingerprint` -- the full
+  // per-project HMAC, not a pre-truncated `fingerprint_prefix` as
+  // docs/openapi.yaml documents the eventual contract to be. Read the field
+  // that is really there and truncate for display client-side below, rather
+  // than reading a field that has never once been sent (rendered as
+  // "(…)" ). May be superseded once the secret-masking work elsewhere
+  // makes the backend send a real prefix instead.
+  fingerprint: string;
+  kind: string;
+  path: string;
+  actor: string;
+  created_at: string;
+}
+
+// allowlistFingerprintPrefix (M8, review fix) is the short, non-identifying
+// slice of the full HMAC shown next to a "not a secret" exemption -- enough
+// to recognize which one it is, never the full value.
+function allowlistFingerprintPrefix(fingerprint: string): string {
+  return (fingerprint || "").slice(0, 12);
+}
+
+const REVIEW_RIGOR_OPTIONS: { value: string; label: string; explanation: string }[] = [
+  {
+    value: "auto",
+    label: "Auto",
+    explanation: "Calibrates to the project's size and the size of the change — the default.",
+  },
+  { value: "quick", label: "Quick", explanation: "One pass, up to 5 findings. For a small, low-risk change." },
+  { value: "standard", label: "Standard", explanation: "Up to 10 findings. The default rigor for most changes." },
+  { value: "thorough", label: "Thorough", explanation: "Up to 20 findings. For a large or sensitive change." },
+];
 
 interface ExecutorInfo {
   name: string;
@@ -132,8 +179,21 @@ export default function Settings({ projectId }: { projectId: string }) {
   // but without an operation to poll.
   const [smokeStartError, setSmokeStartError] = useState("");
 
-  // git commit on apply toggle
+  // git commit on apply toggle, plus the two wave-3 companions (review
+  // changes #2/D3): the default-branch guard and branch-per-initiative.
   const [gitCommit, setGitCommit] = useState(false);
+  const [gitAllowDefaultBranch, setGitAllowDefaultBranch] = useState(false);
+  const [gitBranchPerInitiative, setGitBranchPerInitiative] = useState(false);
+
+  // Review rigor (B1/D1). Falls back to "auto" — the daemon's own default —
+  // when the field is absent, never to an empty select with nothing chosen.
+  const [reviewRigor, setReviewRigor] = useState("auto");
+
+  // Secret exemptions (review changes #1). Project-scoped, unlike everything
+  // else on this page's "Apply"/Git sections which is per-model config only
+  // in spirit — the allowlist itself has always been project-wide.
+  const [allowlist, setAllowlist] = useState<SecretAllowlistEntry[]>([]);
+  const [allowlistError, setAllowlistError] = useState("");
 
   // C1: `viewRef` mirrors `view` state so loadLiveModels can read the latest
   // providers view (to look up the provider's readiness for its status
@@ -206,6 +266,9 @@ export default function Settings({ projectId }: { projectId: string }) {
       setDemo(v.demo ?? false);
       setDefaultModel(v.default_model || "");
       setGitCommit(v.git_commit ?? false);
+      setGitAllowDefaultBranch(v.git_allow_default_branch ?? false);
+      setGitBranchPerInitiative(v.git_branch_per_initiative ?? false);
+      setReviewRigor(v.review_rigor || "auto");
       // I1: this sets the provider whose models the effect below preloads;
       // Setting the provider starts the model fetch, in its own effect; load
       // itself never depends on the view, which is what looped.
@@ -237,6 +300,16 @@ export default function Settings({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
+  const loadAllowlist = useCallback(async () => {
+    try {
+      const list = await get<SecretAllowlistEntry[]>(`/projects/${projectId}/secret-allowlist`);
+      setAllowlist(list ?? []);
+    } catch {
+      // Pre-wave-3 daemon, or a transient error -- the empty state below
+      // already reads correctly ("no exemptions") for either case.
+    }
+  }, [projectId]);
+
   // Mount / explicit-refresh only -- see the comment on `load` above.
   useEffect(() => {
     load();
@@ -245,6 +318,10 @@ export default function Settings({ projectId }: { projectId: string }) {
   useEffect(() => {
     loadExecutors();
   }, [loadExecutors]);
+
+  useEffect(() => {
+    loadAllowlist();
+  }, [loadAllowlist]);
 
   // S3: poll the smoke operation until it leaves pending/running. Cleared
   // whenever smokeOpId changes (a new run replaces the old poll) or the page
@@ -441,6 +518,66 @@ export default function Settings({ projectId }: { projectId: string }) {
     } catch (e) {
       setError(errorMessage(e));
       setGitCommit(!checked);
+    }
+  };
+
+  // Wave 3 / review changes #2: the default-branch guard and
+  // branch-per-initiative, each its own toggle so either can be turned on
+  // without the other. Both PUT the single field that changed, same pattern
+  // as toggleGitCommit — an optimistic flip, reverted on a refusal.
+  const toggleGitAllowDefaultBranch = async (checked: boolean) => {
+    setGitAllowDefaultBranch(checked);
+    setError("");
+    setSaved("");
+    try {
+      await put(`/projects/${projectId}/providers`, { git_allow_default_branch: checked });
+      setSaved(`Committing on the default branch ${checked ? "allowed" : "refused"}.`);
+    } catch (e) {
+      setError(errorMessage(e));
+      setGitAllowDefaultBranch(!checked);
+    }
+  };
+
+  const toggleGitBranchPerInitiative = async (checked: boolean) => {
+    setGitBranchPerInitiative(checked);
+    setError("");
+    setSaved("");
+    try {
+      await put(`/projects/${projectId}/providers`, { git_branch_per_initiative: checked });
+      setSaved(`Branch per initiative ${checked ? "enabled" : "disabled"}.`);
+    } catch (e) {
+      setError(errorMessage(e));
+      setGitBranchPerInitiative(!checked);
+    }
+  };
+
+  const saveReviewRigor = async (value: string) => {
+    const previous = reviewRigor;
+    setReviewRigor(value);
+    setError("");
+    setSaved("");
+    try {
+      await put(`/projects/${projectId}/providers`, { review_rigor: value });
+      setSaved(`Review rigor set to ${value}.`);
+    } catch (e) {
+      setError(errorMessage(e));
+      setReviewRigor(previous);
+    }
+  };
+
+  // revokeAllowlistEntry (review changes #1): removes one "not a secret"
+  // override, so the sweep denies that fingerprint again from then on.
+  // Optimistic removal, restored on a refusal — same shape as the toggles
+  // above, adapted to a list rather than a single boolean.
+  const revokeAllowlistEntry = async (id: string) => {
+    setAllowlistError("");
+    const previous = allowlist;
+    setAllowlist((list) => list.filter((e) => e.id !== id));
+    try {
+      await del(`/projects/${projectId}/secret-allowlist/${id}`);
+    } catch (e) {
+      setAllowlistError(errorMessage(e));
+      setAllowlist(previous);
     }
   };
 
@@ -776,26 +913,117 @@ export default function Settings({ projectId }: { projectId: string }) {
         </div>
       </section>
 
-      <section className="card">
-        <h2>Apply</h2>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontSize: "0.95rem",
-          }}
-        >
+      {/* Git settings were hidden — wave 3 gives git_commit its companions
+          (review changes #2/D3): the default-branch guard and
+          branch-per-initiative, each opt-in and each explained plainly. */}
+      <section className="card w3-git">
+        <h2>Git</h2>
+        <label className="w3-toggle-row">
           <input
             type="checkbox"
             checked={gitCommit}
             onChange={(e) => toggleGitCommit(e.target.checked)}
           />
-          git commit on apply
+          Commit on apply
         </label>
-        <p className="muted" style={{ marginTop: 8 }}>
-          Automatically commit changes when an initiative is applied.
+        <p className="muted">
+          Off by default. When on, each applied change set is committed automatically — this is
+          opt-in, never assumed.
         </p>
+
+        <label className="w3-toggle-row">
+          <input
+            type="checkbox"
+            checked={gitAllowDefaultBranch}
+            onChange={(e) => toggleGitAllowDefaultBranch(e.target.checked)}
+          />
+          Allow committing on the default branch
+        </label>
+        <p className="muted">
+          Off by default. Committing on your default branch (e.g. <code>main</code>) is refused
+          unless you allow it here — the guard exists so an agent never lands a commit straight
+          onto the branch you ship from.
+        </p>
+
+        <label className="w3-toggle-row">
+          <input
+            type="checkbox"
+            checked={gitBranchPerInitiative}
+            onChange={(e) => toggleGitBranchPerInitiative(e.target.checked)}
+          />
+          Branch per initiative
+        </label>
+        <p className="muted">
+          Checks out <code>idea/&lt;name&gt;</code> the first time this initiative applies, and
+          reuses that branch after. Refused if the workspace has unrelated uncommitted changes —
+          nothing of yours is swept into an initiative's branch by accident.
+        </p>
+
+        <p className="muted w3-git-note">
+          Agent commits always run with git hooks disabled, whichever of these are on.
+        </p>
+      </section>
+
+      {/* Review rigor (B1/D1): a one-line explanation per level, so the
+          choice is legible rather than a bare enum. */}
+      <section className="card">
+        <h2>Review rigor</h2>
+        <label className="field-label" htmlFor="review-rigor-select">
+          Rigor
+        </label>
+        <select
+          id="review-rigor-select"
+          className="text-input"
+          value={reviewRigor}
+          onChange={(e) => saveReviewRigor(e.target.value)}
+        >
+          {REVIEW_RIGOR_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <ul className="w3-rigor-list">
+          {REVIEW_RIGOR_OPTIONS.map((o) => (
+            <li key={o.value} className={o.value === reviewRigor ? "w3-rigor-active" : ""}>
+              <strong>{o.label}.</strong> {o.explanation}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {/* Secret exemptions (review changes #1): every "not a secret"
+          disposition, visible and revocable, rather than an invisible
+          standing exception. */}
+      <section className="card">
+        <h2>Secret exemptions</h2>
+        <p className="muted">
+          When a real credential value is marked "not a secret", its fingerprint (never the value
+          itself) is allowed from then on for this project, at the path it was found in. Revoking
+          an exemption makes the sweep deny that value again.
+        </p>
+        {allowlist.length === 0 ? (
+          <p className="muted">No exemptions. Every secret-sweep finding still blocks.</p>
+        ) : (
+          <ul className="list w3-allowlist">
+            {allowlist.map((e) => (
+              <li key={e.id} className="w3-allowlist-row">
+                <div>
+                  <strong>{e.kind}</strong>{" "}
+                  <span className="muted">({allowlistFingerprintPrefix(e.fingerprint)}…)</span>
+                  <div className="muted">{e.path}</div>
+                  <div className="muted">
+                    {e.actor} · {new Date(e.created_at).toLocaleString()}
+                  </div>
+                </div>
+                <button className="ghost" onClick={() => revokeAllowlistEntry(e.id)}>
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {allowlistError && <p className="error">{allowlistError}</p>}
       </section>
 
       {saved && <p className="ok-text">{saved}</p>}

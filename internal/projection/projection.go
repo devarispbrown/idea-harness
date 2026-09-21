@@ -102,6 +102,23 @@ type Guidance struct {
 	// to continue from, omitted when nothing was kept. Same population note
 	// as NextTask.
 	PartialWork *PartialWorkRef `json:"partial_work,omitempty"`
+	// StaleItems lists the requirements, tasks and change sets marked stale by
+	// a decision that was reopened or re-resolved after they were built
+	// (review A4 #5: "impact is true"), omitted when nothing is stale. Same
+	// population note as NextTask: the daemon handler appends both this field
+	// and a sentence onto Why, since BuildGuidance has no store access.
+	StaleItems []StaleItemRef `json:"stale_items,omitempty"`
+}
+
+// StaleItemRef names one stale item on the Recommended Next Move projection.
+// StaleID is the stale-mark's own id -- what POST …/stale/{staleId}/ack takes
+// -- distinct from ID, the graph node (requirement/task/change_set) it marks.
+type StaleItemRef struct {
+	StaleID string `json:"stale_id"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	Reason  string `json:"reason"`
 }
 
 // PartialWorkRef names a stopped run's kept files for the Build page.
@@ -288,6 +305,103 @@ func DedupDecisions(decs []domain.Decision) []domain.Decision {
 	return out
 }
 
+// TriageItem is one open judgment item ranked for the triage view (review B4,
+// adopted #8's guidance/decisions triage): "the top 3 open items by impact
+// (blocking > high severity > dependents count). The rest are labelled
+// optional."
+type TriageItem struct {
+	Type       string          `json:"type"` // "decision" | "question" | "finding"
+	ID         string          `json:"id"`
+	Label      string          `json:"label"`
+	Blocking   bool            `json:"blocking"`
+	Severity   domain.Severity `json:"severity,omitempty"`
+	Dependents int             `json:"dependents"`
+	// Rank is "priority" for the top 3 by impact, "optional" for the rest --
+	// the ICP round's own words for what six audits could not get past: "53
+	// things need your judgment", none of them ranked.
+	Rank string `json:"rank"`
+}
+
+// severityRank orders Severity from most (5) to least (1) severe, matching
+// workflow.severityRank -- kept as its own copy here since projection must
+// not depend on workflow (the same reasoning normalizeDecisionQuestion's own
+// doc comment gives for not importing workflow.normalizeJudgment).
+func severityRank(s domain.Severity) int {
+	switch s {
+	case domain.SeverityCritical:
+		return 5
+	case domain.SeverityHigh:
+		return 4
+	case domain.SeverityMedium:
+		return 3
+	case domain.SeverityLow:
+		return 2
+	case domain.SeverityObservation:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// BuildTriage ranks open decisions, open questions, and open blocking
+// findings into a single priority order and labels the top 3 "priority", the
+// rest "optional" (review B4, adopted #8). dependents maps a decision or
+// question's id to how many other objects (requirements, tasks, change sets)
+// cite it -- the caller supplies it since counting edges needs store access
+// this package's other Build* functions do not have either.
+//
+// Ranking key, highest first: blocking, then severity (findings only --
+// decisions/questions have none and rank below any finding of the same
+// blocking-ness), then dependents count. Ties preserve input order (each
+// slice's own, decisions/questions/findings concatenated in that order) for a
+// deterministic, boring sort.
+func BuildTriage(decisions []domain.Decision, questions []domain.Question, findings []domain.Finding, dependents map[string]int) []TriageItem {
+	items := make([]TriageItem, 0, len(decisions)+len(questions)+len(findings))
+	for _, d := range decisions {
+		if d.Status != domain.DecisionOpen {
+			continue
+		}
+		items = append(items, TriageItem{Type: "decision", ID: d.ID, Label: d.Question, Dependents: dependents[d.ID]})
+	}
+	for _, q := range questions {
+		if q.Status != domain.QuestionOpen {
+			continue
+		}
+		items = append(items, TriageItem{Type: "question", ID: q.ID, Label: q.Question, Dependents: dependents[q.ID]})
+	}
+	for _, f := range findings {
+		if f.Disposition != "" {
+			continue
+		}
+		// C1: an advisory finding never blocks completion (see
+		// hasOpenBlockingFindings), but it must still be shown here so the
+		// user can see it and disposition it -- otherwise a quick-accepted
+		// critical/high finding is saved and then never surfaced anywhere.
+		// It ranks as non-blocking regardless of its severity.
+		items = append(items, TriageItem{
+			Type: "finding", ID: f.ID, Label: f.Finding,
+			Blocking: !f.Advisory && f.Severity.Blocking(), Severity: f.Severity, Dependents: dependents[f.ID],
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Blocking != items[j].Blocking {
+			return items[i].Blocking
+		}
+		if r1, r2 := severityRank(items[i].Severity), severityRank(items[j].Severity); r1 != r2 {
+			return r1 > r2
+		}
+		return items[i].Dependents > items[j].Dependents
+	})
+	for i := range items {
+		if i < 3 {
+			items[i].Rank = "priority"
+		} else {
+			items[i].Rank = "optional"
+		}
+	}
+	return items
+}
+
 // summarize renders a deterministic, provenance-backed prose summary (§5).
 // It is assembled from entity state — never LLM narration, never a separate
 // source of truth.
@@ -397,9 +511,150 @@ func judgmentItems(u *Understanding) []string {
 	return out
 }
 
+// latestChangeSetOutcome returns the most recently created (by CreatedAt)
+// change set among recentChangeSets whose status means the last thing that
+// happened here was NOT success, plus true -- or (zero value, false) when
+// none of them qualify.
+//
+// rejected covers a failed deterministic check (a build/test failure, a
+// secret-sweep credential match) as well as a human/system rejection: this
+// codebase funnels all three into ChangeSetRejected (see execute.go's
+// checks-running -> rejected transitions), so there is one status to ask
+// about, not three (review C6: "denied, rejected or failed").
+//
+// review M7: this scans every entry (by CreatedAt, not "just the last
+// element of the slice"), because the caller (LatestChangeSetsPerActiveTask)
+// is expected to have already reduced recentChangeSets to at most one entry
+// per ACTIVE task -- that task's own latest. Checking only the slice's last
+// element used to hide an earlier task's still-unresolved rejection the
+// moment ANY other task's change set was created afterward, and kept
+// guidance stuck on "Resolve CHG-n" forever once that task was cancelled or
+// deleted (its rejected change set was the global "last" and never aged
+// out). Scanning the pre-reduced, active-tasks-only set fixes both: a later
+// change set on a DIFFERENT task can no longer hide this one, and a
+// cancelled/deleted task's change set is excluded before this function ever
+// sees it.
+func latestChangeSetOutcome(recentChangeSets []domain.ChangeSet) (domain.ChangeSet, bool) {
+	return latestChangeSetWithStatus(recentChangeSets,
+		domain.ChangeSetRejected, domain.ChangeSetChangesRequested, domain.ChangeSetConflicted)
+}
+
+// latestChangeSetWithStatus is latestChangeSetOutcome's generalization (ICP
+// re-run defect G): the newest of recentChangeSets whose Status is one of
+// wantStatuses, or (zero, false) when none matches.
+func latestChangeSetWithStatus(recentChangeSets []domain.ChangeSet, wantStatuses ...domain.ChangeSetStatus) (domain.ChangeSet, bool) {
+	want := make(map[domain.ChangeSetStatus]bool, len(wantStatuses))
+	for _, s := range wantStatuses {
+		want[s] = true
+	}
+	var latest domain.ChangeSet
+	found := false
+	for _, cs := range recentChangeSets {
+		if !want[cs.Status] {
+			continue
+		}
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder
+		// (was strict After(), disagreeing with evidence eligibility's and
+		// /queue's "not before" tie-break on a same-millisecond pair).
+		if !found || domain.NewerChangeSetInScanOrder(cs, latest) {
+			latest = cs
+			found = true
+		}
+	}
+	return latest, found
+}
+
+// LatestChangeSetsPerActiveTask reduces changeSets to at most one entry per
+// task -- that task's own most recently created (by CreatedAt) change set --
+// keeping only tasks whose CURRENT status is not cancelled (review M7).
+//
+// ICP re-run defect G: this used to also exclude `done` tasks, on the
+// assumption that a done task has nothing left to report. But Execute marks a
+// task done as soon as its change set passes checks -- BEFORE that change set
+// has been reviewed, approved, or applied (execute.go: "Mark done so a
+// repeated Execute does not re-pick the same task") -- so a task sitting on a
+// change set awaiting human review/apply is `done` the whole time it is
+// waiting. Excluding it here hid exactly the change set BuildGuidance most
+// needs to report, and once every task reached `done` this way the reduction
+// emptied out entirely, so guidance kept saying "run the next task" forever
+// with nothing left to run instead of ever pointing at Verify. A cancelled (or
+// deleted) task's change set is still excluded: there is nothing left to
+// resolve on work that no longer exists as active.
+func LatestChangeSetsPerActiveTask(changeSets []domain.ChangeSet, tasks []domain.Task) []domain.ChangeSet {
+	active := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.Status != domain.TaskCancelled {
+			active[t.ID] = true
+		}
+	}
+	latestByTask := make(map[string]domain.ChangeSet, len(changeSets))
+	for _, cs := range changeSets {
+		if !active[cs.TaskID] {
+			continue
+		}
+		cur, ok := latestByTask[cs.TaskID]
+		// MEDIUM fix: single-sourced via domain.NewerChangeSetInScanOrder --
+		// see latestChangeSetWithStatus above for why this must not be its
+		// own, independently-diverging comparison.
+		if !ok || domain.NewerChangeSetInScanOrder(cs, cur) {
+			latestByTask[cs.TaskID] = cs
+		}
+	}
+	out := make([]domain.ChangeSet, 0, len(latestByTask))
+	for _, cs := range latestByTask {
+		out = append(out, cs)
+	}
+	return out
+}
+
+// changeSetFailureWhy renders the honest-status sentence for a change set
+// that did not succeed (review C6), naming what happened and the next step.
+// It deliberately does not cite finding detail (a secret's file:line, a
+// failing test's name) -- BuildGuidance is a pure function of Understanding
+// and recentChangeSets with no store access, exactly like NextTask/
+// RunBlockedReason/PartialWork/StaleItems above; a handler with db access may
+// append more (see handleGuidance).
+func changeSetFailureWhy(cs domain.ChangeSet) (action, why string) {
+	switch cs.Status {
+	case domain.ChangeSetRejected:
+		return "Resolve " + cs.HumanID, fmt.Sprintf(
+			"%s was rejected -- a check or the review found a problem it would not pass. "+
+				"`idea reviews` shows why; once it is addressed, run the task again.", cs.HumanID)
+	case domain.ChangeSetChangesRequested:
+		return "Address requested changes on " + cs.HumanID, fmt.Sprintf(
+			"%s needs changes before it can be applied. Run the task again to produce a new change set.", cs.HumanID)
+	case domain.ChangeSetConflicted:
+		return "Resolve the conflict on " + cs.HumanID, fmt.Sprintf(
+			"%s could not be applied cleanly -- the workspace changed since it was produced. "+
+				"Retry the apply or reject it and run the task again.", cs.HumanID)
+	}
+	return "", ""
+}
+
 // BuildGuidance computes the Recommended Next Move with deterministic
 // precedence: judgment items outrank stage advancement (§6, §9).
-func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance {
+//
+// recentChangeSets should be LatestChangeSetsPerActiveTask's result, not the
+// initiative's raw change-set list (review C6, M7; C6 was the original
+// signature change from the earlier BuildGuidance(ini, understanding)):
+// guidance must not say "ready to build" over a change set that was just
+// denied, rejected, or failed -- it says what happened and the next step
+// instead, and it must not miss one just because a DIFFERENT task's change
+// set was created more recently, or keep reporting one whose task was
+// since cancelled or deleted (review M7). Callers with no change sets to
+// report (a fresh initiative, or one with none yet) pass nil, which behaves
+// exactly as before.
+//
+// allTasksDone (ICP re-run defect G) is true when every one of the
+// initiative's non-cancelled tasks is done -- the caller's job, since
+// BuildGuidance stays a pure function with no task-store access of its own
+// (same reason NextTask/RunBlockedReason are composed by the daemon handler
+// instead of computed here). Guidance used to have no way to tell "nothing
+// left to build" from "nothing built yet": once every task reached done with
+// its change set applied, this fell through to the same "run the next task"
+// message a fresh plan gets, and status stayed plan_approved forever with no
+// pointer to `idea verify` at all.
+func BuildGuidance(ini domain.Initiative, understanding Understanding, recentChangeSets []domain.ChangeSet, allTasksDone bool) Guidance {
 	openQuestions := 0
 	for _, q := range understanding.Questions {
 		if q.Status == domain.QuestionOpen {
@@ -437,12 +692,62 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 			Why:      "Adversarial review did not converge; the PRD is paused for your judgment. `idea reviews` lists the findings; `idea approve` accepts the PRD, `idea revise` regenerates it.",
 			Affected: []string{"Product Definition", "Review"}}
 	case domain.InitiativeApproved:
-		return Guidance{Action: "Proceed to design & execution plan", Why: "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.", Affected: []string{"Design", "Execution Plan"}}
+		return Guidance{Action: "Proceed to design & execution plan",
+			Why:      "The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan." + openJudgmentCaveat(openDecisions, openQuestions),
+			Affected: []string{"Design", "Execution Plan"}}
 	case domain.InitiativePlanApproved:
+		// ICP re-run defect G: pending human judgment on a change set outranks
+		// EVERYTHING else here, including "run the next task" -- a change set
+		// already sitting in review_required or approved needs a person before
+		// anything else happens, whatever else is also true. This mirrors
+		// NextAction's own review -> apply -> verify ordering (next.go); guidance
+		// used to have no case for either status at all, so with nothing to say
+		// it fell straight through to "run the next task" while CHG-n sat
+		// waiting for its own approval.
+		if cs, ok := latestChangeSetWithStatus(recentChangeSets, domain.ChangeSetReviewRequired); ok {
+			// ICP re-run defect #1: a change set whose adversarial review
+			// never completed (Execute's own review call errored, most often
+			// cancelled mid-review) is not simply "awaiting your review" --
+			// there is no review to approve yet, and approve refuses it,
+			// naming the same rerun. Name the situation here too, rather
+			// than pointing at a command that will just fail.
+			if !cs.ReviewCompleted() {
+				return Guidance{Action: "Rerun the review for " + cs.HumanID, Why: fmt.Sprintf(
+					"%s never finished its adversarial review (%s), so it has no findings to approve yet. "+
+						"`idea review %s rerun` runs it.", cs.HumanID, cs.ReviewNeverCompletedCause(), cs.HumanID),
+					Affected: []string{"Execution Plan", cs.HumanID}}
+			}
+			return Guidance{Action: "Review " + cs.HumanID, Why: fmt.Sprintf(
+				"%s is awaiting your review before it can be applied. `idea reviews` shows its findings; "+
+					"`idea review %s approve` approves it.", cs.HumanID, cs.HumanID),
+				Affected: []string{"Execution Plan", cs.HumanID}}
+		}
+		if cs, ok := latestChangeSetWithStatus(recentChangeSets, domain.ChangeSetApproved); ok {
+			return Guidance{Action: "Apply " + cs.HumanID, Why: fmt.Sprintf(
+				"%s is approved and ready to apply. Run `idea apply %s`.", cs.HumanID, cs.HumanID),
+				Affected: []string{"Execution Plan", cs.HumanID}}
+		}
+		// Review C6: never say "ready to build" over a change set that was
+		// just denied, rejected, or failed -- say what happened and the next
+		// step instead.
+		if cs, ok := latestChangeSetOutcome(recentChangeSets); ok {
+			action, why := changeSetFailureWhy(cs)
+			return Guidance{Action: action, Why: why, Affected: []string{"Execution Plan", cs.HumanID}}
+		}
+		// ICP re-run defect G: every task is done and nothing is pending review,
+		// apply, or resolution -- the plan is exhausted. Point at Verify instead
+		// of repeating "run the next task" forever with nothing left to run.
+		if allTasksDone {
+			return Guidance{Action: "Run idea verify",
+				Why:      "Every task has an applied change set. Run `idea verify` to record verification evidence and complete the initiative." + openJudgmentCaveat(openDecisions, openQuestions),
+				Affected: []string{"Verify"}}
+		}
 		// B5: this used to say "Implementation and ChangeSets arrive in
 		// Milestone 3" -- true when it was written, false since Milestone 3
 		// shipped. Execute/apply/verify are live; say what to actually do.
-		return Guidance{Action: "Execution plan approved", Why: "The reviewed plan is ready to build. Run the next task to produce a change set for review.", Affected: []string{"Execution Plan"}}
+		return Guidance{Action: "Execution plan approved",
+			Why:      "The reviewed plan is ready to build. Run the next task to produce a change set for review." + openJudgmentCaveat(openDecisions, openQuestions),
+			Affected: []string{"Execution Plan"}}
 	case domain.InitiativeFailed:
 		why := "Check the logs, fix the cause, then retry with `idea new`."
 		if reason := strings.TrimSpace(ini.FailureReason); reason != "" {
@@ -464,12 +769,54 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding) Guidance 
 	}
 
 	if openDecisions > 0 {
-		return Guidance{Action: "Resolve open decisions", Why: fmt.Sprintf("%d decision(s) need your judgment before proceeding.", openDecisions), Affected: []string{"Product Definition"}}
+		// Names the commands that actually resolve this, not just the fact
+		// that something is open: `idea decisions` lists them, `idea resolve`
+		// answers one (by option number or free text), and
+		// `idea accept-recommendations` answers every one with its own
+		// recommendation in a single call.
+		return Guidance{Action: "Resolve open decisions", Why: fmt.Sprintf(
+			"%d decision(s) need your judgment before proceeding. `idea decisions` lists them; "+
+				`idea resolve <decision> <option#>|"<resolution>"`+" resolves one; `idea accept-recommendations` accepts them all.",
+			openDecisions), Affected: []string{"Product Definition"}}
 	}
 	if openQuestions > 0 {
-		return Guidance{Action: "Resolve open questions", Why: fmt.Sprintf("%d open question(s) reduce uncertainty about the product.", openQuestions), Affected: []string{"Product Definition"}}
+		return Guidance{Action: "Resolve open questions", Why: fmt.Sprintf(
+			`%d open question(s) reduce uncertainty about the product. `+"`idea questions`"+` lists them; `+
+				`idea answer <question> "<answer>"`+` answers one.`,
+			openQuestions), Affected: []string{"Product Definition"}}
 	}
 	return Guidance{Action: "Workflow in progress", Why: "The workflow is running — follow it with `idea watch`.", Affected: []string{"Workflow"}}
+}
+
+// openJudgmentCaveat appends a caveat naming any still-open decisions/
+// questions to a "proceed" message that would otherwise say nothing about
+// them (ICP re-run defect H: quick rigor can advance past PRD/plan approval
+// -- and auto-approve a plan -- without ever requiring an open decision or
+// question resolved, so a founder-journey run reached plan_approved with
+// DEC-3/DEC-4 still open and nothing anywhere said so). "" (no caveat) when
+// both are zero, so a normal "everything is settled" message is unchanged.
+//
+// Deliberately advisory, not a block: an open decision/question is a NORMAL,
+// expected part of an in-progress initiative -- PRD authoring and design
+// each routinely raise ones a later Revise/human answer resolves -- so
+// nothing here (or anywhere in the plan/PRD review gates) treats one as a
+// structural defect the way a dependency cycle is. The fix for "must not
+// SKIP" is visibility: the human proceeding past them now sees that they
+// exist, where before this they were invisible at exactly the moment quick
+// rigor let the workflow move on without them.
+func openJudgmentCaveat(openDecisions, openQuestions int) string {
+	var left []string
+	if openDecisions > 0 {
+		left = append(left, fmt.Sprintf("%d decision(s)", openDecisions))
+	}
+	if openQuestions > 0 {
+		left = append(left, fmt.Sprintf("%d question(s)", openQuestions))
+	}
+	if len(left) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" Note: %s still open and were not required to proceed (quick rigor does not block on them) -- resolve them if they affect this work.",
+		strings.Join(left, " and "))
 }
 
 // completeWhy explains a terminal initiative. Anything still open on it is
@@ -505,10 +852,13 @@ type ChangeGroup struct {
 	Items    []string `json:"items"`
 }
 
-// BuildChanged summarizes events since sinceSeq into grouped, narrated items
-// (§7). The raw event timeline is served separately via /activity.
-func BuildChanged(ctx context.Context, db *store.DB, sinceSeq int64, limit int) (Changed, error) {
-	events, err := db.ListEvents(ctx, sinceSeq, limit)
+// BuildChanged summarizes an initiative's events since sinceSeq into grouped,
+// narrated items (§7), scoped to initiativeID throughout (C1/JTBD 6: this used
+// to read the whole project's events with no initiative filter at all, so one
+// initiative's What Changed could report another's counts). The raw event
+// timeline is served separately via /activity.
+func BuildChanged(ctx context.Context, db *store.DB, initiativeID string, sinceSeq int64, limit int) (Changed, error) {
+	events, err := db.ListEventsForInitiative(ctx, initiativeID, sinceSeq, limit)
 	if err != nil {
 		return Changed{}, err
 	}

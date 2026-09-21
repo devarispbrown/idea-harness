@@ -198,7 +198,16 @@ func renderVerificationPlan(obj map[string]any) string {
 	}
 	b.WriteString("## Verification hooks\n\n")
 	for _, h := range objSlice(obj["hooks"]) {
-		fmt.Fprintf(&b, "- **%s** → %s (%s)\n", str(h["requirement"]), str(h["check"]), str(h["evidence"]))
+		fmt.Fprintf(&b, "- **%s** → %s (%s)", str(h["requirement"]), str(h["check"]), str(h["evidence"]))
+		// [tests: ...] is a machine-recoverable suffix (C2, wave 3 contract):
+		// this rendered markdown is the artifact's only persisted form (the raw
+		// model JSON is not kept), so mapping a test name to a requirement later
+		// (evidence_tests on GET .../requirements) parses it back out of here --
+		// see internal/projection.mappedTestsByRequirement.
+		if tests := strSlice(h["tests"]); len(tests) > 0 {
+			fmt.Fprintf(&b, " [tests: %s]", strings.Join(tests, ", "))
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
@@ -236,19 +245,63 @@ func renderTasks(tasks []domain.Task) string {
 	return b.String()
 }
 
-// renderQuestions renders existing questions (open + answered) so the product
-// manager can avoid re-raising them on the next cycle.
-func renderQuestions(questions []domain.Question) string {
+// renderQuestionsWithAnswers renders existing questions (open + answered)
+// with the human's actual answer text for every resolved one, so a model
+// reading this context can avoid re-raising an answered question AND act on
+// what was actually decided (ICP re-run defect H: "the human's answers ...
+// never reached the implementer, which built a JSON config file" -- because
+// nothing downstream ever saw more than "[answered] <question>". The answer
+// is resolved from the redacted blob store by AnswerQuestion's own digest --
+// the same store runPlanner/runProductDefinition already read other content
+// from -- so a missing/unreadable blob degrades to "(answer not found)"
+// rather than failing the whole review or plan.
+func (e *Engine) renderQuestionsWithAnswers(questions []domain.Question) string {
 	if len(questions) == 0 {
 		return "(none)"
 	}
 	var b strings.Builder
 	for _, q := range questions {
-		state := "open"
-		if q.Status == domain.QuestionResolved {
-			state = "answered"
+		if q.Status != domain.QuestionResolved {
+			fmt.Fprintf(&b, "- [open] %s\n", q.Question)
+			continue
 		}
-		fmt.Fprintf(&b, "- [%s] %s\n", state, q.Question)
+		fmt.Fprintf(&b, "- [answered] %s -- ANSWER: %s\n", q.Question, e.answerText(q))
+	}
+	return b.String()
+}
+
+// answerText resolves a resolved question's actual answer text from the
+// redacted blob store by its AnswerDigest (ICP re-run defect H) -- "(answer
+// not found)" when there is no digest, no blob store, or the blob cannot be
+// read, so a lookup failure degrades the rendered context rather than
+// failing the review/plan/brief it feeds.
+func (e *Engine) answerText(q domain.Question) string {
+	if q.AnswerDigest != "" && e.contentBlobs() != nil {
+		if data, err := e.contentBlobs().Get(q.AnswerDigest); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return "(answer not found)"
+}
+
+// resolvedDecisionsAndAnswers renders ONLY the decided decisions and answered
+// questions (never the open ones -- this is meant for an "authoritative,
+// follow these exactly" section, and an open item has nothing to follow yet)
+// as a flat list, for deterministic (orchestrator-authored, not
+// model-dependent) inclusion in the implementer brief (ICP re-run defect H).
+// "" when there is nothing resolved yet.
+func (e *Engine) resolvedDecisionsAndAnswers(decs []domain.Decision, questions []domain.Question) string {
+	var b strings.Builder
+	for _, d := range decs {
+		if d.Status == domain.DecisionDecided && d.Resolution != "" {
+			fmt.Fprintf(&b, "- %s: %s -- DECIDED: %s\n", d.Code, d.Question, d.Resolution)
+		}
+	}
+	for _, q := range questions {
+		if q.Status != domain.QuestionResolved {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s -- ANSWERED: %s\n", q.Question, e.answerText(q))
 	}
 	return b.String()
 }

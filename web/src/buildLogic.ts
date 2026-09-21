@@ -144,6 +144,22 @@ export function runningTitle(
   return opLabels[opType] ?? opType;
 }
 
+// stageOrTitle (task 8, C3 wire contract) is what RunningCard's title shows.
+// `stage` is the operation's own "step running now" (e.g. "Writing the PRD",
+// "Reviewing the plan, cycle 2", "Agent running TASK-2") -- more specific
+// than the generic per-type label, and current even when the running task
+// hasn't been resolved yet. Falls back to the existing runningTitle when the
+// daemon hasn't stamped a stage (or sends an empty one), so this degrades
+// cleanly against one that hasn't shipped it.
+export function stageOrTitle(
+  stage: string | undefined,
+  opType: string,
+  opLabels: Record<string, string>,
+  task: NextTask | null | undefined,
+): string {
+  return stage && stage.trim() ? stage : runningTitle(opType, opLabels, task);
+}
+
 export interface OperationTaskFields {
   task_id?: string;
   task_human_id?: string;
@@ -279,6 +295,14 @@ export function noDiffMessage(noFilesChanged: boolean): string {
   return noFilesChanged ? "The agent changed no files." : "(no diff)";
 }
 
+// stripWorkflowPrefix drops the engine's CLI-oriented "workflow: " prefix so
+// a message meant for `idea` output doesn't carry that prefix into a web
+// page. Shared by approveErrorMessage's fallback and revertRefusalMessage --
+// both need "pass this through basically as-is" as their base case.
+export function stripWorkflowPrefix(raw: string): string {
+  return raw.replace(/^workflow:\s*/i, "");
+}
+
 // approveErrorMessage turns the engine's refusal from POST .../review into a
 // sentence for the reviewer. The engine's text is written for the CLI --
 // "workflow: approval blocked: system deny review_open_blocking (open high
@@ -289,12 +313,22 @@ const APPROVAL_BLOCKED = /approval blocked:.*?\(open (\w+) finding(?:, ([\w-]+))
 
 export function approveErrorMessage(raw: string): string {
   const m = APPROVAL_BLOCKED.exec(raw);
-  if (!m) return raw.replace(/^workflow:\s*/i, "");
+  if (!m) return stripWorkflowPrefix(raw);
   const severity = m[1].toUpperCase();
   if (m[2]) {
     return `Can't approve: an open ${severity} finding (${m[2]}) is a system block that cannot be accepted. Reject this change set and run the task again.`;
   }
   return `Can't approve: an open ${severity} finding from the reviewer is listed on this change set. Resolve it, or request changes.`;
+}
+
+// revertRefusalMessage (task 4) is the 409 from POST .../revert: revert
+// compares each touched file with the change set's post-image and refuses,
+// naming the files, when a later edit moved a file since apply (the mirror
+// of apply's StaleBase). The backend's text already names the files and the
+// advice -- this just strips the CLI-oriented "workflow: " prefix so it
+// reads as a sentence written for this page, not a wrapped CLI error.
+export function revertRefusalMessage(raw: string): string {
+  return stripWorkflowPrefix(raw);
 }
 
 export type ConflictCause = "stale_base" | "other";
@@ -326,6 +360,47 @@ export function appliedOutcomeLabel(executor: string | undefined, model: string 
   if (executor === "internal") return "Placeholder change (demo)";
   if (model === "demo") return "Placeholder change (demo)";
   return "SHIPPED";
+}
+
+export interface ReviewStateLike {
+  status: string;
+  review_completed_at?: string;
+}
+
+// reviewNeverCompleted (H8 fix) is true for a change set sitting in
+// review_required whose adversarial review itself never finished --
+// Execute's own review call errored, most often because the run was
+// cancelled mid-review (domain.ChangeSet.ReviewCompleted's exact condition:
+// review_completed_at is nil). Approve always 400s in this state
+// (execute.go's reviewChangeSet checks ReviewCompleted before either the
+// plain or the accept-findings approve path, so BOTH approve buttons are a
+// guaranteed-fail click here) -- `idea review CHG-n rerun` (the endpoint
+// already exposes it as POST .../review {"verdict":"rerun"}) is the only way
+// forward, surfaced here as "Re-run the review".
+export function reviewNeverCompleted(cs: ReviewStateLike): boolean {
+  return cs.status === "review_required" && !cs.review_completed_at;
+}
+
+// appliedPillLabel (H8 fix) is the applied change set's status-pill text.
+// `noOp` is the backend's own authoritative signal (ChangeSet.no_op: fsdiff
+// found zero files to persist) and takes priority over both the
+// agent_output-finding heuristic (`noFilesChanged`, hasNoFilesChanged above)
+// and appliedOutcomeLabel's SHIPPED/demo split -- a change set that touched
+// nothing is never SHIPPED, whatever executor or model produced it, and
+// calling it "SHIPPED" (as the pill did before this fix) is exactly the
+// dishonest label the review flagged. Labelled "No file changes" rather than
+// reusing noFilesChanged's "No changes" so the two distinct signals (a real
+// no-op change set vs. an agent that produced no diff at all, e.g. a 401)
+// stay visibly different.
+export function appliedPillLabel(
+  noOp: boolean,
+  noFilesChanged: boolean,
+  executor: string | undefined,
+  model: string | undefined,
+): string {
+  if (noOp) return "No file changes";
+  if (noFilesChanged) return "No changes";
+  return appliedOutcomeLabel(executor, model);
 }
 
 // buildHeaderMeta is B4: "placeholder code" only belongs next to the executor
@@ -367,4 +442,143 @@ export function stoppedMessage(partial: PartialWork | null | undefined): string 
     return `Stopped. ${partial.note[0].toUpperCase()}${partial.note.slice(1)}.`;
   }
   return "Stopped.";
+}
+
+// ---- task 1: secret denial ----------------------------------------------
+//
+// A finding shaped for the secret-sweep deny card (docs/openapi.yaml
+// Finding: secret_fingerprint/kind/path/overridable/preview, review H3).
+
+export interface SecretFindingLike {
+  category: string;
+  secret_overridable?: boolean;
+}
+
+// canOverrideSecret decides whether "Not a secret" renders at all (task 1):
+// only for a secret_sweep finding the backend has itself marked eligible.
+// `secret_overridable: false` means the value was drawn from the project's
+// own configured secrets -- a real credential by construction -- and the
+// store refuses `not_a_secret` on it unconditionally, so offering the button
+// there would be a dead click. Every other category never gets the button,
+// whatever `secret_overridable` says (it's only meaningful on secret_sweep).
+export function canOverrideSecret(f: SecretFindingLike): boolean {
+  return f.category === "secret_sweep" && f.secret_overridable === true;
+}
+
+// notASecretConfirmCopy (task 1) is shown before the `not_a_secret`
+// disposition is posted -- the review's own copy requirement: explain that
+// the value is allowed in that file from now on, and that it can be revoked
+// later in Settings, rather than just eating a click on an irreversible-
+// feeling action with no explanation.
+export function notASecretConfirmCopy(secretPath: string | undefined): string {
+  const where = secretPath ? ` in ${secretPath}` : "";
+  return (
+    `This marks the value${where} as allowed from now on -- the secret sweep will stop ` +
+    `flagging it at that exact file. You can revoke this later in Settings.`
+  );
+}
+
+// ---- task 2: advisory findings -------------------------------------------
+
+export interface AdvisoryLike {
+  advisory?: boolean;
+}
+
+// partitionAdvisory (review B1/B2) splits a change set's findings into what
+// can still block approval and what never can. An advisory finding is set by
+// the backend for three reasons (a rigor cap, evidence outside the diff, or
+// unverified self-report) -- whichever the reason, this page's only job is
+// to never let one render as a blocker.
+export function partitionAdvisory<T extends AdvisoryLike>(
+  findings: T[],
+): { blocking: T[]; advisory: T[] } {
+  const blocking: T[] = [];
+  const advisory: T[] = [];
+  for (const f of findings) {
+    (f.advisory ? advisory : blocking).push(f);
+  }
+  return { blocking, advisory };
+}
+
+// advisoryBacklogLabel is the collapsed group's header (task 2's exact
+// wording): "Backlog (N) — noted, not blocking".
+export function advisoryBacklogLabel(count: number): string {
+  return `Backlog (${count}) — noted, not blocking`;
+}
+
+// ---- task 3: git / PR status ---------------------------------------------
+
+export interface PRCheckLine {
+  name: string;
+  state: string;
+  link?: string;
+}
+export interface PRChecksResultLike {
+  overall: string;
+  checks: PRCheckLine[];
+}
+
+const PR_OVERALL_LABEL: Record<string, string> = {
+  success: "All checks passed",
+  failure: "Checks failed",
+  pending: "Checks running",
+  none: "No checks reported",
+};
+
+// prOverallLabel turns PRChecksResult.overall into the summary line above the
+// per-check list.
+export function prOverallLabel(overall: string): string {
+  return PR_OVERALL_LABEL[overall] ?? overall;
+}
+
+// prOverallState maps `overall` onto this app's pill vocabulary
+// (verified/failing/running/inactive), the same states BuildPage's own
+// status pills use, so a PR's CI status reads consistently with everything
+// else on the page instead of inventing a fourth color scheme.
+export function prOverallState(overall: string): string {
+  switch (overall) {
+    case "success":
+      return "verified";
+    case "failure":
+      return "failing";
+    case "pending":
+      return "running";
+    default:
+      return "inactive";
+  }
+}
+
+// gitPrErrorMessage (task 3) turns the 409s from POST .../pr and
+// GET .../pr-checks into a sentence naming the actual fix, instead of the raw
+// "gh: command not found" / "initiative has no dedicated branch yet" text
+// reaching the page unrewritten.
+export function gitPrErrorMessage(raw: string): string {
+  const text = stripWorkflowPrefix(raw);
+  const lower = text.toLowerCase();
+  if (lower.includes("gh") && (lower.includes("not installed") || lower.includes("not found") || lower.includes("no gh"))) {
+    return "The GitHub CLI (gh) isn't installed on this machine, so a PR can't be opened from here. Install gh, then try again.";
+  }
+  if (lower.includes("no dedicated branch") || lower.includes("no branch") || lower.includes("branch_per_initiative")) {
+    return "This initiative has no dedicated branch yet. Turn on git.branch_per_initiative in Settings and apply a change set first, then try again.";
+  }
+  if (lower.includes("no pull request")) {
+    return "No pull request exists yet for this initiative. Create one first.";
+  }
+  return text;
+}
+
+// ---- task 5: rerun with a note -------------------------------------------
+
+// executeRequestBody builds the POST .../execute (and .../retry) body (D-a):
+// `note` is sent only when there is one to send, trimmed, so an empty
+// textarea doesn't add a stray `note: ""` the backend would otherwise have
+// to treat as "no note" anyway. `fresh` (C3's "Start over") is independent
+// and only included when true, matching the pre-existing `{fresh: true}` /
+// `{}` shapes this replaces.
+export function executeRequestBody(discardPartial: boolean, note: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (discardPartial) body.fresh = true;
+  const trimmed = note.trim();
+  if (trimmed) body.note = trimmed;
+  return body;
 }

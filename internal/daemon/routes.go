@@ -15,6 +15,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/understanding", s.handleUnderstanding)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/guidance", s.handleGuidance)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/changed", s.handleChanged)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/timeline", s.handleTimeline)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/costs", s.handleCosts)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/resume", s.handleResume)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/revise", s.handleRevise)
@@ -29,6 +31,9 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}", s.handleDeleteTask)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel", s.handleCancelTask)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/tasks/reorder", s.handleReorderTasks)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/tasks/merge", s.handleMergeTasks)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/split", s.handleSplitTask)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on", s.handleSetTaskDependsOn)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task", s.handleGenerateVerificationTask)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/revise-plan", s.handleRevisePlan)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase", s.handleReopenPhase)
@@ -38,10 +43,13 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/why", s.handleWhy)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/impact", s.handleImpact)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/impact-counts", s.handleImpactCounts)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack", s.handleAckStale)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/trace", s.handleTrace)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/diff", s.handleDiff)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers", s.handleSuggestAnswers)
 	m.HandleFunc("GET /api/v1/logs", s.handleLogs)
+
+	m.HandleFunc("GET /api/v1/projects/{projectId}/queue", s.handleQueue)
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/providers", s.handleListProviders)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/providers", s.handleUpdateProviders)
@@ -65,6 +73,8 @@ func (s *Server) routes() {
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/findings/{id}/disposition", s.handleFindingDisposition)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/findings/{id}/note", s.handleFindingNote)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/secret-allowlist", s.handleListSecretAllowlist)
+	m.HandleFunc("DELETE /api/v1/projects/{projectId}/secret-allowlist/{id}", s.handleRevokeSecretAllowlist)
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/activity", s.handleActivity)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/events", s.handleEvents)
@@ -80,6 +90,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/review", s.handleReviewChangeSet)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/apply", s.handleApplyChangeSet)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/change-sets/{id}/revert", s.handleRevertChangeSet)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}/pr-checks", s.handlePRChecks)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/pr", s.handleCreatePR)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
 
 	// The initiative-scoped reads, on the nested path. These ten once answered
@@ -92,6 +104,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/assertions", s.handleListAssertions)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/artifacts", s.handleListArtifacts)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/decisions", s.handleListDecisions)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations", s.handleAcceptRecommendations)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/triage", s.handleTriage)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/questions", s.handleListQuestions)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/findings", s.handleListFindings)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/change-sets", s.handleListChangeSets)

@@ -103,6 +103,16 @@ func TestExecuteReleasesTheInitiativeOnBothPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	setStatus(t, rt, projectID, iniID, domain.InitiativePlanApproved)
+	// ICP re-run defect E: execute now refuses synchronously, before ever
+	// claiming the initiative, when there is no ready task -- which this
+	// initiative (force-set to plan_approved with none) would otherwise be.
+	// A task is needed here so the claim this test exercises is actually
+	// taken, exactly as the success half of "both paths" (see the doc
+	// comment above) requires.
+	task := &domain.Task{InitiativeID: iniID, Title: "do it", Statement: "do it", Priority: domain.PriorityMust}
+	if err := pr.db.CreateTask(t.Context(), task, "", nil); err != nil {
+		t.Fatal(err)
+	}
 
 	opID, err := rt.ExecuteInitiative(t.Context(), projectID, iniID)
 	if err != nil {

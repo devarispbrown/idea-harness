@@ -41,6 +41,13 @@ func (db *DB) CreateInitiative(ctx context.Context, ini *domain.Initiative) erro
 	if !ini.Status.Valid() {
 		ini.Status = domain.InitiativeRunning
 	}
+	// Short titles are generated deterministically on create (C1, wave 3
+	// contract), from the description (the full idea text -- Title carries the
+	// same text today, see cmdNew). A caller that already supplied one (e.g. a
+	// test fixture) is left alone.
+	if ini.ShortTitle == "" {
+		ini.ShortTitle = domain.GenerateShortTitle(ini.Description)
+	}
 	return db.Apply(ctx, Event{
 		AggregateType: "initiative",
 		AggregateID:   ini.ID,
@@ -48,11 +55,32 @@ func (db *DB) CreateInitiative(ctx context.Context, ini *domain.Initiative) erro
 		EventType:     "initiative.created",
 	}, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
-			INSERT INTO initiatives (id, title, description, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			ini.ID, ini.Title, ini.Description, ini.Status, ini.CreatedAt.UnixMilli(), ini.UpdatedAt.UnixMilli())
+			INSERT INTO initiatives (id, title, description, status, short_title, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			ini.ID, ini.Title, ini.Description, ini.Status, ini.ShortTitle, ini.CreatedAt.UnixMilli(), ini.UpdatedAt.UnixMilli())
 		return err
 	})
+}
+
+// backfillShortTitle returns ini.ShortTitle, generating and persisting one
+// first if the row predates the short_title column (C1, wave 3 contract). The
+// write is best-effort: a read path should never fail because the backfill
+// could not be saved, so the generated value is still returned to the caller
+// even if persisting it errors (it will simply be regenerated -- identically,
+// since generation is deterministic -- next time).
+func (db *DB) backfillShortTitle(ctx context.Context, initiativeID, description, existing string) string {
+	if existing != "" {
+		return existing
+	}
+	generated := domain.GenerateShortTitle(description)
+	if generated == "" {
+		return generated
+	}
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE initiatives SET short_title = ? WHERE id = ? AND short_title = ''`, generated, initiativeID); err != nil {
+		// Best-effort: see doc comment.
+		_ = err
+	}
+	return generated
 }
 
 // GetInitiative returns one initiative by id.
@@ -60,21 +88,22 @@ func (db *DB) GetInitiative(ctx context.Context, initiativeID string) (domain.In
 	var ini domain.Initiative
 	var created, updated int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, short_title, created_at, updated_at
 		FROM initiatives WHERE id = ?`, initiativeID).
-		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &created, &updated)
+		Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &ini.ShortTitle, &created, &updated)
 	if err != nil {
 		return ini, notFoundIfNoRows(err, "initiative", initiativeID)
 	}
 	ini.CreatedAt = time.UnixMilli(created)
 	ini.UpdatedAt = time.UnixMilli(updated)
+	ini.ShortTitle = db.backfillShortTitle(ctx, ini.ID, ini.Description, ini.ShortTitle)
 	return ini, nil
 }
 
 // ListInitiatives returns all initiatives ordered by creation.
 func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, title, description, status, failure_reason, judgment_reason, created_at, updated_at
+		SELECT id, title, description, status, failure_reason, judgment_reason, git_branch, pr_url, short_title, created_at, updated_at
 		FROM initiatives ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -84,17 +113,80 @@ func (db *DB) ListInitiatives(ctx context.Context) ([]domain.Initiative, error) 
 	for rows.Next() {
 		var ini domain.Initiative
 		var created, updated int64
-		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &created, &updated); err != nil {
+		if err := rows.Scan(&ini.ID, &ini.Title, &ini.Description, &ini.Status, &ini.FailureReason, &ini.JudgmentReason, &ini.GitBranch, &ini.PRURL, &ini.ShortTitle, &created, &updated); err != nil {
 			return nil, err
 		}
 		ini.CreatedAt = time.UnixMilli(created)
 		ini.UpdatedAt = time.UnixMilli(updated)
 		out = append(out, ini)
 	}
+	rows.Close()
+	for i := range out {
+		out[i].ShortTitle = db.backfillShortTitle(ctx, out[i].ID, out[i].Description, out[i].ShortTitle)
+	}
 	return out, rows.Err()
 }
 
+// SetInitiativeGitBranch records the dedicated branch git.branch_per_initiative
+// created for this initiative on its first apply (review C4 piece 2), so every
+// later change set commits to the same branch instead of computing (and
+// possibly colliding on) a new name each time.
+func (db *DB) SetInitiativeGitBranch(ctx context.Context, initiativeID, branch, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.git_branch_set",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE initiatives SET git_branch = ? WHERE id = ?`, branch, initiativeID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "initiative %q not found", initiativeID)
+	})
+}
+
+// SetInitiativePRURL records the pull request `idea pr` opened for the
+// initiative's dedicated branch (review C4 piece 3).
+func (db *DB) SetInitiativePRURL(ctx context.Context, initiativeID, prURL, actor string) error {
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.pr_opened",
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE initiatives SET pr_url = ? WHERE id = ?`, prURL, initiativeID)
+		if err != nil {
+			return err
+		}
+		return requireOneRow(res, "initiative %q not found", initiativeID)
+	})
+}
+
 // FailInitiative marks an initiative failed with a reason.
+//
+// review H7: this is a general-purpose "mark failed" primitive, not only the
+// release half of a live ClaimInitiativeRunning claim -- tests (and,
+// plausibly, a future administrative path) call it directly on an
+// initiative that is not currently `running` and expect it to take effect,
+// so it deliberately stays unconditional here rather than gaining
+// ClaimInitiativeRunning's CAS. The actual hazard this review item is about
+// -- failOperationAfterPanic calling this unconditionally for an operation
+// that never claimed the initiative in the first place
+// (SuggestAnswersInitiative, notably, has no ClaimInitiativeRunning call at
+// all), which could overwrite a DIFFERENT, unrelated live claim with
+// `failed` -- is closed at that call site instead, by skipping this call
+// entirely for operation types known not to claim
+// (operationClaimsInitiative in runtime.go). A blanket CAS here would have
+// been the wrong layer: it cannot distinguish "no claim to release" from "a
+// live claim that happens to belong to someone else", which is exactly the
+// case that matters.
 func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) error {
 	return db.Apply(ctx, Event{
 		AggregateType: "initiative",
@@ -108,6 +200,12 @@ func (db *DB) FailInitiative(ctx context.Context, initiativeID, reason string) e
 		return err
 	})
 }
+
+// errInitiativeNotRunning is ReleaseInitiativeClaim's internal no-op signal
+// (review H7): the initiative was not `running`, so there was no live claim
+// to release. Never returned to ReleaseInitiativeClaim's own callers, which
+// translate it to a plain nil.
+var errInitiativeNotRunning = errors.New("store: initiative was not running; nothing to release")
 
 // ClaimInitiativeRunning marks an initiative running, but only from one of the
 // states given. It reports ErrInitiativeNotClaimable when no row matched.
@@ -271,6 +369,22 @@ func (db *DB) TransitionInitiative(ctx context.Context, initiativeID string, to 
 // the release only writes the status back. A commit review caught it by
 // reproducing exactly that against the real handler. `failed` is a transient
 // display of the status; the recorded reason is the durable fact.
+//
+// review H7: `status != failed` alone also passes while status == running
+// with an empty failure_reason -- the documented apply-then-verify sequence
+// (`idea apply` does not wait for its operation) runs exactly there, and
+// TestVerifyIsAllowedWhileAnApplyIsInFlight asserts that must keep working,
+// so `running` is deliberately NOT excluded here. What closes the actual
+// hazard (verify's CompleteInitiative racing apply/execute/revert while they
+// are still actively mutating files, not merely while the row still reads
+// `running` after they finished) is VerifyInitiative now taking the same
+// engine mutex Execute/ApplyChangeSet/RevertChangeSet hold for their whole
+// duration (see verify.go) -- verify cannot even reach this write until
+// their real work is over, which is the actual invariant this needs, not a
+// DB-status proxy for it that would also refuse the legitimate case above.
+// The residual sliver -- apply's own release() running a moment after
+// ApplyChangeSet returns (mutex released) but this write lands first -- is
+// closed by making that release a CAS too (ReleaseInitiativeClaim).
 func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
@@ -298,6 +412,68 @@ func (db *DB) CompleteInitiative(ctx context.Context, initiativeID, actor string
 		}
 		return nil
 	})
+}
+
+// ReleaseInitiativeClaim transitions an initiative FROM `running` back to
+// `to` -- the release half of ClaimInitiativeRunning -- but only while it is
+// STILL `running` (review H7). Every apply/execute/revert-style entry point
+// claims running, does its real work, and then hands the initiative back to
+// wherever it found it (or a related status); before this, that handback
+// (runtime.go's `release()` closures) used the unconditional
+// SetInitiativeStatus, so it could run moments after the claiming
+// operation's real work finished (its engine mutex already released) but
+// AFTER some other, legitimate write had already moved the initiative
+// somewhere else -- proven with verify's CompleteInitiative landing in that
+// exact gap and being silently overwritten back to the pre-apply status,
+// discarding a real completion. CAS-ing this on `running` makes the handback
+// a no-op whenever that has happened, instead of a stomp.
+func (db *DB) ReleaseInitiativeClaim(ctx context.Context, initiativeID string, to domain.InitiativeStatus, actor string) error {
+	if !to.Valid() {
+		return fmt.Errorf("store: invalid initiative status %q", to)
+	}
+	if actor == "" {
+		actor = ActorOrchestrator
+	}
+	err := db.Apply(ctx, Event{
+		AggregateType: "initiative",
+		AggregateID:   initiativeID,
+		Actor:         actor,
+		EventType:     "initiative.status_changed",
+		Operation:     string(to),
+	}, func(tx *sql.Tx) error {
+		// Mirrors SetInitiativeStatus's own failure_reason handling: a
+		// release TO failed or running or needs_human_judgment must not
+		// clear a reason a real resolution (TransitionInitiative) has not
+		// yet acted on.
+		var res sql.Result
+		var err error
+		if to == domain.InitiativeFailed || to == domain.InitiativeRunning ||
+			to == domain.InitiativeNeedsHumanJudgment {
+			res, err = tx.Exec(
+				`UPDATE initiatives SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+				to, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeRunning)
+		} else {
+			res, err = tx.Exec(
+				`UPDATE initiatives SET status = ?, failure_reason = '', judgment_reason = '', updated_at = ?
+				 WHERE id = ? AND status = ?`,
+				to, time.Now().UTC().UnixMilli(), initiativeID, domain.InitiativeRunning)
+		}
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return errInitiativeNotRunning
+		}
+		return nil
+	})
+	if errors.Is(err, errInitiativeNotRunning) {
+		return nil
+	}
+	return err
 }
 
 // ErrInitiativeNotClaimable reports that an initiative could not be claimed:
@@ -520,9 +696,127 @@ func (db *DB) SupersedeRequirements(ctx context.Context, initiativeID, supersede
 		Actor:         ActorOrchestrator,
 		EventType:     "requirements.superseded",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
-			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved)
-		return err
+		if _, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
+			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- a superseded
+		// requirement's stale mark is dead weight, not an outstanding
+		// acknowledgement (see clearStaleMarksForRemovedRequirementsTx).
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
+	})
+}
+
+// SupersedeRequirementsExcept marks every active requirement of an
+// initiative as removed EXCEPT those in keepIDs, recording the superseding
+// reason. Used by a PRD revision that updates some requirements in place
+// (UpdateRequirement) rather than recreating them (review ICP re-run #1):
+// only the requirements this cycle's response actually dropped are
+// superseded, so the code and every graph edge of a requirement carried
+// forward stays stable across the revision. An empty keepIDs behaves exactly
+// like SupersedeRequirements -- backward compatible, additive API.
+func (db *DB) SupersedeRequirementsExcept(ctx context.Context, initiativeID, supersededBy string, keepIDs []string) error {
+	if len(keepIDs) == 0 {
+		return db.SupersedeRequirements(ctx, initiativeID, supersededBy)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   initiativeID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirements.superseded",
+	}, func(tx *sql.Tx) error {
+		placeholders := make([]string, len(keepIDs))
+		args := make([]any, 0, len(keepIDs)+3)
+		args = append(args, domain.RequirementRemoved, supersededBy, initiativeID)
+		for i, id := range keepIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, domain.RequirementRemoved)
+		query := `UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND id NOT IN (` +
+			strings.Join(placeholders, ",") + `) AND status != ?`
+		if _, err := tx.Exec(query, args...); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- see
+		// SupersedeRequirements's identical call.
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
+	})
+}
+
+// UpdateRequirement updates an existing requirement's statement, priority
+// and acceptance criteria in place -- same id, same code -- and records the
+// run that produced the revision. Used when a PRD revision continues a
+// requirement's SUBJECT rather than replacing it (review ICP re-run #1):
+// keeping the same id preserves every graph edge already wired to it
+// (derived_from a decision, implements from a task, produced_by an earlier
+// run) instead of orphaning them the way supersede-and-recreate did on every
+// revise cycle. r.ID must already be set to the existing requirement's id.
+//
+// When the revision actually changes the statement or acceptance criteria of
+// a requirement that has already left draft (review C5) -- approved,
+// verified, failed or waived -- its status is reset to approved, verified_at
+// is cleared, and every verification_evidence row for it is deleted, all in
+// THIS SAME transaction. Without this, a requirement could report verified,
+// with surviving human evidence, for a statement that no longer exists: the
+// evidence was recorded against the OLD subject, and status/verified_at are
+// otherwise untouched by a code-matched revision even though the thing being
+// verified has changed underneath it. A revision that leaves the statement
+// and acceptance criteria byte-for-byte unchanged (e.g. only priority moved)
+// is not treated as re-opening verification. A still-draft requirement (an
+// in-progress PRD review cycle revising it before it has ever been approved)
+// is left in draft -- resetting it to approved here would let a mid-review
+// revision jump the requirement past the review gate it hasn't passed yet.
+func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   r.ID,
+		Actor:         ActorOrchestrator,
+		EventType:     "requirement.revised",
+	}, func(tx *sql.Tx) error {
+		var curStatement, curCriteriaJSON string
+		var curStatus domain.RequirementStatus
+		if err := tx.QueryRow(`SELECT statement, acceptance_criteria_json, status FROM requirements WHERE id = ?`, r.ID).
+			Scan(&curStatement, &curCriteriaJSON, &curStatus); err != nil {
+			return err
+		}
+		newCriteriaJSON := mustJSON(r.AcceptanceCriteria)
+		subjectChanged := curStatement != r.Statement || curCriteriaJSON != newCriteriaJSON
+		reopenVerification := subjectChanged && curStatus != domain.RequirementDraft && curStatus != domain.RequirementRemoved
+
+		if reopenVerification {
+			_, err := tx.Exec(`
+				UPDATE requirements
+				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?,
+				    status = ?, verified_at = NULL
+				WHERE id = ?`,
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, domain.RequirementApproved, r.ID)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DELETE FROM verification_evidence WHERE requirement_id = ?`, r.ID); err != nil {
+				return err
+			}
+		} else {
+			_, err := tx.Exec(`
+				UPDATE requirements
+				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?
+				WHERE id = ?`,
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, r.ID)
+			if err != nil {
+				return err
+			}
+		}
+		if r.ProducedByRun == "" {
+			return nil
+		}
+		// A new produced_by edge per revision (not a replace) is deliberate:
+		// it keeps every run that ever shaped this requirement in the graph,
+		// which is exactly the traceability an update-in-place must not lose
+		// relative to the old supersede-and-recreate path.
+		return db.wireEdges(tx, r.InitiativeID, []EdgeToWrite{
+			{FromType: "requirement", FromID: r.ID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: r.ProducedByRun},
+		})
 	})
 }
 
@@ -705,7 +999,34 @@ func (db *DB) ListDecisionDiscussions(ctx context.Context, decisionID string) ([
 }
 
 // ResolveDecision records a human decision (immutable once resolved).
+//
+// ICP re-run defect H (third clause): quick rigor can auto-approve a plan (and
+// tasks can execute) while a decision is still open, so "resolving a decision
+// for the first time" is no longer guaranteed to happen before anything was
+// built on it -- unlike the ordinary flow, where a decision is expected to
+// resolve before the plan it feeds even exists. When something already
+// depends on this decision (a live requirement derived from it, that
+// requirement's tasks, their applied change sets), resolving it now is
+// exactly as consequential as ReopenDecision's "changed my mind" case, and
+// must mark the same dependents stale the same way -- otherwise a human's
+// answer given after plan approval (e.g. "keys in an env var") never
+// surfaces as "N items may be invalid" anywhere, and the tasks/change sets
+// built without it are never flagged for a second look.
 func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor string) error {
+	dec, err := db.GetDecision(ctx, decisionID)
+	if err != nil {
+		return err
+	}
+	// Discovery reads BEFORE the transaction starts -- see decisionDependents'
+	// own doc comment (db.sql is a single-connection handle; a pool read from
+	// inside an open transaction deadlocks against the transaction's own
+	// connection). Read against the PRE-resolve state; resolving is itself
+	// what makes these dependents newly worth flagging, whether or not any
+	// exist yet.
+	reqIDs, taskIDs, csIDs, err := db.decisionDependents(ctx, dec.InitiativeID, dec.ID)
+	if err != nil {
+		return err
+	}
 	return db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
@@ -722,13 +1043,38 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 			return notFoundOrState(tx, "decisions", decisionID, "decision",
 				fmt.Errorf("decision %s is not open", decisionID))
 		}
-		return nil
+		// review M5's reasoning applies here too: marked in the SAME
+		// transaction as the resolve, so a crash between the two can never
+		// leave the decision resolved with nothing marked stale. A decision
+		// resolved before anything depends on it (the ordinary case) marks
+		// nothing -- markDependentsStaleTx no-ops on three empty lists.
+		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
 	})
 }
 
 // ReopenDecision returns a decided decision to open and clears its resolution,
 // so the human can choose again. Dissent is preserved (never erased, §8).
+//
+// Review A4 #5 ("impact is true"): a decided decision is authoritative only
+// while it stays decided. The moment it is reopened, whatever was built on it
+// -- the requirements that cite it, their tasks, and the applied change sets
+// for those tasks -- is marked stale, so `impact decision DEC-n` and
+// `/guidance` can say so instead of "no dependents found". This covers both
+// "reopened" and "re-resolved with a different answer", since the latter is
+// only reachable through this reopen in the current API.
 func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) error {
+	dec, err := db.GetDecision(ctx, decisionID)
+	if err != nil {
+		return err
+	}
+	// Discovery reads BEFORE the transaction starts (see decisionDependents'
+	// doc comment: db.sql is a single-connection handle, so a pool read from
+	// inside an open transaction deadlocks against the transaction's own
+	// connection).
+	reqIDs, taskIDs, csIDs, err := db.decisionDependents(ctx, dec.InitiativeID, dec.ID)
+	if err != nil {
+		return err
+	}
 	return db.Apply(ctx, Event{
 		AggregateType: "decision",
 		AggregateID:   decisionID,
@@ -744,7 +1090,10 @@ func (db *DB) ReopenDecision(ctx context.Context, decisionID, actor string) erro
 			return notFoundOrState(tx, "decisions", decisionID, "decision",
 				fmt.Errorf("decision %s is not decided", decisionID))
 		}
-		return nil
+		// review M5: marked in the SAME transaction as the reopen above, so a
+		// crash between the two can never leave the decision reopened with
+		// nothing marked stale.
+		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
 	})
 }
 
@@ -1007,10 +1356,11 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 			disp = sql.NullString{String: string(f.Disposition), Valid: true}
 		}
 		_, err := tx.Exec(`
-			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO findings (id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			f.ID, f.InitiativeID, f.ReviewRunID, f.TargetType, f.TargetID, f.Severity, f.Confidence, f.Category, f.Code,
-			f.Finding, f.Evidence, f.Impact, f.Recommendation, disp, f.DispositionActor, f.Note, f.CreatedAt.UnixMilli())
+			f.Finding, f.Evidence, f.Impact, f.Recommendation, disp, f.DispositionActor, f.Note,
+			f.SecretFingerprint, f.SecretKind, f.SecretPath, f.SecretOverridable, f.SecretPreview, f.Path, f.InDiff, f.Advisory, f.CreatedAt.UnixMilli())
 		return err
 	})
 }
@@ -1018,7 +1368,7 @@ func (db *DB) CreateFinding(ctx context.Context, f *domain.Finding) error {
 // ListFindings returns findings for a review run.
 func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE review_run_id = ? ORDER BY created_at ASC`, reviewRunID)
 	if err != nil {
 		return nil, err
@@ -1031,7 +1381,7 @@ func (db *DB) ListFindings(ctx context.Context, reviewRunID string) ([]domain.Fi
 // change set), used by the review_open_blocking deny gate at approve time.
 func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE target_type = ? AND target_id = ? ORDER BY created_at ASC`, targetType, targetID)
 	if err != nil {
 		return nil, err
@@ -1043,13 +1393,34 @@ func (db *DB) ListFindingsByTarget(ctx context.Context, targetType, targetID str
 // ListFindingsByInitiative returns all findings for an initiative.
 func (db *DB) ListFindingsByInitiative(ctx context.Context, initiativeID string) ([]domain.Finding, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, created_at
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
 		FROM findings WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanFindings(rows)
+}
+
+// GetFinding returns one finding by id (ICP re-run defect #2: used to warn a
+// human dispositioning a finding "rejected" when it carries a system deny
+// code and so will NOT clear the approval bar, per Finding.ResolvesBlocking).
+func (db *DB) GetFinding(ctx context.Context, id string) (*domain.Finding, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT id, initiative_id, review_run_id, target_type, target_id, severity, confidence, category, code, finding, evidence, impact, recommendation, disposition, disposition_actor, note, secret_fingerprint, secret_kind, secret_path, secret_overridable, secret_preview, path, in_diff, advisory, created_at
+		FROM findings WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	found, err := scanFindings(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, &NotFoundError{Kind: "finding", Ref: id}
+	}
+	return &found[0], nil
 }
 
 func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
@@ -1060,7 +1431,8 @@ func scanFindings(rows *sql.Rows) ([]domain.Finding, error) {
 		var disp sql.NullString
 		if err := rows.Scan(&f.ID, &f.InitiativeID, &f.ReviewRunID, &f.TargetType, &f.TargetID, &f.Severity, &f.Confidence,
 			&f.Category, &f.Code, &f.Finding, &f.Evidence, &f.Impact, &f.Recommendation, &disp,
-			&f.DispositionActor, &f.Note, &created); err != nil {
+			&f.DispositionActor, &f.Note, &f.SecretFingerprint, &f.SecretKind, &f.SecretPath,
+			&f.SecretOverridable, &f.SecretPreview, &f.Path, &f.InDiff, &f.Advisory, &created); err != nil {
 			return nil, err
 		}
 		f.CreatedAt = time.UnixMilli(created)
@@ -1136,12 +1508,32 @@ func (db *DB) DispositionUnclaimedFindingsByTarget(ctx context.Context, initiati
 }
 
 // SetFindingDisposition records a disposition from a distinct actor.
+//
+// not_a_secret (review changes #1, review H3) is scoped to secret_sweep
+// findings only: every other category refuses it, so the one disposition
+// that also writes a project-scoped allowlist entry cannot be forged onto an
+// unrelated finding. A configured secret value's own finding
+// (secret_overridable = false) refuses it too, unconditionally: that match
+// is a real credential by construction, not a shape that might be a false
+// positive, and no human override makes it eligible. The scoping checks and
+// the allowlist write happen in the same transaction as the disposition
+// update, so a crash between them cannot leave one without the other.
+//
+// The allowlist entry is scoped to (fingerprint, path) -- not fingerprint
+// alone -- via upsert (ON CONFLICT), so the same value allowlisted in one
+// file (e.g. a test fixture) still blocks in another. Changing a finding's
+// disposition AWAY FROM not_a_secret removes the matching allowlist entry,
+// so an allowlist decision can be reversed by re-dispositioning the finding
+// that created it.
 func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp domain.Disposition, actor string) error {
 	if !disp.Valid() {
 		return fmt.Errorf("store: invalid disposition %q", disp)
 	}
 	if disp == domain.DispositionAcceptedRisk && actor != HumanActor {
 		return fmt.Errorf("store: accepted_risk requires a human actor")
+	}
+	if disp == domain.DispositionNotASecret && actor != HumanActor {
+		return fmt.Errorf("store: not_a_secret requires a human actor")
 	}
 	return db.Apply(ctx, Event{
 		AggregateType: "finding",
@@ -1150,6 +1542,27 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		EventType:     "finding.dispositioned",
 		Operation:     string(disp),
 	}, func(tx *sql.Tx) error {
+		var category, secretFingerprint, secretKind, secretPath string
+		var secretOverridable bool
+		var priorDisp sql.NullString
+		if err := tx.QueryRow(`SELECT category, secret_fingerprint, secret_kind, secret_path, secret_overridable, disposition FROM findings WHERE id = ?`, findingID).
+			Scan(&category, &secretFingerprint, &secretKind, &secretPath, &secretOverridable, &priorDisp); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &NotFoundError{Kind: "finding", Ref: findingID}
+			}
+			return err
+		}
+		if disp == domain.DispositionNotASecret {
+			if category != "secret_sweep" {
+				return fmt.Errorf("store: not_a_secret is only valid on a secret_sweep finding (this finding is %q)", category)
+			}
+			if secretFingerprint == "" {
+				return fmt.Errorf("store: this finding has no recorded secret fingerprint to allowlist")
+			}
+			if !secretOverridable {
+				return fmt.Errorf("store: not_a_secret is refused for %q: this value was drawn from the project's own configured secrets, not a pattern match, and is never eligible for the not_a_secret override", secretKind)
+			}
+		}
 		// RowsAffected, because db.Apply commits the finding.dispositioned event
 		// in this same transaction. Without the check, a stale or wrong id
 		// returned 200 and durably recorded that a human accepted a risk on a
@@ -1166,6 +1579,23 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		}
 		if n == 0 {
 			return &NotFoundError{Kind: "finding", Ref: findingID}
+		}
+		wasNotASecret := priorDisp.Valid && domain.Disposition(priorDisp.String) == domain.DispositionNotASecret
+		switch {
+		case disp == domain.DispositionNotASecret:
+			if _, err := tx.Exec(`
+				INSERT INTO secret_allowlist (id, fingerprint, kind, path, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(fingerprint, path) DO UPDATE SET kind = excluded.kind, actor = excluded.actor, created_at = excluded.created_at`,
+				id.New(), secretFingerprint, secretKind, secretPath, actor, nowMS()); err != nil {
+				return err
+			}
+		case wasNotASecret && secretFingerprint != "":
+			// The disposition moved away from not_a_secret: the allowlist
+			// entry it created must go with it, or the sweep would keep
+			// silently passing a value the human just un-allowlisted.
+			if _, err := tx.Exec(`DELETE FROM secret_allowlist WHERE fingerprint = ? AND path = ?`, secretFingerprint, secretPath); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

@@ -1,8 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"unicode"
+
+	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
 // normalizeJudgment returns a canonical form for comparing decision questions
@@ -31,14 +35,29 @@ var stopWords = map[string]bool{
 	"vs": true, "it": true, "this": true, "that": true, "there": true,
 }
 
-// tokenize splits a judgment into significant lowercase tokens (stop words and
-// sub-3-character tokens dropped).
+// tokenize splits a judgment into significant lowercase tokens: stop words
+// and sub-3-character NON-numeric tokens are dropped, but a purely numeric
+// token is always kept, whatever its length (review M2).
+//
+// Dropping short tokens indiscriminately merged "Support Python 3.11?" with
+// "Support Python 3.12?" (each number splits on '.' into "3" and "11"/"12",
+// both under the 3-character floor and so dropped entirely -- the two
+// questions then tokenize to the identical {support, python}, Jaccard 1.0)
+// and "Max 10 or 50 items per page?" with "Max 20 or 25 items per page?"
+// (same reasoning: every number dropped, both left as {max, items, page}).
+// A version number or a quantity is exactly the kind of short token whose
+// value distinguishes two otherwise-similar judgments -- the digits are
+// significant regardless of how few of them there are.
 func tokenize(s string) []string {
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 	})
 	out := make([]string, 0, len(fields))
 	for _, f := range fields {
+		if isNumericToken(f) {
+			out = append(out, f)
+			continue
+		}
 		if len(f) < 3 || stopWords[f] {
 			continue
 		}
@@ -47,28 +66,215 @@ func tokenize(s string) []string {
 	return out
 }
 
-// similarJudgment reports whether two judgments are near-duplicates — high
-// significant-token overlap relative to the shorter one. This suppresses the
-// semantic duplicates that exact-text matching misses (e.g. "How many mailboxes
-// are included by default?" vs "How many mailboxes per domain purchase?").
-func similarJudgment(a, b string) bool {
+// isNumericToken reports whether s consists entirely of digits (a version
+// component, a quantity) -- tokenize's exception to the 3-character floor
+// (review M2).
+func isNumericToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// jaccardSimilarity returns the Jaccard similarity of a and b's significant
+// token sets (tokenize's output, deduplicated): |intersection| / |union|. 0
+// when either side tokenizes to nothing.
+func jaccardSimilarity(a, b string) float64 {
 	ta := tokenize(a)
 	tb := tokenize(b)
 	if len(ta) == 0 || len(tb) == 0 {
-		return false
+		return 0
 	}
-	overlap := 0
+	setA := make(map[string]bool, len(ta))
 	for _, t := range ta {
-		for _, u := range tb {
-			if t == u {
-				overlap++
-				break
-			}
+		setA[t] = true
+	}
+	setB := make(map[string]bool, len(tb))
+	for _, t := range tb {
+		setB[t] = true
+	}
+	inter := 0
+	for t := range setA {
+		if setB[t] {
+			inter++
 		}
 	}
-	den := len(ta)
-	if len(tb) < den {
-		den = len(tb)
+	union := len(setA) + len(setB) - inter
+	if union == 0 {
+		return 0
 	}
-	return float64(overlap)/float64(den) >= 0.6
+	return float64(inter) / float64(union)
+}
+
+// nearDuplicateThreshold is the token-Jaccard similarity, after
+// normalizeJudgment strips revise-cycle prefixes, at or above which two
+// decisions (of the same DecisionType) or two questions are merged at
+// creation (review B4, adopted #8).
+//
+// 0.85, not the looser overlap-over-shorter-side measure this replaced: "Which
+// database should we use?" vs "Which cache should we use?" shares "which" and
+// "use" against each side's own {which,database,use}/{which,cache,use} --
+// Jaccard 2/4 = 0.5, correctly kept apart, where the old 0.6-of-shorter-side
+// rule (2/3 = 0.67) wrongly merged them.
+const nearDuplicateThreshold = 0.85
+
+// similarJudgment reports whether two judgments are near-duplicates by token
+// Jaccard similarity (review B4, adopted #8) after normalizeJudgment. Callers
+// comparing decisions must also check DecisionType equality themselves --
+// this function only ever compares text.
+func similarJudgment(a, b string) bool {
+	return jaccardSimilarity(normalizeJudgment(a), normalizeJudgment(b)) >= nearDuplicateThreshold
+}
+
+// sameSubjectTextFloor is the text-only Jaccard similarity (after
+// normalizeJudgment) two decisions' wording must EXCEED -- strictly, not
+// at-or-above -- before their OPTIONS may count toward a merge (review ICP
+// re-run #2). Without this floor, two decisions that merely happen to offer
+// the same generic options -- both a plain "yes"/"no" choice about entirely
+// different subjects -- would merge on options alone.
+//
+// Exclusive on purpose (review MEDIUM #5): "Which database should we use?"
+// vs "Which cache should we use?" is nearDuplicateThreshold's own worked
+// example of a pair that must stay apart, and it lands EXACTLY on 0.5 (2/4
+// tokens: {which, use} shared out of {which, database, use, cache}). Code and
+// comment used to disagree about which side of 0.5 that boundary fell on --
+// similarDecision's `< sameSubjectTextFloor` early-return let a textSim of
+// exactly 0.5 through to the options check, so a database/cache-style pair
+// that ALSO happened to offer near-identical options (e.g. both a plain
+// yes/no) merged anyway, contradicting this very comment. `>` here (see
+// similarDecision) closes that: 0.5 itself now fails the floor.
+const sameSubjectTextFloor = 0.5
+
+// sameSubjectOptionsThreshold is the options-only Jaccard similarity, on top
+// of sameSubjectTextFloor, at or above which two decisions of the same type
+// are treated as the same subject even though their question wording falls
+// short of nearDuplicateThreshold (review ICP re-run #2).
+const sameSubjectOptionsThreshold = 0.7
+
+// optionsSimilarity is the token-Jaccard similarity of two decisions'
+// options lists (review ICP re-run #2): each list is flattened into one
+// string and tokenized the same way similarJudgment tokenizes question text,
+// so wording drift or reordering across revise cycles ("token bucket (per
+// key)" vs "token bucket algorithm") does not by itself defeat the match,
+// while still respecting tokenize's own exceptions (a short numeric token,
+// e.g. a version or a quantity, is never dropped).
+func optionsSimilarity(a, b []string) float64 {
+	return jaccardSimilarity(strings.Join(a, " "), strings.Join(b, " "))
+}
+
+// similarDecision reports whether two decisions of the SAME TYPE are
+// near-duplicates (review B4, adopted #8; review ICP re-run #2). A decision's
+// wording tends to drift more across revise-cycle rounds than its options do
+// -- an ICP re-run found the model re-asking effectively the same rate-limit
+// algorithm choice with different phrasing each round, each time creating a
+// new DEC instead of merging -- so this checks EITHER:
+//
+//  1. The pure-text rule (>= nearDuplicateThreshold), same as similarJudgment,
+//     or
+//  2. A same-subject signal: the question text is still recognizably about
+//     the same thing (>= sameSubjectTextFloor) AND the two decisions offer
+//     materially the same options (>= sameSubjectOptionsThreshold).
+//
+// The text floor in (2) is the false-merge protection: two decisions that
+// merely share generic options (e.g. both offer "yes"/"no") but are about
+// unrelated subjects have near-zero text similarity and so never merge on
+// options alone. Callers must also check DecisionType equality themselves.
+func similarDecision(aQuestion, bQuestion string, aOptions, bOptions []string) bool {
+	if similarJudgment(aQuestion, bQuestion) {
+		return true
+	}
+	// review MEDIUM #5: strictly greater than, not >=/< -- see
+	// sameSubjectTextFloor's comment. A textSim of exactly the floor (the
+	// database/cache pair's own 0.5) must fail here, not fall through to the
+	// options check.
+	textSim := jaccardSimilarity(normalizeJudgment(aQuestion), normalizeJudgment(bQuestion))
+	if textSim <= sameSubjectTextFloor {
+		return false
+	}
+	return optionsSimilarity(aOptions, bOptions) >= sameSubjectOptionsThreshold
+}
+
+// findingDedupeThreshold is the token-Jaccard similarity (jaccardSimilarity's
+// own measure, applied to Finding.Finding text) at or above which a freshly
+// generated finding is treated as a near-duplicate of a PRIOR one for the
+// purpose of inheriting its human disposition (ICP re-run defect A).
+//
+// Looser than nearDuplicateThreshold (0.85, decisions/questions): there, text
+// is the ONLY signal two judgments are the same one reworded. Here, text
+// similarity is the CONFIRMING signal on top of three already-exact matches
+// (TargetType, normalized Path, Category) -- and a model's adversarial-review
+// prose varies more between runs than a PRD's decision/question wording does
+// (full sentences restructured, not just a synonym swapped), so demanding the
+// same 0.85 would miss real reworded duplicates that share the same
+// judgment's substance.
+const findingDedupeThreshold = 0.5
+
+// inheritDispositionFromPrior carries a human's disposition of a prior
+// finding forward onto its near-duplicate in a fresh review pass (ICP re-run
+// defect A). A change set is reviewed exactly once now (Execute, at the
+// moment its content is fixed), but a PRD revise cycle (Revise ->
+// runReviewLoop) and a plan regeneration (RevisePlan/ReopenPhase ->
+// runExecutionPlanReview) both legitimately re-review the same subject after
+// a human has already dispositioned an earlier finding about it -- and nothing
+// tells the fresh pass that a near-identical finding was already judged. A
+// human-rejected (or otherwise human-dispositioned) finding whose reworded
+// twin reappears must not silently escape that judgment call and re-block
+// approval on its own.
+//
+// A near-duplicate is: same TargetType, same (normalized) Path, same
+// Category, and similar Finding text (token Jaccard >= findingDedupeThreshold,
+// the same measure dedup.go uses for decisions/questions). Only a HUMAN's
+// disposition is inherited -- a system-set one (e.g. the bulk "fixed"
+// DispositionOpenFindings stamps on convergence, or a deny-coded secret_sweep
+// rejection) says nothing about whether THIS specific finding is a false
+// positive, and must never be copied onto an unrelated one.
+//
+// findings is mutated in place; it is not yet persisted (callers run this
+// before their own CreateFinding loop).
+func (e *Engine) inheritDispositionFromPrior(ctx context.Context, initiativeID string, findings []domain.Finding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	prior, err := e.db.ListFindingsByInitiative(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	var priorHuman []domain.Finding
+	for _, p := range prior {
+		if p.Disposition != "" && p.DispositionActor == store.HumanActor {
+			priorHuman = append(priorHuman, p)
+		}
+	}
+	if len(priorHuman) == 0 {
+		return nil
+	}
+	for i := range findings {
+		f := &findings[i]
+		for _, p := range priorHuman {
+			if p.TargetType != f.TargetType {
+				continue
+			}
+			if normalizeFindingPath(p.Path, "") != normalizeFindingPath(f.Path, "") {
+				continue
+			}
+			if p.Category != f.Category {
+				continue
+			}
+			if jaccardSimilarity(p.Finding, f.Finding) < findingDedupeThreshold {
+				continue
+			}
+			f.Disposition = p.Disposition
+			f.DispositionActor = p.DispositionActor
+			if f.Note == "" {
+				f.Note = "disposition inherited from " + p.ID + " (near-duplicate of a previously dispositioned finding)"
+			}
+			break
+		}
+	}
+	return nil
 }

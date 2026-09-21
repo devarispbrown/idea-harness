@@ -52,6 +52,44 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
+// TestReviewRigorDefaultsToAuto is review B1's default.
+func TestReviewRigorDefaultsToAuto(t *testing.T) {
+	if Default().Harness.Review.Rigor != "auto" {
+		t.Fatalf("Default() rigor = %q, want auto", Default().Harness.Review.Rigor)
+	}
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Harness.Review.Rigor != "auto" {
+		t.Fatalf("Load() of an empty dir rigor = %q, want auto", c.Harness.Review.Rigor)
+	}
+}
+
+// TestReviewRigorAcceptsEachLevel is review B1: quick|standard|thorough|auto.
+func TestReviewRigorAcceptsEachLevel(t *testing.T) {
+	for _, level := range []string{"auto", "quick", "standard", "thorough"} {
+		dir := t.TempDir()
+		writeFile(t, dir, "harness.yaml", "review:\n  rigor: "+level+"\n")
+		c, err := Load(dir)
+		if err != nil {
+			t.Fatalf("rigor %q: %v", level, err)
+		}
+		if string(c.Harness.Review.Rigor) != level {
+			t.Fatalf("rigor %q round-tripped as %q", level, c.Harness.Review.Rigor)
+		}
+	}
+}
+
+// TestReviewRigorRejectsUnknownValue is review B1's validation.
+func TestReviewRigorRejectsUnknownValue(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "harness.yaml", "review:\n  rigor: extreme\n")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected an unknown review.rigor value to be rejected")
+	}
+}
+
 func TestLoadRejectsUnknownField(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "harness.yaml", "network: enabled\nbogus_field: true\n")

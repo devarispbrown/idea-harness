@@ -58,3 +58,42 @@ func TestWaitForOperationReportsElapsedTime(t *testing.T) {
 		t.Errorf("the progress line names no way to stop it:\n%q", got)
 	}
 }
+
+// TestWaitForOperationPrintsStage pins C3: when the daemon reports a stage,
+// the wait loop prints it in place of the bare "still working…".
+func TestWaitForOperationPrintsStage(t *testing.T) {
+	f := newFakeDaemon(t)
+
+	var polls atomic.Int32
+	f.mux.HandleFunc("GET /api/v1/operations/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		status := "running"
+		if polls.Add(1) > 1 {
+			status = "succeeded"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": status, "type": "execute_initiative", "stage": "Agent running TASK-2",
+		})
+	})
+
+	origAfter, origEvery := progressNoteAfter, progressNoteEvery
+	progressNoteAfter, progressNoteEvery = 0, time.Hour
+	defer func() { progressNoteAfter, progressNoteEvery = origAfter, origEvery }()
+
+	c, projectID, err := connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if werr := waitForOperation(c, projectID, "ini-1", "op-1", &out); werr != nil {
+		t.Fatalf("wait: %v", werr)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Agent running TASK-2") {
+		t.Errorf("the progress line does not name the stage:\n%q", got)
+	}
+	if strings.Contains(got, "still working") {
+		t.Errorf("the bare fallback was printed even though a stage was available:\n%q", got)
+	}
+}

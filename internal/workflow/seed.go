@@ -50,9 +50,17 @@ const (
 )
 
 // seedDirsOutsideGit are skipped when the workspace is not a git repository and
-// there is no ignore file to say what is generated.
+// there is no ignore file to say what is generated. Anything dot-prefixed
+// (.cache, .venv, .tools, ...) is already skipped by the dot-prefix check at
+// this function's only call site; this covers the well-known non-dot names
+// that aren't. Kept in sync by hand with fsdiff.DefaultIgnoredDirNames --
+// the canonical, documented list (review defect #2) -- rather than importing
+// it, since this package's git-repo path already gets the real answer from
+// the workspace's own .gitignore via `git ls-files --exclude-standard` and
+// only needs a name-based fallback for the no-git case.
 var seedDirsOutsideGit = map[string]bool{
 	"node_modules": true, "vendor": true, "dist": true, "build": true, "target": true,
+	"__pycache__": true,
 }
 
 // seedWorkRoot replaces workRoot with a copy of workspace. isSecret reports

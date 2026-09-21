@@ -29,7 +29,8 @@ const harnessSchema = `{
       "properties": {
         "max_cycles":   { "type": "integer", "minimum": 0 },
         "max_tokens":   { "type": "integer", "minimum": 0 },
-        "max_cost_usd": { "type": "number",  "minimum": 0 }
+        "max_cost_usd": { "type": "number",  "minimum": 0 },
+        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] }
       },
       "additionalProperties": false
     },
@@ -47,6 +48,14 @@ const harnessSchema = `{
     "test_cmd": { "type": "string" },
     "check_timeout_seconds": { "type": "integer", "minimum": 0 },
     "git_commit": { "type": "boolean" },
+    "git": {
+      "type": "object",
+      "properties": {
+        "allow_default_branch":  { "type": "boolean" },
+        "branch_per_initiative": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "demo": {
       "type": "object",
       "properties": {

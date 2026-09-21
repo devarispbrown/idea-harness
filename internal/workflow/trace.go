@@ -71,8 +71,16 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 
 // Impact returns the dependents of a node: it follows incoming edges (from
 // nodes that point to this node) with a staleness classification.
+//
+// A task's change sets are not wired as graph edges (review A4 #4: a change
+// set is linked to its task via ChangeSet.TaskID, not an edge), so when the
+// frontier reaches a task node, its change sets are pulled in by query and
+// added as synthetic dependents -- otherwise `impact requirement REQ-n` (or
+// `impact decision DEC-n`) could reach the task and stop there, never
+// reaching the CHG built from it (review A4 #4/#5: "impact is true").
 func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID string) ([]ImpactItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
+	stale := e.staleTargetSet(ctx, initiativeID)
 	out := []ImpactItem{} // non-nil: see Why
 	visited := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
@@ -97,9 +105,33 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 						EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
 						FromLabel: cache.label(ed.FromType, ed.FromID), ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
 					},
-					Staleness: stalenessFor(ed.EdgeType),
+					Staleness: stalenessForNode(stale, ed.FromType, ed.FromID, ed.EdgeType),
 				})
 				next = append(next, [2]string{ed.FromType, ed.FromID})
+			}
+			if n[0] == "task" {
+				if cses, err := e.db.ListChangeSetsByTask(ctx, n[1]); err == nil {
+					for _, cs := range cses {
+						// A rejected or superseded change set does not "block"
+						// anything -- it is dead, not a live dependent -- and
+						// review (low-priority item) excludes both from
+						// impactNodeCount's "blocks N"; excluded here too so
+						// the itemized list and that count agree.
+						if !cs.Status.HoldsWork() {
+							continue
+						}
+						out = append(out, ImpactItem{
+							TraceItem: TraceItem{
+								// cs.HumanID is already "CHG-3" (review
+								// low-priority item: this used to read
+								// "CHG " + cs.HumanID, printing "CHG CHG-3").
+								EdgeType: "change_set", FromType: "change_set", FromID: cs.ID,
+								FromLabel: cs.HumanID, ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
+							},
+							Staleness: stalenessForNode(stale, "change_set", cs.ID, ""),
+						})
+					}
+				}
 			}
 		}
 		queue = next
@@ -167,6 +199,20 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 				}
 				next = append(next, [2]string{ed.FromType, ed.FromID})
 			}
+			// Change sets are query-linked to their task, not edge-linked (see
+			// the identical comment on Impact); a "blocks N" count must include
+			// them too -- except a rejected or superseded one (review
+			// low-priority item), which is dead and blocks nothing.
+			if n[0] == "task" {
+				if cses, err := e.db.ListChangeSetsByTask(ctx, n[1]); err == nil {
+					for _, cs := range cses {
+						if !cs.Status.HoldsWork() {
+							continue
+						}
+						dependents["change_set:"+cs.ID] = true
+					}
+				}
+			}
 		}
 		queue = next
 		if len(dependents) >= maxTraceNodes {
@@ -174,6 +220,32 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 		}
 	}
 	return len(dependents), nil
+}
+
+// staleTargetSet returns the set of "targetType:targetID" keys carrying an
+// active stale mark for the initiative (review A4 #5), for O(1) lookup while
+// walking Impact's frontier.
+func (e *Engine) staleTargetSet(ctx context.Context, initiativeID string) map[string]bool {
+	set := map[string]bool{}
+	items, err := e.db.ListStaleItems(ctx, initiativeID)
+	if err != nil {
+		return set
+	}
+	for _, it := range items {
+		set[it.TargetType+":"+it.TargetID] = true
+	}
+	return set
+}
+
+// stalenessForNode classifies a dependent: an active stale mark always wins
+// ("stale" -- review A4 #5's ground truth), otherwise the edge-type
+// classification stalenessFor already provides. edgeType is "" for a
+// query-linked (not edge-linked) dependent such as a change set.
+func stalenessForNode(stale map[string]bool, targetType, targetID string, edgeType domain.EdgeType) string {
+	if stale[targetType+":"+targetID] {
+		return "stale"
+	}
+	return stalenessFor(edgeType)
 }
 
 // stalenessFor classifies a dependent based on the edge type (§26). Deterministic.

@@ -3,6 +3,8 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -15,6 +17,8 @@ type FakeProvider struct {
 	mu        sync.RWMutex
 	responses map[string]string
 	queue     map[string][]string // schema name -> queued responses (FIFO)
+	costQueue map[string][]float64 // schema name -> queued CostUSD (FIFO)
+	errQueue  map[string][]error   // schema name -> queued errors (FIFO), consumed before any response
 	caps      Capabilities
 	calls     []Request
 }
@@ -94,6 +98,39 @@ func (f *FakeProvider) EnqueueResponse(schemaName, rawJSON string) {
 	f.queue[schemaName] = append(f.queue[schemaName], rawJSON)
 }
 
+// EnqueueCost appends a CostUSD to report on the NEXT Complete() call for a
+// schema name (FIFO, independent of EnqueueResponse's own queue) -- for
+// tests that need to script a specific per-attempt spend, e.g. proving a
+// retried call's cost is accumulated rather than overwritten by the next
+// attempt's (M5, review fix). A schema with nothing queued reports 0, as
+// before this existed.
+func (f *FakeProvider) EnqueueCost(schemaName string, usd float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.costQueue == nil {
+		f.costQueue = map[string][]float64{}
+	}
+	f.costQueue[schemaName] = append(f.costQueue[schemaName], usd)
+}
+
+// EnqueueError appends an error to return on the NEXT Complete() call for a
+// schema name (FIFO, independent of EnqueueResponse's own queue and consumed
+// before it) -- for a test that needs to script a failed attempt, most
+// commonly a truncated one (model.ErrTruncated, via a real provider's own
+// truncatedError), so it can prove a caller's retry-with-reduced-ask or
+// batch-and-merge degrade path actually runs and completes, rather than
+// merely existing in the code and being exercised only by a real, flaky
+// provider call. A schema with nothing queued behaves exactly as before this
+// existed: Complete falls through to its scripted/demo response.
+func (f *FakeProvider) EnqueueError(schemaName string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errQueue == nil {
+		f.errQueue = map[string][]error{}
+	}
+	f.errQueue[schemaName] = append(f.errQueue[schemaName], err)
+}
+
 // Name implements Provider.
 func (f *FakeProvider) Name() string { return "demo" }
 
@@ -104,6 +141,12 @@ func (f *FakeProvider) Capabilities() Capabilities { return f.caps }
 func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, req)
+	if q := f.errQueue[req.JSONSchemaName]; len(q) > 0 {
+		err := q[0]
+		f.errQueue[req.JSONSchemaName] = q[1:]
+		f.mu.Unlock()
+		return Response{}, err
+	}
 	raw := ""
 	if q := f.queue[req.JSONSchemaName]; len(q) > 0 {
 		raw = q[0]
@@ -115,15 +158,28 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 	if raw == "" {
 		raw = f.responses[req.Model]
 	}
+	costUSD := 0.0
+	if q := f.costQueue[req.JSONSchemaName]; len(q) > 0 {
+		costUSD = q[0]
+		f.costQueue[req.JSONSchemaName] = q[1:]
+	}
 	f.mu.Unlock()
 
 	if raw == "" {
 		raw = demoResponse(req.JSONSchemaName, userIdea(req))
+		// The demo plan and brief cite a requirement. They used to cite REQ-1
+		// always, which after a revise cycle is superseded -- and design and
+		// plan now see only live requirements, so the plan was refused as
+		// citing a requirement that no longer exists. Cite the first one the
+		// inputs actually list.
+		if code := firstRequirementCode(req); code != "" && code != "REQ-1" {
+			raw = strings.ReplaceAll(raw, `"REQ-1"`, strconv.Quote(code))
+		}
 	}
 	return Response{
 		RawJSON:     raw,
 		Text:        raw,
-		Usage:       Usage{InputTokens: 0, OutputTokens: 0, CostUSD: 0},
+		Usage:       Usage{InputTokens: 0, OutputTokens: 0, CostUSD: costUSD},
 		ActualModel: "demo",
 	}, nil
 }
@@ -322,4 +378,35 @@ func shortTitle(idea string) string {
 		return "Untitled idea"
 	}
 	return idea
+}
+
+var requirementCodeRe = regexp.MustCompile(`\bREQ-\d+\b`)
+
+// requirementsSectionRe locates the "--- requirements (trust: ...) ---" block
+// the deterministic context compiler emits (internal/context.Compile) inside
+// System, up to the next "--- " section header or the end of the string.
+var requirementsSectionRe = regexp.MustCompile(`(?s)--- requirements \(trust: [^)]*\) ---\n(.*?)(?:\n--- |\z)`)
+
+// firstRequirementCode is the first requirement code the request actually
+// lists, or "" when it names none.
+//
+// It prefers a code found in the "requirements" context section over one
+// merely mentioned elsewhere (review low-priority item): the history,
+// decisions, or original idea-description sections can still name a
+// requirement that has since been superseded (e.g. "REQ-1 was superseded
+// because..."), and a naive whole-prompt scan would grab that dead code
+// before ever reaching the live requirements section further down --
+// producing demo output that cites a requirement design/plan no longer sees.
+func firstRequirementCode(req Request) string {
+	if m := requirementsSectionRe.FindStringSubmatch(req.System); m != nil {
+		if c := requirementCodeRe.FindString(m[1]); c != "" {
+			return c
+		}
+	}
+	for _, m := range req.Messages {
+		if c := requirementCodeRe.FindString(m.Content); c != "" {
+			return c
+		}
+	}
+	return requirementCodeRe.FindString(req.System)
 }

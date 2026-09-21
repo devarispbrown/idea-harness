@@ -117,6 +117,22 @@ gone stale once:
   was consulted before the row was looked up.
 - **A mutation blocked by something that depends on it**, such as deleting a task another task
   depends on.
+- **`revert` on a workspace that moved since apply** (review A3, message sharpened by review M4).
+  Revert compares every file the change set touched against the *post*-image apply wrote — the
+  mirror of apply's own pre-image check (`fsdiff.StaleBase`) at the opposite end of the change
+  set's life. If a touched file no longer matches (edited, deleted, or an "added" file now
+  missing), revert refuses before writing anything: `revert refused: the workspace changed since
+  CHG-3 was applied: src/app.js: it was edited in the workspace after apply; discard (or stash)
+  your edits to src/app.js, then revert again`. The advice is **discard (or stash)**, never
+  "commit" — committing does not change a file's bytes, so it cannot make the comparison pass. When
+  a *later* change set is what actually touched the file, the advice names it instead —
+  `revert CHG-4 first` — rather than telling the human to discard what is really CHG-4's own
+  change. There is no force option — the change set stays `applied`, and the recovery is to act on
+  the advice, then revert again. This is checked synchronously (before the revert operation
+  starts), the same way an already-reverted change set is: launching the operation and failing in
+  the background would answer `202` for a revert that erased nothing but also changed nothing. The
+  refusal also records a `stale_post` finding on the change set at an observation (non-blocking)
+  severity — it does not gate `complete`.
 - **Configuration written but not applied**, when the daemon could not reload the project. The
   config file *was* written; the running daemon kept the previous one.
 
@@ -216,6 +232,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects` | List registered projects with their root paths. |
 | GET | `/projects/{projectId}` | One project's registry record. |
 | GET | `/projects/{projectId}/attention` | What needs a human across every initiative in the project. Returns `{"items": [...]}` — the only *collection* endpoint with an envelope, because it is a cross-initiative rollup and so has somewhere to put a cursor later. (`/models` also wraps its list, but in a response whose other field names the provider consulted.) |
+| GET | `/projects/{projectId}/queue` | (D-b) The cross-initiative "needs you" queue: open blocking decisions, change sets awaiting review, conflicts, denials, stale items, and verifications ready to confirm — one row per item, ranked blocking first and then by age. `rank` is a small 1..N ordinal (1 = most urgent), never the internal sort key. A denial is only the latest change set of its task and only a real system deny (never a plain human reject or check failure); "ready to confirm" only offers an `approved` requirement; a `complete` or `failed` initiative contributes nothing. |
 
 ### Initiative lifecycle
 
@@ -224,7 +241,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
-| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`, which is **required** — a missing or blank `model` is `400 model is required`. **202**. `409` when the initiative is running. |
+| POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`. `model` is optional and decoded leniently (like `fresh`/`note` on `/execute`): absent or blank falls back to the initiative's configured default model, so `{"note": "…"}` alone is accepted. **202**. `409` when the initiative is running. An optional `note` (D-a) steers this retry: it joins the framing prompt that restarts the pipeline (there is no implementer brief at this stage) and is recorded on that run. |
 | POST | `/projects/{projectId}/initiatives/{id}/reopen-phase` | Reopen a completed phase named by `{"phase": …}` so it can be revised. **202**. `409` when the initiative is running. |
 | POST | `/projects/{projectId}/initiatives/{id}/resume` | Resume a paused/interrupted initiative; returns the new status. |
 | POST | `/projects/{projectId}/initiatives/{id}/approve` | Human approval of the reviewed PRD. |
@@ -232,24 +249,28 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/initiatives/{id}/advance` | Run the M2 Design → Execution Plan pipeline. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/approve-plan` | Human approval gate on the execution plan — accepts it, findings and all. **202** |
 | POST | `/projects/{projectId}/initiatives/{id}/revise-plan` | Regenerate the execution plan and its review, keeping PRD and design. **202** |
-| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. **202** |
+| POST | `/projects/{projectId}/initiatives/{id}/execute` | Run the next ready task through the executor into a change set. Continues from a stopped run's kept files for the same task, if any. `{"fresh": true}` discards them first ("Start over"). An optional `note` (D-a) steers this run: appended to the implementer's brief and recorded on the agent run. Both are decoded leniently. **202** |
 | GET | `/projects/{projectId}/initiatives/{id}/agent-output` | The running coding agent's last 100 output lines (redacted), and whether it is still running. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/partial-work` | Discard a stopped run's kept files, so the next run starts from the workspace ("Start over"). |
-| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
+| POST | `/projects/{projectId}/initiatives/{id}/pr` | Push the initiative's dedicated branch (`git.branch_per_initiative`) and open a pull request via `gh pr create`, with a body built from the initiative (PRD summary, change sets, verification progress). Synchronous — no workspace mutation, so no background operation. Idempotent: a repeat call answers the same `pr_url` rather than opening a second PR. **409** if the initiative has no dedicated branch yet, or `gh` is not installed. |
+| POST | `/projects/{projectId}/initiatives/{id}/verify` | Run the verification gate. With `requirement` plus one of the booleans `pass`, `fail` or `waived` (and an optional `note`), records that human judgment against every acceptance criterion of the requirement first. More than one set is not an error here: the handler takes the first of `fail`, `waived`, `pass` — `idea verify` is what refuses two at once, so a direct API caller should send one. `fail` keeps the requirement in the active set and blocks completion; `waived` takes it out of scope but keeps the judgment on the record. `{"confirm_passing_tests": true}` (C2/C3/H2/H4) additionally confirms every requirement that is `approved`, has acceptance criteria, and whose `evidence_tests` all passed, through the same human-evidence path, actor `human` — requires at least one applied change set; nothing is ever auto-verified without this explicit request, and one ineligible requirement never aborts the rest. The response then also carries `confirmed` (codes flipped) and `skipped` (`{requirement, reason}` for every candidate that was not). Returns the initiative status and per-requirement coverage. A `requirement` sent with no disposition is validated and **404**s if it does not resolve, but the gate and the coverage stay initiative-wide. **409** when the initiative has failed — the gate does not run over a recorded failure; `idea retry` re-runs it. Recording human evidence is *not* refused there, because `retry` supersedes every requirement and evidence not recorded now can never be recorded. |
 
 ### Understanding, guidance and analysis
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/understanding` | The Current Understanding projection: requirements, decisions, questions, findings. |
-| GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). |
+| GET | `/projects/{projectId}/initiatives/{id}/guidance` | Human-readable next move + rationale + affected areas (see above). When a decision it depends on was reopened, adds a `stale_items` list and a sentence in `why` naming the count and the decision, plus the re-plan/review path (review A4 #5). When the current change set was rejected by the secret sweep, `why` also names the actual cause -- the file (or "in the output of `<check>`") and kind of secret, never the value, plus the not_a_secret disposition route when the match is overridable -- instead of only the generic "a check or the review found a problem" (ICP re-run defect #5). |
 | GET | `/projects/{projectId}/initiatives/{id}/next` | Machine-executable next command token (see above). |
 | GET | `/projects/{projectId}/initiatives/{id}/impact-counts?nodes=` | Dependent counts per graph node, for badging the UI without a query per node. `nodes` is **required**: a comma-separated list of `type:id` pairs, where `id` is the graph node id the read endpoints return, not the human code — `decision:<id>,requirement:<id>`. Missing, malformed, or more than 200 entries is `400`. |
+| POST | `/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack` | Acknowledge one stale item, clearing it (review A4 #5). Re-planning clears every stale item for the initiative at once instead. |
 | GET | `/projects/{projectId}/initiatives/{id}/operations` | The initiative's async operations, newest first. |
-| GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. |
-| POST | `/projects/{projectId}/seen` | Advance the `ui` read cursor to `{"through": <seq>}` echoed from `/changed`. Project-scoped despite pairing with an initiative view. |
+| GET | `/projects/{projectId}/initiatives/{id}/changed` | What Changed since the project's `ui` read cursor, grouped and narrated. Scoped to this initiative (fixed in C1: this used to read the whole project's events, unscoped, and could report another initiative's counts). |
+| POST | `/projects/{projectId}/seen` | Advance a read cursor to `{"through": <seq>}` echoed from `/changed`. `initiative_id` (M1) scopes the cursor to that initiative (`ui:<initiativeId>`), so marking one initiative seen cannot advance another's own cursor; omitted, it writes the project-wide `ui` cursor (back-compat default). |
+| GET | `/projects/{projectId}/initiatives/{id}/timeline?since=` | (C1) The human-language "what changed" timeline: change sets applied/rejected/denied/reverted, decisions changed, stale marks, run failures/stops, and completed phases, newest first. `since` (optional, RFC3339) excludes entries at or before it. `idea changed` uses this, not `/changed` above. |
+| GET | `/projects/{projectId}/initiatives/{id}/costs` | (C3) Spend and time per workflow phase from the run records, plus the coding-agent run count/duration/spend separately (`usd: null` with a note when agent spend could not be measured for every run). `idea status` prints the total. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
-| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. |
+| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. A task's change sets are query-linked (not edge-linked) and are included as synthetic dependents; `staleness` is `"stale"` when the node carries an active review-A4 stale mark, else `"obsolete"`/`"revalidate"` by edge type. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff: requirements as added vs. removed, decisions as open/decided/superseded, read from the graph rather than by diffing rendered markdown. Not a source diff — that is `/change-sets/{id}/diff`. |
 | GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
@@ -259,11 +280,14 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). |
-| POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `depends_on[]`). |
-| PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority or estimate. |
+| GET | `/projects/{projectId}/initiatives/{id}/tasks` | Execution-plan tasks in plan order (`position`, then creation). Each carries `requirement_ids[]`/`depends_on[]` (always arrays, never `null`), computed from the task's graph edges. |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks` | Add a task (`title`, `statement`, `priority`, `estimate`, `implements`, `requirement_ids[]`, `depends_on[]`). A task implements one or more requirements, N:M (review A4 #3/#4): `implements` and `requirement_ids` are merged and tolerantly resolved by code or id; at least one is required. |
+| PATCH | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Edit a task's title, statement, priority, estimate, or (via `requirement_ids[]`, which replaces the links entirely and requires at least one) its requirements. |
 | DELETE | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}` | Delete a task. |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/cancel` | Cancel a running task. |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/depends-on` | Set a task's `depends_on` wholesale from `{"depends_on": [...]}` (titles, codes, or ids). Refused if it would introduce a cycle anywhere in the graph (review B3). |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/{taskId}/split` | Split one task into two or more from `{"tasks": [{"title", "statement", "requirement_ids"}, ...]}`. Each replacement defaults to the original's requirements when `requirement_ids` is omitted, inherits its `depends_on`, and anything depending on the original now depends on all the replacements. The original is deleted (review B3). |
+| POST | `/projects/{projectId}/initiatives/{id}/tasks/merge` | Merge two tasks from `{"task_ids": [survivor, merged]}`: requirements union onto the survivor, statements concatenate, every dependency edge rewires onto the survivor, and the merged task is deleted (review B3). |
 | POST | `/projects/{projectId}/initiatives/{id}/tasks/reorder` | Reorder the plan from `{"task_ids": [...]}`. |
 
 ### Context docs
@@ -279,8 +303,10 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/decisions` | List decisions with status and recommendation. |
+| POST | `/projects/{projectId}/initiatives/{id}/decisions/accept-recommendations` | Resolve every OPEN decision with its own `recommendation`, actor `human`, in one call. When a decision has `options`, the recommendation must map onto exactly one of them (verbatim, an "Option B"/letter/index reference, or a case/whitespace/punctuation-tolerant match); a decision left unresolved is named in `skipped` with a `reason` (review B4, review #2). |
+| GET | `/projects/{projectId}/initiatives/{id}/triage` | The top 3 open decisions/questions/blocking findings by impact (blocking, then severity, then dependents count), labelled `priority`; the rest `optional` (review B4). |
 | POST | `/projects/{projectId}/decisions/{id}/resolve` | Record the human's `{"resolution": …}`. |
-| POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. |
+| POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. Also marks stale (review A4 #5) the LIVE requirements that cite it (never one a later PRD revision superseded/removed — ICP re-run defect #4: a superseded requirement keeps its old `derived_from` edge forever, so without this filter a reopen surfaced only long-dead requirements instead of whatever live one now covers the decision's subject), their tasks, and the applied change sets for those tasks — see `stale_items` on `/guidance` and `staleness` on `/impact`. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions. |
@@ -292,7 +318,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. |
+| GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. Each carries `evidence_tests[]` (C2): tests mapped to it by the verification plan's hooks, a code-name match, or — since a real test's name almost never contains the requirement's code — the test files touched by the applied, check-passed change set of a task that `implements` it (ICP re-run defect #3), and whether the last parsed check run had them passing. `confirm_passing_tests`'s `skipped` reason distinguishes "nothing is mapped" (names the requirement and how to map it) from "something mapped failed" ("not every mapped test passed"). |
 | GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
 | GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
 | GET | `/projects/{projectId}/artifacts/diff` | Unified line diff between two versions of one artifact, given `?from=` and `?to=` version ids. Versions from different artifacts are a `400`; bodies over 1 MiB or 20,000 lines are a `413`. |
@@ -308,8 +334,10 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/findings` | Review findings for the initiative. |
 | POST | `/projects/{projectId}/initiatives/{id}/requirements/{reqId}/verification-task` | Add a plan task whose purpose is verifying that requirement, wired with a `verifies` edge. |
-| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` — one of `fixed`, `accepted_risk`, `not_applicable`, `duplicate`, `deferred`, `rejected`, `mitigate`. Anything else is a 400. |
+| POST | `/projects/{projectId}/findings/{id}/disposition` | Set `{"disposition": …}` — one of `fixed`, `accepted_risk`, `not_applicable`, `duplicate`, `deferred`, `rejected`, `mitigate`, `not_a_secret`. `not_a_secret` is valid only on a `secret_sweep` finding and also writes a secret-allowlist entry; anything else invalid is a 400. `rejected` means "the human judged this finding wrong": on a finding with no system deny code (the adversarial reviewer's own judgment call) it resolves the approval bar exactly like `fixed`/`accepted_risk` (ICP re-run defect #2); it is always recorded (200) but has no effect on approval for a finding that carries a deny code (`secret_sweep`, `host_exec`, …) or was set by the system itself (e.g. a failing build/test check) — the response then also carries `"warning"` naming the deny code that still applies. |
 | POST | `/projects/{projectId}/findings/{id}/note` | Attach a free-text human `{"note": …}`. |
+| GET | `/projects/{projectId}/secret-allowlist` | List this project's "not a secret" overrides: fingerprint prefix, kind, path at the time, actor, created_at. |
+| DELETE | `/projects/{projectId}/secret-allowlist/{id}` | Revoke one override, so the secret sweep denies that fingerprint again. |
 
 ### Change sets
 
@@ -319,9 +347,10 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/change-sets/{id}` | One change set, by human id (`CHG-1`) or internal id. |
 | GET | `/projects/{projectId}/change-sets/{id}/checks` | Deterministic checks projected from the change set's findings: `patch_applies`, `build`, `tests`. |
 | GET | `/projects/{projectId}/change-sets/{id}/diff` | The patch in two forms: `patch`, the whole rendered diff as one string, and `files`, a per-file list (`path`, `change_type`, `size`, `content`). Content is redacted **at this display surface, not at write time** — the raw blob store is deliberately redaction-free so apply and revert round-trip byte-for-byte ([`security-model.md`](security-model.md#what-this-does-not-protect-against)). |
-| POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approved"\|"rejected"\|"changes_requested", "accept_findings": bool}`. The wire vocabulary is not the CLI's — `idea review CHG-1 approve` sends `approved`; a client that posts `approve` or `reject` gets a 400. `accept_findings` (`--accept-findings`) signs off the reviewer's own blocking findings, without which an approval over one is refused; a finding carrying a deny code is refused either way. The body is closed: an undeclared field is a 400. |
-| POST | `/projects/{projectId}/change-sets/{id}/apply` | Apply an approved change set to the workspace. **202** |
-| POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202** |
+| POST | `/projects/{projectId}/change-sets/{id}/review` | The human verdict: `{"verdict": "approved"\|"rejected"\|"changes_requested"\|"rerun", "accept_findings": bool}`. The wire vocabulary is not the CLI's — `idea review CHG-1 approve` sends `approved`; a client that posts `approve` or `reject` gets a 400. `accept_findings` (`--accept-findings`) signs off the reviewer's own blocking findings, without which an approval over one is refused; a finding carrying a deny code is refused either way. `approved`/`rejected`/`changes_requested` call no model and answer synchronously, **200**, `{"status": "reviewed"}`. `rerun` (ICP re-run defect #1) is not a state-machine verdict — the change set stays `review_required` — it re-runs the adversarial reviewer for a change set whose review never completed the first time (e.g. `Execute`'s own review call was cancelled mid-review, or every attempt was cut off at the model's output-token ceiling even after a retry); `approved` refuses with a 400 naming `rerun` until it has, EXCEPT with `accept_findings: true` on a change set whose review was genuinely attempted and explicitly recorded as unable to complete (a truncation that persisted through `rerun` too) — that one case may approve without ever reaching a completed review, still requiring `accept_findings` and still refusing a plain `approved`. `rerun` **is** a real model call (observed 1m12s–1m38s) and answers **202** with `{"operation_id": "..."}`, like `apply`/`execute` below — poll `GET /operations/{id}` for completion (ICP re-run D2: running it synchronously meant the daemon always finished the review while a client's own HTTP timeout gave up waiting on the response). `accept_findings: true` is refused (400) alongside `rerun`. The body is closed: an undeclared field is a 400. |
+| POST | `/projects/{projectId}/change-sets/{id}/apply` | Apply an approved (or reverted — ICP re-run defect #3) change set to the workspace. **202** |
+| POST | `/projects/{projectId}/change-sets/{id}/revert` | Roll it back byte-for-byte. **202**. **409** if the change set is not `applied`, or if any file it touched no longer matches what apply wrote there (see the 409 notes above) — nothing is written either way, and there is no force option. |
+| GET | `/projects/{projectId}/change-sets/{id}/pr-checks` | The latest CI status of the change set's initiative's pull request, via `gh pr checks`. Every change set of one initiative shares the same PR and so the same result. **409** if there is no PR yet (`idea pr` first) or `gh` is not installed. |
 | POST | `/projects/{projectId}/change-sets/{id}/resolve-conflict` | Resolve a conflicted change set: `{"resolution": "retry"}` (**202**) or `"reject"` (synchronous). |
 
 ### Operations
@@ -335,8 +364,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/projects/{projectId}/providers` | Configured providers plus the unconfigured presets, each with type, base URL, key-env **name**, and a `ready` flag saying whether that key is present. Key values are never returned. |
-| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit}` into `harness.yaml` and reload the runtime. Answers `{status, warnings?}`; `warnings` carries non-blocking problems attributable to a field this request wrote — a model id absent from the bundled catalog, say — under the same attribution rule as the `400`. |
+| GET | `/projects/{projectId}/providers` | Configured providers plus the unconfigured presets, each with type, base URL, key-env **name**, and a `ready` flag saying whether that key is present. Key values are never returned. Also returns `git_commit`, `git_allow_default_branch`, `git_branch_per_initiative` and `review_rigor` (`"auto"` when unset). |
+| PUT | `/projects/{projectId}/providers` | Merge `{default_model, providers, models, git_commit, git_allow_default_branch, git_branch_per_initiative, review_rigor}` into `harness.yaml` and reload the runtime. `review_rigor` must be one of `auto\|quick\|standard\|thorough` (`400` otherwise). Answers `{status, warnings?}`; `warnings` carries non-blocking problems attributable to a field this request wrote — a model id absent from the bundled catalog, say — under the same attribution rule as the `400`. |
 | GET | `/projects/{projectId}/models?provider=` | List a provider's models live, falling back to the bundled catalog. Defaults to the default model's provider. |
 | GET | `/projects/{projectId}/executors` | Available executors, their declared capabilities, and which one is configured. |
 | PUT | `/projects/{projectId}/executors` | Field-level merge of `{kind, image, model}` into `harness.yaml`, validated, then reload. |

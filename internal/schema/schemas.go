@@ -54,6 +54,7 @@ const PRD = `{
         "properties": {
           "statement": {"type": "string"},
           "priority": {"enum": ["must", "should", "could"]},
+          "code": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"REQ-4\") of the requirement this one continues/updates, copied from the Requirements context. Leave empty for a genuinely new requirement."},
           "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
           "acceptance_criteria": {
             "type": "array",
@@ -78,7 +79,10 @@ const PRD = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }
@@ -105,7 +109,9 @@ const Review = `{
           "finding": {"type": "string"},
           "evidence": {"type": "string"},
           "impact": {"type": "string"},
-          "recommendation": {"type": "string"}
+          "recommendation": {"type": "string"},
+          "path": {"type": "string", "description": "The file this finding is about, if it names a specific one (change-set review only; review B2)."},
+          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."}
         },
         "required": ["severity", "confidence", "category", "finding", "recommendation"]
       }
@@ -151,7 +157,15 @@ const Architecture = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The Requirement code(s) (e.g. \"REQ-2\") this decision shapes, if any -- so resolving or reopening it can flag the requirements, tasks and change sets built on it as possibly invalid. Leave empty only when the decision is not about a specific requirement."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }
@@ -187,7 +201,15 @@ const ProductDesign = `{
         "properties": {
           "question": {"type": "string"},
           "options": {"type": "array", "items": {"type": "string"}},
-          "recommendation": {"type": "string"}
+          "recommendation": {
+            "type": "string",
+            "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The Requirement code(s) (e.g. \"REQ-2\") this decision shapes, if any -- so resolving or reopening it can flag the requirements, tasks and change sets built on it as possibly invalid. Leave empty only when the decision is not about a specific requirement."
+          }
         },
         "required": ["question", "options", "recommendation"]
       }
@@ -210,7 +232,8 @@ const VerificationPlan = `{
         "properties": {
           "requirement": {"type": "string"},
           "evidence": {"type": "string"},
-          "check": {"type": "string"}
+          "check": {"type": "string"},
+          "tests": {"type": "array", "items": {"type": "string"}, "description": "Executable test names that cover this requirement's acceptance, if named (C2, wave 3 contract)."}
         },
         "required": ["requirement", "evidence", "check"]
       }
@@ -232,12 +255,13 @@ const ExecutionPlan = `{
         "properties": {
           "title": {"type": "string"},
           "statement": {"type": "string"},
-          "requirement": {"type": "string"},
+          "requirement": {"type": "string", "description": "A single requirement code, kept for compatibility. Prefer requirements."},
+          "requirements": {"type": "array", "items": {"type": "string"}, "description": "One or more requirement codes this task implements."},
           "priority": {"enum": ["must", "should", "could"]},
           "estimate": {"type": "string"},
           "depends_on": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["title", "statement", "requirement", "priority"]
+        "required": ["title", "statement", "priority"]
       }
     }
   },

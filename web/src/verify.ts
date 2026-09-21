@@ -18,13 +18,25 @@ export function verifiedRequirementCount(reqs: RequirementStatus[]): number {
 
 export interface ChangeSetStatus {
   status: string;
+  // no_op (H8 fix): true when the change set touched zero files
+  // (domain.ChangeSet.NoOp). An applied no_op change set is not "something
+  // built" -- the backend's own confirm_passing_tests gate agrees
+  // (runtime.go's confirmPassingTests skips straight to "no applied change
+  // set yet" unless at least one change set ImplementsTask(), i.e. applied
+  // AND !NoOp). Before this field existed here, `hasBuiltSomething` counted
+  // ANY applied change set, so an initiative whose only applied change set
+  // was a no-op showed Pass/Fail enabled and offered "Confirm all with
+  // passing tests" -- a button the backend then refused for every single
+  // requirement.
+  no_op?: boolean;
 }
 
 // Verify's Pass/Fail only mean something once a change set has actually
 // landed in the workspace -- otherwise "pass" would be recording evidence
-// against code that was never applied.
+// against code that was never applied. A no_op applied change set touched
+// nothing, so it does not count either (H8 fix, see ChangeSetStatus.no_op).
 export function hasBuiltSomething(changeSets: ChangeSetStatus[]): boolean {
-  return changeSets.some((c) => c.status === "applied");
+  return changeSets.some((c) => c.status === "applied" && !c.no_op);
 }
 
 // stripSourceTag removes a leading "[...]" attribution prefix -- e.g.
@@ -53,4 +65,69 @@ export function stripSourceTag(text: string): string {
 // touched, so ordinary bracketed text survives.
 export function stripSourceTagsInText(text: string): string {
   return text.replace(/\[Source:[^\]\n]*\]\s*/gi, "");
+}
+
+// ---- task 7: evidence from tests (C2 wire contract) ----------------------
+//
+// A requirement's `evidence_tests` (docs/plans/icp-v06.md "C2 wire
+// contract"): the test names a passing check maps to, so a passing check
+// reads as evidence rather than a human having to re-derive it.
+
+export interface EvidenceTest {
+  name: string;
+  status: "passed" | "failed";
+  change_set?: string;
+}
+
+// allEvidencePassed is true only when there IS evidence and every one of it
+// passed -- an empty list is "no automatic evidence", not "all passed",
+// which matters for hasConfirmableEvidence below (an empty list must never
+// make a requirement look confirmable).
+export function allEvidencePassed(tests: EvidenceTest[] | undefined): boolean {
+  return !!tests && tests.length > 0 && tests.every((t) => t.status === "passed");
+}
+
+// evidenceSummary (task 7's exact wording) is the line shown per requirement:
+// "✓ 3 passing tests: test_a, test_b, test_c" when every mapped test passed,
+// or a plainer count when some failed -- criteria with no passing evidence at
+// all keep the manual Pass/Fail with nothing extra to show here.
+export function evidenceSummary(tests: EvidenceTest[] | undefined): string {
+  if (!tests || tests.length === 0) return "";
+  const names = tests.map((t) => t.name);
+  if (allEvidencePassed(tests)) {
+    return `✓ ${tests.length} passing test${tests.length === 1 ? "" : "s"}: ${names.join(", ")}`;
+  }
+  const passed = tests.filter((t) => t.status === "passed").length;
+  return `${passed} of ${tests.length} tests passing: ${names.join(", ")}`;
+}
+
+export interface EvidenceRequirementLike {
+  status: string;
+  evidence_tests?: EvidenceTest[];
+}
+
+// isConfirmCandidate mirrors the backend's own confirm_passing_tests
+// eligibility rule exactly (C3/H1/H4, review fix): only an `approved`
+// requirement whose mapped tests all passed. Not `draft`/`removed` (never
+// awaiting a sign-off), and never `verified`/`failed`/`waived` -- those are
+// a decision already made, human or otherwise, that confirm must not
+// silently overwrite.
+function isConfirmCandidate(r: EvidenceRequirementLike): boolean {
+  return r.status === "approved" && allEvidencePassed(r.evidence_tests);
+}
+
+// hasConfirmableEvidence gates the "Confirm all with passing tests" button
+// (task 7): it only makes sense to offer when at least one requirement is
+// actually eligible -- otherwise the button would post
+// `confirm_passing_tests` and confirm nothing.
+export function hasConfirmableEvidence(reqs: EvidenceRequirementLike[]): boolean {
+  return reqs.some(isConfirmCandidate);
+}
+
+// confirmableRequirementCodes lists exactly which requirement codes a
+// confirm_passing_tests call would flip right now (H1, review fix): shown in
+// the confirm dialog before the human commits to it, rather than a bare
+// "are you sure?" naming nothing.
+export function confirmableRequirementCodes(reqs: (EvidenceRequirementLike & { code: string })[]): string[] {
+  return reqs.filter(isConfirmCandidate).map((r) => r.code);
 }
