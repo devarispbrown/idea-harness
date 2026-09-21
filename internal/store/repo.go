@@ -696,9 +696,14 @@ func (db *DB) SupersedeRequirements(ctx context.Context, initiativeID, supersede
 		Actor:         ActorOrchestrator,
 		EventType:     "requirements.superseded",
 	}, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
-			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved)
-		return err
+		if _, err := tx.Exec(`UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND status != ?`,
+			domain.RequirementRemoved, supersededBy, initiativeID, domain.RequirementRemoved); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- a superseded
+		// requirement's stale mark is dead weight, not an outstanding
+		// acknowledgement (see clearStaleMarksForRemovedRequirementsTx).
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
 	})
 }
 
@@ -730,8 +735,12 @@ func (db *DB) SupersedeRequirementsExcept(ctx context.Context, initiativeID, sup
 		args = append(args, domain.RequirementRemoved)
 		query := `UPDATE requirements SET status = ?, superseded_by = ? WHERE initiative_id = ? AND id NOT IN (` +
 			strings.Join(placeholders, ",") + `) AND status != ?`
-		_, err := tx.Exec(query, args...)
-		return err
+		if _, err := tx.Exec(query, args...); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- see
+		// SupersedeRequirements's identical call.
+		return clearStaleMarksForRemovedRequirementsTx(tx, initiativeID, ActorOrchestrator)
 	})
 }
 
