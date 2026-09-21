@@ -91,10 +91,14 @@ func TestRevisePlanInitiativeBlocksOnAConcurrentlyHeldPlanEditLock(t *testing.T)
 
 	unlock := pr.lockPlanEdit(iniID)
 
-	done := make(chan error, 1)
+	type revision struct {
+		opID string
+		err  error
+	}
+	done := make(chan revision, 1)
 	go func() {
-		_, err := rt.RevisePlanInitiative(t.Context(), projectID, iniID)
-		done <- err
+		opID, err := rt.RevisePlanInitiative(t.Context(), projectID, iniID)
+		done <- revision{opID, err}
 	}()
 
 	// Give a buggy (unlocked) RevisePlanInitiative every chance to run to
@@ -123,7 +127,14 @@ func TestRevisePlanInitiativeBlocksOnAConcurrentlyHeldPlanEditLock(t *testing.T)
 	}
 
 	unlock()
-	if err := <-done; err != nil {
-		t.Fatalf("RevisePlanInitiative after unlock: %v", err)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("RevisePlanInitiative after unlock: %v", got.err)
 	}
+	// RevisePlanInitiative returns as soon as it has launched its operation,
+	// which keeps writing under the project directory -- itself under
+	// t.TempDir() -- after this test returns. On a slower runner that races
+	// t.TempDir()'s RemoveAll, which then fails the test with "directory not
+	// empty" (seen on macOS amd64 in CI). Wait for the operation to finish.
+	waitForOperation(t, ts, token, got.opID)
 }
