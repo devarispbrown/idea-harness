@@ -174,6 +174,84 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   1 character per side from 16–23 characters, and the previous
   `min(4, len/4)` reveal only starts at 24 characters.
 
+### Fixed — whole-branch adversarial review, round 2 (concurrency)
+
+- **`lockPlanEdit` covered the handlers but not the writers it was meant to
+  exclude (Critical).** `RevisePlanInitiative`/`ReopenPhaseInitiative` call
+  `DeleteTasksForInitiative` without ever taking the per-initiative
+  plan-edit lock, and every Plan-editing handler read the initiative
+  *before* taking that lock and then guarded against that stale snapshot —
+  so a concurrent `add-task` could answer 200 OK for a task a revise/reopen
+  in flight had already wiped. Fixed: those three entry points now take the
+  same lock around their claim, and every handler re-reads the initiative
+  *after* acquiring it (`lockPlanEditFresh`) instead of trusting the
+  pre-lock read; request bodies are decoded before the lock/guard, not
+  between them.
+- **Reloading a project's config raced roughly twenty unsynchronized readers
+  (High).** `ReloadProject` mutated a `*projectRuntime`'s fields
+  (cfg/registry/redactor/blobs) in place under `r.mu`, while every HTTP
+  handler read them off a `*projectRuntime` it already held with no lock of
+  its own — proven by the race detector against handlers.go's provider/
+  redaction/queue/evidence call sites. `ReloadProject` now builds a fresh
+  `*projectRuntime` and swaps the map entry instead (engine, DB and the
+  plan-edit lock registry are carried over unchanged); `workflow.Engine`
+  gained its own `cfgMu` so `Run`/`Advance`/`Retry`/`RevisePlan`/`Resume`/
+  `ReopenPhase` and their helpers read a consistent snapshot instead of the
+  raw, unguarded fields. `idea resume` also now records an operation row (it
+  previously ran with none), so a reload can no longer land mid-review-loop
+  and a crash mid-resume is no longer invisible to the startup sweep.
+- **Retry could resume from a phase whose persistence never finished
+  (High).** `runFraming`/`runResearch`/`runProductDefinition` commit their
+  phase's artifact and then write its real payload (assertions/requirements/
+  decisions/questions) as separate, cancellable store calls on the same
+  context — a Stop between the artifact commit and that payload (proven:
+  "Stop after 6 of 20 `CreateRequirement` calls") left the artifact durable
+  and the payload truncated. `completedPhases` then saw "artifact exists"
+  and skipped the phase entirely on retry, building review/architecture/plan
+  from a silently truncated set at real model cost. Each phase's payload
+  writes now run under `context.WithoutCancel` once its own model call has
+  already returned and been billed, so a cancellation from that point stops
+  the *next* phase, not this one's already-earned result.
+- **Two claim-integrity gaps allowed two pipelines on one initiative
+  (High).** `VerifyInitiative` ran with no synchronization of its own, so it
+  could reach `CompleteInitiative` while `Execute`/`ApplyChangeSet`/
+  `RevertChangeSet` were still actively mutating files — proven: a
+  concurrent verify completed the initiative mid-apply, after which `idea
+  revise` (which legally claims `running` FROM `complete`) claimed it out
+  from under the still-running apply, and apply's own unconditional release
+  then overwrote revise's live claim on completion. `VerifyInitiative` now
+  takes the same engine mutex those three hold for their whole duration, and
+  apply/execute/revert's release-back-to-prior-status is now a CAS
+  (`ReleaseInitiativeClaim`, `WHERE status = 'running'`) so it can no longer
+  stomp a legitimate write that landed while it waited. Separately, a panic
+  in an operation that never claims the initiative at all
+  (`SuggestAnswersInitiative`) used to call `FailInitiative` unconditionally
+  on whatever initiative id its row carried, which could fail a live,
+  unrelated claim out from under it; `failOperationAfterPanic` now only
+  releases for operation types that actually claim.
+- **`RecordHumanEvidence` was not atomic (Medium).** Clearing prior
+  verification evidence, recording a fresh human judgment per acceptance
+  criterion, and the resulting requirement-status transition ran as N+2
+  separate transactions; a crash between any two of them destroyed the old
+  judgment without recording the new one. Now one transaction.
+- **Stale marks were never garbage-collected (Medium).** A requirement's
+  mark survived its own supersession and a change set's mark survived
+  revert/reject — display-only noise, but permanent. Superseding a
+  requirement and reverting/rejecting a change set now clear that target's
+  own active stale mark(s) in the same transaction as the state change.
+- **Concurrent first-open of an un-migrated database failed roughly 3 of 4
+  times (Medium).** The per-migration "already applied?" check ran as a
+  standalone `SELECT` outside any transaction, so two connections opening
+  the same fresh database for the first time could both see "not yet
+  applied" before either committed and both run the same DDL — the second
+  then re-running `ALTER TABLE … ADD COLUMN` (etc.) a SQLite had already
+  applied. Each migration now claims its version by `INSERT`ing into
+  `schema_migrations` (its primary key) *before* running its DDL, so a
+  losing connection hits a constraint violation instead of repeating work;
+  `configure()` also retries the journal-mode pragma a few times on
+  `SQLITE_BUSY`/`LOCKED`, the same lock two first-opens can transiently
+  contend on.
+
 ### Fixed
 
 - **`evidence_tests` mapped nothing on a real run despite 30 passing tests.**
