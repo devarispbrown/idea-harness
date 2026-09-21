@@ -182,6 +182,81 @@ func (db *DB) ClearVerificationEvidence(ctx context.Context, requirementID, acto
 	})
 }
 
+// RecordHumanEvidence atomically supersedes a requirement's prior
+// verification evidence with a fresh human judgment across every one of its
+// acceptanceCriteria acceptance criteria, plus the resulting requirement
+// status transition (fail/waived only -- a pass leaves status alone;
+// VerifyInitiative promotes it separately once every criterion is covered),
+// all in ONE transaction (review MEDIUM: RecordHumanEvidence atomicity).
+//
+// Before this, workflow.Engine.RecordHumanEvidence ran the equivalent
+// sequence -- ClearVerificationEvidence, one CreateVerificationEvidence per
+// criterion, then an optional MarkRequirementFailed/MarkRequirementWaived --
+// as N+2 separate transactions. A crash (or a Stop) between any two of them
+// destroyed the prior judgment without recording the new one: zero evidence
+// rows left standing under whatever status the requirement had before the
+// call, most visibly `verified` surviving over no evidence at all. One
+// transaction makes the whole judgment atomic: either the old evidence is
+// gone AND the new evidence AND status transition are all in place, or
+// nothing here changed.
+//
+// Matches the merge/split precedent (store/merge.go, store/split.go) for a
+// compound write: one event for the whole operation, not one per row.
+func (db *DB) RecordHumanEvidence(ctx context.Context, initiativeID, requirementID string, acceptanceCriteria int, status domain.VerificationStatus, note, actor string) error {
+	if actor == "" {
+		actor = HumanActor
+	}
+	switch status {
+	case domain.VerificationPass, domain.VerificationFail, domain.VerificationWaived:
+	default:
+		return fmt.Errorf("store: invalid human verification status %q", status)
+	}
+	if acceptanceCriteria <= 0 {
+		return fmt.Errorf("store: requirement %q has no acceptance criteria to verify", requirementID)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "requirement",
+		AggregateID:   requirementID,
+		Actor:         actor,
+		EventType:     "requirement.human_evidence_recorded",
+		Operation:     string(status),
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM verification_evidence WHERE requirement_id = ?`, requirementID); err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMilli()
+		for i := 0; i < acceptanceCriteria; i++ {
+			if _, err := tx.Exec(`
+				INSERT INTO verification_evidence
+					(id, initiative_id, requirement_id, criterion_key, kind, status, evidence_digest, run_id, verified_by, note, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, '', '', ?, ?, ?)`,
+				id.New(), initiativeID, requirementID, domain.CriterionKey(requirementID, i),
+				domain.VerificationAcceptance, status, actor, note, now); err != nil {
+				return err
+			}
+		}
+		switch status {
+		case domain.VerificationFail:
+			res, err := tx.Exec(`UPDATE requirements SET status = ?, verified_at = NULL WHERE id = ? AND status IN (?, ?, ?, ?)`,
+				domain.RequirementFailed, requirementID,
+				domain.RequirementApproved, domain.RequirementVerified, domain.RequirementWaived, domain.RequirementFailed)
+			if err != nil {
+				return err
+			}
+			return requireOneRow(res, "requirement %q not in an approvable state", requirementID)
+		case domain.VerificationWaived:
+			res, err := tx.Exec(`UPDATE requirements SET status = ?, verified_at = NULL WHERE id = ? AND status IN (?, ?, ?, ?)`,
+				domain.RequirementWaived, requirementID,
+				domain.RequirementApproved, domain.RequirementVerified, domain.RequirementFailed, domain.RequirementWaived)
+			if err != nil {
+				return err
+			}
+			return requireOneRow(res, "requirement %q not in an approvable state", requirementID)
+		}
+		return nil
+	})
+}
+
 // UnverifyRequirement resets a verified requirement back to approved and clears
 // verified_at (e.g. when the change set that verified it is reverted). It also
 // clears the requirement's verification evidence in the SAME transaction

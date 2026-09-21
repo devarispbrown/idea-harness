@@ -126,32 +126,15 @@ func (e *Engine) RecordHumanEvidence(ctx context.Context, initiativeID, requirem
 	default:
 		return fmt.Errorf("workflow: requirement %q in state %q cannot take a human judgment", requirementRef, r.Status)
 	}
-	// A new human judgment supersedes all prior evidence for this requirement's
-	// criteria, so a stale pass cannot resurrect a later fail/waive.
-	if err := e.db.ClearVerificationEvidence(ctx, r.ID, actor); err != nil {
-		return err
-	}
-	for i := range r.AcceptanceCriteria {
-		ev := &domain.VerificationEvidence{
-			InitiativeID:  initiativeID,
-			RequirementID: r.ID,
-			CriterionKey:  domain.CriterionKey(r.ID, i),
-			Kind:          domain.VerificationAcceptance,
-			Status:        status,
-			VerifiedBy:    actor,
-			Note:          note,
-		}
-		if err := e.db.CreateVerificationEvidence(ctx, ev); err != nil {
-			return err
-		}
-	}
-	switch status {
-	case domain.VerificationFail:
-		return e.db.MarkRequirementFailed(ctx, r.ID, actor)
-	case domain.VerificationWaived:
-		return e.db.MarkRequirementWaived(ctx, r.ID, actor)
-	}
-	return nil
+	// store.RecordHumanEvidence, not a separate ClearVerificationEvidence +
+	// N*CreateVerificationEvidence + MarkRequirementFailed/Waived (review
+	// MEDIUM: RecordHumanEvidence atomicity): that used to be N+2 separate
+	// transactions, and a crash between any two of them destroyed the prior
+	// judgment without recording the new one -- an empty evidence set left
+	// standing under whatever status (e.g. `verified`) the requirement had
+	// before the call. One transaction: either the clear, every criterion's
+	// new evidence, and the status transition all land, or none of them do.
+	return e.db.RecordHumanEvidence(ctx, initiativeID, r.ID, len(r.AcceptanceCriteria), status, note, actor)
 }
 
 // RecordHumanPass records a human "pass" evidence for every acceptance criterion
@@ -164,7 +147,28 @@ func (e *Engine) RecordHumanPass(ctx context.Context, initiativeID, requirementR
 // requirement verified when every mandatory criterion has a pass evidence, and
 // completes the initiative when every requirement is verified and there are no
 // open blocking findings (§70, review B4). It is idempotent and deterministic.
+//
+// review H7: takes mu, the same mutex Execute/ApplyChangeSet/RevertChangeSet
+// hold for their whole duration, so this cannot run concurrently with any of
+// them actually mutating files or the task/change-set graph. Before this,
+// verify ran with no synchronization of its own; store.CompleteInitiative's
+// CAS only excludes `failed`, not `running` (deliberately -- the documented
+// apply-then-verify sequence verifies while the row still reads `running`
+// after apply's own operation goroutine has not yet released its claim, and
+// that must keep working), so nothing stopped this from reaching
+// CompleteInitiative WHILE one of those three was still actively writing.
+// Proven: an apply mid-file-write let a concurrent verify complete the
+// initiative, after which a third request (revise) claimed `running` FROM
+// the `complete` verify had just manufactured and started superseding
+// requirements while apply's files were still landing -- two pipelines on
+// one initiative. Taking mu here makes verify wait for the real work to
+// finish (mu already excludes the other three from each other and from
+// itself); it does not need to wait for `running` to clear back to a resting
+// status, which is a separate, much narrower race ReleaseInitiativeClaim's
+// own CAS closes.
 func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	reqs, err := e.db.ListRequirements(ctx, initiativeID)
 	if err != nil {
 		return err
