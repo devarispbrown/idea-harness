@@ -3,10 +3,27 @@ package git
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/devarispbrown/idea-harness/internal/blob"
 )
+
+// CatchUpFile names one path from an initiative's own earlier applied,
+// uncommitted change sets (review defect D), and the content that change set
+// is recorded as having actually produced there -- so EnsureInitiativeBranch
+// can tell the harness's own uncommitted write apart from a user's hand-edit
+// made to the same path afterward (review MEDIUM #4).
+//
+// Digest is the post-apply content digest (blob.Digest of the file's bytes)
+// the change set wrote, or "" when that change set DELETED the path -- the
+// expected on-disk state is then "absent", not merely a digest mismatch.
+type CatchUpFile struct {
+	Path   string
+	Digest string
+}
 
 // Slugify lowercases s, collapses every run of characters outside [a-z0-9]
 // into a single '-', trims a leading or trailing '-', and truncates to maxLen
@@ -52,19 +69,23 @@ func Slugify(s string, maxLen int) string {
 //     committed) and catchUpPaths (see below): those would otherwise ride
 //     along onto the new branch uninvited, which is exactly the failure this
 //     guards against.
-//   - catchUpPaths names files this same initiative's OWN earlier applied
+//   - catchUpFiles names files this same initiative's OWN earlier applied
 //     change sets touched but never committed (review defect D: a real run
 //     had git_commit off for its first several applies, then turned it and
 //     branch_per_initiative on together -- the workspace was left with files
 //     from those earlier applies still uncommitted, and every later attempt
 //     refused forever with "uncommitted changes outside this change set"
 //     naming the harness's OWN prior writes). A dirty path that matches one
-//     of these is committed onto the initiative's branch (right after the
-//     branch switch below, so the catch-up commit lands there and not on
-//     whatever branch was checked out before) as its own commit, separate
-//     from the caller's own change-set commit; a dirty path that matches
-//     neither keepPaths nor catchUpPaths still refuses, naming only the
-//     paths that are genuinely unexplained.
+//     of these, AND whose on-disk content still matches the digest that
+//     change set actually wrote there, is committed onto the initiative's
+//     branch (right after the branch switch below, so the catch-up commit
+//     lands there and not on whatever branch was checked out before) as its
+//     own commit, separate from the caller's own change-set commit. A dirty
+//     path that matches neither keepPaths nor catchUpFiles, OR that matches
+//     one but no longer has the content that change set wrote (review MEDIUM
+//     #4: catching it up unconditionally would sweep a user's own hand-edit
+//     into a commit titled as the harness's own catch-up), still refuses,
+//     naming only the paths that are genuinely unexplained or stale.
 //
 // Returns (branch, "", "", nil) once workTree is checked out on branch. A
 // soft refusal -- the tree has a dirty path outside keepPaths and
@@ -76,10 +97,17 @@ func Slugify(s string, maxLen int) string {
 // comment below (review H6); the caller should still commit, but surface the
 // warning (e.g. as the change set's git_commit_warning). A non-nil error is a
 // genuine git failure.
-func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, titleSeed string, keepPaths, catchUpPaths []string) (branch, reason, warning string, err error) {
+func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, titleSeed string, keepPaths []string, catchUpFiles []CatchUpFile) (branch, reason, warning string, err error) {
 	if !isRepo(workTree) {
 		return "", "", "", nil
 	}
+	// Captured before any checkout below runs, so a failure AFTER the
+	// checkout succeeded (the catch-up commit, review MEDIUM #4's other
+	// half) can restore the tree to what the caller actually had checked
+	// out, rather than stranding it on the initiative's branch with an
+	// error and nothing to say the workspace also moved. Best-effort: ""
+	// (detached HEAD, or simply unknown) means there is nothing to restore.
+	previousBranch := CurrentBranch(ctx, workTree)
 	// The dirty check applies to BOTH paths: switching to an already-created
 	// initiative branch and creating a brand-new one. A switch that silently
 	// carried someone else's mid-edit onto the initiative's branch would break
@@ -95,7 +123,7 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 	}
 	var catchUp []string
 	if len(dirty) > 0 {
-		catchUp, dirty = splitCatchUp(dirty, catchUpPaths)
+		catchUp, dirty = splitCatchUp(workTree, dirty, catchUpFiles)
 		if len(dirty) > 0 {
 			return "", "the workspace has uncommitted changes outside this change set: " + strings.Join(dirty, ", "), "", nil
 		}
@@ -116,6 +144,12 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 			return "", "", "", fmt.Errorf("git: checkout %s: %w: %s", existingBranch, err, strings.TrimSpace(out))
 		}
 		if err := commitCatchUp(); err != nil {
+			// review MEDIUM #4: the checkout above already succeeded, so
+			// without this the workspace is left on existingBranch with a
+			// hard error and no branch to explain it -- restore what was
+			// checked out before this call, best-effort (its own failure
+			// must never mask the real one below).
+			_ = CheckoutBranch(ctx, workTree, previousBranch)
 			return "", "", "", err
 		}
 		return existingBranch, "", "", nil
@@ -174,31 +208,71 @@ func EnsureInitiativeBranch(ctx context.Context, workTree, existingBranch, title
 		return "", "", "", fmt.Errorf("git: checkout -b %s: %w: %s", name, err, strings.TrimSpace(out))
 	}
 	if err := commitCatchUp(); err != nil {
+		// review MEDIUM #4: `checkout -b` above already moved the workspace
+		// onto the brand-new branch, so without this a catch-up-commit
+		// failure leaves it stranded there with a hard error instead of back
+		// on whatever the caller had checked out. The empty new branch ref
+		// itself is left behind (harmless, and freeBranchName already treats
+		// a same-named retry as a collision) -- only the checkout is undone.
+		_ = CheckoutBranch(ctx, workTree, previousBranch)
 		return "", "", "", err
 	}
 	return name, "", warning, nil
 }
 
 // splitCatchUp partitions dirty (already known to be outside keepPaths) into
-// catchUp -- paths also named in catchUpPaths, safe to commit onto the
-// initiative's branch on the caller's behalf -- and the remainder, which is
-// still genuinely unexplained and must still refuse the branch switch.
-func splitCatchUp(dirty, catchUpPaths []string) (catchUp, unexplained []string) {
-	if len(catchUpPaths) == 0 {
+// catchUp -- paths also named in catchUpFiles AND whose on-disk content still
+// matches what that recorded change set actually wrote there -- safe to
+// commit onto the initiative's branch on the caller's behalf -- and the
+// remainder, which is still genuinely unexplained (or, review MEDIUM #4,
+// content that USED to match but has since been edited by something other
+// than idea-harness) and must still refuse the branch switch.
+func splitCatchUp(workTree string, dirty []string, catchUpFiles []CatchUpFile) (catchUp, unexplained []string) {
+	if len(catchUpFiles) == 0 {
 		return nil, dirty
 	}
-	allowed := make(map[string]bool, len(catchUpPaths))
-	for _, p := range catchUpPaths {
-		allowed[filepath.ToSlash(p)] = true
+	expected := make(map[string]string, len(catchUpFiles)) // slash path -> expected digest ("" = deleted)
+	for _, f := range catchUpFiles {
+		expected[filepath.ToSlash(f.Path)] = f.Digest
 	}
 	for _, p := range dirty {
-		if allowed[p] {
-			catchUp = append(catchUp, p)
-		} else {
+		digest, allowed := expected[p]
+		if !allowed {
 			unexplained = append(unexplained, p)
+			continue
 		}
+		if stale, reason := catchUpStale(workTree, p, digest); stale {
+			unexplained = append(unexplained, p+" ("+reason+")")
+			continue
+		}
+		catchUp = append(catchUp, p)
 	}
 	return catchUp, unexplained
+}
+
+// catchUpStale reports whether path's current on-disk content no longer
+// matches wantDigest (review MEDIUM #4) -- the recorded change set's own
+// write is not what a catch-up commit would actually be committing, most
+// often because a user hand-edited the file after idea-harness applied it
+// and before this later apply came along to commit it. wantDigest == ""
+// means the recorded change set DELETED path, so any existing file there is
+// itself the drift.
+func catchUpStale(workTree, path, wantDigest string) (bool, string) {
+	dest := filepath.Join(workTree, filepath.FromSlash(path))
+	data, err := os.ReadFile(dest)
+	if wantDigest == "" {
+		if err == nil {
+			return true, "an earlier change set deleted it, but it exists in the workspace now"
+		}
+		return false, ""
+	}
+	if err != nil {
+		return true, "an earlier change set wrote it, but it is missing from the workspace now"
+	}
+	if blob.Digest(data) != wantDigest {
+		return true, "it was applied by an earlier change set here, but its content no longer matches what that change set wrote -- commit or discard that edit first"
+	}
+	return false, ""
 }
 
 // revParse resolves ref to its commit SHA, trimmed. The raw output (usable

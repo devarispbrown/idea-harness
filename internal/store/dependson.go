@@ -16,7 +16,14 @@ import (
 // lockPlanEdit serializes the common race (two concurrent set-depends_on
 // requests) away, but this is the defense-in-depth layer for any other path
 // that reaches this method without going through that lock.
-var ErrDependsOnCycle = errors.New("store: that dependency would create a cycle")
+//
+// No "store: " prefix (review LOW #10): the handler surfaces this sentinel's
+// Error() text verbatim to the API caller as a 400 body, and daemon/
+// errors.go's whole contract is that "the storage layer's own strings"
+// never become the product's error messages -- a literal "store: " leaking
+// through here, for the one sentinel genuinely meant to be read by a
+// person, contradicted it.
+var ErrDependsOnCycle = errors.New("that dependency would create a cycle")
 
 // SetTaskDependencies replaces taskID's depends_on edges wholesale with one
 // per (de-duplicated, non-empty, non-self) id in depTaskIDs, refusing --

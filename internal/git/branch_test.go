@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/devarispbrown/idea-harness/internal/blob"
 )
 
 func TestSlugify(t *testing.T) {
@@ -147,11 +149,12 @@ func TestEnsureInitiativeBranchNeverBlockedByIdeaHarnessDir(t *testing.T) {
 // caught up onto the initiative's branch rather than refusing it forever.
 func TestEnsureInitiativeBranchCatchesUpEarlierAppliedFiles(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
-	writeFile(t, repo, "auth.go", "package main // from an earlier applied change set")
+	authGoContent := "package main // from an earlier applied change set"
+	writeFile(t, repo, "auth.go", authGoContent)
 	writeFile(t, repo, "server.js", "app.get('/health', ok)") // this change set's own file
 
 	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
-		[]string{"server.js"}, []string{"auth.go"})
+		[]string{"server.js"}, []CatchUpFile{{Path: "auth.go", Digest: blob.Digest([]byte(authGoContent))}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,11 +187,12 @@ func TestEnsureInitiativeBranchCatchesUpEarlierAppliedFiles(t *testing.T) {
 // the ones catchUpPaths already explains.
 func TestEnsureInitiativeBranchStillRefusesFilesNotInCatchUp(t *testing.T) {
 	repo := initRepoOnBranch(t, "main")
-	writeFile(t, repo, "auth.go", "package main // from an earlier applied change set")
+	authGoContent := "package main // from an earlier applied change set"
+	writeFile(t, repo, "auth.go", authGoContent)
 	writeFile(t, repo, "unrelated.txt", "someone's mid-edit")
 
 	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
-		[]string{"server.js"}, []string{"auth.go"})
+		[]string{"server.js"}, []CatchUpFile{{Path: "auth.go", Digest: blob.Digest([]byte(authGoContent))}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +212,71 @@ func TestEnsureInitiativeBranchStillRefusesFilesNotInCatchUp(t *testing.T) {
 	status := gitOut(t, repo, "status", "--porcelain")
 	if !strings.Contains(status, "auth.go") {
 		t.Fatalf("status = %q, auth.go should still be uncommitted: the whole switch was refused", status)
+	}
+}
+
+// TestEnsureInitiativeBranchRefusesCatchUpWithUserEdits pins review MEDIUM
+// #4: catchUpFiles names a path AND the digest the recorded change set
+// actually wrote there. When the workspace no longer matches that digest --
+// here, a user's own hand-edit made to auth.go after idea-harness applied it
+// -- the catch-up must refuse rather than silently sweep that edit into a
+// commit titled as the harness's own catch-up.
+func TestEnsureInitiativeBranchRefusesCatchUpWithUserEdits(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	appliedContent := "package main // from an earlier applied change set"
+	writeFile(t, repo, "auth.go", "package main // the user edited this after apply")
+	writeFile(t, repo, "server.js", "app.get('/health', ok)")
+
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
+		[]string{"server.js"}, []CatchUpFile{{Path: "auth.go", Digest: blob.Digest([]byte(appliedContent))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "" {
+		t.Fatalf("branch = %q, want none: auth.go's content no longer matches the recorded catch-up digest", branch)
+	}
+	if !strings.Contains(reason, "auth.go") {
+		t.Fatalf("reason %q does not name the stale catch-up file", reason)
+	}
+	// Refusing must leave the tree untouched: the user's edit is neither
+	// committed nor overwritten, and no catch-up commit happened.
+	if got := gitOut(t, repo, "symbolic-ref", "--short", "HEAD"); got != "main" {
+		t.Fatalf("HEAD moved to %q despite the refusal", got)
+	}
+	got, err := os.ReadFile(filepath.Join(repo, "auth.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main // the user edited this after apply" {
+		t.Fatalf("auth.go content changed: got %q", got)
+	}
+	log := gitOut(t, repo, "log", "--pretty=format:%s")
+	if strings.Contains(log, "catch up") {
+		t.Fatalf("git log = %q, must not contain a catch-up commit for stale content", log)
+	}
+}
+
+// TestEnsureInitiativeBranchRefusesCatchUpWhenDeletedFileWasResurrected is
+// the delete-side of review MEDIUM #4: catchUpFiles records an EMPTY digest
+// when the recorded change set deleted the path. If the path exists in the
+// workspace anyway (recreated by something other than idea-harness), the
+// catch-up must refuse rather than delete it out from under whoever put it
+// there.
+func TestEnsureInitiativeBranchRefusesCatchUpWhenDeletedFileWasResurrected(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	writeFile(t, repo, "old.go", "package main // recreated after the harness deleted it")
+	writeFile(t, repo, "server.js", "app.get('/health', ok)")
+
+	branch, reason, _, err := EnsureInitiativeBranch(t.Context(), repo, "", "Add rate limiting",
+		[]string{"server.js"}, []CatchUpFile{{Path: "old.go", Digest: ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "" {
+		t.Fatalf("branch = %q, want none: old.go was deleted by the recorded change set but exists now", branch)
+	}
+	if !strings.Contains(reason, "old.go") {
+		t.Fatalf("reason %q does not name the resurrected file", reason)
 	}
 }
 

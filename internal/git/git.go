@@ -109,6 +109,41 @@ func isRepo(workTree string) bool {
 	return err == nil
 }
 
+// CurrentBranch returns the short name of the branch workTree currently has
+// checked out, or "" when workTree is not a repository, HEAD is detached, or
+// the branch otherwise cannot be determined. Best-effort and never an error a
+// caller must handle: it exists purely so a caller that is about to switch
+// branches (EnsureInitiativeBranch) can restore this one later if something
+// it does after the switch fails (review MEDIUM #4: a catch-up-commit or
+// change-set-commit failure after `checkout -b` used to leave the workspace
+// stranded on the initiative's branch instead of back where it started).
+func CurrentBranch(ctx context.Context, workTree string) string {
+	if !isRepo(workTree) {
+		return ""
+	}
+	out, err := runGit(ctx, workTree, sanitizedEnv(), "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// CheckoutBranch switches workTree onto branch. A no-op (nil error) when
+// branch is "" (CurrentBranch could not determine what to restore to, most
+// often a detached HEAD -- nothing to switch back to) or workTree is not a
+// repository. Used to restore the branch CurrentBranch captured before a
+// later failure; callers restoring on an error path should treat this call's
+// own failure as best-effort and never let it mask the original error.
+func CheckoutBranch(ctx context.Context, workTree, branch string) error {
+	if branch == "" || !isRepo(workTree) {
+		return nil
+	}
+	if out, err := runGit(ctx, workTree, sanitizedEnv(), "checkout", "-q", branch); err != nil {
+		return fmt.Errorf("git: checkout %s: %w: %s", branch, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 // runGit executes the git binary with the sanitized environment and returns its
 // combined output.
 func runGit(ctx context.Context, workTree string, env []string, args ...string) (string, error) {

@@ -411,8 +411,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// Execute.
 		if p.Status == domain.ChangeSetReviewRequired && !p.ReviewCompleted() {
 			return domain.ChangeSet{}, fmt.Errorf(
-				"workflow: execute: %s never finished its adversarial review (likely cancelled mid-review) and is still awaiting one; "+
-					"run `idea review %s rerun` to finish reviewing it before running this task again", p.HumanID, p.HumanID)
+				"workflow: execute: %s never finished its adversarial review (%s) and is still awaiting one; "+
+					"run `idea review %s rerun` to finish reviewing it before running this task again", p.HumanID, p.ReviewNeverCompletedCause(), p.HumanID)
 		}
 		// C4: a NoOp change set leaves its task `proposed` (not `done`,
 		// which would deadlock it forever -- see the switch below), so it
@@ -1335,6 +1335,57 @@ func (e *Engine) loadPatch(cs *domain.ChangeSet) (*fsdiff.Patch, error) {
 		return nil, fmt.Errorf("workflow: decode patch: %w", err)
 	}
 	return &p, nil
+}
+
+// BackfillNoOpChangeSets recomputes no_op for every change set migration 34
+// left at its conservative default of false (review MEDIUM #1). The
+// migration's comment argued file counts "aren't recomputable" -- they are:
+// the patch manifest was persisted unconditionally before no_op existed, so
+// len(loadPatch(cs).Files) == 0 is one blob read per row. The recompute
+// doesn't happen IN the migration because a migration is plain SQL text
+// (store.migrations) with no access to the blob store; this runs once, at
+// daemon start, after both the DB and the raw blob store exist (see
+// runtime.go's EnsureProject), gated by store.ClaimNoOpBackfill's persisted
+// marker so it costs one query per project on every later start rather than
+// a full table scan.
+//
+// A change set whose patch can no longer be read (a blob evicted or
+// corrupted independently of this fix) is left at no_op=false -- exactly
+// migration 34's own fallback for a row it cannot recompute -- rather than
+// failing the whole backfill.
+func (e *Engine) BackfillNoOpChangeSets(ctx context.Context) (int, error) {
+	if e.db == nil {
+		return 0, nil
+	}
+	claimed, err := e.db.ClaimNoOpBackfill(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("workflow: claim no_op backfill: %w", err)
+	}
+	if !claimed {
+		return 0, nil
+	}
+	refs, err := e.db.ListChangeSetsForNoOpBackfill(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("workflow: list no_op backfill candidates: %w", err)
+	}
+	fixed := 0
+	for _, ref := range refs {
+		patch, err := e.loadPatch(&domain.ChangeSet{PatchDigest: ref.PatchDigest})
+		if err != nil {
+			if e.log != nil {
+				e.log.Warn("no_op backfill: could not load patch, leaving no_op=false", "change_set", ref.ID, "err", err)
+			}
+			continue
+		}
+		if len(patch.Files) != 0 {
+			continue
+		}
+		if err := e.db.SetChangeSetNoOp(ctx, ref.ID, true); err != nil {
+			return fixed, fmt.Errorf("workflow: backfill no_op for %s: %w", ref.ID, err)
+		}
+		fixed++
+	}
+	return fixed, nil
 }
 
 // RenderPatch renders a change set's patch as a readable diff (path + content
@@ -2368,12 +2419,34 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		paths = append(paths, f.Path)
 	}
 
+	// review MEDIUM #4: captured before EnsureInitiativeBranch below can
+	// switch branches, so a genuine git failure AFTER that switch actually
+	// completed (the default-branch guard's own git error, or -- the case
+	// the review names -- the change set's own commit failing) restores the
+	// workspace to what was checked out before, rather than leaving it
+	// stranded on the initiative's branch on top of reporting the failure.
+	// switchedBranch only arms once EnsureInitiativeBranch itself reports a
+	// completed switch (branch != "", no brErr, no soft reason); a soft
+	// refusal or warning returns err == nil below, so the defer never fires
+	// for those -- staying on the initiative's branch there is the
+	// intended, working outcome, not a failure to recover from.
+	originalBranch := git.CurrentBranch(ctx, e.workspaceRoot)
+	var switchedBranch bool
+	defer func() {
+		if err != nil && switchedBranch {
+			if restoreErr := git.CheckoutBranch(context.Background(), e.workspaceRoot, originalBranch); restoreErr != nil && e.log != nil {
+				e.log.Warn("commitChangeSet: could not restore the original branch after a commit failure",
+					"change_set", cs.HumanID, "branch", originalBranch, "err", restoreErr)
+			}
+		}
+	}()
+
 	// Merge/rebase/cherry-pick/detached-HEAD are checked BEFORE any checkout
 	// (review H2): switching branches (below) while one of those is in
 	// progress is exactly the hazard the guard exists to prevent, so it must
 	// run first, not after branch-per-initiative has already moved HEAD.
-	if reason, err := git.PreCommitGuardReason(ctx, e.workspaceRoot); err != nil {
-		return "", "", err
+	if reason, guardErr := git.PreCommitGuardReason(ctx, e.workspaceRoot); guardErr != nil {
+		return "", "", guardErr
 	} else if reason != "" {
 		return "", "not committed because " + reason, nil
 	}
@@ -2384,23 +2457,25 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 		if iniErr != nil {
 			return "", "not committed: could not look up the initiative's branch: " + iniErr.Error(), nil
 		}
-		// catchUpPaths (review defect D): files this same initiative's own
-		// earlier applied change sets touched but never got committed --
-		// typically because git_commit was off for those applies and turned
-		// on later. EnsureInitiativeBranch commits exactly these onto the
-		// initiative's branch rather than refusing forever over the
-		// harness's own prior writes.
-		catchUpPaths, catchUpErr := e.uncommittedAppliedPaths(ctx, cs.InitiativeID, cs.ID)
+		// catchUpFiles (review defect D, review MEDIUM #4): files this same
+		// initiative's own earlier applied change sets touched but never got
+		// committed -- typically because git_commit was off for those
+		// applies and turned on later. EnsureInitiativeBranch commits
+		// exactly these (when their content still matches what that change
+		// set wrote) onto the initiative's branch rather than refusing
+		// forever over the harness's own prior writes.
+		catchUpFiles, catchUpErr := e.uncommittedAppliedPaths(ctx, cs.InitiativeID, cs.ID)
 		if catchUpErr != nil {
 			return "", "not committed: could not look up earlier applied change sets: " + catchUpErr.Error(), nil
 		}
-		branch, reason, warning, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths, catchUpPaths)
+		branch, reason, warning, brErr := git.EnsureInitiativeBranch(ctx, e.workspaceRoot, ini.GitBranch, ini.Title, paths, catchUpFiles)
 		if brErr != nil {
 			return "", "not committed: could not switch to the initiative's branch: " + brErr.Error(), nil
 		}
 		if reason != "" {
 			return "", "not committed: " + reason, nil
 		}
+		switchedBranch = branch != ""
 		// H6: the branch was created from current HEAD rather than the
 		// resolved default branch (HEAD wasn't at the default's commit).
 		// The change set still applies and commits; the caller surfaces
@@ -2416,8 +2491,8 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 	// The default-branch check runs AFTER the branch switch above (review
 	// H2): it must judge the initiative's own branch, once
 	// branch-per-initiative has switched to it, not whatever HEAD was before.
-	if reason, err := git.DefaultBranchGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); err != nil {
-		return "", "", err
+	if reason, guardErr := git.DefaultBranchGuardReason(ctx, e.workspaceRoot, e.cfg.Git.AllowDefaultBranch); guardErr != nil {
+		return "", "", guardErr
 	} else if reason != "" {
 		return "", "not committed because " + reason, nil
 	}
@@ -2437,7 +2512,7 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 	return sha, branchWarning, err
 }
 
-// uncommittedAppliedPaths returns the de-duplicated file paths touched by
+// uncommittedAppliedPaths returns the de-duplicated files touched by
 // initiativeID's own OTHER applied change sets that have never been
 // committed (GitCommitSHA == ""), excluding excludeChangeSetID (the one
 // commitChangeSet is about to commit itself). This is exactly the set of
@@ -2445,15 +2520,24 @@ func (e *Engine) commitChangeSet(ctx context.Context, cs *domain.ChangeSet, patc
 // git_commit was off for those earlier applies (review defect D) --
 // EnsureInitiativeBranch treats a dirty path in this set as safe to catch up
 // onto the initiative's branch, rather than refusing forever over the
-// harness's own prior writes. Best-effort: an earlier change set whose patch
-// can no longer be read contributes nothing rather than failing this apply.
-func (e *Engine) uncommittedAppliedPaths(ctx context.Context, initiativeID, excludeChangeSetID string) ([]string, error) {
+// harness's own prior writes -- PROVIDED the workspace still holds what that
+// change set actually wrote (git.CatchUpFile.Digest, checked by
+// EnsureInitiativeBranch/splitCatchUp: review MEDIUM #4 -- a catch-up commit
+// must never sweep in a user's own hand-edit made to the same path).
+//
+// changeSets is iterated oldest-first (ListChangeSets' order) and later
+// occurrences of the same path OVERWRITE earlier ones, so a path touched by
+// more than one uncommitted change set is keyed on the LATEST write -- the
+// one the workspace should actually still hold -- not whichever happened to
+// run first. Best-effort: an earlier change set whose patch can no longer be
+// read contributes nothing rather than failing this apply.
+func (e *Engine) uncommittedAppliedPaths(ctx context.Context, initiativeID, excludeChangeSetID string) ([]git.CatchUpFile, error) {
 	changeSets, err := e.db.ListChangeSets(ctx, initiativeID)
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	var paths []string
+	byPath := map[string]git.CatchUpFile{}
+	var order []string
 	for _, cs := range changeSets {
 		if cs.ID == excludeChangeSetID || cs.Status != domain.ChangeSetApplied || cs.GitCommitSHA != "" {
 			continue
@@ -2463,14 +2547,17 @@ func (e *Engine) uncommittedAppliedPaths(ctx context.Context, initiativeID, excl
 			continue // best-effort: an unreadable earlier patch contributes nothing to catch up
 		}
 		for _, fc := range patch.Files {
-			if seen[fc.Path] {
-				continue
+			if _, ok := byPath[fc.Path]; !ok {
+				order = append(order, fc.Path)
 			}
-			seen[fc.Path] = true
-			paths = append(paths, fc.Path)
+			byPath[fc.Path] = git.CatchUpFile{Path: fc.Path, Digest: fc.Digest}
 		}
 	}
-	return paths, nil
+	files := make([]git.CatchUpFile, 0, len(order))
+	for _, p := range order {
+		files = append(files, byPath[p])
+	}
+	return files, nil
 }
 
 // sanitizeCommitTitle collapses newlines and strips leading dashes from a task
@@ -3017,8 +3104,9 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		// forward; this refusal names it rather than silently letting the
 		// change set through.
 		if !cs.ReviewCompleted() {
-			return fmt.Errorf("workflow: cannot approve %s: its adversarial review never completed (likely cancelled mid-review), "+
-				"so it carries only mechanical check observations, no adversarial findings; run `idea review %s rerun` first", cs.HumanID, cs.HumanID)
+			return fmt.Errorf("workflow: cannot approve %s: its adversarial review never completed (%s), "+
+				"so it carries only mechanical check observations, no adversarial findings; run `idea review %s rerun` first",
+				cs.HumanID, cs.ReviewNeverCompletedCause(), cs.HumanID)
 		}
 		// The human accept: sign off the reviewer's own findings on this change
 		// set, then re-run the gate. NOT skip it -- anything the disposition

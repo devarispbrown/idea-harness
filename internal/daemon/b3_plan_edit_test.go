@@ -268,6 +268,12 @@ func TestSetTaskDependsOnRejectsCycle(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a cycle, got %d: %s", resp.StatusCode, errorBody(t, resp))
 	}
+	// This request is caught by the handler's own pre-check (wouldCycle),
+	// never reaching store.ErrDependsOnCycle's defense-in-depth path -- see
+	// TestErrDependsOnCycleHasNoInternalPrefix (store package) for that one.
+	if body := errorBody(t, resp); strings.Contains(body, "store:") {
+		t.Fatalf("error body = %q leaks an internal package prefix", body)
+	}
 
 	// A valid, acyclic change succeeds.
 	c := mustCreateTask(t, pr, iniID, "C", req.ID, nil)
@@ -323,6 +329,12 @@ func TestMergeTasksRefusesSelfMerge(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a self-merge, got %d: %s", resp.StatusCode, errorBody(t, resp))
 	}
+	// This request is caught by the handler's own pre-check (identical
+	// task_ids), never reaching store.ErrSelfMerge's defense-in-depth path
+	// -- see TestErrSelfMergeHasNoInternalPrefix (store package) for that one.
+	if body := errorBody(t, resp); strings.Contains(body, "store:") {
+		t.Fatalf("error body = %q leaks an internal package prefix", body)
+	}
 	if _, err := pr.db.GetTask(t.Context(), a.ID); err != nil {
 		t.Fatalf("task must survive a refused self-merge: %v", err)
 	}
@@ -345,6 +357,11 @@ func TestMergeTasksRejectsCycle(t *testing.T) {
 	resp := doReq(t, http.MethodPost, url, token, "", `{"task_ids":["`+a.ID+`","`+c.ID+`"]}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a merge that creates a cycle, got %d: %s", resp.StatusCode, errorBody(t, resp))
+	}
+	// review LOW #10: store.ErrMergeCycle's Error() text reaches the client
+	// verbatim and used to carry the package's internal "store: " prefix.
+	if body := errorBody(t, resp); !strings.HasPrefix(body, "merging would create a dependency cycle") {
+		t.Fatalf("error body = %q, want the cycle message with no internal prefix", body)
 	}
 
 	// Nothing was applied: C still exists, unchanged.

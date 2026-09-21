@@ -713,8 +713,8 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding, recentCha
 			// than pointing at a command that will just fail.
 			if !cs.ReviewCompleted() {
 				return Guidance{Action: "Rerun the review for " + cs.HumanID, Why: fmt.Sprintf(
-					"%s never finished its adversarial review (likely cancelled mid-review), so it has no findings to approve yet. "+
-						"`idea review %s rerun` runs it.", cs.HumanID, cs.HumanID),
+					"%s never finished its adversarial review (%s), so it has no findings to approve yet. "+
+						"`idea review %s rerun` runs it.", cs.HumanID, cs.ReviewNeverCompletedCause(), cs.HumanID),
 					Affected: []string{"Execution Plan", cs.HumanID}}
 			}
 			return Guidance{Action: "Review " + cs.HumanID, Why: fmt.Sprintf(
