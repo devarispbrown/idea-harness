@@ -3012,6 +3012,12 @@ paths:
                     while a change set's review has not completed, naming `rerun`; once `rerun`
                     completes it, `approved` proceeds normally and — as below — makes no further
                     model call.
+
+                    `rerun` is itself a real model call (ICP re-run D2, observed 1m12s–1m38s), so
+                    unlike the other three verdicts it answers **202** with an `operation_id` rather
+                    than **200** — poll `GET /operations/{id}` for completion. Running it
+                    synchronously used to mean the daemon always finished the review while a
+                    client's own HTTP timeout gave up waiting on the response.
                   enum: [approved, rejected, changes_requested, rerun]
                 accept_findings:
                   type: boolean
@@ -3036,7 +3042,8 @@ paths:
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
-          description: Reviewed.
+          description: Reviewed. `approved`, `rejected` and `changes_requested` call no model and
+            answer synchronously.
           content:
             application/json:
               schema:
@@ -3044,18 +3051,21 @@ paths:
                 properties:
                   status: { type: string, const: reviewed }
                 required: [status]
+        "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
           description: |
             `verdict is required`, the engine's rejection of the verdict or the change set's
-            state, or `json: unknown field "..."`. The body is closed: this operation decodes
-            strictly and rejects any key it does not declare, so `acceptFindings` (camelCase)
-            is a 400 rather than a silently-dropped field. Closed only up to Go's
+            state, `accept_findings: true` with `rerun` (nothing to sign off before rerun's review
+            has even produced findings), or `json: unknown field "..."`. The body is closed: this
+            operation decodes strictly and rejects any key it does not declare, so `acceptFindings`
+            (camelCase) is a 400 rather than a silently-dropped field. Closed only up to Go's
             ASCII-case-insensitive field matching — `Verdict` is accepted as `verdict`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
         "404": { $ref: "#/components/responses/NotFound" }
 

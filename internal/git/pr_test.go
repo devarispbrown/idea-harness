@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,6 +85,48 @@ func TestCreatePRPushesAndReturnsURL(t *testing.T) {
 	}
 	if !strings.Contains(args, "Per-user API keys") {
 		t.Errorf("gh args do not carry the title:\n%s", args)
+	}
+}
+
+// TestCreatePRWithNoRemoteConfiguredIsFriendly is an ICP re-run gap: `idea
+// pr` on a repository with no remote at all used to dump git's own raw push
+// error verbatim ("'origin' does not appear to be a git repository") rather
+// than saying plainly what was wrong and naming what to do. gh is never
+// reached: pushRemote refuses before ever shelling out to `git push`.
+//
+// Mutation-check: removing pushRemote's remoteExists(ctx, workTree, "origin")
+// check reproduces this -- CreatePR then attempts the push, which fails with
+// git's own raw error text instead of ErrNoRemote.
+func TestCreatePRWithNoRemoteConfiguredIsFriendly(t *testing.T) {
+	repo := initRepoOnBranch(t, "main")
+	gitOut(t, repo, "checkout", "-q", "-b", "idea/add-rate-limiting")
+	// Deliberately no `fakeRemoteRepo(t, repo)` call -- this repository has no
+	// remote configured at all, the exact shape the report reproduced.
+
+	argsPath := filepath.Join(t.TempDir(), "args")
+	prevGH := GHBinPath
+	GHBinPath = writeFakeGH(t, argsPath, `[]`, 0)
+	t.Cleanup(func() { GHBinPath = prevGH })
+
+	_, err := CreatePR(t.Context(), repo, PRRequest{
+		Branch: "idea/add-rate-limiting",
+		Title:  "Per-user API keys",
+		Body:   "## Summary\n\nAdds rate limiting.",
+	})
+	if err == nil {
+		t.Fatal("expected an error on a repository with no remote configured")
+	}
+	if !errors.Is(err, ErrNoRemote) {
+		t.Fatalf("error = %v, want ErrNoRemote", err)
+	}
+	if !strings.Contains(err.Error(), "add one") {
+		t.Errorf("error does not name what to do about it: %v", err)
+	}
+
+	// gh must never have been invoked: the failure is caught before the push,
+	// let alone `gh pr create`.
+	if raw, readErr := os.ReadFile(argsPath); readErr == nil && len(raw) > 0 {
+		t.Errorf("gh was invoked despite no remote existing: %s", raw)
 	}
 }
 
@@ -171,6 +214,13 @@ func writeFakeGitRecordingPushEnv(t *testing.T, envPath string) string {
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 if [ "$1" = "push" ]; then
   env | sort > '%s'
+  exit 0
+fi
+# pushRemote's own remoteExists(ctx, workTree, "origin") check (ICP re-run
+# gap) needs "origin" to look configured, or CreatePR refuses before ever
+# reaching the push this test exists to inspect.
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  echo "git@github.com:example/repo.git"
   exit 0
 fi
 exit 1
