@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,62 @@ func TestFirstRequirementCodeFallsBackWithoutARequirementsSection(t *testing.T) 
 
 	if got := firstRequirementCode(Request{}); got != "" {
 		t.Fatalf("firstRequirementCode = %q, want empty for a request naming no requirement", got)
+	}
+}
+
+// TestEnqueueErrorReproducesTruncationDeterministically is the fake-model
+// half of the change-set review truncation defect's repro (round-6 B1): it
+// lets a hermetic test script a real provider's exact failure mode --
+// model.ErrTruncated, via truncatedError, on the FIRST call for a schema --
+// without a real API key, a real 11-file diff, or a real provider's output
+// ceiling. workflow's own test (the retry-with-a-smaller-ask path in
+// runModel, and the "review unavailable" no-wedge path in Execute/
+// RerunChangeSetReview) queues this exact error to prove those paths
+// actually run end to end, rather than existing only in code no test
+// exercises.
+func TestEnqueueErrorReproducesTruncationDeterministically(t *testing.T) {
+	fp := NewFakeProvider()
+	wantErr := truncatedError("anthropic", "claude-sonnet-5", 16384)
+	fp.EnqueueError("change_set_review", wantErr)
+
+	_, err := fp.Complete(context.Background(), Request{Model: "claude-sonnet-5", JSONSchemaName: "change_set_review"})
+	if err == nil {
+		t.Fatal("Complete succeeded despite a queued error")
+	}
+	if !errors.Is(err, ErrTruncated) {
+		t.Fatalf("Complete's error does not wrap ErrTruncated: %v", err)
+	}
+	if err.Error() != wantErr.Error() {
+		t.Fatalf("Complete returned %q, want the exact queued error %q", err, wantErr)
+	}
+
+	// The queue is FIFO and consumed exactly once: the next call for the SAME
+	// schema must fall through to an ordinary response, not repeat the error
+	// forever (which would make a scripted "truncate once, then succeed"
+	// retry test indistinguishable from "always truncates").
+	resp, err := fp.Complete(context.Background(), Request{Model: "claude-sonnet-5", JSONSchemaName: "change_set_review"})
+	if err != nil {
+		t.Fatalf("second call: got error %v, want the queue exhausted and a normal response", err)
+	}
+	if strings.TrimSpace(resp.RawJSON) == "" {
+		t.Fatal("second call: expected a normal (demo) response, got empty output")
+	}
+}
+
+// TestEnqueueErrorDoesNotLeakAcrossSchemaNames: the error queue is keyed by
+// schema name, exactly like EnqueueResponse -- a truncation scripted for
+// "change_set_review" must never bleed into a "review" (PRD review) call,
+// which is the same isolation hazard the shared demo-response arm's own
+// comment already flags for responses.
+func TestEnqueueErrorDoesNotLeakAcrossSchemaNames(t *testing.T) {
+	fp := NewFakeProvider()
+	fp.EnqueueError("change_set_review", truncatedError("anthropic", "claude-sonnet-5", 16384))
+
+	resp, err := fp.Complete(context.Background(), Request{Model: "claude-sonnet-5", JSONSchemaName: "review"})
+	if err != nil {
+		t.Fatalf("a different schema name's call failed: %v", err)
+	}
+	if strings.TrimSpace(resp.RawJSON) == "" {
+		t.Fatal("expected a normal response for the unrelated schema name")
 	}
 }

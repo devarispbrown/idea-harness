@@ -33,8 +33,18 @@ func NewAnthropic(apiKey, baseURL string) *AnthropicProvider {
 			Tools:             true,
 			Streaming:         true,
 			ReasoningControls: false,
-			ContextLimit:      200000,
-			MaxOutput:         16384,
+			ContextLimit: 200000,
+			// 64000, not the old, uniformly-wrong 16384: it is the real,
+			// documented ceiling of every CURRENT Anthropic model this
+			// catalog does not otherwise know by name (Claude Haiku 4.5 and
+			// Claude Sonnet 4.5 -- see MaxOutputFor's doc comment), so it is
+			// the conservative floor to assume for a model id this package
+			// has not verified, rather than an optimistic guess. A model
+			// verified higher (claude-sonnet-5, claude-opus-5, ...) is
+			// raised per-model by MaxOutputFor, consulted below in Complete
+			// -- never by raising this baseline, which stays the safe
+			// default for whatever this catalog does NOT yet know.
+			MaxOutput: 64000,
 		},
 	}
 }
@@ -113,9 +123,20 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 		}
 		system += "Respond with a single JSON object matching the requested schema. Do not wrap in markdown."
 	}
+	// ceiling is THIS model's real, verified ceiling when known (MaxOutputFor
+	// overrides the conservative provider-wide baseline for a model verified
+	// HIGHER, e.g. claude-sonnet-5's 128000 against the 64000 baseline); sent
+	// is what capOutput actually bounds the request to, and is also what a
+	// truncation error below must name -- not req.MaxOutput, which is only
+	// the stage's uncapped "want".
+	ceiling := p.caps.MaxOutput
+	if v, ok := MaxOutputFor(req.Model); ok {
+		ceiling = v
+	}
+	sent := capOutput(req.MaxOutput, ceiling)
 	body := anthropicRequest{
 		Model:     req.Model,
-		MaxTokens: capOutput(req.MaxOutput, p.caps),
+		MaxTokens: sent,
 		System:    system,
 		Messages:  anthropicMessages(req),
 	}
@@ -161,7 +182,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	// message above; it was never compared to max_tokens, so a truncated reply
 	// looked like a successful one.
 	if parsed.StopReason == "max_tokens" {
-		return Response{}, truncatedError("anthropic", req.MaxOutput)
+		return Response{}, truncatedError("anthropic", req.Model, sent)
 	}
 	actual := parsed.Model
 	if actual == "" {

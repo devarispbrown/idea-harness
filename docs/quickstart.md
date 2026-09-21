@@ -376,8 +376,9 @@ So rather than a number this document cannot support, here is how to get your ow
   first two — **not** on `max_cycles`, where the engine coerces any value `<= 0` to 3):
   `review.max_cost_usd` is a **cumulative** ceiling — the engine adds up every model call's cost and
   fails the call that crosses it, so the run stops; the total is per project and resets when the
-  daemon restarts. `review.max_tokens` is a **per-call** cap on a single response's output tokens,
-  not a running total. `review.max_cycles` bounds the most expensive variable in M1 — the M1 revise
+  daemon restarts. `review.max_tokens` is a **per-call** figure, not a running total: it sets the
+  output-token budget requested for every call and is checked against the response's actual usage.
+  `review.max_cycles` bounds the most expensive variable in M1 — the M1 revise
   loop (default 3). See [`docs/configuration.md`](configuration.md) for the full reference.
 - **The order of magnitude follows from the table above**: a low-double-digit count of structured
   calls for M1 + M2, each carrying a compiled context bundle rather than a whole repository. The
