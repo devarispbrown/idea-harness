@@ -18,13 +18,25 @@ export function verifiedRequirementCount(reqs: RequirementStatus[]): number {
 
 export interface ChangeSetStatus {
   status: string;
+  // no_op (H8 fix): true when the change set touched zero files
+  // (domain.ChangeSet.NoOp). An applied no_op change set is not "something
+  // built" -- the backend's own confirm_passing_tests gate agrees
+  // (runtime.go's confirmPassingTests skips straight to "no applied change
+  // set yet" unless at least one change set ImplementsTask(), i.e. applied
+  // AND !NoOp). Before this field existed here, `hasBuiltSomething` counted
+  // ANY applied change set, so an initiative whose only applied change set
+  // was a no-op showed Pass/Fail enabled and offered "Confirm all with
+  // passing tests" -- a button the backend then refused for every single
+  // requirement.
+  no_op?: boolean;
 }
 
 // Verify's Pass/Fail only mean something once a change set has actually
 // landed in the workspace -- otherwise "pass" would be recording evidence
-// against code that was never applied.
+// against code that was never applied. A no_op applied change set touched
+// nothing, so it does not count either (H8 fix, see ChangeSetStatus.no_op).
 export function hasBuiltSomething(changeSets: ChangeSetStatus[]): boolean {
-  return changeSets.some((c) => c.status === "applied");
+  return changeSets.some((c) => c.status === "applied" && !c.no_op);
 }
 
 // stripSourceTag removes a leading "[...]" attribution prefix -- e.g.

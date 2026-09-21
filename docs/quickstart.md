@@ -149,12 +149,17 @@ needing your judgment.
 Run `idea status` any time to see where the initiative is, and `idea decisions` / `idea reviews`
 to inspect the judgment items the reviewer raised.
 
-**Resolving them is a web-UI (or API) action, not a CLI one.** `idea decisions` and `idea reviews`
-only *list*: the CLI command table has no verb that resolves a decision, answers a question, or
-dispositions a finding. Open `http://127.0.0.1:8787/` → the initiative's **Define** phase to accept a
-recommendation, pick another option, write your own, disposition a finding, or answer a question;
-the PRD then revises. For a clean first run you can leave them: an undecided decision goes into the
-next revise prompt carrying its recommendation rather than a resolution.
+**Decisions and questions can be resolved from the CLI.** `idea resolve <decision> <option#>|"<text>"`
+resolves a decision (by option number or free text), `idea answer <question> "<answer>"` answers a
+question, `idea reopen-decision <decision>` returns a resolved one to open, and
+`idea accept-recommendations` resolves every open decision with its own recommendation in one call.
+`idea triage` ranks everything needing your judgment — open decisions, questions, and blocking
+findings — across all three. **Dispositioning a review finding is still a web-UI (or API) action,
+not a CLI one**: there is no CLI verb for it yet. Open `http://127.0.0.1:8787/` → the initiative's
+**Define** phase to accept a recommendation, pick another option, write your own, disposition a
+finding, or answer a question there instead; the PRD then revises. For a clean first run you can
+leave decisions and questions unresolved too: an undecided decision goes into the next revise
+prompt carrying its recommendation rather than a resolution.
 
 ## 3. Design and plan (M2)
 
