@@ -359,6 +359,114 @@ func TestChangeSetReviewerPromptRequiresConcreteEvidence(t *testing.T) {
 	}
 }
 
+// TestChangeSetReviewerPromptExplainsRedaction is ICP re-run D1: the
+// reviewer read the harness's own `[REDACTED]` masking as broken code and
+// raised a blocking, high-confidence false-positive critical against a file
+// that actually compiled and passed every deterministic check. The reviewer
+// prompt must tell the model, unconditionally, that credential-shaped values
+// are masked before it sees the diff, that a `[REDACTED]` span is a withheld
+// value rather than missing/malformed source, and that it must not raise a
+// syntax/validity finding about one.
+//
+// Mutation-check: removing this notice from runChangeSetAdversarialReview's
+// immutable_policy input (or rewording it to drop the "do not raise a
+// finding" instruction) fails this test.
+func TestChangeSetReviewerPromptExplainsRedaction(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, ini.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReviewChangeSet(ctx, ini.ID, cs.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, call := range fp.Calls() {
+		if call.JSONSchemaName != ChangeSetReviewSchemaName {
+			continue
+		}
+		found = true
+		if !strings.Contains(call.System, "[REDACTED]") {
+			t.Errorf("change-set reviewer prompt does not mention the [REDACTED] marker at all:\n%s", call.System)
+		}
+		if !strings.Contains(call.System, "withheld") {
+			t.Errorf("change-set reviewer prompt does not say a masked span is a withheld value:\n%s", call.System)
+		}
+		if !strings.Contains(call.System, "Do not raise a finding about the syntax, validity, or type") {
+			t.Errorf("change-set reviewer prompt does not instruct the model to skip syntax/validity findings about a masked span:\n%s", call.System)
+		}
+	}
+	if !found {
+		t.Fatal("expected a change-set review call")
+	}
+}
+
+// TestExecuteReportsReviewStage is ICP re-run D3: setStage was called for
+// "Planning", "Agent running" and "Running checks", but never for the
+// adversarial review that follows -- so an operation's reported stage stayed
+// "Running checks" for the review's entire 1-1.5 minute model call, the most
+// expensive phase of Execute, even though the daemon log already recorded
+// stage=review for it. Drives Execute against a real running operation row
+// (the same shape launchOperation creates) and asserts the operation's
+// stage has moved past "Running checks" to name the review by the time
+// Execute returns -- proving setStage was actually called for it, not just
+// for the checks that precede it.
+func TestExecuteReportsReviewStage(t *testing.T) {
+	fp := model.NewFakeProvider()
+	eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+	eng.SetWorkRoot(t.TempDir())
+	eng.SetWorkspaceRoot(t.TempDir())
+	ctx := context.Background()
+
+	ini := &domain.Initiative{Title: "x", Description: "x"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	task := &domain.Task{InitiativeID: ini.ID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A running operation for this initiative, the same shape
+	// Runtime.launchOperation creates -- SetOperationStage is a documented
+	// no-op with no running operation to update (see runrepo.go), so without
+	// this row the stage writes below would silently do nothing and the test
+	// would pass for the wrong reason.
+	opID, err := db.CreateOperation(ctx, "proj", ini.ID, "execute")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := eng.Execute(ctx, ini.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	op, err := db.GetOperation(ctx, opID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Stage == "Running checks" {
+		t.Fatal("operation stage is still \"Running checks\" after the adversarial review ran -- the review phase was never reported")
+	}
+	if op.Stage != "Running adversarial review" {
+		t.Fatalf("Stage = %q, want the adversarial review to be named", op.Stage)
+	}
+}
+
 // TestChangeSetReviewFailsWhenPatchCannotLoad is review H2: a patch that
 // fails to load must fail the review outright, not silently review against
 // an empty file set (which would make EVERY path-bearing finding

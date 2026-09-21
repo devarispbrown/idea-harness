@@ -882,6 +882,13 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		// reviewChangeSet's "approved" path (below) now only evaluates these
 		// findings plus whatever the human has since dispositioned; it never
 		// calls the model again.
+		//
+		// D3: this is the most expensive phase of Execute (a real model call,
+		// observed 1-1.5 minutes) and, before this line existed, the only one
+		// with no setStage of its own -- the operation's reported stage stayed
+		// "Running checks" for its entire duration, though the daemon log
+		// already recorded stage=review for it.
+		e.setStage(ctx, initiativeID, "Running adversarial review")
 		runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
 		if err != nil {
 			return domain.ChangeSet{}, err
@@ -1739,6 +1746,70 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 			sleep *= 2
 		}
 	}
+}
+
+// ExecutePrecondition runs Execute's own fast, read-only guards -- task
+// selection, another open change set, executor resolution, the trust-tier
+// gate, and a prior change set of the SAME task left mid-review or as an
+// unresolved no-op -- without doing any of Execute's actual work. It exists
+// so Runtime.ExecuteInitiativeFreshWithNote can call it SYNCHRONOUSLY, before
+// ever creating an operation (ICP re-run D5).
+//
+// Execute is asynchronous: before this existed, every one of these guards
+// ran only inside the launchOperation goroutine, strictly after the daemon
+// had already answered 202 and the CLI had already printed "✓ execute
+// started". A guard that refuses in under a millisecond, at zero model
+// cost -- the ordinary case, since none of them call a model -- then landed
+// a moment later as an operation failure: a success line immediately
+// followed by a failure, for a run that in fact never started at all.
+//
+// This mirrors, but does not replace, the identical checks inlined in
+// Execute below: they remain the backstop for the genuine race window
+// between this call returning and the task actually being claimed, the same
+// reasoning ExecuteInitiativeFreshWithNote's own NextReadyTask precheck
+// already documents. Deliberately excluded: the changes_requested ->
+// superseded transition Execute performs over the same prior-change-set
+// loop is a WRITE, not a read -- calling it here too would supersede a
+// change set during the precondition check and then find it no longer
+// changes_requested when Execute runs for real a moment later.
+//
+// No engine mutex: like the exported NextReadyTask, every read here is a
+// plain table scan with no dependency on state e.mu protects, so it is safe
+// to call from outside Execute's own locked section.
+func (e *Engine) ExecutePrecondition(ctx context.Context, initiativeID string) error {
+	task, err := e.nextReadyTask(ctx, initiativeID)
+	if err != nil {
+		return err
+	}
+	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
+		return err
+	}
+	exec, err := e.selectExecutor()
+	if err != nil {
+		return err
+	}
+	trust := executor.TrustTierFor(exec.Name())
+	if !executor.TrustAllows(trust, "write_file") {
+		return fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	}
+	prior, err := e.db.ListChangeSetsByTask(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	for _, p := range prior {
+		if p.Status == domain.ChangeSetReviewRequired && !p.ReviewCompleted() {
+			return fmt.Errorf(
+				"workflow: execute: %s never finished its adversarial review (%s) and is still awaiting one; "+
+					"run `idea review %s rerun` to finish reviewing it before running this task again", p.HumanID, p.ReviewNeverCompletedCause(), p.HumanID)
+		}
+		if p.NoOp && changeSetIsOpen(p.Status) {
+			return fmt.Errorf(
+				"workflow: execute: %s is a no-op change set for %s and is still %s; "+
+					"reject it, or approve and apply it, before running this task again",
+				p.HumanID, task.Code, strings.ReplaceAll(string(p.Status), "_", " "))
+		}
+	}
+	return nil
 }
 
 // refuseWhileAnotherChangeSetIsOpen stops a task from running while another
@@ -3215,6 +3286,7 @@ func (e *Engine) RerunChangeSetReview(ctx context.Context, initiativeID, changeS
 		return fmt.Errorf("workflow: %s already has a completed review; nothing to rerun -- `idea review %s approve` or `reject` instead", cs.HumanID, cs.HumanID)
 	}
 
+	e.setStage(ctx, initiativeID, "Running adversarial review")
 	runID, findings, _, err := e.runChangeSetAdversarialReview(ctx, cs)
 	if err != nil {
 		return err
@@ -3332,7 +3404,9 @@ func (e *Engine) runChangeSetAdversarialReview(ctx context.Context, cs *domain.C
 				"For each finding, set `path` to the file it is about when it names one, and `in_diff` to whether it is about code this change set actually touches. " +
 				"Every finding must cite the specific line or path in the change set and a CONCRETE failure input or scenario that would trigger it -- not a generic category of risk. " +
 				"A speculative concern with no concrete failure input (e.g. \"could theoretically be misused\", or flagging a value already validated/normalized earlier in the same diff) is at most low severity and advisory; " +
-				"reserve critical/high for a finding you can show actually breaks with a specific input or actually contradicts a stated requirement."},
+				"reserve critical/high for a finding you can show actually breaks with a specific input or actually contradicts a stated requirement. " +
+				"The harness masks credential-shaped values before you ever see this diff: a span reading exactly `[REDACTED]` (e.g. `const X = \"[REDACTED]\"`) is a withheld value, not missing or malformed source, and the surrounding code is exactly as it appears in the real, compiling file. " +
+				"Do not raise a finding about the syntax, validity, or type of a `[REDACTED]` span, and do not treat one as evidence the file fails to build or parse; a genuine build/test failure is reported separately as its own deterministic-check finding, never inferred from a masked span."},
 			{Selector: "project_scale", Content: scaleAndConventions(scale, chg, rigor, conventions)},
 			{Selector: "change_set", Content: renderChangeSet(cs, e.RenderPatch(cs))},
 		},

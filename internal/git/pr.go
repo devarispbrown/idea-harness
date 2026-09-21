@@ -20,6 +20,16 @@ var GHBinPath = "gh"
 // than an opaque "exec: not found".
 var ErrGHNotFound = errors.New("git: the GitHub CLI (`gh`) is not installed or not on PATH")
 
+// ErrNoRemote is returned by CreatePR when the repository has no git remote
+// configured at all (ICP re-run gap: `idea pr` on such a repository dumped a
+// raw git error -- "'origin' does not appear to be a git repository" -- with
+// no indication of what was actually wrong or what to do about it).
+// pushRemote's own "origin" fallback names a remote that must actually exist
+// for that raw error to be avoidable; this is checked before ever shelling
+// out to `git push`, rather than pattern-matching git's own (unversioned,
+// locale-dependent) stderr text after the fact.
+var ErrNoRemote = errors.New("git: this repository has no remote configured; add one (e.g. `git remote add origin <url>`) and push the branch, then run `idea pr` again")
+
 // PRRequest is what CreatePR needs to open a pull request.
 type PRRequest struct {
 	// Branch is the head branch, already checked out (git.branch_per_initiative
@@ -48,6 +58,15 @@ func CreatePR(ctx context.Context, workTree string, req PRRequest) (string, erro
 		return "", err
 	}
 	if out, err := runGit(ctx, workTree, sanitizedPushEnv(), "push", "-u", remote, req.Branch); err != nil {
+		// pushRemote already refuses when "origin" itself does not exist, but
+		// a branch can carry a `branch.<name>.remote` config naming a remote
+		// that was since removed -- still a "no remote configured" situation
+		// from the user's point of view, just discovered one step later, at
+		// push time, by git itself (ICP re-run gap: the raw text this used to
+		// surface verbatim named neither the cause nor a fix).
+		if looksLikeMissingRemote(out) {
+			return "", ErrNoRemote
+		}
 		return "", fmt.Errorf("git: push %s %s: %w: %s", remote, req.Branch, err, strings.TrimSpace(out))
 	}
 	// gh's --head wants "owner:branch" when the branch lives on a fork --
@@ -100,6 +119,12 @@ func CreatePR(ctx context.Context, workTree string, req PRRequest) (string, erro
 // (review M7). Checking the branch's own local config, not merely origin,
 // means a branch someone already set up to track a fork keeps pushing there
 // on every subsequent `idea pr` call.
+//
+// The "origin" fallback is verified to actually exist (ICP re-run gap)
+// before it is ever handed to `git push`: a repository with no remote at all
+// has no `branch.<name>.remote` config either, so the old code returned
+// "origin" unconditionally and let `git push -u origin <branch>` fail with
+// git's own raw, unclassified error text.
 func pushRemote(ctx context.Context, workTree, branch string) (string, error) {
 	out, err := runGit(ctx, workTree, sanitizedEnv(), "config", "--get", "branch."+branch+".remote")
 	if err == nil {
@@ -109,7 +134,24 @@ func pushRemote(ctx context.Context, workTree, branch string) (string, error) {
 	} else if !isExitCode(err, 1) {
 		return "", fmt.Errorf("git: config branch.%s.remote: %w: %s", branch, err, strings.TrimSpace(out))
 	}
+	if !remoteExists(ctx, workTree, "origin") {
+		return "", ErrNoRemote
+	}
 	return "origin", nil
+}
+
+// looksLikeMissingRemote reports whether git's push output describes a
+// remote that does not exist, rather than any other push failure (rejected,
+// no network, auth). Matched against git's own English-language wording,
+// which is not a stable API -- this is a best-effort classification for a
+// friendlier message, not a correctness boundary; an unmatched case still
+// falls through to the raw (if uglier) git error rather than being
+// misreported as something it is not.
+func looksLikeMissingRemote(out string) bool {
+	out = strings.ToLower(out)
+	return strings.Contains(out, "does not appear to be a git repository") ||
+		strings.Contains(out, "no configured push destination") ||
+		strings.Contains(out, "repository not found")
 }
 
 // remoteExists reports whether a remote named name is configured (review

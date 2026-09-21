@@ -225,3 +225,44 @@ func TestExecuteRefusesToRepickTaskWithUnreviewedChangeSet(t *testing.T) {
 		t.Fatalf("execute created a duplicate change set for the same task: %+v", css)
 	}
 }
+
+// TestExecutePreconditionCatchesUnreviewedPriorChangeSet is ICP re-run D5:
+// `idea execute` printed "✓ execute started" before this guard existed,
+// because Execute is asynchronous and every one of its refusals -- including
+// this exact one, a task whose only change set never finished its
+// adversarial review -- ran only inside the launchOperation goroutine,
+// strictly after the daemon had already answered 202. A real founder-journey
+// run hit exactly this case and it failed in under a millisecond, at zero
+// model cost, yet still read as a started run.
+//
+// ExecutePrecondition exists so Runtime.ExecuteInitiativeFreshWithNote can
+// run this same check SYNCHRONOUSLY, before ever creating an operation. This
+// pins two things: that ExecutePrecondition itself refuses here, and that
+// its refusal text matches Execute's own (they must not silently diverge,
+// since ExecutePrecondition is documented as mirroring Execute's checks, not
+// replacing them).
+func TestExecutePreconditionCatchesUnreviewedPriorChangeSet(t *testing.T) {
+	eng, db, iniID, _ := newWorkspaceFixture(t)
+	task := addTask(t, db, iniID, "add /health")
+	_ = unreviewedChangeSet(t, eng, iniID, task.ID, "unused-digest", "unused-digest")
+
+	ctx := context.Background()
+	preErr := eng.ExecutePrecondition(ctx, iniID)
+	if preErr == nil {
+		t.Fatal("ExecutePrecondition let through a task whose only change set never finished its adversarial review")
+	}
+	if !strings.Contains(preErr.Error(), "never finished its adversarial review") {
+		t.Errorf("ExecutePrecondition refusal missing the reason: %v", preErr)
+	}
+	if !strings.Contains(preErr.Error(), "rerun") {
+		t.Errorf("ExecutePrecondition refusal does not name the way forward (rerun): %v", preErr)
+	}
+
+	_, execErr := eng.Execute(ctx, iniID)
+	if execErr == nil {
+		t.Fatal("Execute let through the same task ExecutePrecondition refused")
+	}
+	if execErr.Error() != preErr.Error() {
+		t.Errorf("ExecutePrecondition's refusal diverged from Execute's own:\n  precondition: %v\n  execute:      %v", preErr, execErr)
+	}
+}

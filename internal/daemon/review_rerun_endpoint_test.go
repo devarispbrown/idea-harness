@@ -47,6 +47,12 @@ func unreviewedChangeSetOverHTTP(t *testing.T, rt *Runtime, projectID, iniID, re
 // {"verdict":"approved"}` on a change set whose adversarial review never
 // completed must refuse (naming rerun), and `POST .../review
 // {"verdict":"rerun"}` must complete it, after which approve succeeds.
+//
+// rerun answers 202 + operation_id, not 200 (ICP re-run D2): it is a real
+// model call, now run as an async operation rather than inside the request,
+// so the CLI's own http.Client timeout can never again be mistaken for the
+// review itself failing. The test waits on the operation the same way
+// `idea review <id> rerun` does by default before checking the outcome.
 func TestReviewApproveRefusesAndRerunFixesAnIncompleteReview(t *testing.T) {
 	rt, ts, token := newTestServer(t)
 	projectID, iniID, reviewedCSID := reviewRequiredChangeSet(t, rt, ts, token)
@@ -63,9 +69,24 @@ func TestReviewApproveRefusesAndRerunFixesAnIncompleteReview(t *testing.T) {
 	resp = doReq(t, http.MethodPost,
 		ts.URL+"/api/v1/projects/"+projectID+"/change-sets/"+csID+"/review", token, "",
 		`{"verdict":"rerun"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("rerun answered %d, want 200: %s", resp.StatusCode, errorBody(t, resp))
+	var rerunOut map[string]string
+	decode(t, resp, &rerunOut)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("rerun answered %d, want 202: %v", resp.StatusCode, rerunOut)
+	}
+	opID := rerunOut["operation_id"]
+	if opID == "" {
+		t.Fatal("rerun answered 202 with no operation_id")
+	}
+	waitForOperation(t, ts, token, opID)
+	opResp := doReq(t, http.MethodGet, ts.URL+"/api/v1/operations/"+opID, token, "", "")
+	var op struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	decode(t, opResp, &op)
+	if op.Status != "succeeded" {
+		t.Fatalf("review rerun operation ended %q, want succeeded: %s", op.Status, op.Error)
 	}
 
 	pr, err := rt.EnsureProject(t.Context(), projectID)
