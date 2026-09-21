@@ -258,7 +258,13 @@ func (db *DB) RecordHumanEvidence(ctx context.Context, initiativeID, requirement
 }
 
 // UnverifyRequirement resets a verified requirement back to approved and clears
-// verified_at (e.g. when the change set that verified it is reverted).
+// verified_at (e.g. when the change set that verified it is reverted). It also
+// clears the requirement's verification evidence in the SAME transaction
+// (review H1): verification_evidence is append-only and PassedCriterionKeys
+// counts every pass regardless of newer rows, so leaving the pass evidence in
+// place after a revert let a bare, no-op `idea verify` re-mark the
+// requirement verified from evidence that was never re-earned (human pass →
+// verify → revert → verify, with nothing new on disk, re-verified it).
 func (db *DB) UnverifyRequirement(ctx context.Context, requirementID, actor string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
@@ -275,7 +281,11 @@ func (db *DB) UnverifyRequirement(ctx context.Context, requirementID, actor stri
 		if err != nil {
 			return err
 		}
-		return requireOneRow(res, "requirement %q not in state verified", requirementID)
+		if err := requireOneRow(res, "requirement %q not in state verified", requirementID); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`DELETE FROM verification_evidence WHERE requirement_id = ?`, requirementID)
+		return err
 	})
 }
 
