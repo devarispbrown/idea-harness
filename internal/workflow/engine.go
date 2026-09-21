@@ -1004,6 +1004,13 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		}
 	}
 	keptIDs := make([]string, 0, len(reqs))
+	// usedCodes tracks every existing code this cycle's response has already
+	// consumed (review C5): a response naming the same code twice used to
+	// silently last-writer-wins -- the first UpdateRequirement's work is
+	// discarded with no duplicate finding, no error, and no trace of the
+	// dropped requirement. The second occurrence now refuses instead of
+	// silently overwriting the first.
+	usedCodes := map[string]bool{}
 
 	var decisionRefByReqID map[string]string // requirementID -> decision question text
 	for _, r := range objSlice(obj["requirements"]) {
@@ -1020,12 +1027,25 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			AcceptanceCriteria: acs,
 			ProducedByRun:      runID,
 		}
-		if prior, ok := priorByCode[NormalizeRequirementRef(str(r["code"]))]; ok && str(r["code"]) != "" {
+		code := NormalizeRequirementRef(str(r["code"]))
+		if code != "" {
+			if usedCodes[code] {
+				return fmt.Errorf("workflow: revision response names requirement code %q more than once", str(r["code"]))
+			}
+			usedCodes[code] = true
+		}
+		if prior, ok := priorByCode[code]; ok && code != "" {
 			req.ID = prior.ID
 			req.Code = prior.Code
 			if err := e.db.UpdateRequirement(dctx, req); err != nil {
 				return err
 			}
+			// Consume the match (review C5): once this cycle's response has
+			// updated a prior requirement in place, that code is spent -- a
+			// later occurrence of the SAME code in this same response must
+			// hit the usedCodes refusal above, never be treated as a second,
+			// fresh match against the same prior row.
+			delete(priorByCode, code)
 		} else {
 			if err := e.db.CreateRequirement(dctx, req); err != nil {
 				return err

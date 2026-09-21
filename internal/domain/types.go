@@ -225,11 +225,13 @@ type Finding struct {
 	// rows written before this field existed are not retroactively treated
 	// as configured-secret matches.
 	SecretOverridable bool `json:"secret_overridable"`
-	// SecretPreview is a masked preview of the matched value -- first 4 and
-	// last 4 characters, the rest replaced by an ellipsis (e.g. "sk-p…Xy9z"),
-	// short values masked entirely -- shown so a human dispositioning this
-	// finding can see enough to recognize what they are allowlisting without
-	// the raw value ever being persisted or returned in full.
+	// SecretPreview is a masked preview of the matched value (review LOW):
+	// nothing at all for a value under 16 characters (masked entirely), at
+	// most 1 character on each side for a 16-23 character value, and at most
+	// the first/last 4 characters (e.g. "sk-p…Xy9z") only from 24 characters
+	// up -- shown so a human dispositioning this finding can see enough to
+	// recognize what they are allowlisting without the raw value ever being
+	// persisted or returned in full. See security.maskValue.
 	SecretPreview string `json:"secret_preview,omitempty"`
 	// Path is the file the finding is about, self-reported by the reviewer
 	// (change-set review only, review B2, adopted #5). Optional: a finding
@@ -555,6 +557,25 @@ func (cs ChangeSet) ReviewCompleted() bool {
 // guidance.
 func (cs ChangeSet) ImplementsTask() bool {
 	return cs.Status == ChangeSetApplied && !cs.NoOp
+}
+
+// NewerChangeSetInScanOrder reports whether cs should replace cur as "the
+// latest" when a caller reduces a slice of change sets to one per key (per
+// task, or across an initiative) by scanning it in ascending CreatedAt order
+// -- store.ListChangeSets' own order, with no secondary sort key.
+//
+// MEDIUM fix: two change sets created in the same millisecond tie on
+// CreatedAt alone, and this codebase had two different answers for who wins
+// that tie -- evidence eligibility and /queue used "not before" (the later
+// one in scan order, i.e. the actual later attempt, wins), while
+// /guidance's LatestChangeSetsPerActiveTask and PR's
+// mostRecentGitCommitWarning used strict "after" (the FIRST one scanned
+// wins instead). Two change sets a millisecond apart could make /queue and
+// /guidance name different "latest" change sets for the same task. Every
+// such reducer must call this one function instead of comparing CreatedAt
+// itself, so they can never disagree again.
+func NewerChangeSetInScanOrder(cs, cur ChangeSet) bool {
+	return !cs.CreatedAt.Before(cur.CreatedAt)
 }
 
 // ApplyJournalEntry is one durable apply-journal record (§39).

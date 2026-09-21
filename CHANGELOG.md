@@ -102,6 +102,78 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   a real failure (the operation was not cancelled) still logs at ERROR with
   its original message.
 
+### Fixed — whole-branch adversarial review (secrets, revise/verify integrity, cost backfill)
+
+- **The placeholder/entropy work silently weakened REDACTION, not just
+  detection (Critical).** `RedactString` (the blob store's own redactor)
+  filtered every catalog match through the same validity gate used to decide
+  whether to raise a FINDING — which for most patterns includes a
+  placeholder-vocabulary/low-entropy check — so a real secret that merely
+  *looked* like a placeholder (a Slack token whose numeric ID segments
+  produced a 4-digit run by chance, `DB_PASSWORD=latestProdPw9xK2` —
+  `containsPlaceholderWord`'s old bare substring check let `"test"` match
+  inside `latest`) passed through into persisted artifacts, findings and
+  agent output completely unmasked. Fixed: `RedactString` now redacts every
+  raw regex match unconditionally (a narrow structural exclusion remains for
+  the generic assignment rule's own variable-reference/function-call/
+  template checks, which were never about placeholders); `containsPlaceholderWord`
+  now compares whole word/segments, never substrings; and the placeholder-
+  shape check (`isPlaceholderShape`, a repeated-character run or low
+  entropy) no longer applies to any provider-specific format at all — a
+  Monte-Carlo run over 200k random well-formed keys per format found it
+  missed a real secret 1 in 68 times for Slack, 1 in 3,200 for AWS, and 1 in
+  6,100–9,500 for the rest, because the vendor prefix is already the
+  evidence a match is real. Every provider-specific pattern now always
+  raises a finding too (`Overridable`, so a human can still dismiss an
+  obvious placeholder).
+- **A PRD revision re-pointed a requirement's statement while keeping
+  `verified` and its evidence (Critical).** `ReviseInitiative` matched
+  requirements by code and blind-`UpdateRequirement`'d statement/
+  acceptance_criteria, leaving `status`, `verified_at` and every
+  `verification_evidence` row untouched — and revise is claimable from
+  `complete`, so an initiative could report `complete`, on surviving human
+  evidence, for a statement that no longer exists. `UpdateRequirement` now
+  resets a changed requirement's status to `approved`, clears `verified_at`,
+  and deletes its verification evidence, all in the same transaction as the
+  statement/criteria update — but only once the requirement has left draft,
+  so a still-in-review PRD revision cannot jump a requirement past the
+  review gate it hasn't passed yet. Separately, a revision response naming
+  the same requirement code twice used to last-writer-win silently
+  (`priorByCode` matched by lookup, not consumed); it's now refused outright.
+- **`UnverifyRequirement` left pass evidence in place after a revert
+  (High).** Reverting a change set flips a verified requirement back to
+  `approved`, but `PassedCriterionKeys` is status-blind and counts every
+  pass row regardless of age — so a bare `idea verify` with nothing new on
+  disk re-marked the requirement (and the initiative) verified/complete from
+  evidence that predated the revert. `UnverifyRequirement` now clears the
+  requirement's verification evidence in the same transaction as the status
+  reset.
+- **Migration 31 left `runs.initiative_id = ''` for every pre-upgrade row
+  (High).** `ListModelPhaseCosts`/`ListAgentRunStats` both filter
+  `WHERE r.initiative_id = ?`, so an initiative that existed before that
+  upgrade permanently reported $0.00 / 0 calls from `GET .../costs` even
+  though the spend still sits in `run_manifests`. Migration 35 backfills it
+  from the product graph: a run's `initiative_id` is recovered from any
+  `produced_by` edge pointing at it (`graph_edges WHERE to_type = 'run'`),
+  when one exists.
+- **Two security guards raised critical blocking findings with no
+  placeholder gate at all (High, over-blocking).** `bearer token` and
+  `URL userinfo credential` had no validator whatsoever — no entropy,
+  placeholder, template, or test-path gate — so
+  `Bearer YOUR_TOKEN_HERE_XXXXXXXXXX` and
+  `mysql://root:examplepass@127.0.0.1/db` raised a critical blocking finding
+  even in a `*_test.go` file. Both now get the same placeholder/template/
+  test-path treatment the generic "credential assignment" rule already had,
+  while a realistic bearer token or DSN password still blocks everywhere.
+  `docs/security-model.md` no longer claims the placeholder/entropy gate
+  covers every provider pattern (it never applies to a provider-prefixed
+  format at all now, per the Critical fix above).
+- **`maskValue` revealed 50% of a 16-character secret (Low).**
+  `Hq7zR2mVx9LpQwEr` → `Hq7z…QwEr` in `SecretPreview` on every finding.
+  Scaled down: nothing is revealed below 16 characters (unchanged), at most
+  1 character per side from 16–23 characters, and the previous
+  `min(4, len/4)` reveal only starts at 24 characters.
+
 ### Fixed
 
 - **`evidence_tests` mapped nothing on a real run despite 30 passing tests.**
