@@ -328,8 +328,14 @@ func (e *Engine) Run(ctx context.Context, initiativeID, idea string) (domain.Ini
 // directly (not just as a floor or a ceiling), still bounded below by the
 // model's real output ceiling, so raising it is the reachable fix the error
 // message can honestly point to.
-func effectiveMaxOutput(stageKey string, prov model.Provider, reviewMaxTokens int64) int {
-	want := maxOutputForStage(stageKey)
+//
+// modelName is the resolved model (registry.Resolve's second return, e.g.
+// "claude-sonnet-5"), threaded through to maxOutputForStage so the review
+// stage's default want (see reviewDefaultMaxOutput) can be sized off the
+// model actually in play rather than a flat constant. It affects only that
+// default; an explicit reviewMaxTokens above still wins outright.
+func effectiveMaxOutput(stageKey string, prov model.Provider, modelName string, reviewMaxTokens int64) int {
+	want := maxOutputForStage(stageKey, modelName)
 	if reviewMaxTokens > 0 {
 		want = int(reviewMaxTokens)
 	}
@@ -355,14 +361,17 @@ func minOutput(want int, prov model.Provider) int {
 // These are wants, not promises: several exceed the ceilings real providers
 // declare, and effectiveMaxOutput is what reconciles them. Do not read a value
 // here as one that will be sent.
-func maxOutputForStage(stageKey string) int {
+//
+// modelName is used only by the review branch (see reviewDefaultMaxOutput);
+// every other stage's want is a flat constant, unaffected by it.
+func maxOutputForStage(stageKey, modelName string) int {
 	switch stageKey {
 	case StageProductDefinition:
 		return 32000
 	case StageReview, StageExecutionPlanReview:
 		// The adversarial reviewer can emit many findings (15+); a truncated
 		// findings list silently fails schema validation.
-		return 16384
+		return reviewDefaultMaxOutput(modelName)
 	case StageResearch, StageArchitecture, StageProductDesign,
 		StageVerificationDesign, StageConvergence, StageExecutionPlan:
 		return 8192
@@ -371,6 +380,49 @@ func maxOutputForStage(stageKey string) int {
 	default:
 		return 4096
 	}
+}
+
+// reviewDefaultMaxOutput is the review stage's default completion-token ask --
+// used whenever harness.yaml's review.max_tokens is unset (0) -- and this is
+// the fix for D2 of the 2026-09-21 truncation probe: before this, the default
+// was the flat constant 16384 regardless of model, so the exact failure the
+// probe reproduced (a claude-sonnet-5 change-set review truncated at 16384,
+// real ceiling 128000) recurred for every review call until a human set
+// review.max_tokens by hand in harness.yaml. Layer (a) of the earlier fix
+// (model.MaxOutputFor / capOutput) only helps once a caller asks for more
+// than 16384 in the first place; this is what actually asks.
+//
+// The default is derived from the model's own verified output ceiling
+// (model.MaxOutputFor), not a second flat number, but deliberately not raised
+// to the full ceiling: reviewDefaultCeiling (32000) matches
+// maxOutputForStage's own PRD want, the largest of the other stage defaults,
+// as a reasoned "this is a big structured reply" midpoint -- asking for the
+// full 128000/64000/65536 a model might allow on every single review call
+// would be needlessly slow and expensive for the common case, where the
+// review schema's findings list does not come close to needing it.
+// review.max_tokens remains the documented, reachable override for a review
+// that legitimately needs more (the probe's own real-world case needed
+// 40000, which review.max_tokens already reaches).
+//
+// reviewDefaultFloor (16384) is the old flat constant, kept as the floor for
+// two cases: a model this catalog has not verified (MaxOutputFor's ok=false,
+// e.g. a brand-new model that postdates modelMaxOutput), and modelMaxOutput's
+// own smallest verified ceiling, 16384 (gpt-4o / gpt-4o-mini) -- neither
+// regresses below what shipped before this fix.
+const (
+	reviewDefaultFloor   = 16384
+	reviewDefaultCeiling = 32000
+)
+
+func reviewDefaultMaxOutput(modelName string) int {
+	ceiling, ok := model.MaxOutputFor(modelName)
+	if !ok || ceiling <= reviewDefaultFloor {
+		return reviewDefaultFloor
+	}
+	if ceiling > reviewDefaultCeiling {
+		return reviewDefaultCeiling
+	}
+	return ceiling
 }
 
 // wrapTruncationGuidance adds reachable remediation to a model.ErrTruncated
@@ -436,7 +488,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		Messages:       []model.Message{{Role: "user", Content: userPrompt}},
 		JSONSchema:     []byte(schemaJSON),
 		JSONSchemaName: schemaName,
-		MaxOutput:      effectiveMaxOutput(stageKey, prov, snap.cfg.Review.MaxTokens),
+		MaxOutput:      effectiveMaxOutput(stageKey, prov, modelName, snap.cfg.Review.MaxTokens),
 	}
 
 	reqStart := time.Now()
