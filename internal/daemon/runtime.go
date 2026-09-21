@@ -506,6 +506,42 @@ func closedChan() chan struct{} {
 	return c
 }
 
+// claimingOperationTypes are the CreateOperation `type` strings whose entry
+// point takes ClaimInitiativeRunning -- either directly in the Runtime
+// method that creates the operation, or (resume) inside the engine call it
+// launches -- before the operation exists (review H7). Everything else
+// (currently just suggest_answers) only reads the initiative to refuse an
+// already-running request synchronously; it never claims it.
+//
+// This is an explicit allowlist, not its complement, deliberately: a new
+// operation type added here that DOES claim and is left off this list only
+// means failOperationAfterPanic leaves a stuck `running` claim for
+// reconcileStaleOperations to sweep up on the next daemon restart -- a
+// recoverable stall. The list being wrong in the other direction (a
+// non-claiming type added here by mistake) is the actual hazard this review
+// item is about: it lets a panic in that operation steal and fail a
+// DIFFERENT, unrelated live claim. When adding a new claiming
+// CreateOperation call site, add its type string here too.
+var claimingOperationTypes = map[string]bool{
+	"resume":             true,
+	"advance_initiative": true,
+	"execute_initiative": true,
+	"apply_change_set":   true,
+	"revert_change_set":  true,
+	"revise_initiative":  true,
+	"retry_initiative":   true,
+	"reopen_phase":       true,
+	"revise_plan":        true,
+	"approve_plan":       true,
+}
+
+// operationClaimsInitiative reports whether opType's entry point takes
+// ClaimInitiativeRunning before the operation exists (review H7). See
+// claimingOperationTypes.
+func operationClaimsInitiative(opType string) bool {
+	return claimingOperationTypes[opType]
+}
+
 // registerCancel records a live cancellation handle for opID.
 func (r *Runtime) registerCancel(opID string, cancel context.CancelFunc) {
 	r.cancelMu.Lock()
@@ -618,7 +654,23 @@ func (r *Runtime) failOperationAfterPanic(opID string, p any) {
 			r.log.Error("recording a panicked operation failed", "operation_id", opID, "error", err)
 			return
 		}
-		if op.InitiativeID != "" {
+		// review H7: only release the initiative when this operation type is
+		// one that actually claims it (ClaimInitiativeRunning, directly here
+		// or inside the engine call this launched). SuggestAnswersInitiative
+		// notably does not: it only reads the initiative to refuse a
+		// synchronous "already running" case and never claims anything, so a
+		// panic in it has no claim of its own to release. Before this,
+		// FailInitiative ran unconditionally here regardless of operation
+		// type; if some OTHER, unrelated operation legitimately held the
+		// initiative `running` at that exact moment, this overwrote that
+		// live claim with `failed` -- the user then ran `idea retry`, and a
+		// second pipeline started concurrently with the first, which kept
+		// running to completion none the wiser. FailInitiative's own CAS
+		// (status must be `running`) is defense-in-depth for the same
+		// hazard, but cannot by itself tell "my claim" from "someone else's
+		// claim" -- both look like `running` -- so this check is what
+		// actually closes it for the case this function handles.
+		if op.InitiativeID != "" && operationClaimsInitiative(op.Type) {
 			if err := pr.db.FailInitiative(ctx, op.InitiativeID,
 				fmt.Sprintf("internal error while running %s", op.Type)); err != nil {
 				r.log.Error("releasing the initiative after a panic failed",
@@ -1079,8 +1131,8 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 		return "", err
 	} else if nt == nil {
 		return "", preconditionf(
-			"no ready tasks for this initiative (every task is done, cancelled, or blocked on an unsatisfied dependency); "+
-				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change "+
+			"no ready tasks for this initiative (every task is done, cancelled, or blocked on an unsatisfied dependency); " +
+				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change " +
 				"set), it must be ready/proposed -- `idea status` shows why it is not")
 	}
 	// Claim the initiative atomically. The read-only check above gives the
@@ -1139,8 +1191,12 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 		pr.engine.SetNoteOverride(initiativeID, note)
 	}
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): a CAS
+		// on `running`, so this cannot stomp a legitimate write (e.g.
+		// verify's CompleteInitiative) that landed in the gap between
+		// Execute's engine mutex being released and this closure running.
 		release := func() {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				priorStatus, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after execute",
 					"initiative", initiativeID, "op", opID, "error", err)
@@ -1203,8 +1259,13 @@ func (r *Runtime) ApplyChangeSetInitiative(ctx context.Context, projectID, initi
 	}
 	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): a CAS
+		// on `running`. Proven repro: verify's CompleteInitiative landing in
+		// the gap between ApplyChangeSet's engine mutex being released and
+		// this closure running, discarding a real completion. See
+		// ReleaseInitiativeClaim's own doc comment.
 		release := func() {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				priorStatus, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after apply",
 					"initiative", initiativeID, "op", opID, "error", err)
@@ -1278,8 +1339,10 @@ func (r *Runtime) RevertChangeSetInitiative(ctx context.Context, projectID, init
 	}
 	priorStatus := ini.Status
 	r.launchOperation(opID, func(bg context.Context) {
+		// ReleaseInitiativeClaim, not SetInitiativeStatus (review H7): see
+		// the identical comment on apply's release() above.
 		release := func(to domain.InitiativeStatus) {
-			if err := pr.db.SetInitiativeStatus(context.WithoutCancel(bg), initiativeID,
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
 				to, store.ActorOrchestrator); err != nil {
 				r.log.Error("could not release the initiative after revert",
 					"initiative", initiativeID, "op", opID, "error", err)
