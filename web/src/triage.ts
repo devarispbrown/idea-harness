@@ -40,7 +40,15 @@ export function partitionByTriage<T extends { id: string }>(
   items: T[],
   triage: TriageItemLike[],
 ): { needsYou: T[]; optional: T[] } {
-  const priorityIds = new Set(triage.filter((t) => t.rank === "priority").map((t) => t.id));
+  // Wired to groupTriage (LOW fix, release-gate report): this used to trust
+  // every triage row marked `priority` unconditionally, which is exactly the
+  // "future backend change to the cap" groupTriage's own doc comment guards
+  // against -- that defensive cap had zero production callers before this,
+  // so a backend that ever marked a 4th item priority would have shown this
+  // page's "Needs you" section growing past 3 with no code anywhere to catch
+  // it. groupTriage's capped needsYou is the priority-id source of truth
+  // here instead of the raw triage list.
+  const priorityIds = new Set(groupTriage(triage).needsYou.map((t) => t.id));
   const needsYou: T[] = [];
   const optional: T[] = [];
   for (const item of items) {
