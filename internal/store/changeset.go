@@ -152,6 +152,12 @@ func (db *DB) TransitionChangeSet(ctx context.Context, changeSetID string, from,
 		if n != 1 {
 			return fmt.Errorf("store: change set %q not in state %q", changeSetID, from)
 		}
+		if to == domain.ChangeSetRejected {
+			// review MEDIUM: stale-mark garbage collection -- a rejected
+			// change set's stale mark is dead weight, not an outstanding
+			// acknowledgement (see clearStaleMarksForTargetTx).
+			return clearStaleMarksForTargetTx(tx, "change_set", changeSetID, actor)
+		}
 		return nil
 	})
 }
@@ -279,9 +285,14 @@ func (db *DB) MarkChangeSetReverted(ctx context.Context, changeSetID, actor stri
 		if err := requireOneRow(res, "change set %q not in state applied", changeSetID); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO apply_journal (id, change_set_id, state, workspace_snapshot_digest, applied_at, created_at) VALUES (?, ?, ?, '', NULL, ?)`,
-			entryID, changeSetID, domain.ApplyRolledBack, now.UnixMilli())
-		return err
+		if _, err := tx.Exec(`INSERT INTO apply_journal (id, change_set_id, state, workspace_snapshot_digest, applied_at, created_at) VALUES (?, ?, ?, '', NULL, ?)`,
+			entryID, changeSetID, domain.ApplyRolledBack, now.UnixMilli()); err != nil {
+			return err
+		}
+		// review MEDIUM: stale-mark garbage collection -- a reverted change
+		// set's stale mark is dead weight, not an outstanding acknowledgement
+		// (see clearStaleMarksForTargetTx).
+		return clearStaleMarksForTargetTx(tx, "change_set", changeSetID, actor)
 	})
 }
 
