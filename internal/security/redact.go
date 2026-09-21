@@ -74,10 +74,25 @@ func (p credentialPattern) validMatches(content string) [][]int {
 // [REDACTED], filtered by p.redactGate when non-nil (review C3) -- NEVER by
 // p.valid, which gates findings, not redaction (see credentialPattern's doc
 // comments for why the two must stay separate).
+//
+// Only the capturing group's own span is replaced (capturedGroupBounds), not
+// the whole match (ICP re-run D1). For most catalog entries the group spans
+// the entire match, so this is unobservable. It matters for the generic
+// "credential assignment" rule (line ~665): that pattern's match starts at
+// an optional `[A-Za-z0-9_]*` PREFIX before the keyword, so an identifier
+// that merely contains a keyword as a suffix -- `AuthFixtureSecret`, not
+// just `secret` -- pulls the identifier itself, the `=`, and the quotes into
+// the match. Replacing the whole match then swallowed the declaration's
+// name and operator too, so `const AuthFixtureSecret = "<value>"` in a diff
+// shown to the adversarial reviewer became the unparseable `const
+// [REDACTED]` -- no identifier, no `=`, nothing that reads as a value -- and
+// a reviewer that had never been told redaction happens reported it, at
+// high confidence, as a Go syntax error blocking the whole package, even
+// though the real file compiles and the deterministic checks on the same
+// change set passed. Masking only the value keeps the surrounding syntax
+// intact: `const AuthFixtureSecret = "[REDACTED]"` is valid Go AND reads
+// unambiguously as a withheld value, not an absent one.
 func (p credentialPattern) redact(s string) string {
-	if p.redactGate == nil {
-		return p.re.ReplaceAllString(s, redacted)
-	}
 	all := p.re.FindAllStringSubmatchIndex(s, -1)
 	if len(all) == 0 {
 		return s
@@ -85,12 +100,13 @@ func (p credentialPattern) redact(s string) string {
 	var b strings.Builder
 	last := 0
 	for _, idx := range all {
-		if !p.redactGate(s, idx) {
+		if p.redactGate != nil && !p.redactGate(s, idx) {
 			continue
 		}
-		b.WriteString(s[last:idx[0]])
+		start, end := capturedGroupBounds(idx)
+		b.WriteString(s[last:start])
 		b.WriteString(redacted)
-		last = idx[1]
+		last = end
 	}
 	b.WriteString(s[last:])
 	return b.String()

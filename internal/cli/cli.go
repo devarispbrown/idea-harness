@@ -141,7 +141,7 @@ func commands() []command {
 			"checks": {"--json": flagBool},
 		}, maxPositional: 1, run: cmdPR, inHelp: true},
 		{usage: "pr checks <change-set-id>", summary: "show the latest CI status via `gh pr checks`", inHelp: true},
-		{names: []string{"review"}, usage: "review <id> <verdict>", summary: "approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review)", flags: flagSpec{"--accept-findings": flagBool}, maxPositional: 2, run: cmdReview, inHelp: true},
+		{names: []string{"review"}, usage: "review <id> <verdict> [--no-wait]", summary: "approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review; a real model call, waits by default -- --no-wait returns a handle immediately)", flags: flagSpec{"--accept-findings": flagBool, "--no-wait": flagBool}, maxPositional: 2, run: cmdReview, inHelp: true},
 		{names: []string{"verify"}, usage: "verify [<req>]", summary: "run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed", flags: flagSpec{"--pass": flagBool, "--fail": flagBool, "--waive": flagBool, "--note": flagValue, "--confirm-passing-tests": flagBool, "--json": flagBool}, maxPositional: 1, run: cmdVerify, inHelp: true},
 		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, maxPositional: 1, run: cmdRisk, inHelp: true},

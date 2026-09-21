@@ -1146,6 +1146,19 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 				"if every task is done, run `idea verify` instead; if a task should run again (e.g. after reverting its change " +
 				"set), it must be ready/proposed -- `idea status` shows why it is not")
 	}
+	// ICP re-run D5: Execute's own guards (another open change set, executor
+	// resolution, the trust-tier gate, a prior change set of this task left
+	// mid-review or as an unresolved no-op) used to run only inside the async
+	// launchOperation goroutine below, so a refusal there -- typically under a
+	// millisecond, no model call -- landed as an operation failure strictly
+	// after this handler had already answered 202 and the CLI had already
+	// printed "✓ execute started". Running the same checks here, before that
+	// response goes out, means a run this fast/cheap guard would refuse
+	// anyway is refused synchronously instead, with nothing printed as having
+	// started at all.
+	if err := pr.engine.ExecutePrecondition(ctx, initiativeID); err != nil {
+		return "", preconditionf("%s", err)
+	}
 	// Claim the initiative atomically. The read-only check above gives the
 	// specific message; this is what actually excludes a second request --
 	// four of these entry points asked "is it running?" and never set it, so
@@ -1402,6 +1415,12 @@ func (r *Runtime) CreatePRForInitiative(ctx context.Context, projectID, initiati
 		case errors.Is(err, workflow.ErrNoInitiativeBranch):
 			return "", preconditionf("%s", err.Error())
 		case errors.Is(err, git.ErrGHNotFound):
+			return "", preconditionf("%s", err.Error())
+		case errors.Is(err, git.ErrNoRemote):
+			// ICP re-run gap: `idea pr` on a repository with no remote used
+			// to dump git's own raw push error verbatim ("'origin' does not
+			// appear to be a git repository") instead of saying plainly what
+			// was wrong and what to do about it.
 			return "", preconditionf("%s", err.Error())
 		}
 		return "", err
@@ -2120,6 +2139,90 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 		}
 		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, initiativeID)
 		r.log.Info("plan approval complete", "initiative", initiativeID, "status", status)
+	})
+	return opID, nil
+}
+
+// RerunChangeSetReviewInitiative runs the adversarial reviewer again for a
+// change set whose review never completed, as an async operation (ICP re-run
+// D2). The review itself is a real model call -- observed 1m12s-1m38s across
+// four founder-journey runs -- which used to run SYNCHRONOUSLY inside the
+// HTTP handler (detached from the request's own cancellation, but not from
+// the CLI's 60s http.Client timeout): the daemon always finished the work,
+// but the CLI reported a timeout error on every single invocation of a
+// brand-new command, because it was still blocked waiting for the response
+// when its own client gave up. It now returns an operation id immediately,
+// the same shape `idea apply`/`idea execute` use, so `idea review <id> rerun`
+// can be waited on/watched/cancelled like any other long-running action
+// instead of racing a fixed client timeout against a model call.
+//
+// The two precondition checks that used to fail fast, synchronously, inside
+// Engine.RerunChangeSetReview are duplicated here (read-only, no model call)
+// so a wrong-state rerun still refuses immediately with a normal 4xx rather
+// than an operation the caller must poll to learn failed instantly.
+// Engine.RerunChangeSetReview re-checks both under its own lock regardless,
+// which is the correctness boundary; this is purely for a fast, synchronous
+// answer on the common misuse.
+func (r *Runtime) RerunChangeSetReviewInitiative(ctx context.Context, projectID, initiativeID, changeSetID string) (string, error) {
+	pr, err := r.EnsureProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	cs, err := pr.db.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return "", err
+	}
+	if cs.InitiativeID != initiativeID {
+		return "", fmt.Errorf("change set %q does not belong to initiative %q", changeSetID, initiativeID)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		return "", preconditionf("cannot rerun review for %s: it is %s, not awaiting review; `idea changes` shows its current state", cs.HumanID, cs.Status)
+	}
+	if cs.ReviewCompleted() {
+		return "", preconditionf("%s already has a completed review; nothing to rerun -- `idea review %s approve` or `reject` instead", cs.HumanID, cs.HumanID)
+	}
+	ini, err := pr.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return "", err
+	}
+	// Permissive, matching ApplyChangeSetInitiative (a change set's review
+	// state is independent of exactly which settled status its initiative is
+	// in): what this excludes is the one case that matters, starting a rerun
+	// while another operation already holds the initiative.
+	if err := pr.db.ClaimInitiativeRunning(ctx, initiativeID,
+		domain.InitiativeApproved, domain.InitiativePlanApproved,
+		domain.InitiativeNeedsHumanJudgment, domain.InitiativeComplete,
+		domain.InitiativeFailed); err != nil {
+		if errors.Is(err, store.ErrInitiativeNotClaimable) {
+			return "", preconditionf("initiative is busy; wait for the running operation to finish")
+		}
+		return "", err
+	}
+	opID, err := pr.db.CreateOperation(ctx, projectID, initiativeID, "rerun_review")
+	if err != nil {
+		if relErr := pr.db.SetInitiativeStatus(context.WithoutCancel(ctx), initiativeID, ini.Status, store.ActorOrchestrator); relErr != nil {
+			r.log.Error("could not release the initiative claim after a failed operation create",
+				"initiative", initiativeID, "create_error", err, "release_error", relErr)
+		}
+		return "", err
+	}
+	priorStatus := ini.Status
+	r.launchOperation(opID, func(bg context.Context) {
+		release := func() {
+			if err := pr.db.ReleaseInitiativeClaim(context.WithoutCancel(bg), initiativeID,
+				priorStatus, store.ActorOrchestrator); err != nil {
+				r.log.Error("could not release the initiative after a review rerun",
+					"initiative", initiativeID, "op", opID, "error", err)
+			}
+		}
+		if runErr := pr.engine.RerunChangeSetReview(bg, initiativeID, changeSetID); runErr != nil {
+			release()
+			r.failOperation(opID, initiativeID, "review rerun failed", bg, pr, runErr, false)
+			return
+		}
+		release()
+		pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, changeSetID)
+		r.log.Info("review rerun complete", "change_set", changeSetID)
 	})
 	return opID, nil
 }
