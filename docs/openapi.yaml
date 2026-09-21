@@ -14,7 +14,7 @@ openapi: 3.1.0
 
 info:
   title: idea-harness daemon API
-  version: 0.5.1
+  version: 0.6.0
   summary: The local HTTP API of the idea-harness daemon.
   description: |
     The daemon's REST + SSE API is the only way into the product graph. The `idea` CLI is a thin

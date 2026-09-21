@@ -9,6 +9,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-20
+
 ### Changed — BREAKING
 
 | Was | Now |
@@ -18,6 +20,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 | `DELETE .../tasks/{taskId}` on a task with dependents: `{"error":"another task depends on this task; remove that dependency first"}` | `{"error":"TASK-1 cannot be deleted: TASK-3, TASK-4 depend on it. Remove those dependencies first, or delete them too."}` — still a 409 with the same JSON error shape, now naming the dependents. |
 | Adding or editing a task with no requirement reference succeeded silently | `POST`/`PATCH` task now **requires** naming at least one requirement (`requirement_ids`, merged with the single `implements` field); a task may now implement more than one requirement (N:M) via `CreateTaskMulti`. |
 | A vocabulary marker (`password`, `token`, `secret`, `auth`, and similar words) anywhere in a patch hard-blocked the change set, with no file, no line, and no way past it | Raises a non-blocking `sensitive_area` finding instead; only a real credential value still blocks. |
+| Approving a change set whose adversarial review never ran (the run was stopped during the review) succeeded, and applying it shipped code no reviewer had seen | `POST .../change-sets/{id}/review` with `approved`, `--accept-findings` and apply all refuse while `review_completed_at` is unset, naming `idea review <id> rerun` (a fresh, paid review) as the way forward. A change set created before this release predates review tracking and says so rather than claiming it was cancelled. |
+| `idea verify --json` exited 0 even when the verification gate was unmet, so it could not gate a script (the human-readable form already exited non-zero) | Both forms exit non-zero on an unmet gate. `--json` still prints the same payload on stdout; the human message goes to stderr. |
 
 ### Added
 
