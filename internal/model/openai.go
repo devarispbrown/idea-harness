@@ -185,11 +185,17 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	if len(parsed.Choices) > 0 {
 		content = parsed.Choices[0].Message.Content
 	}
-	if strings.TrimSpace(content) == "" {
-		return Response{}, fmt.Errorf("openai: empty content (completion_tokens=%d)", parsed.Usage.CompletionTokens)
-	}
+	// finish_reason is checked BEFORE the empty-content check: a truncated
+	// reply can come back with no message content at all (e.g. a reasoning
+	// model cut off before emitting any visible text), which makes content ==
+	// "". Checking the length-stop first ensures that is always reported as
+	// model.ErrTruncated, matching the ordering fix applied to the Anthropic
+	// and Gemini providers -- see anthropic.go for the full rationale.
 	if len(parsed.Choices) > 0 && parsed.Choices[0].FinishReason == "length" {
 		return Response{}, truncatedError("openai", req.Model, sent)
+	}
+	if strings.TrimSpace(content) == "" {
+		return Response{}, fmt.Errorf("openai: empty content (completion_tokens=%d)", parsed.Usage.CompletionTokens)
 	}
 	actual := parsed.Model
 	if actual == "" {
