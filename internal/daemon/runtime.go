@@ -310,6 +310,17 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 	if !r.reconciled[projectID] {
 		r.reconciled[projectID] = true
 		r.reconcileStaleOperations(ctx, pr)
+		// review MEDIUM #1: migration 34 left every pre-existing change set's
+		// no_op at its conservative default (false), even the ones whose
+		// patch manifest actually touched zero files. Recomputing that needs
+		// the blob store, which a migration (plain SQL text) cannot reach, so
+		// it happens here instead, guarded by a persisted marker so it
+		// actually runs once per project rather than once per daemon start.
+		if n, err := pr.engine.BackfillNoOpChangeSets(ctx); err != nil {
+			r.log.Warn("no_op backfill failed", "project", projectID, "err", err)
+		} else if n > 0 {
+			r.log.Info("no_op backfill: fixed pre-migration change sets", "project", projectID, "count", n)
+		}
 	}
 	return pr, nil
 }
@@ -2443,7 +2454,18 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	// above demoProvider says. This sentence used to claim otherwise and
 	// survived the fix that made it false.)
 	n := h.Demo.BlockReviewCycles
-	if max := h.Review.MaxCycles; max > 0 && n > max {
+	// review MEDIUM #7: max_cycles == 0 does NOT mean "unclamped" -- config's
+	// own applyDefaults only defaults it to 3 when EVERY review.* field is
+	// unset (max_cycles/max_tokens/max_cost_usd all zero), so a harness.yaml
+	// that sets, say, review.max_tokens alongside demo.block_review_cycles
+	// left max_cycles at its raw zero here even though the engine (New/
+	// Reload) coerces any value <= 0 to 3 before ever running a review loop.
+	// The old `max > 0 &&` guard read that raw zero as "no clamp", handing a
+	// surplus block_review_cycles queue entry to the plan or change-set
+	// review -- exactly the state a queue (over a flag) exists to avoid.
+	// Effective(), not the raw field, matches what the engine will actually
+	// enforce.
+	if max := h.Review.EffectiveMaxCycles(); n > max {
 		n = max
 	}
 	for i := 0; i < n; i++ {

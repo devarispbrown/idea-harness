@@ -64,15 +64,19 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 		"--user", uid,
 		"--memory", "2g",
 		"--pids-limit", "256",
-		// rw,exec,nosuid,size=... : Docker's tmpfs default is noexec, which
-		// blocks fork/exec (and PROT_EXEC mmap, i.e. dlopen) of anything
-		// staged here. Test/build toolchains compile a binary into $TMPDIR
-		// and then run it, so noexec breaks `go test`, jest's native
+		// rw,exec,nosuid,nodev,size=... : Docker's tmpfs default is noexec,
+		// which blocks fork/exec (and PROT_EXEC mmap, i.e. dlopen) of
+		// anything staged here. Test/build toolchains compile a binary into
+		// $TMPDIR and then run it, so noexec breaks `go test`, jest's native
 		// transforms, cargo build scripts, and pytest's compiled
-		// extensions alike (review defect #1). nosuid+size keep this from
-		// being a privilege-escalation or unbounded-RAM vector.
-		"--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
-		"--tmpfs", "/tmp/cache:rw,exec,nosuid,size=1g",
+		// extensions alike (review defect #1). Re-enabling exec is no reason
+		// to also drop Docker's own tmpfs default of nodev (review LOW #8:
+		// an earlier revision dropped it along with noexec) -- nosuid+nodev
+		// block a privilege-escalation or device-node vector this tmpfs has
+		// no legitimate need for, and size keeps it from being an unbounded
+		// -RAM one.
+		"--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g",
+		"--tmpfs", "/tmp/cache:rw,exec,nosuid,nodev,size=1g",
 		"-e", "HOME=/tmp",
 		"-e", "TMPDIR=/tmp",
 		"-e", "GOCACHE=/tmp/cache/go",

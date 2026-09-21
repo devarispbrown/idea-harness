@@ -538,6 +538,19 @@ type ChangeSet struct {
 	// and reviewChangeSet's "approved" verdict must refuse it rather than
 	// let it through as if a real review had converged.
 	ReviewCompletedAt *time.Time `json:"review_completed_at,omitempty"`
+	// PredatesReviewTracking is true when cs was created before migration 33
+	// added review_completed_at at all (review MEDIUM #2: its store, not the
+	// wire, is the source of truth -- computed by comparing CreatedAt against
+	// that migration's own applied_at, per store.applyPredatesReviewTracking).
+	// It is only meaningful when ReviewCompletedAt is nil, and it exists
+	// purely to keep the four "never finished its adversarial review"
+	// messages (Execute's re-pick refusal, the approve refusal, guidance, and
+	// applyStateMessage) from calling a pre-upgrade row "cancelled": before
+	// the upgrade, a change set's review ran (or was skipped) at approve
+	// time and nothing ever recorded whether it "completed" -- NULL is the
+	// expected, permanent state for that row, not evidence of a cancellation.
+	// Never serialized: it is a message-selection detail, not API surface.
+	PredatesReviewTracking bool `json:"-"`
 }
 
 // ReviewCompleted reports whether the adversarial reviewer actually finished
@@ -547,6 +560,19 @@ type ChangeSet struct {
 // observations, never a real adversarial pass.
 func (cs ChangeSet) ReviewCompleted() bool {
 	return cs.ReviewCompletedAt != nil
+}
+
+// ReviewNeverCompletedCause names, in a short clause meant to be embedded in
+// a sentence, why cs has no completed adversarial review (ICP re-run defect
+// #1) -- the shared wording for every surface that explains this to a human:
+// workflow.Execute's re-pick refusal, reviewChangeSet's approve refusal,
+// projection.BuildGuidance, and daemon.applyStateMessage (review MEDIUM #2).
+// Only meaningful when !cs.ReviewCompleted().
+func (cs ChangeSet) ReviewNeverCompletedCause() string {
+	if cs.PredatesReviewTracking {
+		return "it predates review-completion tracking from before this project's daemon was upgraded, not because anything was cancelled"
+	}
+	return "likely cancelled mid-review"
 }
 
 // ImplementsTask reports whether this change set is applied AND actually
@@ -738,7 +764,7 @@ func GenerateShortTitle(idea string) string {
 	if clause == "" {
 		clause = s
 	}
-	return trimToWordBoundary(clause, 60)
+	return TrimToWordBoundary(clause, 60)
 }
 
 // dropLeadIn removes one leading phrase from leadIns, case-insensitively, if s
@@ -769,12 +795,18 @@ func firstClause(s string) string {
 	return strings.TrimSpace(s[:cut])
 }
 
-// trimToWordBoundary trims s to at most n runes without splitting a word,
-// falling back to a hard cut only when no earlier space exists.
-func trimToWordBoundary(s string, n int) string {
-	r := []rune(s)
+// TrimToWordBoundary trims s to at most n runes without splitting a word,
+// falling back to a hard cut only when no earlier space exists. Exported
+// (review LOW #11) so it is the one place this algorithm lives: projection's
+// truncateWords used to carry an independent, near-identical copy that had
+// already drifted on when it measures length (before vs. after trimming
+// surrounding whitespace) before either callers noticed -- two
+// implementations of the same word-boundary cut, each free to diverge
+// further the next time one of them was touched.
+func TrimToWordBoundary(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
 	if len(r) <= n {
-		return strings.TrimSpace(s)
+		return string(r)
 	}
 	cut := n
 	for cut > 0 && r[cut] != ' ' {

@@ -50,6 +50,30 @@ func TestGenerateShortTitleNeverExceeds60Chars(t *testing.T) {
 	}
 }
 
+// TestTrimToWordBoundary pins the shared cut algorithm directly (review LOW
+// #11: projection.truncateWords used to carry its own, independently
+// maintained copy of this exact logic, free to drift -- it now wraps this
+// one instead). No ellipsis: that is truncateWords' own addition on top,
+// deliberately not shared, since GenerateShortTitle (above) wants a title,
+// not a visibly-truncated string.
+func TestTrimToWordBoundary(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"short enough", 20, "short enough"},
+		{"cuts at the last space before n", 10, "cuts at"},
+		{"nospacebeforethelimitatall", 10, "nospacebef"}, // no earlier space: hard cut
+		{"  leading and trailing space  ", 40, "leading and trailing space"},
+	}
+	for _, c := range cases {
+		if got := TrimToWordBoundary(c.in, c.n); got != c.want {
+			t.Errorf("TrimToWordBoundary(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
 // TestGenerateShortTitleIsDeterministic backs the backfill story (store's
 // backfillShortTitle regenerates and compares -- it must always agree with
 // what CreateInitiative wrote the first time).

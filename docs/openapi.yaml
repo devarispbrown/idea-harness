@@ -1895,7 +1895,7 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`tasks must name at least 2 replacement tasks`, `each replacement task needs a title`, or `requirement_ids references an unknown requirement \"...\"`."
+          description: "`tasks must name at least 2 replacement tasks`, `replacement task N needs a title`, `replacement task N (\"...\") needs at least one requirement` (a caller-supplied `requirement_ids: []` or an original task with none), or `requirement_ids references an unknown requirement \"...\"`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1946,7 +1946,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
         "400":
-          description: "`task_ids must name exactly 2 tasks`."
+          description: "`task_ids must name exactly 2 tasks`, `task_ids must name two distinct tasks` (the handler's own pre-check for a self-merge), `cannot merge a task with itself` (the store's defense-in-depth for the same case, reached only by a race the handler's pre-check missed), or `merging would create a dependency cycle (through ...)`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

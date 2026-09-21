@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,20 +13,45 @@ import (
 // a wedged/overloaded daemon presents to a client, and the deterministic way
 // to trigger a client-side HTTP timeout fast in a test, without needing a
 // real slow handler.
+//
+// review LOW #12: the accepted conn used to be a bare loop-local variable,
+// discarded (`_ = c`) rather than kept alive -- once nothing referenced it,
+// it became eligible for GC at any point, and *net.TCPConn's finalizer
+// closes the underlying file descriptor when collected. A close that lands
+// before the client's 50ms timeout fires sends it a TCP RST instead: the
+// client observes "connection reset by peer", not the deadline-exceeded
+// timeout this test exists to translate, and fails without hanging or a
+// wrong-looking diff, plausibly once in several thousand runs (GC timing
+// dependent) -- ICP re-run reported roughly 1 in 7 full-suite runs, which a
+// full suite's added GC pressure from every other package's tests running
+// concurrently makes far likelier to actually observe. Keeping every
+// accepted conn referenced until the test itself closes it in Cleanup makes
+// the collection nondeterminism impossible, not just unlikely.
 func hangingListener(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	var mu sync.Mutex
+	var accepted []net.Conn
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range accepted {
+			c.Close()
+		}
+	})
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			_ = c // accepted, never answered
+			mu.Lock()
+			accepted = append(accepted, c) // kept alive (and explicitly closed) until Cleanup, never GC-finalized mid-test
+			mu.Unlock()
 		}
 	}()
 	return ln

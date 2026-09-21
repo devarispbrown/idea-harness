@@ -150,33 +150,7 @@ func markStaleTx(tx *sql.Tx, initiativeID, targetType, targetID, reason, decisio
 // ListStaleItems returns the active (uncleared) stale marks for an initiative,
 // oldest first.
 func (db *DB) ListStaleItems(ctx context.Context, initiativeID string) ([]domain.StaleItem, error) {
-	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, target_type, target_id, reason, decision_id, created_at, cleared_at, cleared_by
-		FROM stale_marks WHERE initiative_id = ? AND cleared_at IS NULL ORDER BY created_at ASC`, initiativeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]domain.StaleItem, 0)
-	for rows.Next() {
-		var s domain.StaleItem
-		var created int64
-		var cleared sql.NullInt64
-		var clearedBy sql.NullString
-		if err := rows.Scan(&s.ID, &s.InitiativeID, &s.TargetType, &s.TargetID, &s.Reason, &s.DecisionID, &created, &cleared, &clearedBy); err != nil {
-			return nil, err
-		}
-		s.CreatedAt = time.UnixMilli(created)
-		if cleared.Valid {
-			t := time.UnixMilli(cleared.Int64)
-			s.ClearedAt = &t
-		}
-		if clearedBy.Valid {
-			s.ClearedBy = clearedBy.String
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
+	return db.listStaleMarks(ctx, initiativeID, true)
 }
 
 // ListAllStaleMarks returns every stale mark for an initiative -- cleared and
@@ -185,9 +159,21 @@ func (db *DB) ListStaleItems(ctx context.Context, initiativeID string) ([]domain
 // right for "what needs acknowledgement now"; the timeline instead needs "what
 // went stale, and when", including a mark since cleared.
 func (db *DB) ListAllStaleMarks(ctx context.Context, initiativeID string) ([]domain.StaleItem, error) {
-	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, target_type, target_id, reason, decision_id, created_at, cleared_at, cleared_by
-		FROM stale_marks WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
+	return db.listStaleMarks(ctx, initiativeID, false)
+}
+
+// listStaleMarks is ListStaleItems and ListAllStaleMarks' shared query and
+// row-scan (review LOW #11: these used to be a 35-line verbatim copy of each
+// other, differing only in the WHERE clause below -- free to drift on the
+// scan logic the next time either one was touched, with nothing to catch it).
+func (db *DB) listStaleMarks(ctx context.Context, initiativeID string, activeOnly bool) ([]domain.StaleItem, error) {
+	query := `SELECT id, initiative_id, target_type, target_id, reason, decision_id, created_at, cleared_at, cleared_by
+		FROM stale_marks WHERE initiative_id = ?`
+	if activeOnly {
+		query += ` AND cleared_at IS NULL`
+	}
+	query += ` ORDER BY created_at ASC`
+	rows, err := db.SQL().QueryContext(ctx, query, initiativeID)
 	if err != nil {
 		return nil, err
 	}
