@@ -81,6 +81,13 @@ const harnessSchema = `{
         "image": { "type": "string" }
       },
       "additionalProperties": false
+    },
+    "execute": {
+      "type": "object",
+      "properties": {
+        "max_files": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

@@ -87,6 +87,10 @@ type Engine struct {
 	workRoot      string
 	workspaceRoot string
 	dotEnv        map[string]string // the project's .env, for provider keys
+	// testExtraFiles is a hook for internal/workflow's own tests only (review
+	// C's blast-radius guard fixtures): see executor.Request.ExtraFiles' doc
+	// comment. Always empty outside a test; no production code path sets it.
+	testExtraFiles []string
 
 	// mu serializes the state-mutating operations (execute/apply/revert) so two
 	// concurrent invocations cannot race on the same task or workspace.

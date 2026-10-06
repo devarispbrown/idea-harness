@@ -138,6 +138,43 @@ type CheckConfig struct {
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 }
 
+// defaultMaxFiles is execute.max_files' built-in default when unset (<=0).
+//
+// Chosen BELOW the 15-file / ~26KB diff that is the known-bad case this guard
+// exists to catch (the ICP re-run where an 80-line service was restructured,
+// unasked, into cmd/+internal/ for a one-endpoint task, producing a diff that
+// went on to hit the adversarial reviewer's own output ceiling). 10 sits under
+// that observed failure while still comfortably fitting the plan's own target
+// of 2-4 vertical slices per task.
+const defaultMaxFiles = 10
+
+// ExecuteConfig bounds the blast radius of a single change set (review C). A
+// change set whose diff touches more files than MaxFiles allows is refused
+// before the adversarial review ever runs (workflow.Engine.Execute), naming
+// the count, the limit, and how to proceed: split the task, or raise the
+// limit.
+//
+// The count is of files the change set's diff (fsdiff.Diff(before, after))
+// actually touches, which already excludes fsdiff's own always-on exclusions
+// (well-known toolchain/cache directories, the harness's own control-plane
+// paths) and, for the after-image, the workspace's own .gitignore — so a
+// lockfile regen or another generated/ignored file an agent rewrites does not
+// count against a limit meant for hand-written sprawl.
+type ExecuteConfig struct {
+	// MaxFiles caps the file count a change set's diff may touch. <=0 (unset)
+	// uses defaultMaxFiles — see EffectiveMaxFiles.
+	MaxFiles int `json:"max_files,omitempty" yaml:"max_files,omitempty"`
+}
+
+// EffectiveMaxFiles is execute.max_files as Execute actually enforces it —
+// the same <=0-means-default convention as ReviewConfig.EffectiveMaxCycles.
+func (c ExecuteConfig) EffectiveMaxFiles() int {
+	if c.MaxFiles <= 0 {
+		return defaultMaxFiles
+	}
+	return c.MaxFiles
+}
+
 // HarnessConfig is harness.yaml (portable, committable).
 type HarnessConfig struct {
 	Network      NetworkPolicy             `json:"network" yaml:"network"`
@@ -147,6 +184,9 @@ type HarnessConfig struct {
 	DefaultModel string                    `json:"default_model" yaml:"default_model"`
 	Executor     ExecutorConfig            `json:"executor" yaml:"executor"`
 	Check        CheckConfig               `json:"check" yaml:"check"`
+	// Execute bounds a single change set's blast radius (review C). See
+	// ExecuteConfig's doc comment.
+	Execute ExecuteConfig `json:"execute,omitempty" yaml:"execute,omitempty"`
 	// Models is the per-role model map: role name → "provider/model". Roles
 	// without an entry fall back to default_model (§40). The coding "implementer"
 	// role is a valid key here, letting OMP/Hermes run different models.
@@ -317,6 +357,9 @@ func Load(dir string) (Config, error) {
 	}
 	if !ValidRigor(cfg.Harness.Review.Rigor) {
 		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
+	}
+	if cfg.Harness.Execute.MaxFiles < 0 {
+		return cfg, fmt.Errorf("config: harness.execute.max_files must be >= 0")
 	}
 	return cfg, nil
 }

@@ -48,6 +48,15 @@ type Request struct {
 	TaskStatement string `json:"task_statement"`
 	Brief         string `json:"brief,omitempty"`
 	WorkRoot      string `json:"work_root"`
+	// ExtraFiles is honored only by InternalExecutor.Collect: a list of extra
+	// placeholder files, by workspace-relative path, to write beyond
+	// hello.txt. It exists purely so internal/workflow's own tests can drive
+	// a real Execute() call's diff past a file-count limit (review C's
+	// blast-radius guard) -- or past a path the workspace's own .gitignore
+	// excludes, for that guard's false-positive fixture -- without a real
+	// coding agent. No production code path ever sets this; it is never
+	// serialized (json:"-") because it crosses no process boundary.
+	ExtraFiles []string `json:"-"`
 }
 
 // Attempt is the durable handle returned by Start.

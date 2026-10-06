@@ -465,12 +465,19 @@ const (
 	DenyCodeBlobDigestMismatch DenyCode = "blob_digest_mismatch"
 	DenyCodeTrustDeny          DenyCode = "trust_deny"
 	DenyCodeReviewOpenBlocking DenyCode = "review_open_blocking"
+	// DenyCodeBlastRadius marks a change set refused for touching more files
+	// than execute.max_files allows (review C, the blast-radius guard) —
+	// refused before the adversarial review ever runs, so there is never a
+	// finding to override: the way past it is splitting the task or raising
+	// the configured limit, not a human disposition.
+	DenyCodeBlastRadius DenyCode = "blast_radius"
 )
 
 func (d DenyCode) Valid() bool {
 	switch d {
 	case DenyCodeSecretSweep, DenyCodePII, DenyCodePathEscape, DenyCodeHostExec,
-		DenyCodeBlobDigestMismatch, DenyCodeTrustDeny, DenyCodeReviewOpenBlocking:
+		DenyCodeBlobDigestMismatch, DenyCodeTrustDeny, DenyCodeReviewOpenBlocking,
+		DenyCodeBlastRadius:
 		return true
 	}
 	return false

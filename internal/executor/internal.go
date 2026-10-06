@@ -147,18 +147,26 @@ func (e *InternalExecutor) Cancel(ctx context.Context, id string) error {
 func (e *InternalExecutor) Collect(ctx context.Context, id string) (Result, error) {
 	e.mu.Lock()
 	a, ok := e.attempts[id]
-	var title string
-	if ok {
-		title = a.req.TaskTitle
-	}
 	e.mu.Unlock()
 	if !ok {
 		return Result{}, fmt.Errorf("executor: unknown attempt %q", id)
 	}
+	title := a.req.TaskTitle
 
 	content := []byte("# idea-harness placeholder — configure executor.kind = omp|hermes to generate real code\ntask: " + title + "\n")
 	if err := os.WriteFile(filepath.Join(a.req.WorkRoot, "hello.txt"), content, 0o644); err != nil {
 		return Result{}, fmt.Errorf("executor: internal: write hello.txt: %w", err)
+	}
+	// See Request.ExtraFiles' doc comment: a test-only hook, always empty
+	// outside internal/workflow's own tests.
+	for _, rel := range a.req.ExtraFiles {
+		p := filepath.Join(a.req.WorkRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return Result{}, fmt.Errorf("executor: internal: mkdir %q: %w", rel, err)
+		}
+		if err := os.WriteFile(p, []byte("placeholder: "+rel+"\n"), 0o644); err != nil {
+			return Result{}, fmt.Errorf("executor: internal: write %q: %w", rel, err)
+		}
 	}
 	return Result{}, nil
 }
