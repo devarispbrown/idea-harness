@@ -1525,15 +1525,20 @@ func (db *DB) DispositionUnclaimedFindingsByTarget(ctx context.Context, initiati
 // disposition AWAY FROM not_a_secret removes the matching allowlist entry,
 // so an allowlist decision can be reversed by re-dispositioning the finding
 // that created it.
+// No "store: " prefix on any message below (same reasoning as ErrSelfMerge/
+// ErrMergeCycle/ErrDependsOnCycle and ReorderTasks's two messages -- see
+// merge.go/dependson.go/graph.go): handleFindingDisposition surfaces this
+// function's Error() text verbatim in a 400, and `idea disposition`
+// (internal/cli/tasks.go) is the first CLI-reachable caller of this path.
 func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp domain.Disposition, actor string) error {
 	if !disp.Valid() {
-		return fmt.Errorf("store: invalid disposition %q", disp)
+		return fmt.Errorf("invalid disposition %q", disp)
 	}
 	if disp == domain.DispositionAcceptedRisk && actor != HumanActor {
-		return fmt.Errorf("store: accepted_risk requires a human actor")
+		return fmt.Errorf("accepted_risk requires a human actor")
 	}
 	if disp == domain.DispositionNotASecret && actor != HumanActor {
-		return fmt.Errorf("store: not_a_secret requires a human actor")
+		return fmt.Errorf("not_a_secret requires a human actor")
 	}
 	return db.Apply(ctx, Event{
 		AggregateType: "finding",
@@ -1554,13 +1559,13 @@ func (db *DB) SetFindingDisposition(ctx context.Context, findingID string, disp 
 		}
 		if disp == domain.DispositionNotASecret {
 			if category != "secret_sweep" {
-				return fmt.Errorf("store: not_a_secret is only valid on a secret_sweep finding (this finding is %q)", category)
+				return fmt.Errorf("not_a_secret is only valid on a secret_sweep finding (this finding is %q)", category)
 			}
 			if secretFingerprint == "" {
-				return fmt.Errorf("store: this finding has no recorded secret fingerprint to allowlist")
+				return fmt.Errorf("this finding has no recorded secret fingerprint to allowlist")
 			}
 			if !secretOverridable {
-				return fmt.Errorf("store: not_a_secret is refused for %q: this value was drawn from the project's own configured secrets, not a pattern match, and is never eligible for the not_a_secret override", secretKind)
+				return fmt.Errorf("not_a_secret is refused for %q: this value was drawn from the project's own configured secrets, not a pattern match, and is never eligible for the not_a_secret override", secretKind)
 			}
 		}
 		// RowsAffected, because db.Apply commits the finding.dispositioned event

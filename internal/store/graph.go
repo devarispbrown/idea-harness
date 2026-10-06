@@ -478,13 +478,18 @@ func (db *DB) ReorderTasks(ctx context.Context, initiativeID string, orderedIDs 
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		// No "store: " prefix on either message (same reasoning as ErrSelfMerge/
+		// ErrMergeCycle/ErrDependsOnCycle — see merge.go/dependson.go): the CLI's
+		// `idea reorder` and the daemon's handleReorderTasks both surface this
+		// Error() text verbatim in a 400, and a literal "store: " leaking through
+		// here is the exact defect 0.6.0 fixed for those three sentinels.
 		if len(orderedIDs) != len(ids) {
-			return fmt.Errorf("store: reorder needs exactly %d task ids, got %d", len(ids), len(orderedIDs))
+			return fmt.Errorf("reorder needs exactly %d task ids, got %d", len(ids), len(orderedIDs))
 		}
 		seen := map[string]bool{}
 		for _, id := range orderedIDs {
 			if !existing[id] || seen[id] {
-				return fmt.Errorf("store: reorder task id list is not a permutation of the initiative's tasks")
+				return fmt.Errorf("reorder task id list is not a permutation of the initiative's tasks")
 			}
 			seen[id] = true
 		}

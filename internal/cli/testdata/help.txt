@@ -14,6 +14,7 @@ Commands:
   accept-recommendations resolve every open decision with its own recommendation
   triage               show the ranked "needs your judgment" view
   reviews              list review findings
+  disposition <finding> <fixed|accepted_risk|not_applicable|duplicate|deferred|rejected|mitigate|not_a_secret> [--note <text>] [<initiative>] disposition a review finding (not_a_secret also allowlists it)
   model [--provider <name>] [--all] show the current model + a curated set (Gemini, OpenAI, …)
   model list [<provider>] [--all] list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider
   prd                  render the reviewed PRD in your terminal
@@ -26,6 +27,11 @@ Commands:
   revise-plan          regenerate the execution plan
   plan                 render the execution plan
   tasks                list the ordered plan tasks
+  add-task "<title>" --requirement <ref> [--statement <text>] [--priority must|should|could] [--estimate <text>] [--depends-on <ref>] [<initiative>] add a plan task (at least one --requirement is required)
+  merge-tasks <task1> <task2> [<initiative>] [--yes] merge two tasks into one, deleting the second (--yes required)
+  split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>] split a task into two or more (repeat --title/--requirements/--statement in order; --yes required)
+  depends-on <task> --on <ref> [--on <ref>...] [<initiative>] set a task's dependencies (--clear to depend on nothing)
+  reorder <task1> <task2> ... [--initiative <ref>] reorder the plan's tasks (name every task, in the new order)
   why <type> <id>      show the provenance chain
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents

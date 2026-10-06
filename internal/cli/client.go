@@ -114,6 +114,18 @@ func questionResource(projectID, questionID, action string) string {
 	return p
 }
 
+// findingResource builds a project-scoped finding path with its segments
+// escaped, matching decisionResource/questionResource. Findings are
+// dispositioned at the project level (POST .../projects/{projectId}/
+// findings/{id}/disposition), not under an initiative, unlike the list route.
+func findingResource(projectID, findingID, action string) string {
+	p := "/api/v1/projects/" + url.PathEscape(projectID) + "/findings/" + url.PathEscape(findingID)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
+}
+
 // client talks to the daemon API.
 type client struct {
 	baseURL string

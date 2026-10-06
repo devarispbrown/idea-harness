@@ -83,6 +83,14 @@ type cliFinding struct {
 	Finding        string `json:"finding"`
 	Recommendation string `json:"recommendation"`
 	Disposition    string `json:"disposition"`
+	// Code, SecretKind and SecretOverridable mirror domain.Finding's own
+	// fields (`idea disposition`'s client-side guards need them: not_a_secret
+	// is refused on anything but a secret_sweep finding, and refused again,
+	// unconditionally, on one drawn from the project's own configured
+	// secrets rather than a pattern match).
+	Code              string `json:"code,omitempty"`
+	SecretKind        string `json:"secret_kind,omitempty"`
+	SecretOverridable bool   `json:"secret_overridable,omitempty"`
 }
 
 func statusBadge(s string) string {
@@ -388,7 +396,15 @@ func cmdReviews(a cmdArgs, stdout, stderr io.Writer) error {
 		default:
 			sev = muted(sev)
 		}
-		fmt.Fprintln(stdout, "  "+sev+" "+f.Finding)
+		// The short ref is what `idea disposition <ref> <disposition>` takes
+		// back (findings, like questions, have no human code -- only a
+		// content-hash id). Printing nothing here meant the only way to learn
+		// a finding's ref was `idea reviews --json`.
+		line := "  " + code(shortRef(f.ID)) + " " + sev + " " + f.Finding
+		if f.Disposition != "" {
+			line += " " + muted("["+f.Disposition+"]")
+		}
+		fmt.Fprintln(stdout, line)
 		if f.Recommendation != "" {
 			fmt.Fprintln(stdout, "      "+muted("→ ")+f.Recommendation)
 		}
