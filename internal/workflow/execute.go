@@ -41,6 +41,11 @@ const (
 	snapshotSanityMaxBytes = 150 << 20 // 150 MiB
 )
 
+// blastRadiusExampleLimit caps how many touched paths the blast-radius
+// refusal's Evidence lists, so a sprawling change set does not itself produce
+// an oversized finding.
+const blastRadiusExampleLimit = 10
+
 // afterRunSnapshotOptions are the fsdiff.SnapshotOptions applied to every
 // snapshot taken of a work root AFTER an external agent has run in it --
 // i.e. of untrusted content. It excludes whatever the workspace's own
@@ -461,6 +466,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		TaskStatement: task.Statement,
 		Brief:         brief,
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
+		ExtraFiles:    e.testExtraFiles,
 	}
 
 	// Record a durable run for the implementer step (review B7). The run is
@@ -586,6 +592,18 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	files := fsdiff.Diff(before, after)
 
+	// Blast-radius guard (review C): files is already the orchestrator's own
+	// post-exclusion diff -- fsdiff's always-on well-known-dir/control-plane
+	// exclusions, plus (for the after-image, via afterRunSnapshotOptions) the
+	// workspace's own .gitignore -- so a lockfile regen or another generated/
+	// ignored file never counts against a limit meant for hand-written
+	// sprawl. Evaluated here, before anything about this diff is sent to a
+	// model: checksBlocked below is also skipped when this trips, so a change
+	// set too large to ever pass review does not also spend a real build/test
+	// run first.
+	maxFiles := e.cfg.Execute.EffectiveMaxFiles()
+	tooManyFiles := len(files) > maxFiles
+
 	// Sweep the produced content BEFORE persisting it: if it carries a real
 	// credential, we reject without ever writing the raw bytes to the
 	// redaction-free raw store (review: raw-blob GC for rejected patches).
@@ -675,9 +693,10 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// failing check is a blocking finding and will reject the change set below.
 	// Skipped when a credential was already detected (the raw content was not
 	// persisted, so patch-applies would spuriously fail, and the change set is
-	// rejected on the secret sweep regardless).
+	// rejected on the secret sweep regardless) -- and skipped on blast radius,
+	// which rejects regardless of what a build/test run would have found.
 	checksBlocked := false
-	if !sweepBlocked {
+	if !sweepBlocked && !tooManyFiles {
 		e.setStage(ctx, initiativeID, "Running checks")
 		checks, blocked := e.runDeterministicChecks(ctx, cs, req.WorkRoot, files)
 		checksBlocked = blocked
@@ -832,8 +851,32 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// a human dispositioned "not a secret" for this project (and any
 	// test/fixture-path advisory match, split out above).
 	rejected := false
-	if checksBlocked || hasCredential || hasBlockingRiskSignal(signals) {
+	if checksBlocked || hasCredential || hasBlockingRiskSignal(signals) || tooManyFiles {
 		rejected = true
+		// Blast radius (review C): named the count, the limit, and the two
+		// ways forward -- never a bare "diff too large". A system-deny code
+		// (DenyCodeBlastRadius) like the secret sweep's, not something a
+		// human disposition can accept past: the way through is splitting
+		// the task or raising the configured limit, so `idea reviews` /
+		// `idea status` show this exactly like a secret-sweep denial.
+		if tooManyFiles {
+			if err := e.db.CreateFinding(ctx, &domain.Finding{
+				InitiativeID:   cs.InitiativeID,
+				TargetType:     "change_set",
+				TargetID:       cs.ID,
+				Severity:       domain.SeverityHigh,
+				Confidence:     domain.ConfidenceHigh,
+				Category:       "blast_radius",
+				Code:           domain.DenyCodeBlastRadius,
+				Finding:        blastRadiusFinding(cs.HumanID, len(files), maxFiles),
+				Evidence:       blastRadiusEvidence(files),
+				Impact:         "change set rejected before review",
+				Recommendation: blastRadiusRecommendation(task.Code, maxFiles),
+				Disposition:    domain.DispositionRejected,
+			}); err != nil {
+				return domain.ChangeSet{}, err
+			}
+		}
 		// One finding per match, each naming path:line and the kind of secret --
 		// never the value (full-platform review: secret leak) -- so the denial
 		// says where, instead of a bare "blocking risk signal detected".
@@ -1296,6 +1339,46 @@ func secretSweepRecommendation(m security.CredentialFinding) string {
 			"disposition this finding \"not a secret\" to allow it from now on"
 	}
 	return "remove the sensitive content and re-execute"
+}
+
+// blastRadiusFinding is the Finding headline for a blast-radius refusal
+// (review C): names the change set, the actual count, and the limit it
+// exceeded -- `idea reviews`/`idea status` render this field as the
+// finding's own headline, so it is the one sentence a human reads first.
+func blastRadiusFinding(humanID string, count, limit int) string {
+	return fmt.Sprintf("%s touches %d files, over execute.max_files (%d)", humanID, count, limit)
+}
+
+// blastRadiusRecommendation is the Recommendation text for a blast-radius
+// refusal (review C): the two ways forward the plan review required --
+// split the task, or raise the configured limit -- never a bare "diff too
+// large" with no path out. The split endpoint is named because there is no
+// CLI verb for it yet in this tree (item D, landing separately); `idea
+// status`/`idea reviews` show this finding either way.
+func blastRadiusRecommendation(taskCode string, limit int) string {
+	return fmt.Sprintf(
+		"split %s into smaller tasks (`POST .../tasks/{id}/split`) and execute each piece, "+
+			"or raise `execute.max_files` above %d in harness.yaml if this task genuinely needs this many files, then execute it again",
+		taskCode, limit)
+}
+
+// blastRadiusEvidence lists up to blastRadiusExampleLimit of the touched
+// paths -- files is already path-sorted by fsdiff.Diff -- so the human
+// reviewing the refusal sees what actually drove the count, not just a bare
+// number.
+func blastRadiusEvidence(files []domain.FileChange) string {
+	shown := len(files)
+	if shown > blastRadiusExampleLimit {
+		shown = blastRadiusExampleLimit
+	}
+	paths := make([]string, shown)
+	for i := 0; i < shown; i++ {
+		paths[i] = files[i].Path
+	}
+	if len(files) > shown {
+		return fmt.Sprintf("%s, and %d more", strings.Join(paths, ", "), len(files)-shown)
+	}
+	return strings.Join(paths, ", ")
 }
 
 // renderDiffTextFromWorkRoot renders the produced file contents directly from

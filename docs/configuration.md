@@ -53,6 +53,13 @@ review:
   max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
   rigor: auto          # auto | quick | standard | thorough (review B1)
 
+# Blast-radius guard (review C): the most files a single change set's diff may
+# touch before `idea execute` refuses it, before the adversarial review ever
+# runs. 0 is not unlimited -- it means "use the built-in default of 10". See
+# "Blast radius" below.
+execute:
+  max_files: 10
+
 # Research sources (fetched — public addresses only — during research when
 # network is enabled). Offline/empty means the researcher marks everything as
 # an assumption rather than a fact.
@@ -117,6 +124,7 @@ Top-level fields:
 | `check.image` | image holding the project toolchain for the build/test checks | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check fails closed (see "Check auto-detection" below) |
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
 | `check_timeout_seconds` | per-check timeout | `600` |
+| `execute.max_files` | the **blast-radius guard** (review C): the most files a single change set's diff may touch before `idea execute` refuses it, before the adversarial review ever runs. Counts only what `fsdiff.Diff` reports, which already excludes its own well-known-dir/control-plane paths and (for the produced image) the workspace's own `.gitignore` — a lockfile regen or another generated/ignored file never counts against it. `0` is **not** unlimited: the engine coerces any value `<= 0` to `10`. See "Blast radius" below | `10` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `git.allow_default_branch` | let commit-on-apply commit while the repository's default branch is checked out | `false` |
 | `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there. **Implies committing on its own** — setting this alone, with `git_commit` left `false`, is sufficient (review defect D) | `false` |
@@ -280,6 +288,42 @@ answers the pull request already recorded on the initiative (`initiative.pr_url`
 a second one. `idea pr checks <change-set-id>` shows the latest CI status via `gh pr checks`, which
 every change set of the initiative shares. See [`cli.md`](cli.md) and [`api.md`](api.md) for the
 exact commands and routes.
+
+### Blast radius (review C)
+
+The ICP founder journeys turned up a one-endpoint task that restructured an 80-line service into
+`cmd/` + `internal/`, unasked, producing a 15-file / ~26 KB diff that went on to hit the adversarial
+reviewer's own output ceiling. `execute.max_files` is the guard for that shape of sprawl: a change set
+whose diff touches more files than the limit allows is **refused before the adversarial review ever
+runs** — no model call is spent reviewing a diff the human is going to have to split anyway — with a
+message naming the real count, the real limit, and both ways forward.
+
+The count is **files only**, not added lines: "lines added" is not a field this project persists
+anywhere (a change set's patch manifest records per-file content digests, not line-level diff stats),
+so deriving it would mean inventing a new column purely for this guard. Counting files keeps the
+guard reachable from what already exists, and files are what actually hit the reviewer's output
+ceiling in the observed failure.
+
+The count excludes whatever `fsdiff` already excludes — its well-known-dir list (`node_modules`,
+`vendor`, `.tools`, …), the harness's own control-plane paths, and, for the produced image, the
+workspace's own `.gitignore` (shipped in 0.6.0 for the toolchain-download failure, review defect #2).
+A lockfile regen or another generated/ignored file an agent rewrites never counts against a limit
+meant for hand-written sprawl, because `execute.max_files` is checked against the same post-exclusion
+diff (`fsdiff.Diff(before, after)`) every other guard in this pipeline already uses — nothing here
+applies a second, different filter.
+
+**The default is `10`, not `15`.** The known-bad diff that motivated this guard was 15 files; the
+default sits strictly below it rather than at it, while still comfortably fitting this project's own
+target of 2-4 vertical slices per task.
+
+**The refusal.** The change set still exists — `idea status` / `idea reviews` show it `rejected`,
+with a `blast_radius` finding naming the change set, the count, and the limit (e.g. `CHG-7 touches 23
+files, over execute.max_files (10)`), and a recommendation naming both ways forward: split the task
+(`POST .../tasks/{id}/split`) and execute each piece, or raise `execute.max_files` in `harness.yaml`
+if the task genuinely needs this many files. The task returns to `proposed` — the same recovery
+`idea status` already uses for a secret-sweep denial — so it is neither stuck nor silently marked
+done; running `idea execute` again re-picks it. No build/test check and no adversarial review ever
+ran against the refused diff.
 
 ### The three review budgets
 

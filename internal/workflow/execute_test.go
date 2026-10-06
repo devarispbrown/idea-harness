@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1792,4 +1793,219 @@ func TestRunPlannerBriefTellsTheAgentNotToInstallAToolchain(t *testing.T) {
 			t.Errorf("brief should still tell the agent not to install a toolchain when nothing was detected: %q", brief)
 		}
 	})
+}
+
+// TestBlastRadiusMessageNamesCountLimitAndNextSteps pins review C's exact
+// refusal wording -- the one requirement the plan review called out by name:
+// "the refusal message is the product here". It must name the real count,
+// the real knob (execute.max_files), and both ways forward (split the task,
+// or raise the limit) -- the lesson carried over from the review.max_tokens
+// defect, where an earlier error named a setting that did nothing.
+func TestBlastRadiusMessageNamesCountLimitAndNextSteps(t *testing.T) {
+	got := blastRadiusFinding("CHG-7", 23, 10)
+	want := "CHG-7 touches 23 files, over execute.max_files (10)"
+	if got != want {
+		t.Fatalf("blastRadiusFinding = %q, want %q", got, want)
+	}
+
+	rec := blastRadiusRecommendation("TASK-4", 10)
+	if !strings.Contains(rec, "TASK-4") {
+		t.Errorf("recommendation does not name the task to split: %q", rec)
+	}
+	if !strings.Contains(rec, "split") {
+		t.Errorf("recommendation does not mention splitting the task: %q", rec)
+	}
+	if !strings.Contains(rec, "execute.max_files") {
+		t.Errorf("recommendation does not name the real config knob: %q", rec)
+	}
+	if !strings.Contains(rec, "10") {
+		t.Errorf("recommendation does not name the limit the task must fit under: %q", rec)
+	}
+
+	var files []domain.FileChange
+	for i := 0; i < blastRadiusExampleLimit+5; i++ {
+		files = append(files, domain.FileChange{Path: fmt.Sprintf("f%02d.txt", i)})
+	}
+	ev := blastRadiusEvidence(files)
+	if strings.Count(ev, ".txt") != blastRadiusExampleLimit {
+		t.Errorf("evidence should list exactly %d example paths, got %q", blastRadiusExampleLimit, ev)
+	}
+	if !strings.Contains(ev, "5 more") {
+		t.Errorf("evidence should note the 5 omitted paths: %q", ev)
+	}
+
+	// Under the limit: every path is listed, with no "and N more" tail.
+	ev2 := blastRadiusEvidence(files[:3])
+	if strings.Contains(ev2, "more") {
+		t.Errorf("evidence should not truncate when every path already fits: %q", ev2)
+	}
+}
+
+// TestExecuteAtBlastRadiusLimitPasses is review C's "at the limit" acceptance
+// case: a change set whose diff touches exactly execute.max_files files must
+// still reach review, not be refused. The internal test executor always
+// writes exactly one file (hello.txt), so a limit of 1 is the real diff at
+// the real boundary -- not a stand-in for it.
+func TestExecuteAtBlastRadiusLimitPasses(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	eng.cfg.Execute.MaxFiles = 1
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("a change set at the limit must still reach review, got %q", cs.Status)
+	}
+}
+
+// TestExecuteRefusesOverBlastRadiusLimit is review C's core acceptance case:
+// a change set whose diff touches more files than execute.max_files allows
+// (here, the built-in default of 10) is refused before the adversarial
+// review ever runs, naming the count, the limit, and the two ways forward --
+// and the task returns to proposed (0.6.0's sweep-denied pattern), not stuck
+// and not silently re-runnable as done.
+//
+// eng.testExtraFiles drives a real Execute() call's diff past the limit
+// without a real coding agent -- see executor.Request.ExtraFiles' doc
+// comment.
+//
+// Mutation check: remove `|| tooManyFiles` from Execute's rejected condition
+// (or restore `if !sweepBlocked {` without `&& !tooManyFiles` on the checks
+// guard) and this fails.
+func TestExecuteRefusesOverBlastRadiusLimit(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+
+	extra := make([]string, 11) // + hello.txt = 12, over the default limit of 10
+	for i := range extra {
+		extra[i] = fmt.Sprintf("src/extra-%02d.txt", i)
+	}
+	eng.testExtraFiles = extra
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetRejected {
+		t.Fatalf("expected rejected (blast radius), got %q", cs.Status)
+	}
+
+	gotTask, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.Status != domain.TaskProposed {
+		t.Fatalf("expected the task reopened to proposed (not stuck, not silently done), got %q", gotTask.Status)
+	}
+
+	findings, err := db.ListFindingsByTarget(ctx, "change_set", cs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *domain.Finding
+	for i := range findings {
+		if findings[i].Category == "blast_radius" {
+			f = &findings[i]
+		}
+		if findings[i].Category == "build" || findings[i].Category == "tests" {
+			t.Errorf("a blast-radius-refused change set must not have run the deterministic checks: found a %q finding", findings[i].Category)
+		}
+	}
+	if f == nil {
+		t.Fatal("expected a blast_radius finding explaining the refusal")
+	}
+	wantFinding := "CHG-1 touches 12 files, over execute.max_files (10)"
+	if f.Finding != wantFinding {
+		t.Errorf("Finding = %q, want %q", f.Finding, wantFinding)
+	}
+	if f.Code != domain.DenyCodeBlastRadius {
+		t.Errorf("Code = %q, want %q", f.Code, domain.DenyCodeBlastRadius)
+	}
+	if f.Disposition != domain.DispositionRejected {
+		t.Errorf("Disposition = %q, want %q", f.Disposition, domain.DispositionRejected)
+	}
+	if !strings.Contains(f.Recommendation, task.Code) {
+		t.Errorf("recommendation does not name the task to split: %q", f.Recommendation)
+	}
+	if !strings.Contains(f.Recommendation, "split") || !strings.Contains(f.Recommendation, "execute.max_files") {
+		t.Errorf("recommendation must name both ways forward: %q", f.Recommendation)
+	}
+}
+
+// TestExecuteMaxFilesKnobRaisesTheLimit is review C's "the limit must be
+// reachable from config" acceptance case -- the review.max_tokens lesson,
+// where an earlier error named a setting that did nothing. The SAME diff
+// TestExecuteRefusesOverBlastRadiusLimit refuses at the built-in default must
+// pass once execute.max_files is configured above it.
+func TestExecuteMaxFilesKnobRaisesTheLimit(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	eng.cfg.Execute.MaxFiles = 20 // well above the 12 files this run touches
+	ctx := context.Background()
+
+	extra := make([]string, 11)
+	for i := range extra {
+		extra[i] = fmt.Sprintf("src/extra-%02d.txt", i)
+	}
+	eng.testExtraFiles = extra
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("raising execute.max_files should let a 12-file change set through, got %q", cs.Status)
+	}
+}
+
+// TestExecuteBlastRadiusFalsePositiveFixture is review C's binding
+// condition: the count must exclude whatever fsdiff already excludes (its
+// well-known-dir list, and -- for the after-image -- the workspace's own
+// .gitignore), so a generated file does not trip a guard meant for
+// hand-written sprawl. A large generated file the workspace's own .gitignore
+// ignores, alongside a couple of hand-written files, must still pass even
+// though the raw write count (hello.txt + the generated file + 2
+// hand-written files = 4) is over a limit of 3 -- only the 3 paths fsdiff
+// does NOT exclude count.
+func TestExecuteBlastRadiusFalsePositiveFixture(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	if err := os.WriteFile(filepath.Join(eng.workspaceRoot, ".gitignore"), []byte("generated.bin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eng.cfg.Execute.MaxFiles = 3 // hello.txt + the 2 hand-written files; NOT the ignored one
+	eng.testExtraFiles = []string{"generated.bin", "src/a.go", "src/b.go"}
+	ctx := context.Background()
+
+	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
+	if err := db.CreateTask(ctx, task, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := eng.Execute(ctx, iniID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The generated file really was written -- a genuine 4th file -- so this
+	// proves the COUNT excludes it, not that it never existed.
+	if _, err := os.Stat(filepath.Join(eng.workRoot, "work", iniID, "generated.bin")); err != nil {
+		t.Fatalf("expected the generated file to actually exist in the work root: %v", err)
+	}
+
+	if cs.Status != domain.ChangeSetReviewRequired {
+		t.Fatalf("a gitignored generated file must not count toward execute.max_files, got %q", cs.Status)
+	}
 }

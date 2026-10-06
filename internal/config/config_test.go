@@ -138,3 +138,54 @@ func TestLoadCheckImage(t *testing.T) {
 		t.Fatalf("expected check.image golang:1.25, got %q", c.Harness.Check.Image)
 	}
 }
+
+// TestExecuteMaxFilesDefaultsBelowTheKnownBadDiff is review C: the ICP re-run
+// that restructured an 80-line service into cmd/+internal/ for a one-endpoint
+// task produced a 15-file diff, which then hit the reviewer's own output
+// ceiling. The built-in default must sit strictly below that known-bad
+// count, unset in harness.yaml.
+func TestExecuteMaxFilesDefaultsBelowTheKnownBadDiff(t *testing.T) {
+	got := Default().Harness.Execute.EffectiveMaxFiles()
+	if got <= 0 || got >= 15 {
+		t.Fatalf("EffectiveMaxFiles() = %d, want a positive default strictly below 15", got)
+	}
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2 := c.Harness.Execute.EffectiveMaxFiles(); got2 != got {
+		t.Fatalf("Load() of an empty dir EffectiveMaxFiles() = %d, want %d (Default()'s)", got2, got)
+	}
+}
+
+// TestExecuteMaxFilesIsReachableFromConfig is review C's binding condition:
+// "the limit must be reachable from config, and the message must name a knob
+// that actually works" -- the review.max_tokens defect this explicitly
+// echoes named a setting that did nothing. Setting execute.max_files in
+// harness.yaml must change what EffectiveMaxFiles() reports, round-tripped
+// through Load, not just through the struct literal.
+func TestExecuteMaxFilesIsReachableFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "harness.yaml", "execute:\n  max_files: 25\n")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Harness.Execute.MaxFiles != 25 {
+		t.Fatalf("expected execute.max_files 25, got %d", c.Harness.Execute.MaxFiles)
+	}
+	if got := c.Harness.Execute.EffectiveMaxFiles(); got != 25 {
+		t.Fatalf("EffectiveMaxFiles() = %d, want 25", got)
+	}
+}
+
+// TestExecuteMaxFilesRejectsNegative mirrors review.max_cycles' own
+// validation: a nonsensical negative limit is refused at Load, not silently
+// coerced.
+func TestExecuteMaxFilesRejectsNegative(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "harness.yaml", "execute:\n  max_files: -1\n")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected a negative execute.max_files to be rejected")
+	}
+}

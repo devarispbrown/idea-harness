@@ -9,6 +9,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+| Was | Now |
+|---|---|
+| A change set's diff could touch any number of files; nothing capped it before the adversarial review ran | `idea execute` refuses a change set whose diff touches more than `execute.max_files` files (default `10`) **before** the adversarial review ever runs, with a message naming the count, the limit, and the two ways forward: split the task (`POST .../tasks/{id}/split`) and execute each piece, or raise `execute.max_files` in `harness.yaml`. The count excludes whatever `fsdiff` already excludes (well-known-dir list, control-plane paths, and — for the produced image — the workspace's own `.gitignore`), so a lockfile regen or another generated/ignored file never trips it. The change set still exists, `rejected`, with a `blast_radius` finding; the task returns to `proposed` (the same recovery a secret-sweep denial already uses), so it is neither stuck nor silently marked done. **Consumer impact**: a multi-file task that used to execute cleanly now refuses once its diff exceeds 10 files — split the task or raise the limit. |
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING
