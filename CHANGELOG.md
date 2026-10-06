@@ -33,6 +33,45 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   against `internal/cli/testdata/help.txt` and `internal/daemon/routes.go`. Linked from
   `README.md` and `docs/quickstart.md`.
 
+- **CLI verbs for plan editing**, the five the API and web UI already had and
+  the CLI did not (ICP re-run 5): `idea add-task "<title>" --requirement
+  <ref>` (at least one `--requirement` is required, refused locally before the
+  round trip), `idea merge-tasks <task1> <task2> --yes` (deletes the second;
+  `--yes` required, matching `idea executors setup`'s own security-tradeoff
+  gate), `idea split-task <task> --title "<t>" --requirements <ref>[,<ref>...]
+  --yes` (repeat `--title`/`--requirements`/`--statement` in order, at least
+  twice), `idea depends-on <task> --on <ref>|--clear`, and `idea reorder
+  <task1> <task2> ... [--initiative <ref>]`. Every verb resolves a task by id,
+  code, or title against `idea tasks`, the way the server's own
+  `resolveTaskRefs` already does for a `depends_on` list's members — the CLI
+  now does the same for the task a merge/split/depends-on/reorder verb acts
+  *on*, which is a raw id on every one of those endpoints. An evaluator
+  editing a plan from the CLI had to drop to raw HTTP twice; this closes that.
+- **`idea disposition <finding> <disposition>`**, the other missing judgment
+  verb (audit 6 / D1): `POST .../findings/{id}/disposition` had no CLI caller
+  at all, and the daemon's own guidance for a secret-sweep denial told a user
+  to run `idea reviews` to "disposition" a finding, which only ever listed
+  them — a user hitting a secret denial was told to use a capability that did
+  not exist. `not_a_secret` is refused locally (before the round trip) on
+  anything but a `secret_sweep` finding, and refused again, unconditionally,
+  on a match drawn from the project's own configured secrets; a `rejected`
+  disposition's server-reported warning (a system deny code still blocks) is
+  printed, not swallowed; `--note` additionally records a free-text note in
+  the same command. `idea reviews`' human output now shows each finding's
+  short ref (it showed none before, so the only way to learn one was
+  `--json`).
+
+### Fixed
+
+- `POST .../tasks/reorder`'s two count/permutation refusals, and
+  `POST .../findings/{id}/disposition`'s disposition-value and
+  `not_a_secret`-scoping refusals, carried a literal `store: ` prefix into the
+  client body — the same leak `ErrSelfMerge`/`ErrMergeCycle`/
+  `ErrDependsOnCycle` were fixed for in 0.6.0, reachable for the first time now
+  that `idea reorder` and `idea disposition` exist to hit them from the CLI
+  (`internal/store/graph.go`, `internal/store/repo.go`).
+
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING

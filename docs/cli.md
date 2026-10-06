@@ -27,6 +27,7 @@ if this file has drifted.
 | `idea accept-recommendations` | resolve every open decision with its own recommendation | `--json` | yes |
 | `idea triage` | show the ranked "needs your judgment" view | `--json` | yes |
 | `idea reviews` | list review findings | `--json` | yes |
+| `idea disposition <finding> <fixed\|accepted_risk\|not_applicable\|duplicate\|deferred\|rejected\|mitigate\|not_a_secret> [--note <text>] [<initiative>]` | disposition a review finding (not_a_secret also allowlists it) | `--note` | no |
 | `idea model [--provider <name>] [--all]` | show the current model + a curated set (Gemini, OpenAI, …) | `--all`, `--provider`, `add --base-url`, `add --key-env`, `add --type`, `list --all`, `list --provider`, `ls`, `set --role` | no |
 | `idea model list [<provider>] [--all]` | list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider | — | — |
 | `idea model ls <provider>` | list a provider's models live (falls back to the catalog offline) | — | — |
@@ -42,6 +43,11 @@ if this file has drifted.
 | `idea revise-plan` | regenerate the execution plan | none | takes no flags |
 | `idea plan` | render the execution plan | `--json` | rejected — use `idea tasks --json` |
 | `idea tasks` | list the ordered plan tasks | `--json` | yes |
+| `idea add-task "<title>" --requirement <ref> [--statement <text>] [--priority must\|should\|could] [--estimate <text>] [--depends-on <ref>] [<initiative>]` | add a plan task (at least one --requirement is required) | `--depends-on`, `--estimate`, `--priority`, `--requirement`, `--statement` | no |
+| `idea merge-tasks <task1> <task2> [<initiative>] [--yes]` | merge two tasks into one, deleting the second (--yes required) | `--yes` | no |
+| `idea split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>]` | split a task into two or more (repeat --title/--requirements/--statement in order; --yes required) | `--requirements`, `--statement`, `--title`, `--yes` | no |
+| `idea depends-on <task> --on <ref> [--on <ref>...] [<initiative>]` | set a task's dependencies (--clear to depend on nothing) | `--clear`, `--on` | no |
+| `idea reorder <task1> <task2> ... [--initiative <ref>]` | reorder the plan's tasks (name every task, in the new order) | `--initiative` | no |
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |

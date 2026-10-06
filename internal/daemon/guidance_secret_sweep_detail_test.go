@@ -66,6 +66,14 @@ func TestGuidanceNamesSecretSweepCauseNotJustGenericProblem(t *testing.T) {
 	if !strings.Contains(g.Why, "not a secret") {
 		t.Errorf("guidance did not name the not_a_secret disposition route: %q", g.Why)
 	}
+	// Regression guard for the defect this detail used to carry: it named
+	// `idea reviews`, which only ever listed findings and had no way to
+	// disposition one -- a user hitting a secret denial was told to use a
+	// capability that did not exist. `idea disposition` (internal/cli/
+	// disposition.go) is the real verb.
+	if !strings.Contains(g.Why, "idea disposition") {
+		t.Errorf("guidance does not name a real CLI verb: %q", g.Why)
+	}
 	if strings.Contains(g.Why, "AKIAIOSFODNN7EXAMPLE") {
 		t.Errorf("guidance must never echo the credential value: %q", g.Why)
 	}

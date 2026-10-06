@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -125,5 +126,40 @@ func TestConflictTransitions(t *testing.T) {
 	setChangeSetStatus(t, db, cs.ID, domain.ChangeSetConflicted)
 	if err := db.TransitionChangeSet(ctx, cs.ID, domain.ChangeSetConflicted, domain.ChangeSetRejected, "actor"); err != nil {
 		t.Fatalf("conflicted->rejected: %v", err)
+	}
+}
+
+// TestReorderTasksErrorsCarryNoStorePrefix pins docs/plans/deferred.md's
+// "audit 6 / A13c" row: POST .../tasks/reorder answered
+// `400 store: reorder task id list is not a permutation…`, prefix and all,
+// because handleReorderTasks surfaces ReorderTasks's own error text verbatim
+// (daemon/errors.go's writeErr falls through to err.Error() for an ordinary
+// domain error) -- the same class of leak ErrSelfMerge/ErrMergeCycle/
+// ErrDependsOnCycle were fixed for (see TestErrDependsOnCycleHasNoInternalPrefix
+// and merge_test.go). `idea reorder` (internal/cli/tasks.go) is the first
+// CLI-reachable caller of this path, and it pre-validates the count and
+// membership client-side before ever sending the request -- this is the
+// defense-in-depth layer for the race that defeats that pre-check (the task
+// list changing between the CLI's GET and its POST).
+func TestReorderTasksErrorsCarryNoStorePrefix(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ini := mkInitiative(t, db)
+	t1 := &domain.Task{InitiativeID: ini.ID, Title: "one"}
+	if err := db.CreateTask(ctx, t1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, orderedIDs := range [][]string{
+		{},               // wrong count
+		{t1.ID, "bogus"}, // not a permutation: unknown id
+		{t1.ID, t1.ID},   // not a permutation: duplicate
+	} {
+		err := db.ReorderTasks(ctx, ini.ID, orderedIDs)
+		if err == nil {
+			t.Fatalf("ReorderTasks(%v): want an error", orderedIDs)
+		}
+		if strings.HasPrefix(err.Error(), "store:") {
+			t.Errorf("ReorderTasks(%v).Error() = %q, leaks the internal package prefix", orderedIDs, err.Error())
+		}
 	}
 }

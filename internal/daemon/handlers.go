@@ -321,7 +321,7 @@ func secretSweepGuidanceDetail(findings []domain.Finding) string {
 		}
 		detail := fmt.Sprintf("The secret sweep denied it: %s.", f.Finding)
 		if f.SecretOverridable {
-			detail += " If this is not really a secret, `idea reviews` lets you disposition it \"not a secret\" to allow it."
+			detail += " If this is not really a secret, `idea disposition <finding> not_a_secret` lets you mark it \"not a secret\" to allow it."
 		}
 		return detail
 	}
