@@ -206,6 +206,10 @@ idea next                              # → "✓ initiative complete"
 > stands, `idea revise` regenerates it. The same happens at the plan (`idea approve-plan`,
 > `idea revise-plan`). `idea status` says which one you are in.
 
+If a *change set* is what's stuck instead — a review that never finished, a secret-sweep
+rejection, a revert that refuses — see [`docs/failure-modes.md`](docs/failure-modes.md):
+the real command, the real message, and the way out, for each one we've hit.
+
 Two guided walkthroughs of that block, with the output at each step and what to look at
 before approving anything: [a new project](docs/demo-greenfield.md), and
 [an existing codebase](docs/demo-existing-project.md).
@@ -328,6 +332,8 @@ path to be publicly fetchable.
 
 - [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
 - [`docs/quickstart.md`](docs/quickstart.md) — annotated end-to-end walkthrough (recipe-sharing app).
+- [`docs/failure-modes.md`](docs/failure-modes.md) — stuck? the real command, the real message, and the
+  way out, for every refusal we've hit and fixed.
 - [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.

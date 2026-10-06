@@ -9,6 +9,24 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/failure-modes.md`.** Five classes of refusal/stall a founder journey actually hit,
+  each as symptom → diagnostic command → expected output → recovery, quoting the real message
+  verbatim (several are `%s`-templated, shown as a rendered example): a change set whose
+  adversarial review never completed, and the task that then won't re-run — two symptoms of
+  one guard in `execute.go` (`Status == ChangeSetReviewRequired && !ReviewCompleted()`), not two
+  defects; a change set the secret sweep rejected, including what `not_a_secret` does and does
+  not unblock (one value, one file — there is no CLI verb for it yet, so the page names the API
+  call directly); a no-op (zero-file) change set; a revert refused because the workspace changed
+  since apply; and a review truncated at the model's output ceiling, including what
+  `review.max_tokens` actually overrides and `--accept-findings`/`rerun` as the way forward.
+  `internal/docsgen`'s new `TestFailureModesDocMessagesMatchCode` fails if any quoted message
+  drifts from the code that emits it (matched as a wildcarded format string, not a rendered
+  string), and `TestFailureModesDocCommandsAreReal` anchors every command/route the page names
+  against `internal/cli/testdata/help.txt` and `internal/daemon/routes.go`. Linked from
+  `README.md` and `docs/quickstart.md`.
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING

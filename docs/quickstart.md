@@ -212,6 +212,10 @@ reviewer's own findings — the same judgment call `idea approve` makes on the P
 the credential sweep, the sandbox guard or a digest mismatch carries a deny code and still refuses;
 that is the line between "the reviewer disagrees with you" and "this change set is unsafe".
 
+If a change set instead sits there not progressing — the review itself never finished, a secret
+was found, a revert won't apply — [`docs/failure-modes.md`](failure-modes.md) names the exact
+message and the way out.
+
 ```bash
 idea apply CHG-1
 ```
