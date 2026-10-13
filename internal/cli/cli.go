@@ -162,6 +162,7 @@ func commands() []command {
 		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", flags: flagSpec{}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
+		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
 		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}

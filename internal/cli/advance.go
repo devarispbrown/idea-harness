@@ -272,6 +272,14 @@ func fetchTrace(mode string, positional []string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return queryTrace(c, projectID, iniID, mode, typ, ref)
+}
+
+// queryTrace resolves typ/ref within an initiative and returns its why
+// ([]cliWhyItem) or impact ([]cliImpactItem) edges. Shared by `idea trace
+// --json` and the MCP server's why/impact/trace tools, so the two cannot
+// resolve a reference differently.
+func queryTrace(c *client, projectID, iniID, mode, typ, ref string) (any, error) {
 	objID, err := resolveObjectID(c, projectID, iniID, typ, ref)
 	if err != nil {
 		return nil, err

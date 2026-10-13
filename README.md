@@ -255,7 +255,8 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 `make build` or a release binary; see [Install](#install).
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
-· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
+· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`
+· [`docs/mcp.md`](docs/mcp.md) — the same loop from Claude Code, Cursor or Codex via `idea mcp`.
 
 ## Model providers
 
@@ -352,6 +353,8 @@ grep '_darwin_arm64.tar.gz' checksums.txt | shasum -a 256 -c
 - [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
 - [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
 - [`docs/cli.md`](docs/cli.md) — CLI reference.
+- [`docs/mcp.md`](docs/mcp.md) — `idea mcp`: drive idea-harness from Claude Code, Cursor or Codex
+  over MCP (`claude mcp add idea -- idea mcp`).
 - [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, and a row per route
   (`make api-docs-check` keeps it complete), with [`docs/openapi.yaml`](docs/openapi.yaml) as the
   machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
