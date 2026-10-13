@@ -337,11 +337,37 @@ page had was an unscoped generalisation, not a typo.
   `host.docker.internal`, not only to Ollama. The daemon's own API requires a
   token the container never sees, but anything on the host that trusts local
   connections without authentication is reachable.
-- **The raw blob store is deliberately redaction-free.** For *that* store — the
-  one holding file content and uploaded bytes, which must round-trip
-  byte-for-byte — redaction happens at the read/display surface rather than at
-  write time: `RenderPatch` and the structured diff redact what they return, and
-  the bytes underneath stay as written.
+- **The raw blob store is deliberately redaction-free.** For *that* store —
+  `raw-blobs/`, the one holding file content and uploaded bytes, which must
+  round-trip byte-for-byte — redaction happens at the read/display surface
+  rather than at write time: `RenderPatch` and the structured diff redact what
+  they return, and the bytes underneath stay as written.
+
+  Why it cannot be redacted at write: apply writes a change set's files from it
+  (`fsdiff.Commit`), revert restores the workspace pre-image from it
+  (`fsdiff.Restore`), and both are keyed on the SHA-256 of the real bytes — the
+  same digest `StaleBase`/`StalePost` compare against the workspace. A masked
+  copy would apply `[REDACTED]` into the user's source tree and never match a
+  digest again.
+
+  What is in it, exactly: the post-image of every file a change set adds or
+  modifies (only once the secret sweep passed it — a denied change set's raw
+  bytes are never written, only a masked copy for the diff view); the
+  pre-image of every path apply touches, read from the user's own workspace;
+  patch and snapshot manifests (paths and digests); and uploaded image bytes.
+  Uploaded *text* documents and question answers are not in it — they go to
+  `blobs/`. What can therefore be unmasked in it: a value a human
+  dispositioned `not_a_secret`, a generic credential match downgraded to
+  advisory in a test path, a secret the catalog does not recognise, and
+  whatever the user's own files already held before apply.
+
+  Who reads it: apply, revert, the diff renderers above (which redact), the
+  test-name extraction for verification evidence (which returns only
+  `Test…` function names), and `GET …/docs/{docId}` for an **image** doc only,
+  which serves the uploaded bytes as uploaded (see the next bullet). No route
+  serves a change-set blob by digest. The store's directories are `0700` and
+  every blob is `0600`; `blob.New` re-tightens a directory that already existed
+  with a wider mode.
 
   This is not the rule for the whole system, and an earlier version of this
   sentence read as if it were. The *other* store, `blobs/`, is constructed with
