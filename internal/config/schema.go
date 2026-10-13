@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 )
 
 // Embedded JSON Schemas for the portable config files (§28). These are the
@@ -18,7 +19,17 @@ const projectSchema = `{
   "additionalProperties": false
 }`
 
-const harnessSchema = `{
+// integrationEventEnum is IntegrationEventKinds rendered as a JSON enum body,
+// spliced into the schema so the vocabulary is written down once.
+var integrationEventEnum = func() string {
+	q := make([]string, len(IntegrationEventKinds))
+	for i, k := range IntegrationEventKinds {
+		q[i] = `"` + k + `"`
+	}
+	return strings.Join(q, ", ")
+}()
+
+var harnessSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "harness.yaml",
   "type": "object",
@@ -79,6 +90,51 @@ const harnessSchema = `{
       "type": "object",
       "properties": {
         "image": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "integrations": {
+      "type": "object",
+      "properties": {
+        "slack": {
+          "type": "object",
+          "properties": {
+            "channel":             { "type": "string" },
+            "events":              { "type": "array", "items": { "enum": [` + integrationEventEnum + `] } },
+            "mention_on_judgment": { "type": "array", "items": { "type": "string" } },
+            "allowed_users":       { "type": "array", "items": { "type": "string" } },
+            "socket_mode":         { "type": "boolean" },
+            "bot_token_env":       { "type": "string" },
+            "app_token_env":       { "type": "string" },
+            "ui_base_url":         { "type": "string" }
+          },
+          "required": ["channel"],
+          "additionalProperties": false
+        },
+        "linear": {
+          "type": "object",
+          "properties": {
+            "team_key":              { "type": "string" },
+            "project":               { "type": "string" },
+            "inbound_label":         { "type": "string" },
+            "inbound":               { "type": "boolean" },
+            "poll_interval_seconds": { "type": "integer", "minimum": 0 },
+            "api_key_env":           { "type": "string" },
+            "state_mapping": {
+              "type": "object",
+              "properties": {
+                "todo":        { "type": "string" },
+                "in_progress": { "type": "string" },
+                "in_review":   { "type": "string" },
+                "done":        { "type": "string" },
+                "canceled":    { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["team_key"],
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     }
