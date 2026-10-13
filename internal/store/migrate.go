@@ -798,6 +798,17 @@ ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAU
 	`
 ALTER TABLE run_manifests ADD COLUMN executor_json TEXT NOT NULL DEFAULT '';
 `,
+	// 38: review convergence telemetry. review_json holds one review cycle's
+	// domain.ReviewTelemetry on the adversarial reviewer's own run manifest:
+	// findings raised/new/re-raised/resolved by severity, what the
+	// convergence rules demoted and why, the open blocking count and the
+	// outcome (converged, revise, stalled, max_cycles). '' for every manifest
+	// that is not a review cycle's, and for every one written before this
+	// migration -- there is nothing to backfill it from, since the per-cycle
+	// classification it records was never computed before.
+	`
+ALTER TABLE run_manifests ADD COLUMN review_json TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

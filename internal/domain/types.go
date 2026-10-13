@@ -254,6 +254,61 @@ type Finding struct {
 	// yet.
 	Advisory  bool      `json:"advisory,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Cites, ReRaises and Justification are the adversarial reviewer's own
+	// convergence fields (schema.Review: "requirement", "reraises",
+	// "justification"), read by review.ParseFindings and consumed by the PRD
+	// review loop's convergence rules before the finding is persisted. They
+	// are parse-time only -- no column stores them, so a finding read back
+	// from the store always has them empty, and json:"-" keeps the API from
+	// advertising fields it could never fill. What they decided is persisted
+	// where a human can see it: the cited requirement as TargetType/TargetID,
+	// and the justification (or the reason a finding was made advisory) in
+	// Note.
+	Cites         string `json:"-"`
+	ReRaises      string `json:"-"`
+	Justification string `json:"-"`
+}
+
+// ReviewTelemetry is one review cycle's convergence record, persisted on the
+// adversarial reviewer's run manifest (RunManifest.Review). It exists because
+// the PRD review loop used to be a black box: "did not converge" was the only
+// output, and nothing distinguished a reviewer that kept finding genuinely new
+// problems from one that kept rephrasing the same three -- which is the
+// difference between a loop that needs a human and one that needs a fix.
+//
+// Counts are per severity (critical/high/medium/low/observation). Raised is
+// every adversarial finding this cycle produced; New and ReRaised partition it
+// against the previous cycle's gating findings; Resolved counts previous-cycle
+// gating findings this cycle did NOT re-raise. Demoted counts findings made
+// advisory by a convergence rule, keyed by the rule.
+type ReviewTelemetry struct {
+	// Review is which review loop this is: "prd" or "execution_plan".
+	Review string `json:"review"`
+	Cycle  int    `json:"cycle"`
+	// Mode is review.convergence.mode as it ran: "guarded" or "legacy".
+	Mode  string `json:"mode"`
+	Rigor string `json:"rigor,omitempty"`
+
+	Raised   map[Severity]int `json:"raised,omitempty"`
+	New      map[Severity]int `json:"new,omitempty"`
+	ReRaised map[Severity]int `json:"reraised,omitempty"`
+	Resolved map[Severity]int `json:"resolved,omitempty"`
+	Demoted  map[string]int   `json:"demoted,omitempty"`
+
+	// Deterministic is the number of gating deterministic-check findings
+	// (duplicate code, missing/vague criterion, plan structure) this cycle.
+	Deterministic int `json:"deterministic"`
+	// OpenBlocking is every finding still gating approval after this cycle's
+	// rules ran, deterministic ones included. PrevOpenBlocking is the same
+	// figure for the previous cycle of the same loop, -1 on a loop's first
+	// cycle -- the pair is what the stall detector compares.
+	OpenBlocking     int `json:"open_blocking"`
+	PrevOpenBlocking int `json:"prev_open_blocking"`
+	// Outcome is what the loop did next: "converged", "revise", "stalled"
+	// (the open blocking count stopped decreasing), "max_cycles", or
+	// "blocked" (a single-pass review, e.g. the plan's, that parked).
+	Outcome string `json:"outcome"`
 }
 
 // ResolvesBlocking reports whether f's current disposition clears it from the
@@ -395,6 +450,11 @@ type RunManifest struct {
 	FinishedAt     time.Time         `json:"finished_at"`
 	// Executor is set on coding-agent (implementer) runs only.
 	Executor *ExecutorProvenance `json:"executor,omitempty"`
+	// Review is the convergence record of the review cycle this run was the
+	// adversarial reviewer for (nil on every other run). Written after the
+	// manifest itself, once the cycle's rules have run -- see
+	// store.SetRunManifestReview.
+	Review *ReviewTelemetry `json:"review,omitempty"`
 }
 
 // RunUsage records token/cost/duration for a run (§17, §36).

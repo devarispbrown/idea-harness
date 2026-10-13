@@ -73,6 +73,7 @@ if this file has drifted.
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
 | `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
+| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
 | `idea version` | print the version, commit and build state | none | takes no flags |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | `--format` | no |
 
@@ -260,6 +261,47 @@ idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --ke
 ```
 
 Provider configuration is also available in the web UI under **Settings**.
+
+## Measuring the pipeline: `idea eval`
+
+`idea eval` runs a fixed suite of small greenfield ideas end to end — idea → PRD review → plan →
+change set → apply → verify — on a **private, in-process daemon**: its own state root and project
+directories under a temporary directory, never your running daemon or your projects. Each workflow
+step goes through the daemon's ordinary HTTP API, following the same `next` answer `idea next`
+acts on; an automatic judgment policy stands in for you wherever the workflow stops.
+
+| Flag | Meaning |
+| --- | --- |
+| `--suite <name\|file>` | a built-in suite (`default`, the only one so far) or a suite YAML file |
+| `--case <name>` | run only this case (repeatable) |
+| `--model <provider/model>` | run against a real model; its key must be exported. Without it the **scripted provider** runs: deterministic, no model calls |
+| `--policy approve\|stop` | at a human-judgment stop, accept and go on (`approve`, the default — each stop is still counted) or end the case there (`stop`) |
+| `--harness <file>` | extra `harness.yaml` merged into every case's project, e.g. an `executor:` block so the acceptance checks run against real code |
+| `--json-out <file>`, `--md-out <file>` | write the report |
+| `--baseline <report.json>` | compare against a saved report; a regression exits non-zero |
+| `--timeout <duration>` | per-case limit (default `20m`) |
+| `--keep` | keep every case's state and project directory, and print where |
+
+The report covers, per case and in aggregate: the furthest stage reached, whether the PRD review
+converged and in how many cycles, whether the plan review converged, every human-judgment stop and
+where (`prd_review`, `plan_review`, `plan_dependencies`, `change_set_review`), change sets produced
+and applied, whether verification passed, cost, tokens and wall time — plus each review cycle's
+convergence record (findings raised, new, re-raised and resolved by severity, what the convergence
+rules demoted, and the outcome). Approving a reviewed change set, applying it and recording
+verification are routine gates of every run and are not counted as stops.
+
+Each case has acceptance checks: shell commands run in the project after every change set is
+applied. With the built-in internal executor, which writes a placeholder file instead of code, they
+are **skipped and reported as skipped**; verification is still recorded, with a note saying so, so
+the gate itself is exercised. A regression is a case reaching an earlier stage, a review that used
+to converge no longer converging or needing more cycles, more human stops, verification no longer
+passing, a new error, or (real runs) cost up by more than 25%. Wall time is reported, never
+compared. A scripted baseline and a real run are never compared with each other.
+
+Exit status is non-zero when a scripted case misses its scenario's expectation, or when the run
+regresses against `--baseline`. A real-model run that merely stops for a human is a measurement,
+not a failure. CI runs the scripted suite as a Go test (`internal/eval`) against
+`internal/eval/testdata/baseline-scripted.json`.
 
 ## Example
 

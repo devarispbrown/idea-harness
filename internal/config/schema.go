@@ -30,7 +30,18 @@ const harnessSchema = `{
         "max_cycles":   { "type": "integer", "minimum": 0 },
         "max_tokens":   { "type": "integer", "minimum": 0 },
         "max_cost_usd": { "type": "number",  "minimum": 0 },
-        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] }
+        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] },
+        "convergence": {
+          "type": "object",
+          "properties": {
+            "mode":             { "enum": ["guarded", "legacy"] },
+            "gate_severity":    { "enum": ["high", "critical"] },
+            "require_citation": { "type": "boolean" },
+            "later_findings":   { "enum": ["changed", "critical", "any"] },
+            "stall_cycles":     { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

@@ -60,8 +60,11 @@ than guess from which artifacts exist.
 - Each stage produces a versioned Artifact + structured entities (Assertions, Requirements,
   Decisions, Questions), recorded via Run → RunManifest → ContextBundle.
 - Review is **mandatory**: deterministic checks run first, then an adversarial
-  reviewer. The approval bar is "no open critical/high findings." Non-convergence pauses into
-  `needs_human_judgment` (§11).
+  reviewer. The approval bar is "no open critical/high findings" that cite what they are about.
+  From cycle 2 the reviewer sees the previous cycle's findings and what the revision did about
+  them; re-raises are de-duplicated, and a loop whose blocking count stops falling pauses into
+  `needs_human_judgment` early (§11; `review.convergence` in [configuration.md](configuration.md)).
+  Each cycle's convergence record is stored on the reviewer's RunManifest.
 - Recommended Next Move is generated from deterministic candidates; the orchestrator only ranks
   and explains within workflow policy (§6).
 

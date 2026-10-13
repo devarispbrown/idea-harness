@@ -151,6 +151,12 @@ func ParseFindings(reviewRunID, targetType, targetID string, obj map[string]any)
 			Impact:         str(m["impact"]),
 			Recommendation: str(m["recommendation"]),
 			Path:           str(m["path"]),
+			// The convergence fields (parse-time only; see domain.Finding.Cites).
+			// Whitespace-trimmed because a model pads them as freely as any
+			// other string, and an untrimmed " F1" would fail to name F1.
+			Cites:         strings.TrimSpace(str(m["requirement"])),
+			ReRaises:      strings.TrimSpace(str(m["reraises"])),
+			Justification: strings.TrimSpace(str(m["justification"])),
 			// InDiff defaults to true (assume in-diff) when the reviewer omits
 			// it entirely: B2's self-report only demotes a finding when the
 			// reviewer actively says it is NOT about the diff. A reviewer that
