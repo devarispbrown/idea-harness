@@ -22,7 +22,7 @@ func validateConfig(root string, stdout io.Writer) error {
 	problems := cfg.ProblemsWithEnv(config.LoadDotEnv(root))
 	renderConfigProblems(problems, stdout)
 	if config.HasErrors(problems) {
-		return fmt.Errorf("config: %d problem(s) must be fixed", countSeverity(problems, config.SeverityError))
+		return errorf(kindConfigInvalid, "config: %d problem(s) must be fixed", countSeverity(problems, config.SeverityError))
 	}
 	return nil
 }

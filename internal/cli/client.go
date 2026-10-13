@@ -124,7 +124,7 @@ type client struct {
 func newClient() (*client, error) {
 	token, err := os.ReadFile(filepath.Join(daemon.DefaultStateRoot(), "token"))
 	if err != nil {
-		return nil, fmt.Errorf("daemon not initialized; run `idea init` or `idea daemon` first")
+		return nil, errorf(kindDaemonUnavailable, "daemon not initialized; run `idea init` or `idea daemon` first")
 	}
 	return &client{
 		baseURL: "http://" + daemonAddr(),
@@ -263,7 +263,10 @@ func (c *client) doRaw(method, path string) (string, error) {
 			// CLI would print as a bare "idea: ".
 			msg = resp.Status
 		}
-		return "", fmt.Errorf("%s", msg)
+		// An *httpError, as send() returns, so the status reaches the
+		// exit-code classification (exitcode.go) instead of being flattened
+		// into a string that can only exit 1.
+		return "", &httpError{Status: resp.StatusCode, Message: msg}
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -402,7 +405,7 @@ func ensureDaemon() error {
 	logStart := logSize()
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start daemon: %w", err)
+		return errorf(kindDaemonUnavailable, "failed to start daemon: %w", err)
 	}
 
 	// Setsid makes the child a session leader, not someone else's child, so
@@ -447,9 +450,9 @@ func daemonStartFailed(werr error, exited bool, logStart int64) error {
 		}
 	}
 	if detail := lastLogLine(logStart); detail != "" {
-		return fmt.Errorf("%s: %s; run `idea logs` for the full output", what, detail)
+		return errorf(kindDaemonUnavailable, "%s: %s; run `idea logs` for the full output", what, detail)
 	}
-	return fmt.Errorf("%s; run `idea logs` for details", what)
+	return errorf(kindDaemonUnavailable, "%s; run `idea logs` for details", what)
 }
 
 // logSize is daemon.log's length now, or 0 when it does not exist yet.
@@ -502,7 +505,7 @@ func (c *client) projectIDForCwd() (string, error) {
 			return p.ProjectID, nil
 		}
 	}
-	return "", fmt.Errorf("no project registered for %s; run `idea init` first", cwd)
+	return "", errorf(kindNotFound, "no project registered for %s; run `idea init` first", cwd)
 }
 
 func samePath(a, b string) bool {

@@ -2,15 +2,14 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/devarispbrown/idea-harness/internal/cli"
 )
 
+// main only exits. Classifying and rendering a failure is cli.Main's job, so
+// the exit-code taxonomy (docs/cli.md, "Exit codes") lives in one package and
+// is tested there.
 func main() {
-	if err := cli.Run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "idea:", err)
-		os.Exit(1)
-	}
+	os.Exit(cli.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

@@ -25,7 +25,7 @@ func cmdWatch(a cmdArgs, stdout, stderr io.Writer) error {
 			return err
 		}
 		if len(inis) == 0 {
-			return fmt.Errorf("no initiatives yet; run `idea new` first")
+			return errorf(kindNotFound, "no initiatives yet; run `idea new` first")
 		}
 		initiativeID = inis[len(inis)-1].ID // most recent
 	}
