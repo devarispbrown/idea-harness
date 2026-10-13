@@ -790,6 +790,57 @@ WHERE initiative_id = '' AND EXISTS (
 	`
 ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAULT '';
 `,
+	// 37: integrations (Slack, Linear). Three tables of delivery bookkeeping,
+	// none of which is product state -- which is why none of their writes
+	// appends to `events` (see integration.go): the integration bus TAILS the
+	// event log, and a write that appended an event of its own would feed the
+	// bus its own exhaust.
+	//
+	// integration_cursors is the per-subscriber high-water mark into events.seq,
+	// so a restarted daemon resumes where it left off instead of replaying the
+	// whole log into Slack. integration_outbox holds one row per (subscriber,
+	// domain event); idempotency_key is UNIQUE, so re-ingesting the same event
+	// after a crash between "row inserted" and "cursor advanced" is a no-op,
+	// and a row already `delivered` is never sent again. integration_links maps
+	// a local object (an initiative's Slack thread, a task's Linear issue) to
+	// the remote one, so a retry finds the issue it already created rather
+	// than creating a second.
+	`
+CREATE TABLE IF NOT EXISTS integration_cursors (
+	subscriber TEXT PRIMARY KEY,
+	last_seq   INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS integration_outbox (
+	id              TEXT PRIMARY KEY,
+	subscriber      TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL UNIQUE,
+	event_seq       INTEGER NOT NULL,
+	kind            TEXT NOT NULL,
+	payload_json    TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	attempts        INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at INTEGER NOT NULL,
+	last_error      TEXT NOT NULL DEFAULT '',
+	created_at      INTEGER NOT NULL,
+	delivered_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_integration_outbox_due ON integration_outbox(subscriber, status, event_seq);
+CREATE TABLE IF NOT EXISTS integration_links (
+	integration  TEXT NOT NULL,
+	kind         TEXT NOT NULL,
+	local_id     TEXT NOT NULL,
+	remote_id    TEXT NOT NULL,
+	remote_key   TEXT NOT NULL DEFAULT '',
+	remote_url   TEXT NOT NULL DEFAULT '',
+	remote_state TEXT NOT NULL DEFAULT '',
+	note         TEXT NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL,
+	updated_at   INTEGER NOT NULL,
+	PRIMARY KEY (integration, kind, local_id)
+);
+CREATE INDEX IF NOT EXISTS idx_integration_links_remote ON integration_links(integration, kind, remote_id);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
