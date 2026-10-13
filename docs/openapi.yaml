@@ -872,7 +872,20 @@ paths:
                 type: object
                 properties:
                   operation_id: { type: string }
-                  executor_kind: { $ref: "#/components/schemas/ExecutorKind" }
+                  executor_kind:
+                    allOf: [{ $ref: "#/components/schemas/ExecutorKind" }]
+                    description: What harness.yaml's `executor.kind` asks for; `auto` when it is unset.
+                  executor_resolved:
+                    allOf: [{ $ref: "#/components/schemas/ExecutorKind" }]
+                    description: |
+                      The executor this run uses. Differs from `executor_kind` only for `auto`, which
+                      resolves to `hermes` (Docker reachable and the coding model's key set) or to
+                      `internal`.
+                  executor_warning:
+                    type: string
+                    description: |
+                      Present when `auto` fell back to the placeholder `internal` executor. This run
+                      writes no real code; the text says why and how to fix it. A client must show it.
                 required: [operation_id, executor_kind]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -3450,8 +3463,8 @@ paths:
       operationId: updateExecutors
       summary: Merge executor settings into harness.yaml
       description: |
-        **`GET /executors` is not the read side of this.** It returns a catalog of all four
-        executor kinds with their capabilities, not a projection of the config, so there is no
+        **`GET /executors` is not the read side of this.** It returns a catalog of all five
+        concrete executor kinds with their capabilities, not a projection of the config, so there is no
         round trip to perform: its per-item key is `name`, this takes `kind`, and echoing an entry
         back answers `400 json: unknown field "capabilities"`. The writable set is the three
         properties below.
@@ -3482,6 +3495,16 @@ paths:
                 model:
                   type: string
                   description: Model spec for agent executors. Empty clears it.
+                acp_command:
+                  type: array
+                  items: { type: string }
+                  description: |
+                    `executor.acp.command`, the ACP agent's argv inside the image (e.g.
+                    `["claude-code-acp"]`). Required, with a non-empty `image`, when the resulting
+                    kind is `acp` - there is no canonical ACP image - otherwise `400`.
+                acp_key_env:
+                  type: string
+                  description: "`executor.acp.key_env`: the name the provider key is exposed under inside an ACP agent's container."
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -4827,6 +4850,20 @@ components:
             When present, `why` also carries a sentence naming the count and the decision code, and
             the recommended path (`idea revise-plan`, or acknowledge each item via
             `POST .../stale/{staleId}/ack`).
+        executor_resolution:
+          type: object
+          description: |
+            Which executor the next run uses, and why; present when there is a next task.
+            `warning` is set when `executor.kind` is unset (`auto`) and the run would fall back to
+            the placeholder `internal` executor - no real code will be written, and the text says
+            how to fix it. `note` is the quieter equivalent for an explicit `kind: internal`.
+          properties:
+            requested: { $ref: "#/components/schemas/ExecutorKind" }
+            resolved: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            warning: { type: string }
+            note: { type: string }
+          required: [requested, resolved]
       required: [action, why, affected]
 
     StaleItemRef:
@@ -5220,7 +5257,12 @@ components:
     ExecutorKind:
       type: string
       title: ExecutorKind
-      enum: [internal, container, omp, hermes]
+      description: |
+        `auto` is what an unset `executor.kind` means: resolved per run to `hermes` (Docker
+        reachable and the coding model's key set) or to `internal` with a loud warning. `acp`
+        drives any Agent Client Protocol agent. `GET /executors` lists the concrete kinds only,
+        never `auto`.
+      enum: [auto, internal, container, omp, hermes, acp]
 
     ExecutorView:
       type: object
@@ -5251,6 +5293,20 @@ components:
           type: string
           description: The image this executor would use if none were configured.
         status: { $ref: "#/components/schemas/ExecutorStatus" }
+        resolution:
+          type: object
+          description: |
+            Present on exactly one entry: the executor the next run would use. With
+            `executor.kind` unset (`auto`) no entry is `selected`, and this says what auto
+            resolved to; `warning` is set when it fell back to the placeholder `internal`
+            executor (no real code will be written), `note` for an explicit `kind: internal`.
+          properties:
+            requested: { $ref: "#/components/schemas/ExecutorKind" }
+            resolved: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            warning: { type: string }
+            note: { type: string }
+          required: [requested, resolved]
       required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image, status]
 
     ExecutorStatus:

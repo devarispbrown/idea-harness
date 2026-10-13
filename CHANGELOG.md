@@ -9,6 +9,55 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+| Was | Now |
+|---|---|
+| An unset `executor.kind` meant `internal`: `idea execute` wrote a placeholder file, with a one-line hint, whether or not a model key and Docker were available | An unset kind means **`auto`**: `hermes` on the digest-pinned image when Docker is reachable and the coding model's provider key is set (the first run pulls the multi-gigabyte image and makes paid model calls), otherwise `internal` with a `NO REAL CODE WILL BE WRITTEN` warning on `idea execute`/`idea next`, `idea doctor`, the Build page guidance, `GET /executors`, the change set's agent output and the run manifest. **Migration:** set `executor.kind: internal` to keep the placeholder. Projects created by an earlier `idea init` already have `kind: internal` written and are unaffected until that line is removed; a new `idea init` writes `kind: auto`. A keyless provider (Ollama) is never auto-picked. |
+| `ExecutorKind` (`harness.yaml` schema, OpenAPI) was `internal \| container \| omp \| hermes` | Adds `auto` and `acp`. `POST …/execute`'s `executor_kind` can now be `auto`; the kind that actually runs is in the new `executor_resolved`. A client switching on `executor_kind == "internal"` to warn about placeholders should read `executor_warning` / `executor_resolved` instead. |
+| The default Hermes image was `nousresearch/hermes-agent:v2026.5.16` (tag only) | `nousresearch/hermes-agent:v2026.5.16@sha256:b6e41c15…` (same bytes, pinned by index digest). `harness.yaml` files that stored the tag-only default keep working, unverified; `idea executors setup` now writes the digest form. |
+
+### Added
+
+- **`acp` executor kind: any Agent Client Protocol agent as the coding agent.** Claude Code
+  (`claude-code-acp`), Codex (`codex-acp`), Gemini CLI (`gemini --experimental-acp`), OpenHands
+  (`openhands acp`), OpenCode — anything speaking ACP's JSON-RPC over stdio. The agent runs in
+  the same hardened container as hermes/omp (`docker run -i`), and idea-harness is its ACP client:
+  `initialize` advertising only `fs.readTextFile`/`fs.writeTextFile` (never `terminal`),
+  `session/new` with `cwd: /work`, `session/prompt` with the brief, success on `end_turn`. File
+  reads/writes are confined to the work root (cleaned and symlink-resolved; escapes answer
+  `-32602`). Permission requests are auto-answered `allow_once` — the container is the boundary —
+  and each is recorded on the run manifest. A prompt turn is bounded by
+  `executor.acp.timeout_seconds` (default 840 s) and ends with `session/cancel`, then a kill.
+  Configure with `executor.image`, `executor.acp.command` (argv inside the image; `{model}` and
+  `{bare_model}` substituted), optionally `executor.acp.key_env`; or
+  `idea executors setup --kind acp --image <img> --acp-command <argv> [--acp-key-env NAME]`, which
+  verifies the image with a keyless, network-less ACP `initialize` handshake. `--smoke`, the
+  Build page smoke test and `PUT /executors` (`acp_command`, `acp_key_env`) support it; the compat
+  table reports every `acp` combination as untested until one is smoke-verified.
+- **`executor.mcp_servers`: MCP pass-through for ACP agents**, in ACP's `McpServer` shape (stdio
+  `command`/`args`/`env`, or `type: http|sse` with `url`/`headers`). Values are a literal `value`
+  or a `value_env` naming a variable resolved like provider keys (daemon environment, then `.env`);
+  a literal that looks like a secret is refused at load, a `value_env` set nowhere stops the run
+  before the container starts, and resolved values are redacted from agent output. See
+  `docs/agents.md` for the trust tradeoff (stdio servers run inside the agent's container).
+- **Executor provenance on the run manifest**: `executor.requested`/`resolved`/`image`/`warning`
+  and, for ACP, `executor.permissions` (new `run_manifests.executor_json` column, migration 37).
+- **`executor_resolution` on the Build page guidance and `GET /executors`**, and
+  `executor_resolved`/`executor_warning` on `POST …/execute`, so every client can say which
+  executor a run uses and when it writes no real code. `idea doctor` prints it (`⚠ executor: …` for
+  the fallback, as a warning that does not fail the command).
+
+### Security
+
+- **The default Hermes image is pinned by digest**, and `executor.PullImage` refuses a pulled
+  image whose `RepoDigests` do not contain the pinned digest for that repository — for the default
+  and for any `--image` given as `repo[:tag]@sha256:…`. Signature verification is still not done
+  (recorded in `docs/plans/deferred.md`).
+- **The `acp` kind forwards secrets without an env-file**: the provider key and MCP `value_env`
+  values are passed as `-e NAME` with the value in the docker CLI's own environment, never in argv;
+  MCP values reach the agent in `session/new` on its stdin.
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING

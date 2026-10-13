@@ -249,6 +249,7 @@ from the executor's self-declared capabilities:
 | container | `local_external` | allow | allow | deny |
 | omp | `local_external` | allow | allow | deny |
 | hermes | `local_external` | allow | allow | deny |
+| acp | `local_external` | allow | allow | deny |
 | unknown | `remote_external` | deny | deny | deny (fail-closed) |
 
 Note: `run_command` on the host is separately gated by the deterministic-check
@@ -257,15 +258,17 @@ sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
 <!-- claim:executor-isolation -->
 ## Execution gateway
 
-There is no single "the executor sandbox". Four executor kinds are selectable via
-`harness.executor.kind`, and they do not share an isolation posture. Every row
+There is no single "the executor sandbox". Five executor kinds are selectable via
+`harness.executor.kind` (plus `auto`, the unset default, which resolves per run to
+`hermes` or `internal`), and they do not share an isolation posture. Every row
 below is the actual `docker run` argv, not a summary of intent.
 
 | kind | type | network | workspace mount | provider key inside |
 |---|---|---|---|---|
-| `internal` (default) | `InternalExecutor` | n/a — **no container at all** | runs in the daemon process | n/a |
+| `internal` | `InternalExecutor` | n/a — **no container at all** | runs in the daemon process | n/a |
 | `container` | `ContainerExecutor` | `--network none` | `/work` | no |
 | `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
+| `acp` | `ACPExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `-e NAME` (value from the docker CLI's environment) |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
 
 **`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
@@ -320,6 +323,32 @@ So for `omp` and `hermes` specifically:
   On Linux this is a route the agent did not otherwise have; on Docker Desktop
   the name already exists. No other provider gets it.
 
+**`acp` gets the same hardening and the same exposure**, with these differences
+(`internal/executor/acp.go`, `ACPExecutor.containerArgs`):
+
+- It runs **attached** (`docker run -i --rm`): the harness speaks JSON-RPC over
+  the container's stdin/stdout. `--rm` is safe here because nothing polls a
+  finished container. Cancel, timeout and collection still `docker rm -f` it by
+  name, and the agent home and container label are the same, so a crashed
+  daemon's leftovers are swept the same way.
+- The provider key (and any MCP `value_env` value) is passed as `-e NAME` with
+  **no value** in the argv; docker reads it from its own process environment.
+  It is not written to an env-file. MCP values travel in the `session/new`
+  message on the agent's stdin.
+- The agent home is mounted as `$HOME` for every ACP agent, holding nothing
+  idea-harness wrote.
+- The harness is the agent's ACP client and answers on the host: file reads and
+  writes are confined to the work root (cleaned and symlink-resolved; anything
+  outside is refused), `terminal/*` is not offered, and every permission request
+  is auto-answered `allow_once` and recorded on the run manifest. A stdio MCP
+  server configured in `executor.mcp_servers` runs inside the agent's container
+  with all of the above.
+
+**The default Hermes image is pinned by digest** (`repo:tag@sha256:…`), and the
+pulled image's `RepoDigests` must contain that digest or `idea executors setup`
+refuses it. That fixes the bytes, not their trustworthiness: there is still no
+signature verification.
+
 <!-- /claim -->
 
 <!-- claim:redaction -->
@@ -357,9 +386,10 @@ page had was an unscoped generalisation, not a typo.
 - **`--user` passes the daemon's own UID/GID.** If the daemon runs as root, the
   container runs as root inside its capability-dropped, read-only namespace.
   Nothing refuses to start or warns.
-- **The agent image is pinned by tag, not digest**, and no signature is verified.
-  A re-pushed tag is not detected. `omp` has no default image at all, so the
-  operator supplies one.
+- **No agent image signature is verified.** The default Hermes image is pinned
+  by digest, so a re-pushed tag no longer changes what is pulled — but an
+  operator-supplied tag-only `--image` is used as given, and `omp` and `acp`
+  have no default image at all, so the operator supplies one.
 - **The control-plane deny covers `.idea-harness/` and `.git/` only.** A change
   set may touch `.github/workflows/`, `.envrc` or similar auto-executing files;
   the defence there is the human review gate, not the deny.
