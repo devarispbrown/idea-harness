@@ -330,3 +330,12 @@ A single **git commit on apply** checkbox — the `git_commit: true` option in
 `.idea-harness/harness.yaml`. When enabled, each applied change set also creates a git commit
 staging only the patch's files. The resulting commit SHA is not surfaced anywhere in the UI; revert
 remains a byte-for-byte file restore, not git history.
+
+### Integrations
+
+Read-only health for Slack and Linear: whether each is configured and running, which token
+environment variables are set (never their values), problems such as an empty Slack allowlist or
+dropped deliveries, delivery counts, the Socket Mode connection and the Linear poll. A configured
+integration has a **Send test message** (Slack) or **Test connection** (Linear) button, the same
+check as `idea integrations test`. Configuration stays in `harness.yaml` and `.env` so tokens never
+pass through the browser; see [`integrations.md`](integrations.md).

@@ -21,6 +21,7 @@ import {
 } from "./smokeTest";
 import { chipsToShow, orderModels } from "./modelCatalog";
 import { resolveInitialProvider } from "./settingsLoad";
+import IntegrationsPanel from "./IntegrationsPanel";
 
 interface Provider {
   name: string;
@@ -1025,6 +1026,8 @@ export default function Settings({ projectId }: { projectId: string }) {
         )}
         {allowlistError && <p className="error">{allowlistError}</p>}
       </section>
+
+      <IntegrationsPanel projectId={projectId} />
 
       {saved && <p className="ok-text">{saved}</p>}
       {warning && <p className="warn-text">{warning}</p>}

@@ -82,6 +82,7 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		"{docId}":     "d-unused",
 		"{reqId}":     "REQ-1",
 		"{staleId}":   "s-unused",
+		"{name}":      "slack",
 	}
 
 	routes := idRoutes(t)

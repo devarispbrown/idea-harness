@@ -61,6 +61,8 @@ if this file has drifted.
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
 | `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
 | `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp, default hermes (or --kind; acp needs --image and --acp-command) | — | — |
+| `idea integrations [status]` | show Slack/Linear integration health: tokens present, deliveries, socket and poll state | `--json`, `status --json`, `test --json` | yes |
+| `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |

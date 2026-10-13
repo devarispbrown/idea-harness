@@ -370,6 +370,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/executors` | Available executors, their declared capabilities, and which one is configured. |
 | PUT | `/projects/{projectId}/executors` | Field-level merge of `{kind, image, model}` into `harness.yaml`, validated, then reload. |
 | POST | `/projects/{projectId}/executors/smoke` | Run the coding agent's smoke test with the daemon's own config and keys; one small real model call. **202** |
+| GET | `/projects/{projectId}/integrations` | Slack and Linear health: configured/running, which token env vars are set (never values), problems, outbox counts, Socket Mode and poll state. See [integrations.md](integrations.md). |
+| POST | `/projects/{projectId}/integrations/{name}/test` | `slack`: `auth.test`, a test message to the channel, and a Socket Mode token check. `linear`: key, team, state names, project and label. `200` with `ok: false` when the service answered with a failure; `400` when not configured or the token is unset. |
 
 ### Activity and events
 

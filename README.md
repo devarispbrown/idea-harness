@@ -267,7 +267,9 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
 · [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`
-· [`docs/mcp.md`](docs/mcp.md) — the same loop from Claude Code, Cursor or Codex via `idea mcp`.
+· [`docs/mcp.md`](docs/mcp.md) — the same loop from Claude Code, Cursor or Codex via `idea mcp`
+· [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
+sync (no public URL needed).
 
 ### Measured runs: `idea eval`
 

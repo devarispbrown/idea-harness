@@ -93,6 +93,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}/pr-checks", s.handlePRChecks)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/pr", s.handleCreatePR)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/integrations", s.handleIntegrationsStatus)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/integrations/{name}/test", s.handleIntegrationTest)
 
 	// The initiative-scoped reads, on the nested path. These ten once answered
 	// only at the flat `/projects/{projectId}/<resource>?initiative_id=` form,
