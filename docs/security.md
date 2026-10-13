@@ -10,7 +10,8 @@ M1 threats and mitigations:
 
 | Threat | Mitigation |
 |---|---|
-| A change set editing the control plane | `.idea-harness/**` and `.git/**` are excluded from every change set by `internal/fsdiff`, matched case-insensitively — a case-sensitive check let `.IDEA-HARNESS/harness.yaml` through on macOS, which is why CI runs on macOS as well as Linux |
+| A change set editing the control plane | `.idea-harness/**` and `.git/**` are excluded from every change set by `internal/fsdiff`, matched case-insensitively — a case-sensitive check let `.IDEA-HARNESS/harness.yaml` through on macOS, which is why CI runs on macOS as well as Linux. A path reaching either through a symlink in the workspace is refused at apply (`path_escape`) |
+| A change set editing CI or other auto-executing files | not denied — an initiative may be about CI — but a blocking `protected_path` finding requires an explicit human sign-off; the list and what is left off it are in [`security-model.md`](security-model.md#protected-paths-auto-executing-files-need-an-explicit-sign-off) |
 | Unauthorized local API requests (§73) | per-install token (0600) required on every `/api/v1` request except `GET /api/v1/health`, which is unauthenticated so a liveness probe needs no secret; loopback-only bind |
 | CSRF / DNS rebinding | exact-match loopback Host/Origin allowlist; `Origin: null` rejected; no CORS for foreign origins |
 | Cross-project leakage | project-scoped API paths + SSE; per-project `state.db` + blob namespaces; path guard |

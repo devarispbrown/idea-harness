@@ -35,6 +35,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   reaches the stored description or a prompt, that a `.docx` carrying a key is
   rejected on its extracted text, and that a key in an image's filename is
   masked in its title.
+- **`pii`, `path_escape` and `trust_deny` are produced.** All three were
+  declared in `DenyCode` with no code path emitting them.
+  - `pii`: Execute scans produced files for payment card numbers (issuer
+    prefix and length, printed grouping, Luhn, published test numbers
+    excluded) and dashed US SSNs (issued ranges, published examples excluded).
+    A match raises a coded, blocking finding with a masked preview — not a
+    reject — that `--accept-findings` never covers; a human dispositions it
+    `accepted_risk` individually. Advisory in test/fixture paths. Emails and
+    phone numbers are deliberately not detected.
+  - `path_escape`: apply refuses, before writing anything, a change whose path
+    is absolute, unclean, or resolves outside the workspace or into
+    `.git/`/`.idea-harness/` through a symlink. The change set is rejected and
+    its task reopened. A symlink into the control plane previously passed the
+    lexical control-plane check.
+  - `trust_deny`: the executor `write_file` trust gate now refuses with a
+    `workflow.SystemDenyError` carrying the code. No shipped executor kind
+    trips it; it is the fail-closed backstop for a kind with no trust mapping.
+- **Changes to auto-executing files need an explicit sign-off.** A change set
+  touching CI definitions (`.github/workflows/`, `.gitlab-ci.yml`,
+  `.circleci/`, `Jenkinsfile`, …), tree-installed git hooks (`.husky/`,
+  `.pre-commit-config.yaml`, …) or `.envrc`/`.devcontainer/`/
+  `.vscode/tasks.json` gets one blocking `protected_path` finding. It is not a
+  deny, since an initiative may be about CI: a plain `approve` is refused and
+  `idea review <CHG-n> approve --accept-findings` records the human sign-off.
+  Build files (`Makefile`, `package.json`, …) are deliberately left off.
 
 ### Fixed
 
