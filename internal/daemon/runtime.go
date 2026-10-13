@@ -35,6 +35,10 @@ type Runtime struct {
 	token     string
 	global    *store.DB
 	log       *slog.Logger
+	// logRedact masks credentials in every daemon log record (log is wrapped
+	// with it in NewRuntime) and in GET /api/v1/logs on the way out. Each
+	// project's resolved secrets are added as the project loads.
+	logRedact *logRedactor
 
 	mu       sync.Mutex
 	projects map[string]*projectRuntime
@@ -169,6 +173,12 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		return nil, err
 	}
 	lifetime, endLifetime := context.WithCancel(context.Background())
+	// Every record the daemon logs passes through the redactor before it
+	// reaches daemon.log (audit 3 / S4). The API token is a known value too:
+	// it is the daemon's sole credential, and nothing should ever log it, but
+	// "should" is what this layer exists not to rely on.
+	logRedact := newLogRedactor(append(processSecrets(), token)...)
+	log = redactingLogger(log, logRedact)
 	return &Runtime{
 		lifetime:    lifetime,
 		endLifetime: endLifetime,
@@ -176,6 +186,7 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		token:       token,
 		global:      global,
 		log:         log,
+		logRedact:   logRedact,
 		projects:    map[string]*projectRuntime{},
 		reconciled:  map[string]bool{},
 		cancels:     map[string]context.CancelFunc{},
@@ -271,7 +282,9 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		db.Close()
 		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
 	}
-	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
+	secrets := collectSecrets(cfg, dotEnv)
+	redactor := security.NewRedactorWithKey(fpKey, secrets...)
+	r.logRedact.add(secrets...)
 	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
 	if err != nil {
 		db.Close()
@@ -357,7 +370,9 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	if err != nil {
 		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
 	}
-	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
+	secrets := collectSecrets(cfg, dotEnv)
+	redactor := security.NewRedactorWithKey(fpKey, secrets...)
+	r.logRedact.add(secrets...)
 	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
 	if err != nil {
 		return nil, err

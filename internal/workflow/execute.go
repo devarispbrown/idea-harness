@@ -378,9 +378,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// selected executor's engine-assigned trust tier (§49).
 	// The engine assigns the trust tier from the selected executor's kind, never
 	// from the executor's self-declared Capabilities().Trust (system-deny).
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	// A refusal is the trust_deny system deny (authorizeExecutorWrite).
+	if err := authorizeExecutorWrite(exec.Name()); err != nil {
+		return domain.ChangeSet{}, err
 	}
 
 	// Supersede any prior changes_requested change set for this task so a
@@ -814,6 +814,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// area" finding -- the same signals that used to hard-reject on a bare word
 	// match now just flag the change set for a closer look.
 	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, cs.ID, signals, "deterministic marker scan of the produced patch"); err != nil {
+		return domain.ChangeSet{}, err
+	}
+
+	// A protected (auto-executing) path and personal data in the produced
+	// content: neither rejects the change set, both block its approval until
+	// a human has looked (deny.go). Read from the work root, like the
+	// credential sweep above, so a change set the sweep denied is covered too.
+	if err := e.recordProducedContentFindings(ctx, cs, files, func(fc domain.FileChange) (string, bool) {
+		content, err := os.ReadFile(filepath.Join(req.WorkRoot, filepath.FromSlash(fc.Path)))
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	}); err != nil {
 		return domain.ChangeSet{}, err
 	}
 
@@ -1805,9 +1819,8 @@ func (e *Engine) ExecutePrecondition(ctx context.Context, initiativeID string) e
 	if err != nil {
 		return err
 	}
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	if err := authorizeExecutorWrite(exec.Name()); err != nil {
+		return err
 	}
 	prior, err := e.db.ListChangeSetsByTask(ctx, task.ID)
 	if err != nil {
@@ -2321,6 +2334,14 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 			}
 		}
 		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
+	}
+
+	// path_escape: every path must resolve inside the workspace, and outside
+	// its control plane, as the workspace stands now -- checked before the
+	// change set is marked applying and before StaleBase, which would
+	// otherwise report a symlinked path as merely "stale" (deny.go).
+	if err := e.denyPathEscape(ctx, cs, fromStatus, workspaceRoot, patch.Files); err != nil {
+		return err
 	}
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, fromStatus, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
@@ -3133,6 +3154,16 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 				return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding); "+
 					"`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` "+
 					"accepts the change set findings and all", domain.DenyCodeReviewOpenBlocking, f.Severity)
+			}
+			if f.Code == domain.DenyCodePII {
+				// Not a hard deny (deny.go, recordPIIFindings): the detector
+				// is checksum-based, not proof, so a human may sign off
+				// synthetic data -- one finding at a time, never in bulk.
+				return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding, %s); "+
+					"`idea reviews` shows where -- remove real personal data and run the task again, or, if it is synthetic, "+
+					"disposition that finding accepted_risk (POST /api/v1/projects/{projectId}/findings/{id}/disposition, or the web UI); "+
+					"--accept-findings does not cover it",
+					domain.DenyCodeReviewOpenBlocking, f.Severity, f.Code)
 			}
 			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding, %s); "+
 				"a system deny is not something a human can accept — `idea reviews` shows it",

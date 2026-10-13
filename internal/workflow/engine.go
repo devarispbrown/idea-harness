@@ -1814,8 +1814,17 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		setRunStatus(domain.RunFailed)
 		return fmt.Errorf("empty image description")
 	}
+	// The description is model output over untrusted input, and a vision
+	// model OCRs whatever the image shows -- a screenshot of a terminal or a
+	// settings page puts its API key into this text. Redact it before it is
+	// stored or ever reaches a prompt. A nil redactor (an engine built
+	// without one) falls back to the pattern catalog rather than storing the
+	// text as-is: the daemon's redacted blob store would mask it again on
+	// Put, but this must not depend on which store happens to be wired.
 	if redactor != nil {
 		text = redactor.RedactString(text)
+	} else {
+		text = security.Redact(text)
 	}
 	digest, err := blobs.Put([]byte(text))
 	if err != nil {

@@ -14,19 +14,45 @@ conditions. Everything else is ordinary policy that a human may override.
 | DenyCode | Where enforced | Description |
 |----------|----------------|-------------|
 | `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) + the deterministic-check output sweep (review M2) | A real credential value — a known key/token format (`security.FindCredential`), or one of the project's own resolved secret values — appears in produced file content, or in the raw output of a build/test check. The content is never written to the redaction-free store. The raised `Finding` names `path:line` and the kind of secret (e.g. "src/keys.js:14: looks like an OpenAI API key"), or `"in the output of <check>"` when found in check output, never the value; `Finding.Evidence` carries a masked preview of the source line instead (see below). **Conditionally overridable** (review changes #1, ICP round; hardened by review H3): a human may disposition the raised finding `not_a_secret`, which allowlists its fingerprint scoped to the path it was found at — never the value — for the project, with the actor and time recorded. The sweep ignores an allowlisted (fingerprint, path) pair from then on, at Execute, Apply, and the check-output sweep. The override is scoped to a pattern-shaped match; a value drawn from the project's own configured secrets is never eligible for it, and the store refuses the disposition outright (not merely re-denying it on the next sweep) when `Finding.SecretOverridable` is `false`. |
-| `pii` | **declared, never produced** | Reserved for a hard-rejected PII signal. A bare vocabulary marker (below) no longer hard-rejects anything, so no code path emits this today. |
-| `path_escape` | **declared, never produced** | Reserved for a diff path escaping the workspace. The path guard rejects that case, but it returns its own error rather than this code, so no `Finding` ever carries it. |
+| `pii` | Execute (produced content), blocking at ReviewChangeSet (approve) | A payment card number or a US Social Security number appears in produced file content (`security.FindPIIInFile`). Card numbers need a known issuer prefix at that issuer's length, the issuer's own grouping or none, and a valid Luhn checksum, and the issuers' published test numbers are excluded; SSNs must be dashed and inside the ranges ever issued, and the published example numbers are excluded. Email addresses and phone numbers are **not** detected — they are in most codebases' ordinary content, and a finding on every change set trains a reviewer to dismiss it. One finding per match names `path:line` and the kind, with a masked preview (a card keeps its last four digits; an SSN keeps nothing). It does not reject the change set, because the detector is a checksum and a range rule, not proof: it blocks approval. **Conditionally overridable:** `--accept-findings` never signs it off; a human dispositions that one finding `accepted_risk` ("this is synthetic data") after reading it. In a test/fixture path (the same rule as the credential sweep's generic patterns) the finding is advisory instead: shown, never blocking, and carrying no code. The raw bytes are persisted like any other change-set content (see the raw blob store below). |
+| `path_escape` | ApplyChangeSet (before any write) | A change's path is absolute, not a clean relative path (`..`, `a//b`), or — against the workspace as it is at apply time — resolves outside the workspace or into `.git/`/`.idea-harness/` through a symlink (`fsdiff.Escapes`). A path cannot be made to escape at Execute: the orchestrator's snapshot never follows symlinks. What can change is the workspace by apply time, which is where this runs — before the change set is marked `applying` and before the stale-base check, so nothing is written. One finding per offending path; the change set is rejected and its task reopened, as for an apply-time secret, and the error is a `workflow.SystemDenyError` carrying the code. `security.ResolveWithin` still guards every `Prepare`/`Commit`/`Restore` write independently. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
-| `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
-| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. The adversarial review that raises these findings runs exactly once, inside `Execute` right after checks pass (ICP re-run defect A) — not again on `approve` — so a plain `approve` only ever evaluates findings already on the change set plus whatever a human has since dispositioned; it makes no model call. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies, whatever disposition it carries. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
+| `trust_deny` | Execute and ExecutePrecondition | The selected executor's engine-assigned trust tier (below) does not allow `write_file`. Refused before any spend with a `workflow.SystemDenyError` carrying the code. Every kind `selectExecutor` can build today maps to a tier that allows it, so no shipped configuration trips this: it is the fail-closed backstop for an executor kind added without a trust-tier mapping, which lands in `remote_external` and may do nothing. |
+| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. The adversarial review that raises these findings runs exactly once, inside `Execute` right after checks pass (ICP re-run defect A) — not again on `approve` — so a plain `approve` only ever evaluates findings already on the change set plus whatever a human has since dispositioned; it makes no model call. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies. For every code but `pii` the change set carrying it was already rejected, so no disposition reopens it; a `pii` finding blocks a change set that is still awaiting review, and only that finding's own human `accepted_risk` (or `fixed`) disposition clears it. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
-`Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
-three marked **declared, never produced**, which exist in the `DenyCode` enum and
-in `Valid()` but have no producer. They are listed rather than deleted because a
-client switching on `DenyCode` should know the full set it may one day see; do
-not treat any of them as evidence that the condition is enforced.
+`Finding.Code`) or a fail-closed error mapped to the same `DenyCode`. Until the
+release after 0.6.0, `pii`, `path_escape` and `trust_deny` were declared, never
+produced — present in the `DenyCode` enum with no code path emitting them. Each
+now has the producer named in its row; none was deleted, because each has a
+condition it can soundly enforce.
+
+### Protected paths: auto-executing files need an explicit sign-off
+
+Separate from the control-plane deny (`.idea-harness/` and `.git/` never enter a
+change set at all), a change set that adds, edits or deletes a file that **runs
+without anyone invoking it** gets one blocking `protected_path` finding at
+Execute (`fsdiff.AutoExecutingPath`; severity `high`, no deny code). The list:
+CI definitions (`.github/workflows/`, `.github/actions/`, `.gitlab-ci.yml`,
+`.circleci/`, `Jenkinsfile`, `.travis.yml`, `azure-pipelines.yml`,
+`bitbucket-pipelines.yml`, `.buildkite/`, `.drone.yml`), git hooks installed
+from the tree (`.husky/`, `.githooks/`, `.pre-commit-config.yaml`,
+`lefthook.yml`), and files the developer's tools run on entry (`.envrc`,
+`.devcontainer/`, `.vscode/tasks.json`). Matched case-insensitively at the
+workspace root.
+
+The false-positive policy is that this is **not a deny**: an initiative may
+legitimately be about CI. A plain `approve` is refused, and the human signs it
+off explicitly — `idea review <CHG-n> approve --accept-findings` records
+`accepted_risk` against it under the human actor, or the finding is
+dispositioned on its own. What it removes is the silent path: a workflow edit
+riding along in a change set about something else.
+
+Deliberately not on the list: `Makefile`, `package.json` (npm lifecycle
+scripts), `setup.py`, `build.gradle`, `Dockerfile` and other build definitions.
+They run code too, but only when someone builds, and a large share of ordinary
+tasks edit them; a finding on every one would teach the reviewer to dismiss it.
 
 ### Vocabulary markers are advisory, not a deny code
 
@@ -337,11 +363,37 @@ page had was an unscoped generalisation, not a typo.
   `host.docker.internal`, not only to Ollama. The daemon's own API requires a
   token the container never sees, but anything on the host that trusts local
   connections without authentication is reachable.
-- **The raw blob store is deliberately redaction-free.** For *that* store — the
-  one holding file content and uploaded bytes, which must round-trip
-  byte-for-byte — redaction happens at the read/display surface rather than at
-  write time: `RenderPatch` and the structured diff redact what they return, and
-  the bytes underneath stay as written.
+- **The raw blob store is deliberately redaction-free.** For *that* store —
+  `raw-blobs/`, the one holding file content and uploaded bytes, which must
+  round-trip byte-for-byte — redaction happens at the read/display surface
+  rather than at write time: `RenderPatch` and the structured diff redact what
+  they return, and the bytes underneath stay as written.
+
+  Why it cannot be redacted at write: apply writes a change set's files from it
+  (`fsdiff.Commit`), revert restores the workspace pre-image from it
+  (`fsdiff.Restore`), and both are keyed on the SHA-256 of the real bytes — the
+  same digest `StaleBase`/`StalePost` compare against the workspace. A masked
+  copy would apply `[REDACTED]` into the user's source tree and never match a
+  digest again.
+
+  What is in it, exactly: the post-image of every file a change set adds or
+  modifies (only once the secret sweep passed it — a denied change set's raw
+  bytes are never written, only a masked copy for the diff view); the
+  pre-image of every path apply touches, read from the user's own workspace;
+  patch and snapshot manifests (paths and digests); and uploaded image bytes.
+  Uploaded *text* documents and question answers are not in it — they go to
+  `blobs/`. What can therefore be unmasked in it: a value a human
+  dispositioned `not_a_secret`, a generic credential match downgraded to
+  advisory in a test path, a secret the catalog does not recognise, and
+  whatever the user's own files already held before apply.
+
+  Who reads it: apply, revert, the diff renderers above (which redact), the
+  test-name extraction for verification evidence (which returns only
+  `Test…` function names), and `GET …/docs/{docId}` for an **image** doc only,
+  which serves the uploaded bytes as uploaded (see the next bullet). No route
+  serves a change-set blob by digest. The store's directories are `0700` and
+  every blob is `0600`; `blob.New` re-tightens a directory that already existed
+  with a wider mode.
 
   This is not the rule for the whole system, and an earlier version of this
   sentence read as if it were. The *other* store, `blobs/`, is constructed with
@@ -361,9 +413,27 @@ page had was an unscoped generalisation, not a typo.
   A re-pushed tag is not detected. `omp` has no default image at all, so the
   operator supplies one.
 - **The control-plane deny covers `.idea-harness/` and `.git/` only.** A change
-  set may touch `.github/workflows/`, `.envrc` or similar auto-executing files;
-  the defence there is the human review gate, not the deny.
-- **Daemon logs are not redacted**, and `GET /api/v1/logs` returns them.
+  set may still touch `.github/workflows/`, `.envrc` or a similar auto-executing
+  file. It is not denied; it raises a blocking `protected_path` finding that a
+  human must sign off (above). A file outside the list — a `Makefile`, an npm
+  `postinstall` script — gets no such finding, and the defence there is the
+  ordinary human review gate.
+- **Daemon logs are redacted twice, by pattern and by known value — not by
+  anything smarter.** The daemon's `slog` handler is wrapped
+  (`security.NewRedactingHandler`, installed in `daemon.NewRuntime`) so the
+  message and every attribute value — strings, errors, `fmt.Stringer`s,
+  arbitrary values, nested groups, and attributes bound with `With` — pass
+  through the credential catalog and the known-value list before reaching
+  `daemon.log`. An attribute's key is re-joined to its value for that check, so
+  `"password", "…"` is masked the way `password=…` in a message would be. The
+  known values are every loaded project's resolved secrets plus the daemon's
+  own API token; the set only grows while the daemon runs. `GET /api/v1/logs`
+  redacts each line again on the way out, which is what covers lines written
+  before this handler existed and anything that reached the file as raw stderr
+  rather than through `slog` (a panic trace). A secret that is neither
+  pattern-shaped nor configured is not recognised by either pass, the same
+  limit the blob-store redactor has. `idea logs` reads the file directly, as the
+  user who owns it, and does not re-redact.
 
 ## Defense in depth
 

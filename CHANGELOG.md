@@ -54,6 +54,65 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   protocol revision and the `initialize`-handshake revisions back to `2024-11-05`. See
   [`docs/mcp.md`](docs/mcp.md).
 
+### Security
+
+- **The daemon log is redacted.** It was the one persisted surface the redaction
+  choke point did not reach, and `GET /api/v1/logs` served it verbatim (deferred
+  since audit 3 / S4). The daemon's `slog` handler is now wrapped so the message
+  and every attribute value — errors, nested groups, attributes bound with
+  `With`, and a value whose key names a credential (`"password", "…"`) — pass
+  through the credential catalog plus every loaded project's secret values and
+  the daemon's API token before reaching `daemon.log`. The handler is also the
+  process default, so `slog.Default()` callers and `net/http`'s error log go
+  through it. `GET /api/v1/logs` redacts each line again on read, which covers
+  log files written before this release and raw stderr (a panic trace).
+- **`raw-blobs/` stays unredacted, and is now documented and locked down as
+  such.** Apply writes from it and revert restores from it, both keyed on the
+  digest of the real bytes, so masking it would write `[REDACTED]` into source
+  files. `docs/security-model.md` now states exactly what it holds, what can be
+  unmasked in it, and every reader (all API surfaces over it redact, except the
+  image-doc download). `blob.New` re-tightens an existing store directory to
+  `0700`; blobs were already `0600`.
+- **A vision description is redacted even with no redactor wired.** It already
+  went through the project redactor and the redacting blob store; an engine
+  built without a redactor now falls back to the pattern catalog instead of
+  relying on which store is wired. New tests pin that an OCR'd key never
+  reaches the stored description or a prompt, that a `.docx` carrying a key is
+  rejected on its extracted text, and that a key in an image's filename is
+  masked in its title.
+- **`pii`, `path_escape` and `trust_deny` are produced.** All three were
+  declared in `DenyCode` with no code path emitting them.
+  - `pii`: Execute scans produced files for payment card numbers (issuer
+    prefix and length, printed grouping, Luhn, published test numbers
+    excluded) and dashed US SSNs (issued ranges, published examples excluded).
+    A match raises a coded, blocking finding with a masked preview — not a
+    reject — that `--accept-findings` never covers; a human dispositions it
+    `accepted_risk` individually. Advisory in test/fixture paths. Emails and
+    phone numbers are deliberately not detected.
+  - `path_escape`: apply refuses, before writing anything, a change whose path
+    is absolute, unclean, or resolves outside the workspace or into
+    `.git/`/`.idea-harness/` through a symlink. The change set is rejected and
+    its task reopened. A symlink into the control plane previously passed the
+    lexical control-plane check.
+  - `trust_deny`: the executor `write_file` trust gate now refuses with a
+    `workflow.SystemDenyError` carrying the code. No shipped executor kind
+    trips it; it is the fail-closed backstop for a kind with no trust mapping.
+- **Changes to auto-executing files need an explicit sign-off.** A change set
+  touching CI definitions (`.github/workflows/`, `.gitlab-ci.yml`,
+  `.circleci/`, `Jenkinsfile`, …), tree-installed git hooks (`.husky/`,
+  `.pre-commit-config.yaml`, …) or `.envrc`/`.devcontainer/`/
+  `.vscode/tasks.json` gets one blocking `protected_path` finding. It is not a
+  deny, since an initiative may be about CI: a plain `approve` is refused and
+  `idea review <CHG-n> approve --accept-findings` records the human sign-off.
+  Build files (`Makefile`, `package.json`, …) are deliberately left off.
+
+### Fixed
+
+- **Answered questions reached the model as "(answer not found)".** The answer
+  text is written to the redacted store and was read back from the raw one,
+  which in the daemon is a different directory; tests wired one store as both.
+  Found auditing every `raw-blobs/` read path.
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING
