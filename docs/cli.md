@@ -59,8 +59,8 @@ if this file has drifted.
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
-| `idea executors` | list executors + capabilities | `--json`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
-| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp, default hermes (or --kind) | — | — |
+| `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
+| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp, default hermes (or --kind; acp needs --image and --acp-command) | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |

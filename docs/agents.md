@@ -1,18 +1,37 @@
 # Wire a real coding agent
 
-By default, `idea execute` does **not** write real code. This guide explains what the default
-executor actually does, how to switch to a real coding agent (OMP or Hermes), and — critically —
-the security tradeoff you accept when you do.
+This guide explains which executor `idea execute` uses by default, how to choose a real coding
+agent (Hermes, OMP, or any Agent Client Protocol agent), and — critically — the security tradeoff
+you accept when you do.
 
-## The default `internal` executor is a placeholder
+## The default: `auto`, with a loud placeholder fallback
 
-Out of the box, `harness.executor.kind` defaults to `internal`. The internal executor is
-deterministic and hermetic: it makes no model calls, performs no network I/O, and depends on no
-external services. It writes a placeholder file into the isolated work root so the change-set
-pipeline (snapshot → diff → review → apply → revert) runs end-to-end — but it does **not** generate
-real code.
+Out of the box, `harness.executor.kind` is unset, which means `auto`. Each run resolves it:
 
-To produce real file changes, select a coding-agent executor.
+- **Docker reachable and the coding model's provider key set** → `hermes`, on the digest-pinned
+  image (see [Select OMP or Hermes](#select-omp-or-hermes)). Docker pulls the image on the first
+  run if it is not present.
+- **Anything else** → `internal`, the placeholder executor, with a warning that starts
+  `NO REAL CODE WILL BE WRITTEN` and says why (no model configured, the key missing from both the
+  daemon's environment and `.env`, Docker not running, or a keyless provider such as Ollama, which
+  auto never picks) and how to fix it.
+
+The warning is not silent anywhere: `idea execute` and `idea next` print it in red, `idea doctor`
+prints it as `⚠ executor:` (a warning; doctor still exits 0), the Build page's guidance carries it
+as `executor_resolution.warning`, `GET /executors` carries it on the row that will run, the change
+set's agent output starts with it, and the run manifest records `requested: auto, resolved:
+internal` with the warning text.
+
+The internal executor is deterministic and hermetic: no model calls, no network I/O, no external
+services. It writes a placeholder file into the isolated work root so the change-set pipeline
+(snapshot → diff → review → apply → revert) runs end to end, but it does **not** write real code.
+To keep it on purpose — a demo, a CI run — set `executor.kind: internal`; runs then print only a
+one-line note instead of the warning.
+
+**Projects created before auto existed** have `kind: internal` written into `harness.yaml` by
+`idea init`, so they keep the placeholder. Delete the line (or set `kind: auto`) to opt in.
+
+To choose a specific agent, select its executor kind below.
 
 ## Select OMP or Hermes
 
@@ -37,7 +56,12 @@ idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anth
 `idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
 pull), prints the security tradeoff, and writes `executor.kind/image/model` to `harness.yaml`.
 For **Hermes** `--image` is optional: when omitted it downloads the pinned official image
-(`nousresearch/hermes-agent:<version>`) and prints the pulled digest. For **OMP** `--image` is
+(`nousresearch/hermes-agent:<version>@sha256:<digest>`) and prints the pulled image id. The
+default is pinned by **digest**, not only by tag: a tag can be re-pointed at different bytes, a
+digest cannot. After the pull, the image's `RepoDigests` must contain that digest for that
+repository, or setup refuses it (a registry mirror rewriting images is the usual cause). Any
+`--image` given as `repo[:tag]@sha256:…` gets the same check; a tag-only `--image` is used as
+given. For **OMP** `--image` is
 required. `--model` is optional if a default model is already configured. There is **no silent
 fallback** — pass `--kind omp` explicitly to choose OMP.
 
@@ -66,7 +90,8 @@ the run stops before the agent starts, and the error names the variable.
 | Ollama (local) | `ollama/qwen3.8:latest` | none | smoke passed, 46 s to 7 min |
 
 "Verified" means `idea executors setup --kind hermes --model <that> --smoke --yes` produced a
-real file on 2026-09-17, against the pinned image `nousresearch/hermes-agent:v2026.5.16`. Times
+real file on 2026-09-17, against the pinned image `nousresearch/hermes-agent:v2026.5.16` (since
+pinned by its index digest, `sha256:b6e41c15…`; the bytes are the same). Times
 are for the whole command, with the image already pulled. Ollama's depends on the machine and on
 whether the model is already loaded: two runs on the same machine took 46 s and 429 s. Any
 model the provider serves works; these are the ones measured.
@@ -149,6 +174,7 @@ since nobody has actually run it through `--smoke` yet.
 |---|---|---|---|
 | `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
 | `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
+| `acp` | any | Warned | No ACP agent has been smoke-tested against a real model yet; run `--smoke` (with `--image` and `--acp-command`) first. |
 
 A row placed in the table stops `idea executors setup` and `idea execute` before anything runs,
 naming the model and why — reserved for a combination that turns out to be genuinely, unfixably
@@ -194,11 +220,133 @@ idea daemon stop        # then run any command — the daemon auto-starts and re
 
 | Field | Meaning | Default |
 |---|---|---|
-| `executor.kind` | `internal` (default) \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | Docker image containing the agent CLI (`omp` / `hermes`) | `alpine:3.20` (not useful for a real agent) |
+| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp` | `auto` (unset) |
+| `executor.image` | Docker image containing the agent (`omp` / `hermes` / `acp`) | the pinned Hermes image for `hermes`; none for `omp`/`acp` (required) |
 | `executor.model` | Coding model for the agent, as `provider/model` | falls back to the default-model chain |
+| `executor.acp.command` | The ACP agent's argv inside the image; `{model}` / `{bare_model}` are substituted | none (required for `acp`) |
+| `executor.acp.key_env` | Name the provider key is exposed under inside an `acp` container | the provider's own variable |
+| `executor.acp.timeout_seconds` | Bound on one ACP prompt turn; then `session/cancel`, then kill | `840` |
+| `executor.mcp_servers` | MCP servers handed to an `acp` agent (see [MCP servers](#mcp-servers-acp-only)) | none |
 
 The per-role model map `models.implementer` overrides `executor.model` if both are set.
+
+## Any Agent Client Protocol agent (`kind: acp`)
+
+The `acp` kind drives any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+— JSON-RPC 2.0 over stdio — instead of a CLI with a bespoke argv. That covers Claude Code
+(`claude-code-acp`, from `@zed-industries/claude-code-acp`), Codex (`codex-acp`), Gemini CLI
+(`gemini --experimental-acp`), OpenHands (`openhands acp`) and OpenCode. There is no canonical image
+for any of them: build one with the agent installed and pass it with `--image`.
+
+```bash
+idea executors setup --kind acp --image ghcr.io/your-org/claude-acp:1 \
+  --acp-command claude-code-acp --model anthropic/claude-sonnet-5 --yes
+
+# argv with arguments: whitespace-separated words, or a JSON array when an argument has a space
+idea executors setup --kind acp --image ghcr.io/your-org/gemini:1 \
+  --acp-command "gemini --experimental-acp -m {bare_model}" --acp-key-env GEMINI_API_KEY \
+  --model gemini/gemini-3.6-flash --yes
+```
+
+Setup verifies the image the ACP way: it starts the command in the hardened container with no
+network and no key (the probe's isolation is in [`security-model.md`](security-model.md)), sends
+`initialize`, and requires a protocol-version-1 answer (an ACP
+adapter need not implement `--version`, so the CLI-presence probe Hermes and OMP use does not
+apply). `--smoke` then runs the same trivial task Hermes's smoke runs, through the agent.
+
+How a run works. The agent runs in the same hardened container as Hermes and OMP (see the security
+section below), attached with `docker run -i --rm`, and the harness is its ACP client:
+
+1. `initialize` — the harness advertises `fs.readTextFile` and `fs.writeTextFile`, and nothing else.
+   `terminal` is **false**: the agent runs its own commands inside its own container, and a client
+   terminal would run them on the host. An agent that calls `terminal/*` anyway gets
+   method-not-found. A protocol version other than 1 fails the run.
+2. `session/new` with `cwd: /work` and the configured `mcpServers`.
+3. `session/prompt` with the implementation brief. The run succeeds on `stopReason: end_turn`; any
+   other stop reason, an agent that exits, or a JSON-RPC error fails it with the reason.
+
+While the turn runs:
+
+- **`fs/read_text_file` and `fs/write_text_file` are confined to the work root.** The path must be
+  absolute and under `/work`; it is cleaned (`/work/../etc/passwd` is refused) and then resolved on
+  the host, symlinks included, so a link inside the work root pointing out of it is refused too.
+  Refusals answer `-32602` and are written to the agent output.
+- **`session/request_permission` is answered without asking anyone**: `allow_once` when offered,
+  else `allow_always`, else `reject_once`/`reject_always`, else `cancelled`. The container is the
+  boundary, exactly as Hermes's `--yolo` and OMP's `--auto-approve` are. Every request and its answer
+  is recorded on the run manifest (`executor.permissions`), so nothing approved on your behalf is
+  invisible.
+- **Output** — the agent's messages, tool-call titles, permission answers, file writes and stderr —
+  feeds the same live view and change-set `agent_output` as the other agents. Thought chunks are
+  not kept. Known secret values (the key, MCP `value_env` values) are redacted.
+- **Timeout and cancel.** After `executor.acp.timeout_seconds` (default 840 s, under the engine's
+  15-minute ceiling), or when the run is stopped, the harness sends `session/cancel`, waits 10 s for
+  the agent to answer `cancelled`, then kills the container.
+
+**The model.** ACP has no standard way to choose a model, so `executor.model` does two things: it
+picks which provider key is forwarded (the same resolution as Hermes), and it is substituted into
+`executor.acp.command` wherever `{model}` (`provider/model`) or `{bare_model}` appears. An agent
+that reads its model from its own config or environment ignores it. The agent talks to its own
+vendor's API directly; a `providers:` base URL override does not apply to it.
+
+**The key's name.** The provider key is forwarded under the provider's own variable unless
+`executor.acp.key_env` renames it — Gemini CLI reads `GEMINI_API_KEY`, not the `GOOGLE_API_KEY` the
+`gemini` provider uses. Docker reads the value from its own environment (`-e NAME` with no value), so
+it never appears in the `docker run` argv.
+
+**Not verified yet.** The protocol handling is tested against a fake ACP agent (handshake, file
+writes, permission requests, path-escape refusal, timeout, cancel), and the production transport
+against a real Docker container running a shell ACP agent. No real ACP coding agent has been run
+end to end through `--smoke` against a real model yet, so every `acp` combination is reported as
+untested; run `--smoke` before relying on one.
+
+### MCP servers (acp only)
+
+`executor.mcp_servers` hands MCP servers to an ACP agent in `session/new`, in ACP's own shape:
+
+```yaml
+executor:
+  kind: acp
+  image: ghcr.io/your-org/claude-acp:1
+  acp:
+    command: [claude-code-acp]
+  mcp_servers:
+    - name: github                     # stdio: runs INSIDE the agent's container
+      command: github-mcp-server
+      args: [stdio]
+      env:
+        - name: GITHUB_PERSONAL_ACCESS_TOKEN
+          value_env: GITHUB_TOKEN      # the NAME of a variable; never the token itself
+        - name: LOG_LEVEL
+          value: info                  # a literal, for a non-secret setting
+    - name: docs                       # http (or sse): reached by the agent over the network
+      type: http
+      url: https://docs.example.com/mcp
+      headers:
+        - name: Authorization
+          value_env: DOCS_MCP_AUTH
+```
+
+The trust tradeoff, which you take on per server:
+
+- **A stdio server runs inside the agent's container**, as the agent's child — with the same
+  isolation, the same unrestricted egress, and the same auto-approved permissions. Its binary must
+  be in the image. It is as trusted as the agent itself.
+- **An http/sse server is reached by the agent**, which sends it whatever its `headers` carry. The
+  agent must advertise `mcpCapabilities.http` (or `sse`); if it does not, the run fails rather than
+  silently dropping the server.
+- **Secrets are never inline.** Each `env`/`headers` entry is either `value` (a literal) or
+  `value_env` (the name of a variable). `harness.yaml` is committable, so a literal whose name looks
+  like a credential (`*_TOKEN`, `*_KEY`, `Authorization`, …) or whose value matches a known credential
+  format is refused when the config loads. `value_env` is resolved like a provider key — the
+  daemon's environment, then the project's `.env` — and one that is set in neither stops the run
+  before the container starts, naming the variable. The resolved values travel to the agent in the
+  `session/new` message on its stdin, never in argv, and are redacted from its output.
+- The agent can use every server you list, for anything, with nobody approving the call. List only
+  servers whose reach you would grant the agent directly.
+
+`mcp_servers` on any kind other than `acp` is reported by `idea config validate` and `idea doctor`
+as unused, rather than ignored silently.
 
 ### API key
 
@@ -239,7 +387,9 @@ runs it in your terminal's environment, which is not always the daemon's.
 **In CI:** [`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) runs a real Hermes coding task end-to-end in
 the isolated container and asserts that it produces a real file diff. It is **opt-in**: it requires
 `HERMES_IMAGE` and `AGENT_MODEL` (plus a model API key), which are repository variables/secrets
-rather than CI defaults — so it runs manually (workflow_dispatch), not on every push.
+rather than CI defaults — so it runs manually (workflow_dispatch), not on every push. Setting
+`ACP_IMAGE` and `ACP_COMMAND` (a YAML flow sequence such as `[claude-code-acp]`, optionally
+`ACP_KEY_ENV`) instead runs the same task through an ACP agent.
 
 ## Watching and stopping a run
 
@@ -367,7 +517,7 @@ recurring in practice.
 
 ## Security / trust tradeoff — read this before wiring an agent
 
-The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of all four executor kinds against what each one actually passes:
+The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of every executor kind against what each one actually passes:
 
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
@@ -381,9 +531,11 @@ But it is **not network-isolated**. The agent needs egress to reach its model AP
 Concretely, the agent container:
 
 - can reach the network,
-- receives **its own provider API key** (forwarded in via env-file), and
-- runs in auto-approve mode — OMP with `--auto-approve`, Hermes with `--yolo` — so it writes files
-  and runs commands without asking you first.
+- receives **its own provider API key** (forwarded in via env-file; for `acp`, via the docker CLI's
+  environment), and
+- runs in auto-approve mode — OMP with `--auto-approve`, Hermes with `--yolo`, an ACP agent by
+  having every permission request answered `allow_once` — so it writes files and runs commands
+  without asking you first.
 
 **A compromised or malicious agent image, or a prompt-injection attack through the task content,
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
@@ -395,5 +547,7 @@ The canonical statement of what each executor kind isolates, and what none of th
 [`security-model.md`](security-model.md#what-this-does-not-protect-against). This page repeats the
 agent-specific part because it is where you decide whether to wire one.
 
-The deterministic `internal` executor has none of this exposure (no network, no key, no real code),
-which is why it remains the safe default until you deliberately opt into a real agent.
+The deterministic `internal` executor has none of this exposure (no network, no key, no real code).
+It is no longer the silent default: an unset `executor.kind` runs Hermes once a model key and
+Docker are both present, so having both is the opt-in. Set `executor.kind: internal` if you want
+the placeholder regardless.
