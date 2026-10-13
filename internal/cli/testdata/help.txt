@@ -45,6 +45,8 @@ Commands:
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
   executors setup [<kind>] wire a coding agent: hermes|omp, default hermes (or --kind)
+  integrations [status] show Slack/Linear integration health: tokens present, deliveries, socket and poll state
+  integrations test slack|linear post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   watch                watch a run live
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config

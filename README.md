@@ -255,7 +255,9 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 `make build` or a release binary; see [Install](#install).
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
-· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
+· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`
+· [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
+sync (no public URL needed).
 
 ## Model providers
 
