@@ -78,6 +78,8 @@ internal/model       provider registry (OpenAI/Anthropic/Gemini/OpenRouter/Ollam
 internal/review      deterministic checks + approval bar + findings
 internal/workflow    stage graph + state machine + orchestrator
 internal/daemon      token-authenticated, project-scoped REST; an SSE endpoint exists, unused by the CLI and UI
+internal/integrations  integration event bus: tails the event log (the SSE endpoint's source) into a
+                     SQLite outbox; Slack (Socket Mode) and Linear (polling) subscribers; see integrations.md
 internal/projection  Current Understanding / Next Move / What Changed
 internal/cli         thin HTTP client + Charm-styled commands (Lip Gloss, Huh, Glamour, Bubble Tea)
 internal/web         embedded React UI
@@ -87,6 +89,10 @@ internal/web         embedded React UI
 
 - **Relational state is authoritative**; events are appended atomically in the same SQLite
   transaction (§32). Not event sourcing.
+- **Integrations observe, they never sit in the write path.** Slack and Linear are fed by a
+  dispatcher that tails the event log after the fact, through a persistent outbox; anything they
+  *do* (a Slack approve, a Linear import) goes back in through the same HTTP handlers the CLI uses
+  ([integrations.md](integrations.md)).
 - **Single writer**: the daemon owns all state. The CLI is a thin HTTP client that auto-starts a
   managed daemon (§29, D1).
 - **Source is written only by an approved apply**: `.idea-harness/` is the only thing written as a

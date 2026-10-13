@@ -531,6 +531,23 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
   Redaction is also not a uniform gate on what leaves for the model provider — it is applied at
   specific points, not to every outbound request.
 
+## Integrations
+
+`integrations.slack` and `integrations.linear` in `harness.yaml` turn on the Slack (notifications,
+approval buttons, `/idea`) and Linear (plan tasks as issues, labeled issues as initiatives)
+integrations. Each is off until its section exists; tokens come from the environment or `.env` by
+the `*_env` names, never from the file. Setup, every key, and the security trade-offs:
+[integrations.md](integrations.md).
+
+```yaml
+integrations:
+  slack:
+    channel: C0123456789
+    allowed_users: [U0123ABCD]   # empty = notify-only
+  linear:
+    team_key: ENG
+```
+
 ## Role Contracts
 
 Bundled Role Contracts live in `.idea-harness/roles/*.yaml`. Each declares competencies, required

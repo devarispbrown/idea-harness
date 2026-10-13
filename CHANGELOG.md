@@ -9,6 +9,37 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Slack and Linear integrations** ([docs/integrations.md](docs/integrations.md)), configured under
+  `integrations:` in `harness.yaml`, tokens from the environment or `.env` only. Neither needs a
+  public URL.
+  - **An integration event bus.** A per-project dispatcher tails the event log (the source the SSE
+    endpoint streams) into typed events — initiative created, needs judgment with its reason,
+    PRD/plan approved, change set started/ready/approved/rejected/applied/reverted, verify
+    passed/failed, run failed, task status — and delivers them through a SQLite outbox
+    (migration 37): per-subscriber cursor, unique idempotency key, in-order delivery, exponential
+    backoff honouring `Retry-After`, and dead-lettering after 8 attempts. A restart resumes without
+    re-posting; enabling an integration does not post history; the engine never waits on it.
+  - **Slack.** Block Kit notifications threaded per initiative, `needs_judgment` broadcast with
+    configurable mentions; over Socket Mode, **Approve/Reject** buttons on change sets ready for
+    review, **Accept recommendations** and per-question **Answer** on judgment items, and
+    `/idea new <idea>` / `/idea status`. Every action goes through the daemon's own HTTP handler, so
+    it meets the same gates and gets the same refusals as the CLI, and only users in
+    `integrations.slack.allowed_users` may act (empty, the default, is notify-only). App manifest:
+    [docs/integrations/slack-manifest.yaml](docs/integrations/slack-manifest.yaml).
+  - **Linear.** An approved execution plan becomes a parent issue plus one sub-issue per task
+    (requirement codes, why-chain), kept in step with change sets and task status, with comments
+    for reviews, applies, reverts and verification. Issues carrying the inbound label (default
+    `idea`) become initiatives, with the issue text attached as an untrusted context document, never
+    as the description. A Linear-side cancellation records an `initiative.external_note` and changes
+    nothing.
+  - `idea integrations [status]`, `idea integrations test slack|linear`, an integrations summary in
+    `idea doctor` (reported, not failing), `GET /projects/{projectId}/integrations`,
+    `POST /projects/{projectId}/integrations/{name}/test`, and **Settings → Integrations** in the UI.
+- The redactor's catalog now covers Slack app-level tokens (`xapp-…`) and Linear API keys
+  (`lin_api_…`), and integration tokens are fed to it by their configured env names.
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING
