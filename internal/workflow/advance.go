@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/review"
@@ -721,8 +722,11 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{Requirements: len(tasks)})
 
+	rules := e.snapshotConfig().cfg.Review.Convergence.Effective()
+	guarded := !rules.Legacy()
+
 	det := e.deterministicPlanChecks(ctx, initiativeID)
-	adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor)
+	reviewRunID, adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor, rules)
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
@@ -745,6 +749,36 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		}
 	}
 
+	// The plan review is a single pass, so of the convergence rules only the
+	// per-finding ones apply here: the severity gate and the citation rule
+	// (a plan finding must name the TASK or REQ it is about). The plan
+	// review parked 2 of 2 measured real-model runs on blocking findings,
+	// and a finding that names no task or requirement is not one a human
+	// re-planning can act on either. There is no prior cycle, no re-raise
+	// and no stall -- RevisePlan starts a fresh plan, not a revision of
+	// this one.
+	tel := newReviewTelemetry("execution_plan", 1, rules, rigor)
+	cls := classification{reRaiseOf: map[int]int{}, demoted: map[string]int{}, cites: make([]string, len(adv))}
+	if guarded {
+		allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+		taskCodes := make(map[string]bool, len(tasks))
+		for _, t := range tasks {
+			taskCodes[NormalizeRequirementRef(t.Code)] = true
+		}
+		ini, _ := e.db.GetInitiative(ctx, initiativeID)
+		cls = classifyFindings(classifyInput{
+			rules: rules, active: activeRequirements(allReqs), taskCodes: taskCodes, idea: ini.Description,
+		}, adv)
+		// Every plan finding targets the plan (see the loop below); the
+		// requirement a citation resolved to is the PRD loop's re-targeting,
+		// not this review's, so it is undone here rather than left as a
+		// requirement id under an execution_plan target type.
+		for i := range adv {
+			adv[i].TargetType, adv[i].TargetID = PlanFindingTarget, initiativeID
+		}
+	}
+	countCycle(&tel, adv, cls, nil)
+
 	all := append(det, adv...)
 	all = capFindings(all, findingCap(rigor), rigor)
 	for i := range all {
@@ -765,6 +799,7 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		all[i].Evidence = e.redact(all[i].Evidence)
 		all[i].Impact = e.redact(all[i].Impact)
 		all[i].Recommendation = e.redact(all[i].Recommendation)
+		all[i].Note = e.redact(all[i].Note)
 	}
 
 	// ICP re-run defect A: RevisePlan/ReopenPhase regenerate the plan and
@@ -793,6 +828,13 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	// there is no rigor level at which a structural plan defect is
 	// auto-approved.
 	blocked, reason := review.EvaluateApproval(all)
+	tel.OpenBlocking = countGating(all)
+	tel.Deterministic = countGating(det)
+	tel.Outcome = outcomeConverged
+	if blocked {
+		tel.Outcome = outcomeBlocked
+	}
+	e.recordReviewTelemetry(ctx, reviewRunID, tel)
 	if blocked {
 		e.log.Warn("plan review blocked", "initiative", initiativeID, "reason", reason)
 		if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanReview, RoleAdversarialReviewer); err != nil {
@@ -973,7 +1015,7 @@ func overlapCount(set map[string]bool, tokens []string) int {
 	return n
 }
 
-func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string, tasks []domain.Task, rigor RigorLevel) ([]domain.Finding, error) {
+func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string, tasks []domain.Task, rigor RigorLevel, rules config.ConvergenceConfig) (string, []domain.Finding, error) {
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	conventions := projectConventions(e.workspaceRoot)
 	// "plan_review", not "review". The name is a demo/test discriminator only:
@@ -985,18 +1027,25 @@ func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID stri
 	// land on the change-set review, where a blocking finding cannot be cleared
 	// by anything the CLI can do. Separate keys make a surplus harmless.
 	e.setStage(ctx, initiativeID, "Reviewing the plan")
-	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
-		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
-			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(tasks)}, rigor, conventions)},
-			{Selector: "tasks", Content: renderTasks(tasks)},
-		},
-		"Adversarial review of the execution plan.",
-	)
-	if err != nil {
-		return nil, err
+	inputs := []ccontext.Input{
+		{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
+		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(tasks)}, rigor, conventions)},
+		{Selector: "tasks", Content: renderTasks(tasks)},
 	}
-	return review.ParseFindings(runID, "execution_plan", initiativeID, obj)
+	if !rules.Legacy() {
+		// The plan reviewer never got the PRD reviewer's severity calibration
+		// (reviewerSeverityGuidance is PRD-only), so "high" meant whatever the
+		// model felt it meant. The convergence policy states the bar and the
+		// citation rule the review is judged under.
+		inputs = append(inputs, ccontext.Input{Selector: "convergence_policy", Content: reviewerConvergencePolicy(rules, "a TASK code from the tasks below, or the REQ code it implements")})
+	}
+	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
+		inputs, "Adversarial review of the execution plan.")
+	if err != nil {
+		return runID, nil, err
+	}
+	findings, err := review.ParseFindings(runID, "execution_plan", initiativeID, obj)
+	return runID, findings, err
 }
 
 // detectCycle returns the first node id that participates in a cycle, or "".

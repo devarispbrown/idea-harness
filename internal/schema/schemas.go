@@ -88,7 +88,19 @@ const PRD = `{
       }
     },
     "open_questions": {"type": "array", "items": {"type": "string"}},
-    "risks": {"type": "array", "items": {"type": "string"}}
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "review_responses": {
+      "type": "array",
+      "description": "When revising after a review, one entry per finding listed under review_findings: what this revision did about it.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {"type": "string", "description": "The finding's label exactly as listed, e.g. \"F2\"."},
+          "response": {"type": "string", "description": "What changed, naming the requirement code(s) -- or why nothing needed to."}
+        },
+        "required": ["finding", "response"]
+      }
+    }
   },
   "required": ["summary", "requirements"],
   "additionalProperties": true
@@ -111,7 +123,10 @@ const Review = `{
           "impact": {"type": "string"},
           "recommendation": {"type": "string"},
           "path": {"type": "string", "description": "The file this finding is about, if it names a specific one (change-set review only; review B2)."},
-          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."}
+          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."},
+          "requirement": {"type": "string", "description": "The code of the requirement (or task) this finding is about, exactly as listed -- or \"idea\" for something the idea asks for that no requirement covers, with evidence quoting the idea. A critical/high finding citing neither is recorded as advisory."},
+          "reraises": {"type": "string", "description": "When this repeats a finding listed under prior_findings, that finding's label, e.g. \"F1\"."},
+          "justification": {"type": "string", "description": "Required with reraises when the prior finding was addressed: specifically why the revision did not resolve it."}
         },
         "required": ["severity", "confidence", "category", "finding", "recommendation"]
       }

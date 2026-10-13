@@ -9,6 +9,42 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **The PRD review loop converges on principle instead of by exhaustion** (`review.convergence`,
+  `guarded` by default). In 2 of 2 measured real-model runs the PRD review never converged, and the
+  causes were in the loop, not the model: the reviewer never saw the previous cycle's findings or
+  what the revision did about them; one critical/high finding anywhere blocked, cited or not, new or
+  rephrased; re-raises had no identity across cycles; the reviser got every finding ever raised as
+  bare "[severity] text"; and nothing measured progress. Now the reviewer receives the previous
+  cycle's blocking findings by label with the reviser's response to each, must justify re-raising
+  an addressed one, and must cite the requirement (or task, or quoted idea text) a blocking finding
+  is about; a finding first raised after cycle 1 blocks only if it is about a requirement the
+  revision changed, or is critical; re-raises are matched with the existing near-duplicate
+  similarity and the superseded finding is dispositioned `duplicate`; the reviser gets a precise,
+  labelled brief and answers it in `review_responses`; and the loop stops for a human as soon as the
+  open blocking count fails to fall (`stall_cycles`, default 1). Demoted findings are kept, marked
+  advisory, with the rule on their note. Deterministic checks are untouched, and a cited blocker
+  that persists with a reason still parks the initiative — now at cycle 2 rather than 3. The plan
+  review applies the per-finding rules (severity floor, citation). `review.convergence.mode: legacy`
+  restores the previous loop exactly.
+- **`demo.block_review_cycles` now parks at cycle 2** for any value of 2 or more, by the stall
+  detector, instead of running to `review.max_cycles`. The demo blocking finding cites the first
+  listed requirement and justifies its re-raise, so it behaves as a genuine blocker under the new
+  rules.
+- The `adversarial_reviewer` and `product_manager` role contracts are at 1.1.0: citation, severity,
+  re-raise and precise-revision behaviors.
+
+### Added
+
+- **Convergence telemetry on the run manifest.** Each adversarial review run's manifest records the
+  cycle: findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
+  blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
+  `blocked`). Stored in `run_manifests.review_json` (migration 37); `store.ListReviewTelemetry`
+  reads an initiative's history.
+- `schema.Review` findings accept optional `requirement`, `reraises` and `justification`;
+  `schema.PRD` accepts optional `review_responses`.
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING
