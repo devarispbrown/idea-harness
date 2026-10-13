@@ -523,10 +523,11 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
 - Secret values are redacted on the paths that store them: the artifact/blob store, and the event
   log, whose rows carry digests into that store rather than content.
 
-  Two things this does **not** cover, both deliberate and both documented at
-  [`security-model.md`](security-model.md#what-this-does-not-protect-against): the daemon log is not
-  redacted and `GET /api/v1/logs` returns it verbatim, and the raw blob store (`raw-blobs/`) keeps
-  uploaded file content and image bytes exactly as received.
+  The daemon log is redacted too, by the same catalog plus every loaded project's secret values,
+  and `GET /api/v1/logs` redacts again on read, so it no longer returns it verbatim. One thing this does **not** cover, deliberately:
+  the raw blob store (`raw-blobs/`) keeps change-set file content and image bytes exactly as
+  received. Both are documented at
+  [`security-model.md`](security-model.md#what-this-does-not-protect-against).
 
   Redaction is also not a uniform gate on what leaves for the model provider — it is applied at
   specific points, not to every outbound request.
