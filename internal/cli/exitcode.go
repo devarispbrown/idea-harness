@@ -280,6 +280,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}
 		enc := json.NewEncoder(dst)
 		enc.SetIndent("", "  ")
+		// Messages and hints quote placeholders like `<command>`; the default
+		// < escaping is for embedding in HTML, which this never is.
+		enc.SetEscapeHTML(false)
 		_ = enc.Encode(map[string]errorReport{"error": r})
 		return r.ExitCode
 	}

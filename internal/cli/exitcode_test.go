@@ -261,6 +261,11 @@ func TestMainUsageErrors(t *testing.T) {
 	if code, _, _ := runMain(t, "frobnicate"); code != 2 {
 		t.Errorf("unknown command exited %d, want 2", code)
 	}
+	// The default hint quotes `<command>`; encoding/json would escape it to
+	// <command>, which is valid and unreadable.
+	if _, stdout, _ := runMain(t, "frobnicate", "--json"); !strings.Contains(stdout, "<command>") {
+		t.Errorf("the JSON error object HTML-escapes its text: %s", stdout)
+	}
 	// After "--", --json is a positional, not a request for JSON.
 	if code, stdout, _ := runMain(t, "frobnicate", "--", "--json"); code != 2 || stdout != "" {
 		t.Errorf("`--json` after `--` was read as a flag: exit %d, stdout %q", code, stdout)
