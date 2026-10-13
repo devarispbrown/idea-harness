@@ -152,7 +152,7 @@ idea next
 
 `idea verify` runs the verification gate. `--pass` records your judgment against every
 acceptance criterion of that requirement; `--fail` and `--waive` are the other two verdicts.
-An unmet gate exits non-zero, so `idea verify` is usable in a script.
+An unmet gate exits non-zero (`5`, `gate_unmet` — see [exit codes](cli.md#exit-codes)), so `idea verify` is usable in a script.
 
 ## Step 8 — point it at a real model
 

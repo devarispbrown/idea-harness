@@ -129,7 +129,7 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdCancel(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea cancel <operation-id>")
+		return usageErrorf("usage: idea cancel <operation-id>")
 	}
 	c, _, err := connect()
 	if err != nil {
@@ -193,7 +193,7 @@ func cmdChanges(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdChange(a cmdArgs, stdout, stderr io.Writer) error {
 	positional, flags := a.positional, a.flags
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea change <id>")
+		return usageErrorf("usage: idea change <id>")
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -274,7 +274,7 @@ func cmdPR(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea pr checks <change-set-id>")
+		return usageErrorf("usage: idea pr checks <change-set-id>")
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -321,7 +321,7 @@ func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
+		return usageErrorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
 	}
 	verdict := positional[1]
 	switch verdict {
@@ -331,7 +331,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		verdict = "rejected"
 	case "approved", "rejected", "changes_requested", "rerun":
 	default:
-		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
+		return usageErrorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -341,7 +341,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	accepting := a.has("--accept-findings")
 	if accepting {
 		if verdict != "approved" {
-			return fmt.Errorf("--accept-findings only applies to `approve`")
+			return usageErrorf("--accept-findings only applies to `approve`")
 		}
 		body["accept_findings"] = true
 	}
@@ -381,7 +381,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea %s <id> [--wait]", action)
+		return usageErrorf("usage: idea %s <id> [--wait]", action)
 	}
 	id := positional[0]
 	c, projectID, err := connect()
@@ -485,7 +485,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	kind := positionalKind
 	if flagKind != "" {
 		if positionalKind != "" && positionalKind != flagKind {
-			return fmt.Errorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
+			return usageErrorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
 		}
 		kind = flagKind
 	}
@@ -495,24 +495,24 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	image, model := a.value("--image"), a.value("--model")
 	yes, smoke := a.has("--yes"), a.has("--smoke")
 	if kind != "hermes" && kind != "omp" {
-		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
+		return usageErrorf("unsupported executor kind %q (use hermes or omp)", kind)
 	}
 	if smoke && model == "" {
-		return fmt.Errorf("--smoke requires --model (to resolve the provider API key)")
+		return usageErrorf("--smoke requires --model (to resolve the provider API key)")
 	}
 	// Resolve the image: Hermes has a pinned default (auto-downloaded); OMP has
 	// no canonical image so --image is required.
 	if image == "" {
 		image = executor.DefaultAgentImage(kind)
 		if image == "" {
-			return fmt.Errorf("--image is required: no canonical %s image (provide one you trust)", kind)
+			return usageErrorf("--image is required: no canonical %s image (provide one you trust)", kind)
 		}
 		fmt.Fprintln(stderr, muted("no --image; using pinned default ")+code(image)+muted(" and downloading it now"))
 	}
 
 	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" a "+kind+" executor runs with network egress and auto-approve, and receives its provider API key. Only use an image you trust.")
 	if !yes {
-		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
+		return usageErrorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
 	}
 
 	c, projectID, err := connect()
@@ -535,7 +535,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		// same as the model-warning above.
 		if compat := executor.CheckModelCompat(kind, model); compat.Message != "" {
 			if compat.Blocked {
-				return fmt.Errorf("%s", compat.Message)
+				return errorf(kindConfigInvalid, "%s", compat.Message)
 			}
 			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
 		}
@@ -585,7 +585,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 			return dotEnv[name]
 		}
 		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup, ""); err != nil {
-			return fmt.Errorf("smoke failed: %w", err)
+			return errorf(kindRunFailed, "smoke failed: %w", err)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
 	}
@@ -634,13 +634,13 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		}
 	}
 	if dispositions > 1 {
-		return fmt.Errorf("--pass, --fail and --waive are alternatives; give exactly one")
+		return usageErrorf("--pass, --fail and --waive are alternatives; give exactly one")
 	}
 	if req == "" && (dispositions > 0 || note != "") {
-		return fmt.Errorf("recording evidence needs the requirement it is about: idea verify <req> --pass|--fail|--waive [--note <text>]")
+		return usageErrorf("recording evidence needs the requirement it is about: idea verify <req> --pass|--fail|--waive [--note <text>]")
 	}
 	if len(a.positional) > 1 {
-		return fmt.Errorf("usage: idea verify [<req>] [--pass|--fail|--waive] [--note <text>]")
+		return usageErrorf("usage: idea verify [<req>] [--pass|--fail|--waive] [--note <text>]")
 	}
 
 	c, projectID, err := connect()
@@ -715,7 +715,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 			return err
 		}
 		if failOnUnmet && len(unmet) > 0 {
-			return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+			return errorf(kindGateUnmet, "verification incomplete: %s", strings.Join(unmet, "; "))
 		}
 		return nil
 	}
@@ -751,7 +751,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	// unconditionally. The previous round fixed this command's recording half
 	// and never looked at its reporting half.
 	if failOnUnmet && len(unmet) > 0 {
-		return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+		return errorf(kindGateUnmet, "verification incomplete: %s", strings.Join(unmet, "; "))
 	}
 	return nil
 }
@@ -786,7 +786,7 @@ func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
 		model = view.DefaultModel
 	}
 	if model == "" {
-		return fmt.Errorf("no model configured; set one with `idea model set <provider>/<model>` or pass --model")
+		return errorf(kindConfigInvalid, "no model configured; set one with `idea model set <provider>/<model>` or pass --model")
 	}
 
 	// D-a, wave 3 contract: an optional note steering this retry, joining the
@@ -847,7 +847,7 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (executor.AgentProvider, error) {
 	i := strings.Index(model, "/")
 	if i <= 0 || i == len(model)-1 {
-		return executor.AgentProvider{}, fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
+		return executor.AgentProvider{}, usageErrorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
 	}
 	name := model[:i]
 	var view cliProvidersView
@@ -858,7 +858,7 @@ func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (e
 	for _, p := range view.Providers {
 		if p.Name == name {
 			if p.Problem != "" {
-				return executor.AgentProvider{}, fmt.Errorf("provider %q is not usable: %s", name, p.Problem)
+				return executor.AgentProvider{}, errorf(kindConfigInvalid, "provider %q is not usable: %s", name, p.Problem)
 			}
 			ap := executor.AgentProvider{Name: p.Name, Type: config.ProviderType(p.Type), KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}
 			if err := ap.Validate(); err != nil {
@@ -877,5 +877,5 @@ func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (e
 		names = append(names, p.Name)
 	}
 	sort.Strings(names)
-	return executor.AgentProvider{}, fmt.Errorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
+	return executor.AgentProvider{}, usageErrorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
 }

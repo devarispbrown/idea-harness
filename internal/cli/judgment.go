@@ -63,10 +63,10 @@ func cmdRevise(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("GET", path, nil, &ini); err == nil {
 		switch ini.Status {
 		case "plan_approved":
-			return fmt.Errorf("revise regenerates the PRD, which would discard the approved plan below it; " +
+			return errorf(kindConflict, "revise regenerates the PRD, which would discard the approved plan below it; "+
 				"use `idea revise-plan` to change the plan, or `idea reopen-phase` to go further back")
 		case "complete":
-			return fmt.Errorf("this initiative is complete; revising its PRD would reopen it and discard the plan. " +
+			return errorf(kindConflict, "this initiative is complete; revising its PRD would reopen it and discard the plan. "+
 				"Start a new initiative with `idea new`, or `idea reopen-phase` if you mean to reopen this one")
 		}
 	}
@@ -140,12 +140,12 @@ var reopenPhases = []string{"architecture", "product_design", "verification_desi
 // it wrong.
 func cmdReopenPhase(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) == 0 {
-		return fmt.Errorf("usage: idea reopen-phase <%s> [<initiative>]",
+		return usageErrorf("usage: idea reopen-phase <%s> [<initiative>]",
 			strings.Join(reopenPhases, "|"))
 	}
 	phase := a.positional[0]
 	if !slices.Contains(reopenPhases, phase) {
-		return fmt.Errorf("unknown phase %q; use one of: %s", phase, strings.Join(reopenPhases, ", "))
+		return usageErrorf("unknown phase %q; use one of: %s", phase, strings.Join(reopenPhases, ", "))
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -228,9 +228,9 @@ func resolveQuestionRef(c *client, projectID, iniID, ref string) (string, error)
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", fmt.Errorf("no question matching %q; `idea questions` lists them", ref)
+		return "", errorf(kindNotFound, "no question matching %q; `idea questions` lists them", ref)
 	default:
-		return "", fmt.Errorf("%q matches more than one question; use more of the id shown by `idea questions`", ref)
+		return "", usageErrorf("%q matches more than one question; use more of the id shown by `idea questions`", ref)
 	}
 }
 
@@ -276,7 +276,7 @@ func cmdQuestions(a cmdArgs, stdout, stderr io.Writer) error {
 // cmdAnswer answers an open question.
 func cmdAnswer(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 2 {
-		return fmt.Errorf(`usage: idea answer <question> "<answer>" [<initiative>]`)
+		return usageErrorf(`usage: idea answer <question> "<answer>" [<initiative>]`)
 	}
 	ref, answer := a.positional[0], a.positional[1]
 	c, projectID, err := connect()
@@ -304,7 +304,7 @@ func cmdAnswer(a cmdArgs, stdout, stderr io.Writer) error {
 // them in that order) or free text for a decision with none.
 func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 2 {
-		return fmt.Errorf(`usage: idea resolve <decision> <option#>|"<resolution>" [<initiative>]`)
+		return usageErrorf(`usage: idea resolve <decision> <option#>|"<resolution>" [<initiative>]`)
 	}
 	ref, resolution := a.positional[0], a.positional[1]
 	c, projectID, err := connect()
@@ -327,13 +327,13 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("no decision matching %q; `idea decisions` lists them", ref)
+		return errorf(kindNotFound, "no decision matching %q; `idea decisions` lists them", ref)
 	}
 	resolved := resolution
 	if len(target.Options) > 0 {
 		if n, convErr := strconv.Atoi(resolution); convErr == nil {
 			if n < 1 || n > len(target.Options) {
-				return fmt.Errorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
+				return usageErrorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
 					target.Code, len(target.Options), n)
 			}
 			resolved = target.Options[n-1]
@@ -352,7 +352,7 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 // which until now only the web UI could reach.
 func cmdReopenDecision(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 1 {
-		return fmt.Errorf("usage: idea reopen-decision <decision> [<initiative>]")
+		return usageErrorf("usage: idea reopen-decision <decision> [<initiative>]")
 	}
 	ref := a.positional[0]
 	c, projectID, err := connect()

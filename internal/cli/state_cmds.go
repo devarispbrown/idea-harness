@@ -254,9 +254,9 @@ func failedInitiativeExit(inis []cliInitiative) error {
 		return nil
 	}
 	if ini.FailureReason != "" {
-		return fmt.Errorf("%s failed: %s", ini.Title, ini.FailureReason)
+		return errorf(kindRunFailed, "%s failed: %s", ini.Title, ini.FailureReason)
 	}
-	return fmt.Errorf("%s failed; `idea logs` has the full text", ini.Title)
+	return errorf(kindRunFailed, "%s failed; `idea logs` has the full text", ini.Title)
 }
 
 // cmdChanged shows What Changed since last look, per initiative, in human
