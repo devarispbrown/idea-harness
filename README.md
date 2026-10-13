@@ -161,18 +161,26 @@ idea verify REQ-1 --pass               # record pass evidence; repeat per requir
 idea next                              # → "✓ initiative complete"
 ```
 
-> **The block above is the demo-provider path. With a key it differs in three ways.** Measured on
-> `openai/gpt-5.6-luna`, 2 of 2 runs, ~7–9 minutes end to end:
+> **The block above is the demo-provider path. With a key it differs in three ways.** The numbers
+> below were measured on `openai/gpt-5.6-luna`, 2 of 2 hand-driven runs, ~7–9 minutes end to end —
+> **before** the review convergence rules (`review.convergence`, see
+> [configuration](docs/configuration.md#review-convergence)) existed, so they describe the old loop
+> and need re-measuring. No real-model run has been made since; the rules have only been verified
+> against the deterministic scripted provider. `idea eval --model <provider/model>` is how to
+> re-measure — see [Measured runs](#measured-runs-idea-eval).
 >
-> 1. **It stops for you twice before `idea review`.** The PRD review did not converge (2/2) and the
->    plan review raised blocking findings (2/2). `idea new` and `idea next` each print the command
->    that moves it on — `idea approve` or `idea revise` for the PRD, `idea approve-plan` or
->    `idea revise-plan` for the plan. Run what it names, then `idea next --until-human` again.
+> 1. **It may stop for you before `idea review`.** In those runs the PRD review did not converge
+>    (2/2) and the plan review raised blocking findings (2/2). The loop now shows the reviewer its
+>    previous findings, requires blocking findings to cite a requirement, and stops early only when
+>    the blocking count stops falling — but a genuine blocker still parks. `idea new` and
+>    `idea next` each print the command that moves it on — `idea approve` or `idea revise` for the
+>    PRD, `idea approve-plan` or `idea revise-plan` for the plan. Run what it names, then
+>    `idea next --until-human` again.
 > 2. **`idea review CHG-1 approve` may refuse**, with an open critical finding. See the note below.
-> 3. **The requirement is not `REQ-1`.** Every review cycle supersedes the requirement set and mints
->    new codes, so after the PRD review revises a few times the surviving requirements started at
->    `REQ-23` in one measured run — 12 of them, 34 rows created, 22 superseded. `idea status` lists
->    the live codes; `idea verify REQ-1` on a superseded one answers
+> 3. **The requirement may not be `REQ-1`.** A revision that drops a requirement supersedes it and
+>    mints new codes; in one of those measured runs the surviving requirements started at `REQ-23`
+>    — 12 of them, 34 rows created, 22 superseded. `idea status` lists the live codes;
+>    `idea verify REQ-1` on a superseded one answers
 >    `requirement "REQ-1" in state "removed" cannot take a human judgment`.
 >
 > None of this is a fault — an adversarial reviewer that never blocks is not doing anything. It is
@@ -256,6 +264,31 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 
 **Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
 · [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
+
+### Measured runs: `idea eval`
+
+`idea eval` runs a fixed suite of seven small greenfield ideas (a todo CLI, a URL shortener, a
+Markdown site generator, …) end to end through a private in-process daemon — idea → PRD review →
+plan → change set → apply → verify — with an automatic judgment policy standing in for you, and
+reports per case and in aggregate: how far it got, whether the PRD and plan reviews converged and in
+how many cycles, every human-judgment stop and where, change sets produced and applied, whether
+verification passed, cost, tokens and wall time. It writes JSON and markdown and compares against a
+saved baseline to flag regressions.
+
+```bash
+idea eval                                        # scripted provider: deterministic, no key, ~5s
+idea eval --model openai/gpt-5.6-luna \
+          --json-out run.json --md-out run.md    # a real measurement (needs OPENAI_API_KEY)
+idea eval --model openai/gpt-5.6-luna --baseline run.json   # non-zero exit on a regression
+```
+
+Without `--model` it runs scripted reviewer scenarios — including one that reproduces the measured
+non-convergence (a reviewer re-raising rephrased findings) under both the old and the new loop, and
+one genuine blocker that must still park for a human — and CI runs exactly that against
+`internal/eval/testdata/baseline-scripted.json` on every push. With the built-in internal executor
+each case's acceptance checks are reported as skipped, never as passing; pass
+`--harness <file>` with an `executor:` block to run them against a real coding agent. Real-model
+numbers in this README are the 2-run measurement above until someone with a key re-runs the suite.
 
 ## Model providers
 

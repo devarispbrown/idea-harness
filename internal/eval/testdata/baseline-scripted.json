@@ -1,0 +1,537 @@
+{
+  "suite": "default",
+  "provider": "scripted",
+  "policy": "approve",
+  "started_at": "0001-01-01T00:00:00Z",
+  "finished_at": "0001-01-01T00:00:00Z",
+  "cases": [
+    {
+      "name": "todo-cli",
+      "scenario": "typical",
+      "reached": "complete",
+      "prd_converged": true,
+      "prd_cycles": 2,
+      "prd_outcome": "converged",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "builds",
+          "status": "skipped"
+        },
+        {
+          "name": "add then list",
+          "status": "skipped"
+        },
+        {
+          "name": "done marks the item",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": null,
+      "calls": 14,
+      "input_tokens": 6337,
+      "output_tokens": 655,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 0,
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "high": 1,
+            "medium": 1
+          },
+          "new": {
+            "high": 1,
+            "medium": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 1,
+          "prev_open_blocking": -1,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 2,
+          "mode": "guarded",
+          "rigor": "standard",
+          "resolved": {
+            "high": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": 1,
+          "outcome": "converged"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "url-shortener",
+      "scenario": "typical",
+      "reached": "complete",
+      "prd_converged": true,
+      "prd_cycles": 2,
+      "prd_outcome": "converged",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "builds",
+          "status": "skipped"
+        },
+        {
+          "name": "tests pass",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": null,
+      "calls": 14,
+      "input_tokens": 6347,
+      "output_tokens": 657,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 0,
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "high": 1,
+            "medium": 1
+          },
+          "new": {
+            "high": 1,
+            "medium": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 1,
+          "prev_open_blocking": -1,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 2,
+          "mode": "guarded",
+          "rigor": "standard",
+          "resolved": {
+            "high": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": 1,
+          "outcome": "converged"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "markdown-site",
+      "scenario": "rephrasing_reviewer",
+      "reached": "complete",
+      "prd_converged": true,
+      "prd_cycles": 2,
+      "prd_outcome": "converged",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "generates the index",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": null,
+      "calls": 14,
+      "input_tokens": 6389,
+      "output_tokens": 766,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 1,
+      "demoted": {
+        "uncited": 2,
+        "unjustified_reraise": 1
+      },
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "high": 2
+          },
+          "new": {
+            "high": 2
+          },
+          "demoted": {
+            "uncited": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 1,
+          "prev_open_blocking": -1,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 2,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "high": 2
+          },
+          "new": {
+            "high": 1
+          },
+          "reraised": {
+            "high": 1
+          },
+          "demoted": {
+            "uncited": 1,
+            "unjustified_reraise": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": 1,
+          "outcome": "converged"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "markdown-site-legacy",
+      "scenario": "rephrasing_reviewer",
+      "reached": "complete",
+      "prd_converged": false,
+      "prd_cycles": 3,
+      "prd_outcome": "max_cycles",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "generates the index",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": [
+        {
+          "stage": "prd_review"
+        }
+      ],
+      "calls": 16,
+      "input_tokens": 8669,
+      "output_tokens": 1147,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 0,
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "legacy",
+          "rigor": "standard",
+          "raised": {
+            "high": 2
+          },
+          "new": {
+            "high": 2
+          },
+          "deterministic": 0,
+          "open_blocking": 2,
+          "prev_open_blocking": -1,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 2,
+          "mode": "legacy",
+          "rigor": "standard",
+          "raised": {
+            "high": 2
+          },
+          "new": {
+            "high": 2
+          },
+          "deterministic": 0,
+          "open_blocking": 2,
+          "prev_open_blocking": 2,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 3,
+          "mode": "legacy",
+          "rigor": "standard",
+          "raised": {
+            "high": 2
+          },
+          "new": {
+            "high": 2
+          },
+          "deterministic": 0,
+          "open_blocking": 2,
+          "prev_open_blocking": 2,
+          "outcome": "max_cycles"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "legacy",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "expense-splitter",
+      "scenario": "scope_creep",
+      "reached": "complete",
+      "prd_converged": true,
+      "prd_cycles": 1,
+      "prd_outcome": "converged",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "tests pass",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": null,
+      "calls": 12,
+      "input_tokens": 2866,
+      "output_tokens": 347,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 0,
+      "demoted": {
+        "uncited": 2
+      },
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "high": 2,
+            "medium": 1
+          },
+          "new": {
+            "high": 2,
+            "medium": 1
+          },
+          "demoted": {
+            "uncited": 2
+          },
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "pomodoro",
+      "scenario": "demo",
+      "reached": "complete",
+      "prd_converged": true,
+      "prd_cycles": 1,
+      "prd_outcome": "converged",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "page exists",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": null,
+      "calls": 12,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 0,
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    },
+    {
+      "name": "habit-tracker",
+      "scenario": "genuine_blocker",
+      "reached": "complete",
+      "prd_converged": false,
+      "prd_cycles": 2,
+      "prd_outcome": "stalled",
+      "plan_converged": true,
+      "change_sets": 1,
+      "applied_change_sets": 1,
+      "verify_passed": true,
+      "checks": [
+        {
+          "name": "builds",
+          "status": "skipped"
+        }
+      ],
+      "checks_skipped": true,
+      "human_stops": [
+        {
+          "stage": "prd_review"
+        }
+      ],
+      "calls": 14,
+      "input_tokens": 6360,
+      "output_tokens": 742,
+      "cost_usd": 0,
+      "wall_seconds": 0,
+      "reraised": 1,
+      "telemetry": [
+        {
+          "review": "prd",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "critical": 1
+          },
+          "new": {
+            "critical": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 1,
+          "prev_open_blocking": -1,
+          "outcome": "revise"
+        },
+        {
+          "review": "prd",
+          "cycle": 2,
+          "mode": "guarded",
+          "rigor": "standard",
+          "raised": {
+            "critical": 1
+          },
+          "reraised": {
+            "critical": 1
+          },
+          "deterministic": 0,
+          "open_blocking": 1,
+          "prev_open_blocking": 1,
+          "outcome": "stalled"
+        },
+        {
+          "review": "execution_plan",
+          "cycle": 1,
+          "mode": "guarded",
+          "rigor": "standard",
+          "deterministic": 0,
+          "open_blocking": 0,
+          "prev_open_blocking": -1,
+          "outcome": "converged"
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "cases": 7,
+    "completed": 7,
+    "prd_converged": 5,
+    "mean_prd_cycles": 1.8571428571428572,
+    "plan_converged": 7,
+    "produced_change_set": 7,
+    "applied": 7,
+    "verify_passed": 7,
+    "human_stops": 2,
+    "human_stops_by_stage": {
+      "prd_review": 2
+    },
+    "errors": 0,
+    "expectation_failures": 0,
+    "cost_usd": 0,
+    "input_tokens": 36968,
+    "output_tokens": 4314,
+    "wall_seconds": 0
+  }
+}

@@ -380,7 +380,7 @@ In `guarded` mode (the default) the loop answers each:
 - **Every cycle is recorded.** Each adversarial review run's manifest carries a `review` record:
   findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
   blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
-  or `blocked` for the single-pass plan review).
+  or `blocked` for the single-pass plan review). `idea eval` reports them per case.
 
 Nothing here lowers the bar for a genuine blocker: a cited finding that persists, with a reason,
 keeps blocking until a human acts. Deterministic checks are never subject to any of it. The plan
@@ -389,8 +389,8 @@ A human `idea revise` (or resume) starts a new loop seeded with the still-open f
 reworded twin of something the human just revised away is a re-raise rather than a new blocker.
 
 `legacy` restores the pre-0.7 loop exactly — no prior-cycle context, no demotions, no stall
-detector — though telemetry is still recorded. It is there to measure the difference and as an
-escape hatch.
+detector — though telemetry is still recorded. It is there to measure the difference (`idea eval`
+runs the non-convergence scenario both ways) and as an escape hatch.
 
 ### Model output ceilings
 

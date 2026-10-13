@@ -176,6 +176,38 @@ func (db *DB) SetRunManifestReview(ctx context.Context, runID string, t domain.R
 	})
 }
 
+// SumRunUsage sums the usage of every run manifest attributed to an
+// initiative (runs.initiative_id) and counts them -- the token figures GET
+// .../costs does not report. Summed in Go because usage is stored as JSON.
+func (db *DB) SumRunUsage(ctx context.Context, initiativeID string) (domain.RunUsage, int, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT m.usage_json
+		FROM runs r JOIN run_manifests m ON m.run_id = r.id
+		WHERE r.initiative_id = ?`, initiativeID)
+	if err != nil {
+		return domain.RunUsage{}, 0, err
+	}
+	defer rows.Close()
+	var total domain.RunUsage
+	n := 0
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return domain.RunUsage{}, 0, err
+		}
+		var u domain.RunUsage
+		if err := jsonUnmarshal(raw, &u); err != nil {
+			return domain.RunUsage{}, 0, fmt.Errorf("store: decode run usage: %w", err)
+		}
+		total.InputTokens += u.InputTokens
+		total.OutputTokens += u.OutputTokens
+		total.CostUSD += u.CostUSD
+		total.DurationMS += u.DurationMS
+		n++
+	}
+	return total, n, rows.Err()
+}
+
 // ListReviewTelemetry returns every review cycle's convergence record for an
 // initiative, oldest first -- the PRD loop's cycles and the plan review's
 // pass, across every invocation (a human revise starts a new loop at cycle 1,

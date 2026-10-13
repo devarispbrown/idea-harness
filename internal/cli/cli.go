@@ -162,6 +162,7 @@ func commands() []command {
 		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", flags: flagSpec{}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
+		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
 		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}
