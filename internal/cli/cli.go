@@ -197,12 +197,15 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			}
 			a, err := c.parse(cmd, rest)
 			if err != nil {
-				return err
+				// Every parse failure is the command line's fault, so it is
+				// tagged once here rather than at each of parse's returns.
+				return &cliError{kind: kindUsage, err: err,
+					hint: "`idea " + cmd + " --help` shows its arguments and flags"}
 			}
 			return c.run(a, stdout, stderr)
 		}
 	}
-	return fmt.Errorf("unknown command %q (try `idea help`)", cmd)
+	return usageErrorf("unknown command %q (try `idea help`)", cmd)
 }
 
 // parse turns a command's remaining argv into cmdArgs, enforcing the spec the
@@ -288,7 +291,7 @@ func cmdHelp(a cmdArgs, stdout, stderr io.Writer) error {
 	case "md", "markdown":
 		return renderCommandTable(stdout)
 	default:
-		return fmt.Errorf("unknown --format %q (use text or md)", format)
+		return usageErrorf("unknown --format %q (use text or md)", format)
 	}
 }
 
@@ -353,7 +356,7 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 			fmt.Fprintln(stdout, muted("web UI: ")+bold(uiURL()))
 			return nil
 		}
-		return fmt.Errorf("daemon is not running (it auto-starts on the first command that needs it)")
+		return errorf(kindDaemonUnavailable, "daemon is not running (it auto-starts on the first command that needs it)")
 	case "stop":
 		pid, err := stopDaemon()
 		if err == nil {
@@ -434,7 +437,7 @@ func stopDaemon() (int, error) {
 				"directory is removed while it runs. Stop it with: %s",
 				daemonAddr(), stopHint())
 		}
-		return 0, fmt.Errorf("no daemon pidfile, and nothing answering on %s; it is already stopped",
+		return 0, errorf(kindDaemonUnavailable, "no daemon pidfile, and nothing answering on %s; it is already stopped",
 			daemonAddr())
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -465,7 +468,7 @@ func cmdInit(a cmdArgs, stdout io.Writer) error {
 	// success, so a user watched it create a project somewhere they did not ask
 	// for (DX audit). The argument reads as intent, so it is honoured.
 	if len(a.positional) > 1 {
-		return fmt.Errorf("usage: idea init [<dir>]")
+		return usageErrorf("usage: idea init [<dir>]")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -481,7 +484,7 @@ func cmdInit(a cmdArgs, stdout io.Writer) error {
 			return fmt.Errorf("cannot initialize %s: %w", dir, err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("cannot initialize %s: not a directory", dir)
+			return usageErrorf("cannot initialize %s: not a directory", dir)
 		}
 		cwd = abs
 	}
@@ -520,10 +523,10 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 	idea := strings.Join(a.positional, " ")
 	if strings.TrimSpace(idea) == "" {
 		if len(docPaths) > 0 {
-			return fmt.Errorf("an idea is required with --doc (e.g. idea new \"<idea>\" --doc <path>)")
+			return usageErrorf("an idea is required with --doc (e.g. idea new \"<idea>\" --doc <path>)")
 		}
 		if !colorEnabled {
-			return fmt.Errorf("usage: idea new \"<idea>\" [--doc <path> …]")
+			return usageErrorf("usage: idea new \"<idea>\" [--doc <path> …]")
 		}
 		return interactiveNew(stdout, stderr)
 	}
@@ -541,13 +544,13 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 			return err
 		}
 		if len(data) > maxDocUploadBytes {
-			return fmt.Errorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
+			return usageErrorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
 		}
 		if len(data) == 0 {
-			return fmt.Errorf("document %q is empty", path)
+			return usageErrorf("document %q is empty", path)
 		}
 		if docparse.Sniff(path, data) != "text" {
-			return fmt.Errorf("--doc supports text files only (%s); use `idea docs add` for PDF/DOCX/images", path)
+			return usageErrorf("--doc supports text files only (%s); use `idea docs add` for PDF/DOCX/images", path)
 		}
 		kind := docparse.InferKind(path)
 		title := filepath.Base(path)
@@ -634,7 +637,9 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 // connect ensures the daemon is running and returns a client + the cwd project.
 func connect() (*client, string, error) {
 	if err := ensureDaemon(); err != nil {
-		return nil, "", err
+		// Whatever stopped it starting -- including a failure to find our own
+		// executable -- the outcome for the caller is the same: no daemon.
+		return nil, "", withKind(kindDaemonUnavailable, err)
 	}
 	c, err := newClient()
 	if err != nil {
@@ -662,7 +667,7 @@ func cmdConfig(a cmdArgs, stdout, stderr io.Writer) error {
 		// invalid". Unlike doctor, this command is asked to validate a specific
 		// thing, so the absence of that thing is an error rather than a note.
 		if _, statErr := os.Stat(filepath.Join(cwd, config.Dir)); statErr != nil {
-			return fmt.Errorf("no idea-harness project in %s (run `idea init` to create one)", cwd)
+			return errorf(kindNotFound, "no idea-harness project in %s (run `idea init` to create one)", cwd)
 		}
 		// Schema validity is not the same as a usable config: a default_model
 		// naming a provider that does not exist parses fine and fails at the
@@ -683,19 +688,19 @@ func cmdLogs(a cmdArgs, stdout io.Writer) error {
 	if v := a.value("-n"); v != "" {
 		parsed, err := strconv.Atoi(v)
 		if err != nil || parsed <= 0 {
-			return fmt.Errorf("-n needs a positive number of lines, got %q", v)
+			return usageErrorf("-n needs a positive number of lines, got %q", v)
 		}
 		n = parsed
 	}
 	if arg := a.arg(0); arg != "" {
 		parsed, err := strconv.Atoi(arg)
 		if err != nil || parsed <= 0 {
-			return fmt.Errorf("idea logs takes a positive line count, got %q", arg)
+			return usageErrorf("idea logs takes a positive line count, got %q", arg)
 		}
 		n = parsed
 	}
 	if len(a.positional) > 1 {
-		return fmt.Errorf("usage: idea logs [-f] [-n <lines>] [<lines>]")
+		return usageErrorf("usage: idea logs [-f] [-n <lines>] [<lines>]")
 	}
 	if follow {
 		return followLogs(stdout)
@@ -703,7 +708,7 @@ func cmdLogs(a cmdArgs, stdout io.Writer) error {
 
 	data, err := os.ReadFile(logPath())
 	if err != nil {
-		return fmt.Errorf("no daemon log at %s yet — run `idea daemon` or any command first", logPath())
+		return errorf(kindNotFound, "no daemon log at %s yet — run `idea daemon` or any command first", logPath())
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) > n {
@@ -720,7 +725,7 @@ func cmdLogs(a cmdArgs, stdout io.Writer) error {
 func followLogs(stdout io.Writer) error {
 	f, err := os.Open(logPath())
 	if err != nil {
-		return fmt.Errorf("no daemon log at %s yet", logPath())
+		return errorf(kindNotFound, "no daemon log at %s yet", logPath())
 	}
 	defer f.Close()
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
@@ -787,7 +792,7 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
 			muted(" — or, if its pidfile went with the state directory, ")+bold(stopHint())+muted("."))
 		fmt.Fprintln(stdout, muted("  The next command starts a fresh one."))
-		daemonProblem = fmt.Errorf("the daemon is rejecting this CLI's token; stop it and let the next command restart it")
+		daemonProblem = errorf(kindUnauthorized, "the daemon is rejecting this CLI's token; stop it and let the next command restart it")
 	case staleDaemon:
 		fmt.Fprintln(stdout, errText("✗ daemon")+" "+muted("running ")+code(daemonInfo.String())+
 			muted(", but this CLI is ")+code(buildinfo.Get().String()))
@@ -807,7 +812,7 @@ func cmdDoctor(stdout io.Writer) error {
 		fmt.Fprintln(stdout, muted("  The state directory is gone or unreadable; the daemon still holds the token it read at start."))
 		fmt.Fprintln(stdout, muted("  Fix: ")+bold("idea daemon stop")+
 			muted(" — or, if its pidfile went with the state directory, ")+bold(stopHint())+muted("."))
-		daemonProblem = fmt.Errorf("a daemon is running but this CLI has no token for it; stop it and let the next command restart it")
+		daemonProblem = errorf(kindUnauthorized, "a daemon is running but this CLI has no token for it; stop it and let the next command restart it")
 	default:
 		fmt.Fprintln(stdout, muted("• daemon: not running (auto-starts on first command)"))
 	}
@@ -972,7 +977,7 @@ func cmdDoctor(stdout io.Writer) error {
 		return daemonProblem
 	}
 	if !configValid {
-		return fmt.Errorf("config problems above must be fixed")
+		return errorf(kindConfigInvalid, "config problems above must be fixed")
 	}
 	if keyErr != nil {
 		return keyErr

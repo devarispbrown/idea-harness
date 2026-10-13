@@ -200,9 +200,9 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 			if step, nerr := nextAction(c, projectID, iniID); nerr == nil && step.Action == "failed" {
 				return failedInitiativeError(step.FailureReason)
 			}
-			return fmt.Errorf("%s failed — run `idea logs` for details", op.Type)
+			return errorf(kindRunFailed, "%s failed — run `idea logs` for details", op.Type)
 		case "cancelled":
-			return fmt.Errorf("%s was cancelled", op.Type)
+			return errorf(kindRunFailed, "%s was cancelled", op.Type)
 		}
 		// A model call that hangs is indistinguishable from one that is merely
 		// slow, and both looked like `working…` forever. The provider client
@@ -413,7 +413,7 @@ func failedInitiativeError(reason string) error {
 	// re-running the pipeline is not what that needs.
 	const recovery = "`idea status` shows where it is; `idea retry` re-runs it, `idea logs` has the full text"
 	if strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("the initiative failed, and no reason was recorded — %s", recovery)
+		return errorf(kindRunFailed, "the initiative failed, and no reason was recorded — %s", recovery)
 	}
-	return fmt.Errorf("the initiative failed: %s — %s", reason, recovery)
+	return errorf(kindRunFailed, "the initiative failed: %s — %s", reason, recovery)
 }
