@@ -282,6 +282,11 @@ type HarnessConfig struct {
 	// Demo configures the built-in deterministic provider. It does nothing when
 	// a real provider is configured.
 	Demo DemoConfig `json:"demo,omitempty" yaml:"demo,omitempty"`
+	// Integrations configures the Slack and Linear integrations
+	// (integrations.go). Each is off unless its section is present; tokens are
+	// never read from here, only from the environment or the project's .env,
+	// named by the *_env fields.
+	Integrations IntegrationsConfig `json:"integrations,omitempty" yaml:"integrations,omitempty"`
 }
 
 // GitConfig configures git-native behavior beyond git_commit (review C4,
@@ -439,6 +444,9 @@ func Load(dir string) (Config, error) {
 	}
 	if conv.StallCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.convergence.stall_cycles must be >= 0")
+	}
+	if err := cfg.Harness.Integrations.validate(); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }

@@ -150,6 +150,11 @@ func commands() []command {
 				"--acp-command": flagValue, "--acp-key-env": flagValue},
 		}, subsAreRequired: true, maxPositional: 1, run: cmdExecutors, inHelp: true},
 		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp|acp, default hermes (or --kind; acp needs --image and --acp-command)", inHelp: true},
+		{names: []string{"integrations"}, usage: "integrations [status]", summary: "show Slack/Linear integration health: tokens present, deliveries, socket and poll state", flags: jsonFlag, subs: map[string]flagSpec{
+			"status": {"--json": flagBool},
+			"test":   {"--json": flagBool},
+		}, maxPositional: 1, run: cmdIntegrations, inHelp: true},
+		{usage: "integrations test slack|linear", summary: "post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label", inHelp: true},
 		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
@@ -963,6 +968,19 @@ func cmdDoctor(stdout io.Writer) error {
 					}
 				}
 			}
+		}
+	}
+
+	// Slack/Linear health. Reported, deliberately not failing the command:
+	// a revoked Slack token or a Linear outage is worth seeing here, but it
+	// does not make the harness itself unhealthy, and a script gating on
+	// `idea doctor` should not start failing because a chat service did.
+	if doctorClient != nil {
+		var iv cliIntegrationsView
+		if err := doctorClient.do("GET", "/api/v1/projects/"+doctorProj+"/integrations", nil, &iv); err != nil {
+			fmt.Fprintln(stdout, muted("• integrations: could not ask the daemon ("+err.Error()+")"))
+		} else {
+			renderIntegrations(stdout, iv, true)
 		}
 	}
 

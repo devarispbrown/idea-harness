@@ -80,6 +80,11 @@ type Runtime struct {
 	// Its own mutex, because EnsureProject builds a registry while holding mu.
 	extraMu        sync.Mutex
 	extraProviders map[string]model.Provider
+
+	// integ runs the Slack/Linear integrations (integrations.go); created on
+	// first use by integrations().
+	integOnce sync.Once
+	integ     *integrationHub
 }
 
 type projectRuntime struct {
@@ -205,7 +210,12 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 func (r *Runtime) Token() string { return r.token }
 
 // Close releases global resources.
-func (r *Runtime) Close() error { return r.global.Close() }
+func (r *Runtime) Close() error {
+	// Integrations first: their goroutines read project databases and must
+	// be gone before anything underneath them is.
+	r.stopIntegrations()
+	return r.global.Close()
+}
 
 // StateRoot returns the global state directory.
 func (r *Runtime) StateRoot() string { return r.stateRoot }
@@ -342,6 +352,9 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 			r.log.Info("no_op backfill: fixed pre-migration change sets", "project", projectID, "count", n)
 		}
 	}
+	// After reconciliation, so the integration bus never observes (and
+	// announces) a half-reconciled state as news.
+	r.configureIntegrations(projectID, pr)
 	return pr, nil
 }
 
@@ -423,6 +436,8 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	r.mu.Lock()
 	r.projects[projectID] = newPr
 	r.mu.Unlock()
+	// A no-op unless the integrations section or its tokens changed.
+	r.configureIntegrations(projectID, newPr)
 	return newPr, nil
 }
 
@@ -2460,6 +2475,16 @@ func collectSecrets(cfg config.Config, dotEnv map[string]string) []string {
 		if keyEnv != "" {
 			add(lookupEnv(keyEnv, dotEnv))
 		}
+	}
+	// Integration tokens (integrations.go), by whatever env names harness.yaml
+	// points at -- including ones set only in the process environment, which
+	// the .env sweep below never sees.
+	if s := cfg.Harness.Integrations.Slack; s != nil {
+		add(lookupEnv(s.BotTokenEnvName(), dotEnv))
+		add(lookupEnv(s.AppTokenEnvName(), dotEnv))
+	}
+	if l := cfg.Harness.Integrations.Linear; l != nil {
+		add(lookupEnv(l.APIKeyEnvName(), dotEnv))
 	}
 	// Arbitrary secret-bearing .env entries (e.g. AWS_SECRET_ACCESS_KEY, a
 	// DATABASE_URL with an embedded password) are redacted too (review).

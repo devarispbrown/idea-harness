@@ -36,7 +36,8 @@ M1 threats and mitigations:
   personal access tokens (`glpat-…`), Google API keys (`AIza…`), npm access tokens (`npm_…`),
   OpenAI/Anthropic API keys (`sk-ant-…`, `sk-proj-…`, and related `sk-` prefixes), a bare `sk-`
   OpenAI API key, Stripe secret keys (`sk_live_…`), Slack tokens (`xoxb-…` and the other
-  `xox[baprs]-…` kinds), bearer tokens (`Bearer …`), URL userinfo credentials
+  `xox[baprs]-…` kinds), Slack app-level tokens (`xapp-…`), Linear API keys (`lin_api_…`),
+  bearer tokens (`Bearer …`), URL userinfo credentials
   (`scheme://user:password@host`, e.g. a postgres/mysql DSN), a generic `key=`/`token=`-shaped
   credential assignment, and any of the project's own configured secret values.
 - The canary-secret leak sweep (a canary secret injected as input must not appear in any store)
