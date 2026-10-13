@@ -7,7 +7,8 @@ on:
 
 # Least privilege by default. Every job here is read-only except `release`,
 # which declares `contents: write` for itself in order to create the GitHub
-# release. Job-level `permissions` REPLACES this default rather than merging
+# release, plus `id-token: write` and `attestations: write` to sign and attest
+# it. Job-level `permissions` REPLACES this default rather than merging
 # with it, and any scope a job block omits is set to `none` -- so the agent tier,
 # which runs a real coding agent with network egress, declares `contents: read`
 # explicitly and cannot inherit the release job's write token.
@@ -312,6 +313,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and upload archives
+      # Keyless cosign signing of checksums.txt and the provenance attestation
+      # below both authenticate as this workflow through a GitHub OIDC token.
+      # Scoped to this job only: the agent tier must never be able to mint one.
+      id-token: write
+      attestations: write # store the build-provenance attestation
     # No cancel-in-progress, deliberately. Nothing races today, but this
     # workflow now runs on every push, which makes a workflow-level
     # `concurrency: { cancel-in-progress: true }` a tempting future addition --
@@ -365,12 +371,36 @@ jobs:
       # dirties the tree only AFTER goreleaser's own git validation, and nothing
       # runs afterward. compile-no-node checks the placeholder, and this job
       # needs it.
+      # goreleaser shells out to both: cosign for the `signs` block, syft for
+      # the `sboms` block. Neither is on the hosted runner.
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: anchore/sbom-action/download-syft@v0
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional. Absent, .goreleaser.yaml skips the cask push rather than
+          # failing the release (see homebrew_casks.skip_upload there).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # Build provenance for every archive, stored by GitHub and checkable with
+      # `gh attestation verify` (RELEASING.md). After goreleaser because it
+      # attests the files goreleaser wrote to dist/.
+      #
+      # Public repositories only. On GitHub Free, Pro and Team plans artifact
+      # attestations are unavailable for private repositories and the action
+      # fails -- which, this being the last step, would mark a release that
+      # did publish as failed. The cosign signature above does not have that
+      # limit, so a private-repository release is still signed.
+      - name: Attest build provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
 
   # The coding-agent path shipped broken twice over and nothing noticed: the
   # Hermes argv used a flag the image does not have, and the hardened container
