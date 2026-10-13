@@ -109,7 +109,7 @@ internal/web         embedded React UI
   projects/<id>/
     state.db           per-project relational state
     blobs/             content-addressed blobs, redacted on write
-    raw-blobs/         uploaded file content and image bytes, deliberately NOT redacted
+    raw-blobs/         change-set file content, apply pre-images, image bytes — deliberately NOT redacted
                        (see security-model.md#what-this-does-not-protect-against)
 ```
 

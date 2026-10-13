@@ -275,9 +275,18 @@ func (e *Engine) renderQuestionsWithAnswers(questions []domain.Question) string 
 // not found)" when there is no digest, no blob store, or the blob cannot be
 // read, so a lookup failure degrades the rendered context rather than
 // failing the review/plan/brief it feeds.
+//
+// Read from the REDACTED store, which is where both writers put an answer
+// (handleAnswerQuestion's pr.blobs.Put, storeBlob). This used to read
+// contentBlobs() -- the redaction-free raw store -- which in the daemon is a
+// different directory, so every answer resolved to "(answer not found)"
+// outside tests (whose engine wires one store as both). Found auditing every
+// raw-blobs read path: the raw store holds file content for apply/revert and
+// nothing a prompt should be built from.
 func (e *Engine) answerText(q domain.Question) string {
-	if q.AnswerDigest != "" && e.contentBlobs() != nil {
-		if data, err := e.contentBlobs().Get(q.AnswerDigest); err == nil {
+	blobs := e.snapshotConfig().blobs
+	if q.AnswerDigest != "" && blobs != nil {
+		if data, err := blobs.Get(q.AnswerDigest); err == nil {
 			return strings.TrimSpace(string(data))
 		}
 	}

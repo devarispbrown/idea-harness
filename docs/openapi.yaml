@@ -165,7 +165,9 @@ paths:
       summary: Tail the daemon log
       description: |
         Global, not project-scoped. Answers 200 with an empty `lines` array and an empty `path`
-        rather than an error when the log file does not exist yet.
+        rather than an error when the log file does not exist yet. Each line is credential-redacted
+        on read (pattern catalog plus every loaded project's secret values), in addition to the
+        redacting log handler that wrote it; see docs/security-model.md.
       parameters:
         - name: n
           in: query
@@ -3028,8 +3030,10 @@ paths:
                     its findings are persisted and every later attempt is refused by the
                     `review_open_blocking` deny before the review runs, with no route out.
 
-                    Only the reviewer's findings. A finding carrying a deny code — `secret_sweep`,
-                    `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
+                    Only findings with no deny code: the reviewer's own, and the `protected_path`
+                    finding a change to an auto-executing file raises (signing that off is the
+                    explicit approval it exists to require). A finding carrying a deny code —
+                    `secret_sweep`, `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
                     dispositioned (a failing build check is `rejected`, not a judgment to accept
                     away). The deny gate is re-run afterwards, so anything left alone still refuses
                     — except a finding a HUMAN already dispositioned `rejected` on their own, with

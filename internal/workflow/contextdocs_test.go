@@ -7,6 +7,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
 // TestContextDocsWireConsumesEdges verifies deterministic provenance: when an
@@ -121,5 +122,73 @@ func TestDescribeImages(t *testing.T) {
 	block := eng.contextDocs(ctx, ini.ID)
 	if !strings.Contains(block, "image") {
 		t.Fatalf("context block should label the image doc, got %q", block)
+	}
+}
+
+// TestDescribeImagesRedactsOCRdCredentials: a vision model transcribes what an
+// image shows, so a screenshot of a settings page or a terminal puts its keys
+// into the description. Those must be masked before the description is stored
+// and before it reaches any prompt -- with the engine's redactor (known values
+// plus patterns) and, with none configured, the pattern catalog alone.
+func TestDescribeImagesRedactsOCRdCredentials(t *testing.T) {
+	anthropicKey := "sk-ant-api03-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCDEF"
+	awsKeyID := "AKIA" + "Q3EGRIXJ7PZ4WN2T"
+	const configured = "configured-but-shapeless-value-91"
+	description := "Settings screen. The API key field shows " + anthropicKey +
+		"; below it an AWS access key " + awsKeyID + " and a token " + configured + "."
+
+	for _, tc := range []struct {
+		name     string
+		redactor *security.Redactor
+		mustMask []string
+	}{
+		{"engine redactor", security.NewRedactor(configured), []string{anthropicKey, awsKeyID, configured}},
+		{"no redactor configured", nil, []string{anthropicKey, awsKeyID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := scriptedProvider()
+			// A vision request carries no JSON schema name.
+			fp.SetResponse("", description)
+			eng, db := newTestEngine(t, fp, config.HarnessConfig{Network: config.NetworkDisabled, Review: config.ReviewConfig{MaxCycles: 3}})
+			if tc.redactor != nil {
+				eng.SetRedactor(tc.redactor)
+			}
+			ctx := context.Background()
+			ini := &domain.Initiative{Title: "x", Description: "x"}
+			if err := db.CreateInitiative(ctx, ini); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := eng.rawBlobs.Put([]byte("\x89PNG\r\n\x1a\nscreenshot"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			img := &domain.ContextDoc{InitiativeID: ini.ID, Kind: "design", Title: "settings", Digest: digest, Format: "image"}
+			if err := db.CreateContextDoc(ctx, img); err != nil {
+				t.Fatal(err)
+			}
+			if err := eng.DescribeImages(ctx, ini.ID); err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.GetContextDoc(ctx, img.ID)
+			if err != nil || got.DescriptionDigest == "" {
+				t.Fatalf("no description recorded (err=%v)", err)
+			}
+			stored, err := eng.blobs.Get(got.DescriptionDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			block := eng.contextDocs(ctx, ini.ID)
+			for _, s := range tc.mustMask {
+				if strings.Contains(string(stored), s) {
+					t.Errorf("stored description kept %q:\n%s", s, stored)
+				}
+				if strings.Contains(block, s) {
+					t.Errorf("context block kept %q", s)
+				}
+			}
+			if !strings.Contains(string(stored), "Settings screen.") {
+				t.Errorf("the description itself was lost: %q", stored)
+			}
+		})
 	}
 }
