@@ -1035,6 +1035,15 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 // re-run of the whole set on every cycle is exactly what churned REQ codes
 // on every revise cycle and made requirement history unreadable.
 func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, priorReqs []domain.Requirement, reviseReason string) error {
+	_, err := e.runProductDefinitionRevising(ctx, initiativeID, priorReqs, reviseReason, nil)
+	return err
+}
+
+// runProductDefinitionRevising is runProductDefinition with an optional
+// review-driven revision brief (rev; see prdRevision), returning the PRD
+// author's review_responses keyed by finding label. With rev nil it is
+// exactly runProductDefinition, and the responses are empty.
+func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID string, priorReqs []domain.Requirement, reviseReason string, rev *prdRevision) (map[string]string, error) {
 	reqs := priorReqs
 	if reqs == nil {
 		all, _ := e.db.ListRequirements(ctx, initiativeID)
@@ -1064,6 +1073,14 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 		{Selector: "findings", Content: renderFindings(findings)},
 	}
+	if rev != nil {
+		// The precise brief (convergence.go root cause 4): the "findings"
+		// input above is every finding the initiative ever had, severity and
+		// text only, and the policy only obliges acting on a "mitigate"
+		// disposition no in-loop finding carries. This is the list that
+		// blocked THIS cycle, with evidence and recommendation, by label.
+		inputs = append(inputs, ccontext.Input{Selector: "review_findings", Content: rev.findings})
+	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
@@ -1071,15 +1088,16 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	e.setStage(ctx, initiativeID, "Writing the PRD")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageProductDefinition, RoleProductManager, "prd", schema.PRD, inputs, "Author the PRD.")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	responses := reviewResponses(obj)
 
 	body := renderPRD(obj)
 	bodyDigest := e.storeBlob(body)
 	art := &domain.Artifact{InitiativeID: initiativeID, Kind: domain.ArtifactPRD}
 	ver := &domain.ArtifactVersion{BodyDigest: bodyDigest, ProducedByRun: runID, Status: "draft"}
 	if err := e.db.CreateArtifact(ctx, art, ver); err != nil {
-		return err
+		return nil, err
 	}
 
 	// review H6: completedPhases keys Retry's "PRD completed" off
@@ -1137,7 +1155,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 		code := NormalizeRequirementRef(str(r["code"]))
 		if code != "" {
 			if usedCodes[code] {
-				return fmt.Errorf("workflow: revision response names requirement code %q more than once", str(r["code"]))
+				return nil, fmt.Errorf("workflow: revision response names requirement code %q more than once", str(r["code"]))
 			}
 			usedCodes[code] = true
 		}
@@ -1145,7 +1163,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			req.ID = prior.ID
 			req.Code = prior.Code
 			if err := e.db.UpdateRequirement(dctx, req); err != nil {
-				return err
+				return nil, err
 			}
 			// Consume the match (review C5): once this cycle's response has
 			// updated a prior requirement in place, that code is spent -- a
@@ -1155,7 +1173,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			delete(priorByCode, code)
 		} else {
 			if err := e.db.CreateRequirement(dctx, req); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		// Every requirement THIS cycle produced must survive the
@@ -1172,7 +1190,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	}
 	if reviseReason != "" {
 		if err := e.db.SupersedeRequirementsExcept(dctx, initiativeID, reviseReason, keptIDs); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// M1: decIDByNorm is keyed by THIS CYCLE's own decision wording (what the
@@ -1196,7 +1214,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			Recommendation: e.redact(str(d["recommendation"])),
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if id != "" {
 			decIDByNorm[normalizeJudgment(question)] = id
@@ -1231,7 +1249,7 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 			}
 			if ok {
 				if err := e.db.WireRequirementDerivedFromDecision(dctx, initiativeID, reqID, decID); err != nil {
-					return err
+					return nil, err
 				}
 			} else {
 				e.log.Debug("requirement decision reference did not match any known decision; link skipped (best-effort)", "initiative", initiativeID, "requirement", reqID)
@@ -1240,10 +1258,10 @@ func (e *Engine) runProductDefinition(ctx context.Context, initiativeID string, 
 	}
 	for _, q := range strSlice(obj["open_questions"]) {
 		if err := e.createQuestionIfNew(dctx, initiativeID, e.redact(q)); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return responses, nil
 }
 
 // runReviewLoop runs deterministic checks + adversarial review with bounded
@@ -1261,7 +1279,32 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 	// happens to have swapped in by a later cycle.
 	snap := e.snapshotConfig()
 	maxCycles := snap.cfg.Review.MaxCycles
+	rules := snap.cfg.Review.Convergence.Effective()
+	guarded := !rules.Legacy()
 	var rigor RigorLevel
+
+	ini, err := e.db.GetInitiative(ctx, initiativeID)
+	if err != nil {
+		return domain.InitiativeFailed, err
+	}
+
+	// Cross-cycle state (review.convergence; see convergence.go for the root
+	// causes each piece answers). prior is what the reviewer is shown and
+	// judged against; changed is what the last revision touched (nil until a
+	// revision inside THIS loop has happened); prevOpen is the previous
+	// cycle's gating count, -1 before there is one.
+	var prior []priorFinding
+	var changed map[string]bool
+	prevOpen, stalls := -1, 0
+	if guarded {
+		// A loop entered from Revise or Resume has been reviewed before: the
+		// previous loop's still-open findings are this one's prior cycle, so
+		// a reworded twin of a finding a human just revised away is
+		// recognized as a re-raise rather than counted as brand new.
+		if prior, err = e.seedPriorFindings(ctx, initiativeID); err != nil {
+			return domain.InitiativeFailed, err
+		}
+	}
 
 	for cycle := 1; ; cycle++ {
 		reqs, err := e.db.ListRequirements(ctx, initiativeID)
@@ -1272,10 +1315,6 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 
 		if rigor == "" {
 			scale := projectScaleOf(ctx, e.workspaceRoot)
-			ini, err := e.db.GetInitiative(ctx, initiativeID)
-			if err != nil {
-				return domain.InitiativeFailed, err
-			}
 			rigor = calibrateRigor(RigorLevel(snap.cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 			if rigor == RigorQuick {
 				maxCycles = 1
@@ -1284,7 +1323,14 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 
 		detFindings := review.DeterministicChecks(initiativeID, active)
 		e.setStage(ctx, initiativeID, fmt.Sprintf("Reviewing the PRD (cycle %d)", cycle))
-		advFindings, err := e.runAdversarialReview(ctx, initiativeID, active, rigor)
+		var extra []ccontext.Input
+		if guarded {
+			extra = append(extra, ccontext.Input{Selector: "convergence_policy", Content: reviewerConvergencePolicy(rules, "a REQ code from the requirements below")})
+			if len(prior) > 0 {
+				extra = append(extra, ccontext.Input{Selector: "prior_findings", Content: renderPriorFindings(prior, changed, rules)})
+			}
+		}
+		reviewRunID, advFindings, err := e.runAdversarialReview(ctx, initiativeID, active, rigor, extra)
 		if err != nil {
 			return domain.InitiativeFailed, err
 		}
@@ -1305,6 +1351,23 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			}
 		}
 
+		// The convergence rules (guarded mode) run on the adversarial
+		// findings only, before capping, so the cap's "never drop a blocker"
+		// rule sees the post-rule blockers, and before redaction, which never
+		// touches a requirement code.
+		tel := newReviewTelemetry("prd", cycle, rules, rigor)
+		tel.PrevOpenBlocking = prevOpen
+		var cls classification
+		if guarded {
+			cls = classifyFindings(classifyInput{
+				rules: rules, later: len(prior) > 0, active: active, idea: ini.Description,
+				prior: prior, changed: changed,
+			}, advFindings)
+		} else {
+			cls = classification{reRaiseOf: map[int]int{}, demoted: map[string]int{}, cites: make([]string, len(advFindings))}
+		}
+		countCycle(&tel, advFindings, cls, prior)
+
 		all := append(detFindings, advFindings...)
 		all = capFindings(all, findingCap(rigor), rigor)
 
@@ -1317,6 +1380,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			all[i].Evidence = e.redact(all[i].Evidence)
 			all[i].Impact = e.redact(all[i].Impact)
 			all[i].Recommendation = e.redact(all[i].Recommendation)
+			all[i].Note = e.redact(all[i].Note)
 		}
 
 		// ICP re-run defect A: Revise (human answers a question / resolves a
@@ -1338,6 +1402,19 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			}
 		}
 
+		if guarded {
+			// The previous cycle's gating findings have now been ruled on:
+			// each one re-raised is superseded by its re-raise (duplicate),
+			// and each one not re-raised is resolved -- fixed when the
+			// revision addressed it, not_applicable when the reviewer simply
+			// stopped raising it. Without this, a parked initiative showed
+			// every cycle's findings as open and current (root cause 3), and
+			// `idea approve` signed off findings the loop had already closed.
+			if err := e.retirePriorFindings(ctx, prior, cls); err != nil {
+				return domain.InitiativeFailed, err
+			}
+		}
+
 		// blocked now reflects only non-advisory blocking findings: at quick
 		// that is exactly the deterministic ones (the adversarial reviewer's
 		// were just marked Advisory above), and at standard/thorough it is
@@ -1345,7 +1422,12 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		// human-judgment path below -- there is no rigor level at which a
 		// failed deterministic check is auto-approved.
 		blocked, reason := review.EvaluateApproval(all)
+		tel.OpenBlocking = countGating(all)
+		tel.Deterministic = countGating(detFindings)
+
 		if !blocked {
+			tel.Outcome = outcomeConverged
+			e.recordReviewTelemetry(ctx, reviewRunID, tel)
 			if rigor == RigorQuick && len(advFindings) > 0 {
 				// Quick converges in one pass and accepts with advisories
 				// (review B1): the findings stand, but do not gate approval,
@@ -1371,23 +1453,192 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			return domain.InitiativeApproved, nil
 		}
 
-		e.log.Warn("review blocked", "cycle", cycle, "findings", len(all), "reason", reason)
-		if cycle >= maxCycles {
-			e.log.Warn("review non-convergence", "cycles", cycle)
+		// The stall detector (root cause 5): the open blocking count must
+		// fall from one cycle to the next. When it does not, the remaining
+		// cycles are spent re-reviewing a PRD that is not getting closer --
+		// usually a genuine blocker only a human can resolve (a contradiction
+		// in the idea, a decision nobody has made), sometimes a reviewer the
+		// rules above could not pin down. Either way a human is the next
+		// step, and reaching them a cycle early is cheaper than reaching them
+		// at max_cycles.
+		if guarded && prevOpen >= 0 && tel.OpenBlocking >= prevOpen {
+			stalls++
+		} else {
+			stalls = 0
+		}
+		prevOpen = tel.OpenBlocking
+
+		e.log.Warn("review blocked", "cycle", cycle, "findings", len(all), "open_blocking", tel.OpenBlocking, "reason", reason)
+		if cycle >= maxCycles || (guarded && stalls >= rules.StallCycles) {
+			tel.Outcome = outcomeMaxCycles
+			if cycle < maxCycles {
+				tel.Outcome = outcomeStalled
+			}
+			e.recordReviewTelemetry(ctx, reviewRunID, tel)
+			e.log.Warn("review non-convergence", "cycles", cycle, "outcome", tel.Outcome)
 			if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPRDReview, RoleOrchestrator); err != nil {
 				return domain.InitiativeFailed, err
 			}
 			return domain.InitiativeNeedsHumanJudgment, nil
 		}
+		tel.Outcome = outcomeRevise
+		e.recordReviewTelemetry(ctx, reviewRunID, tel)
 
 		// Revise: re-run product definition, updating requirements that
 		// continue in place (same code) and superseding only the ones this
 		// cycle's response dropped (review ICP re-run #1 -- see
 		// runProductDefinition's reviseReason doc).
 		e.log.Info("revising", "cycle", cycle)
-		if err := e.runProductDefinition(ctx, initiativeID, active, "review-cycle-"+fmt.Sprint(cycle)); err != nil {
+		var rev *prdRevision
+		var next []priorFinding
+		if guarded {
+			// The next cycle's prior list is THIS cycle's gating adversarial
+			// findings, as persisted (IDs, redacted text, the rule notes).
+			var gating, det []domain.Finding
+			var cites []string
+			for _, f := range all {
+				if f.Advisory || !f.Severity.Blocking() || f.ResolvesBlocking() {
+					continue
+				}
+				switch f.ReviewRunID {
+				case reviewRunID:
+					gating = append(gating, f)
+					cites = append(cites, citationOf(f, active))
+				case "deterministic-check":
+					det = append(det, f)
+				}
+			}
+			next = gatingPriors(gating, cites)
+			rev = &prdRevision{findings: renderReviewFindingsForReviser(det, next, all)}
+		}
+		responses, err := e.runProductDefinitionRevising(ctx, initiativeID, active, "review-cycle-"+fmt.Sprint(cycle), rev)
+		if err != nil {
 			return domain.InitiativeFailed, err
 		}
+		if guarded {
+			after, err := e.db.ListRequirements(ctx, initiativeID)
+			if err != nil {
+				return domain.InitiativeFailed, err
+			}
+			var removed map[string]bool
+			changed, removed = changedRequirements(active, activeRequirements(after))
+			markAddressed(next, responses, changed, removed)
+			prior = next
+		}
+	}
+}
+
+// prdRevision is what a review-driven revision tells the PRD author beyond
+// the ordinary inputs: the precise list of findings it must address
+// (renderReviewFindingsForReviser). nil for an initial authoring, a human
+// revise, a retry, and every revision in legacy convergence mode.
+type prdRevision struct {
+	findings string
+}
+
+// citationOf recovers the citation a persisted finding carries -- the code
+// of the requirement it targets, or "" -- for the prior list. The parse-time
+// Cites field does not survive persistence, but the re-targeting it caused
+// does.
+func citationOf(f domain.Finding, reqs []domain.Requirement) string {
+	if f.TargetType != "requirement" {
+		return ""
+	}
+	for _, r := range reqs {
+		if r.ID == f.TargetID {
+			return NormalizeRequirementRef(r.Code)
+		}
+	}
+	return ""
+}
+
+// seedPriorFindings returns the still-open gating adversarial findings an
+// earlier PRD review loop left behind, as this loop's prior cycle. Empty on a
+// first review. A seeded finding counts as addressed when the requirement it
+// cited is no longer active, or the PRD has been regenerated since it was
+// raised (a human revise); a resume, which re-reviews the same PRD, leaves it
+// unaddressed, so its re-raise needs no justification.
+func (e *Engine) seedPriorFindings(ctx context.Context, initiativeID string) ([]priorFinding, error) {
+	findings, err := e.db.ListFindingsByInitiative(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	reqs, err := e.db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	activeIDs := map[string]bool{}
+	for _, r := range activeRequirements(reqs) {
+		activeIDs[r.ID] = true
+	}
+	arts, err := e.db.ListArtifacts(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	var latestPRD time.Time
+	for _, a := range arts {
+		if a.Kind == domain.ArtifactPRD && a.CreatedAt.After(latestPRD) {
+			latestPRD = a.CreatedAt
+		}
+	}
+	var gating []domain.Finding
+	var cites []string
+	var addressed []bool
+	for _, f := range findings {
+		if f.Disposition != "" || f.Advisory || !f.Severity.Blocking() || f.Code != "" {
+			continue
+		}
+		if f.ReviewRunID == "deterministic-check" || (f.TargetType != "prd" && f.TargetType != "requirement") {
+			continue
+		}
+		gating = append(gating, f)
+		cites = append(cites, citationOf(f, reqs))
+		addressed = append(addressed, (f.TargetType == "requirement" && !activeIDs[f.TargetID]) || latestPRD.After(f.CreatedAt))
+	}
+	out := gatingPriors(gating, cites)
+	for i := range out {
+		out[i].Addressed = addressed[i]
+	}
+	return out, nil
+}
+
+// retirePriorFindings dispositions the previous cycle's gating findings once
+// this cycle has ruled on them (see the call site). Actor is the reviewer:
+// this is the review's own bookkeeping, never a human's signature, and
+// accepted_risk is not among the dispositions it can set.
+func (e *Engine) retirePriorFindings(ctx context.Context, prior []priorFinding, cls classification) error {
+	reraised := make(map[int]bool, len(cls.reRaiseOf))
+	for _, p := range cls.reRaiseOf {
+		reraised[p] = true
+	}
+	for i, p := range prior {
+		if p.ID == "" {
+			continue
+		}
+		disp := domain.DispositionNotApplicable
+		switch {
+		case reraised[i]:
+			disp = domain.DispositionDuplicate
+		case p.Addressed:
+			disp = domain.DispositionFixed
+		}
+		if err := e.db.SetFindingDisposition(ctx, p.ID, disp, RoleAdversarialReviewer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordReviewTelemetry attaches one cycle's convergence record to the
+// reviewer's run manifest. Best-effort: telemetry is evidence about the
+// review, not part of it, and a failure to record it must not fail a review
+// that otherwise completed -- it is logged instead.
+func (e *Engine) recordReviewTelemetry(ctx context.Context, runID string, t domain.ReviewTelemetry) {
+	if runID == "" {
+		return
+	}
+	if err := e.db.SetRunManifestReview(context.WithoutCancel(ctx), runID, t); err != nil {
+		e.log.Warn("could not record review telemetry", "run", runID, "err", err)
 	}
 }
 
@@ -1555,21 +1806,27 @@ func (e *Engine) DiscussDecision(ctx context.Context, decisionID, message string
 	return response, nil
 }
 
-func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, reqs []domain.Requirement, rigor RigorLevel) ([]domain.Finding, error) {
+// runAdversarialReview runs one PRD review pass and returns the reviewer's
+// run id (whose manifest the cycle's convergence telemetry is attached to)
+// with its parsed findings. extra carries the guarded-mode convergence inputs
+// (the citation policy and, from cycle 2, the prior cycle's findings); nil in
+// legacy mode, which sends exactly the prompt it always has.
+func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, reqs []domain.Requirement, rigor RigorLevel, extra []ccontext.Input) (string, []domain.Finding, error) {
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	conventions := projectConventions(e.workspaceRoot)
-	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,
-		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk. " + reviewerSeverityGuidance(rigor, scale)},
-			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, conventions)},
-			{Selector: "requirements", Content: renderRequirements(reqs)},
-		},
-		"Adversarial review of the PRD requirements.",
-	)
-	if err != nil {
-		return nil, err
+	inputs := []ccontext.Input{
+		{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk. " + reviewerSeverityGuidance(rigor, scale)},
+		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, conventions)},
+		{Selector: "requirements", Content: renderRequirements(reqs)},
 	}
-	return review.ParseFindings(runID, "prd", initiativeID, obj)
+	inputs = append(inputs, extra...)
+	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,
+		inputs, "Adversarial review of the PRD requirements.")
+	if err != nil {
+		return runID, nil, err
+	}
+	findings, err := review.ParseFindings(runID, "prd", initiativeID, obj)
+	return runID, findings, err
 }
 
 // ---------- helpers ----------
