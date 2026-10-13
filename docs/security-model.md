@@ -363,7 +363,22 @@ page had was an unscoped generalisation, not a typo.
 - **The control-plane deny covers `.idea-harness/` and `.git/` only.** A change
   set may touch `.github/workflows/`, `.envrc` or similar auto-executing files;
   the defence there is the human review gate, not the deny.
-- **Daemon logs are not redacted**, and `GET /api/v1/logs` returns them.
+- **Daemon logs are redacted twice, by pattern and by known value — not by
+  anything smarter.** The daemon's `slog` handler is wrapped
+  (`security.NewRedactingHandler`, installed in `daemon.NewRuntime`) so the
+  message and every attribute value — strings, errors, `fmt.Stringer`s,
+  arbitrary values, nested groups, and attributes bound with `With` — pass
+  through the credential catalog and the known-value list before reaching
+  `daemon.log`. An attribute's key is re-joined to its value for that check, so
+  `"password", "…"` is masked the way `password=…` in a message would be. The
+  known values are every loaded project's resolved secrets plus the daemon's
+  own API token; the set only grows while the daemon runs. `GET /api/v1/logs`
+  redacts each line again on the way out, which is what covers lines written
+  before this handler existed and anything that reached the file as raw stderr
+  rather than through `slog` (a panic trace). A secret that is neither
+  pattern-shaped nor configured is not recognised by either pass, the same
+  limit the blob-store redactor has. `idea logs` reads the file directly, as the
+  user who owns it, and does not re-redact.
 
 ## Defense in depth
 

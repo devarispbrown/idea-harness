@@ -9,6 +9,19 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Security
+
+- **The daemon log is redacted.** It was the one persisted surface the redaction
+  choke point did not reach, and `GET /api/v1/logs` served it verbatim (deferred
+  since audit 3 / S4). The daemon's `slog` handler is now wrapped so the message
+  and every attribute value — errors, nested groups, attributes bound with
+  `With`, and a value whose key names a credential (`"password", "…"`) — pass
+  through the credential catalog plus every loaded project's secret values and
+  the daemon's API token before reaching `daemon.log`. The handler is also the
+  process default, so `slog.Default()` callers and `net/http`'s error log go
+  through it. `GET /api/v1/logs` redacts each line again on read, which covers
+  log files written before this release and raw stderr (a panic trace).
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING

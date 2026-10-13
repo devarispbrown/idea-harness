@@ -669,6 +669,14 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if len(all) > n {
 		all = all[len(all)-n:]
 	}
+	// Redacted on the way out as well as on the way in (the slog handler).
+	// Defense in depth for what the handler never saw: lines written before
+	// it existed, and anything that reached the file as raw stderr rather
+	// than through slog (a panic trace, the auto-started daemon's own
+	// startup failure).
+	for i, line := range all {
+		all[i] = s.rt.logRedact.RedactString(line)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":  filepath.Join(s.rt.StateRoot(), "daemon.log"),
 		"lines": all,

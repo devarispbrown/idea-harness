@@ -106,6 +106,12 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 		return err
 	}
 	defer rt.Close()
+	// From here on log the redacting logger NewRuntime built, and make it the
+	// process default too: slog.Default() call sites (internal/projection) and
+	// the standard log package (net/http's server errors) would otherwise
+	// write to daemon.log around the redactor.
+	log = rt.log
+	slog.SetDefault(log)
 	if onReady != nil {
 		onReady()
 	}

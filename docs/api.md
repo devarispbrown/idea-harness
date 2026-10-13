@@ -222,7 +222,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/health` | Liveness plus version. **The only unauthenticated API route.** |
 | GET | `/version` | The build stamp: `version`, `commit`, `modified` (dirty tree). |
-| GET | `/logs?n=<1-2000>` | Tail of the daemon log (global, not project-scoped; default 100 lines). |
+| GET | `/logs?n=<1-2000>` | Tail of the daemon log (global, not project-scoped; default 100 lines). Every line is credential-redacted on the way out, on top of the redaction the log handler applies on the way in — see [`security-model.md`](security-model.md#what-this-does-not-protect-against). |
 
 ### Projects
 

@@ -165,7 +165,9 @@ paths:
       summary: Tail the daemon log
       description: |
         Global, not project-scoped. Answers 200 with an empty `lines` array and an empty `path`
-        rather than an error when the log file does not exist yet.
+        rather than an error when the log file does not exist yet. Each line is credential-redacted
+        on read (pattern catalog plus every loaded project's secret values), in addition to the
+        redacting log handler that wrote it; see docs/security-model.md.
       parameters:
         - name: n
           in: query
