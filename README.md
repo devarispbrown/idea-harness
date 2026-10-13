@@ -55,12 +55,15 @@ requirement verification.
 
 - **Serial per initiative.** Tasks run one at a time, in dependency order from the execution plan.
   Multiple initiatives are supported; each advances independently, one task at a time.
-- **Placeholder executor by default.** The default `internal` executor is deterministic and hermetic
-  (no model, no network) — it writes a placeholder file, not real code. To generate real code, wire
-  a coding agent with one command: `idea executors setup --model <provider/model> --yes`, which
-  auto-downloads the pinned Hermes image (OMP needs `--kind omp --image <img>`). Add `--smoke` to
-  run a trivial task through the agent and assert it produces a real file change — see
-  [`docs/agents.md`](docs/agents.md).
+- **A real coding agent when it can, a loud placeholder when it cannot.** With `executor.kind`
+  unset (`auto`), `idea execute` runs the pinned Hermes agent when Docker is running and the coding
+  model's API key is set. Otherwise it falls back to the `internal` executor — deterministic and
+  hermetic, writing a placeholder file, not real code — and says so in red on every surface
+  (`idea execute`, `idea doctor`, the Build page, the run manifest). To choose an agent explicitly:
+  `idea executors setup --model <provider/model> --yes` (Hermes; OMP needs `--kind omp --image
+  <img>`; any Agent Client Protocol agent — Claude Code, Codex, Gemini CLI, OpenHands, OpenCode —
+  with `--kind acp --image <img> --acp-command <argv>`). Add `--smoke` to run a trivial task through
+  the agent and assert it produces a real file change — see [`docs/agents.md`](docs/agents.md).
 - **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
   and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
   git history. To also get a git commit per applied change set, set `git_commit: true` in

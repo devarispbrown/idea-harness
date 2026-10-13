@@ -81,7 +81,7 @@ idea next --until-human
 ```text
 → advance …
 → execute …
-⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code.
+⚠ NO REAL CODE WILL BE WRITTEN: executor.kind is unset (auto) and no coding model is configured (demo mode), so this run uses the internal placeholder executor. Fix: run `idea model set <provider>/<model>` and set that provider's API key. To keep the placeholder on purpose, set executor.kind: internal in .idea-harness/harness.yaml.
 Next: review CHG-1 — idea review CHG-1 approve
 ```
 
@@ -92,9 +92,10 @@ Two steps ran here: **advance** (M2 — architecture, product design, verificati
 execution plan, plan review) and **execute** (M3 — the next ready task becomes a change set).
 It stopped at `review`, because approving a change set is a human decision.
 
-That warning is honest: the default `internal` executor is deterministic and hermetic. It
-writes a placeholder file, not real code. [Wiring a real coding
-agent](agents.md) is a separate opt-in step.
+That warning is honest. With no model configured, the run falls back to the `internal`
+executor, which is deterministic and hermetic. It writes a placeholder file, not real code.
+Once a model and its key are set and Docker is running, the same unset `executor.kind` runs a
+real coding agent instead (see [Wire a real coding agent](agents.md)).
 
 ## Step 5 — trace where a requirement came from
 

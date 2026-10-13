@@ -451,8 +451,11 @@ doc_has demo-existing-project.md "demo mode — synthetic output."
 # in both guides. ledger-check cannot see this -- it collapses a newline plus
 # indent to a single space, which is exactly the difference -- so it is checked
 # here, where the raw bytes are available.
+#
+# The warning is now the auto-executor fallback (executor.kind unset, demo mode:
+# no real code will be written), not the old explicit-internal line.
 for d in demo-greenfield.md demo-existing-project.md; do
-  grep -qF -- "set executor.kind = omp|hermes in .idea-harness/harness.yaml" "$ROOT/docs/$d" ||
+  grep -qF -- "executor.kind is unset (auto) and no coding model is configured (demo mode), so this run uses the internal placeholder executor." "$ROOT/docs/$d" ||
     { echo "ERROR: docs/$d wraps the executor warning; the binary prints it on one line"; exit 1; }
 done
 echo "the demo guides show the lines the binary actually prints"

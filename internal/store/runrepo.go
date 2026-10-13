@@ -111,11 +111,12 @@ func (db *DB) CreateRunManifest(ctx context.Context, m *domain.RunManifest) erro
 	}, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
 			INSERT INTO run_manifests
-				(id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at, executor_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.ID, m.RunID, m.SnapshotDigest, m.ConfigDigest, m.WorkflowDigest, m.RoleVersion,
 			m.RequestedModel, m.ActualModel, m.ContextDigest, mustJSON(m.SkillDigests),
-			mustJSON(m.ToolVersions), mustJSON(m.Usage), m.ResultDigest, m.StartedAt.UnixMilli(), m.FinishedAt.UnixMilli())
+			mustJSON(m.ToolVersions), mustJSON(m.Usage), m.ResultDigest, m.StartedAt.UnixMilli(), m.FinishedAt.UnixMilli(),
+			executorJSON(m.Executor))
 		return err
 	})
 }
@@ -123,16 +124,22 @@ func (db *DB) CreateRunManifest(ctx context.Context, m *domain.RunManifest) erro
 // GetRunManifest returns a manifest by run id.
 func (db *DB) GetRunManifest(ctx context.Context, runID string) (domain.RunManifest, error) {
 	var m domain.RunManifest
-	var skills, tools, usage string
+	var skills, tools, usage, executorRaw string
 	var started, finished int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at
+		SELECT id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at, executor_json
 		FROM run_manifests WHERE run_id = ?`, runID).
 		Scan(&m.ID, &m.RunID, &m.SnapshotDigest, &m.ConfigDigest, &m.WorkflowDigest, &m.RoleVersion,
 			&m.RequestedModel, &m.ActualModel, &m.ContextDigest, &skills, &tools, &usage,
-			&m.ResultDigest, &started, &finished)
+			&m.ResultDigest, &started, &finished, &executorRaw)
 	if err != nil {
 		return m, err
+	}
+	if executorRaw != "" {
+		var ep domain.ExecutorProvenance
+		if jsonUnmarshal(executorRaw, &ep) == nil {
+			m.Executor = &ep
+		}
 	}
 	m.StartedAt = time.UnixMilli(started)
 	m.FinishedAt = time.UnixMilli(finished)
@@ -567,6 +574,15 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// executorJSON is the run manifest's executor_json column: empty (not "null")
+// for the non-agent runs that carry no executor provenance.
+func executorJSON(ep *domain.ExecutorProvenance) string {
+	if ep == nil {
+		return ""
+	}
+	return mustJSON(ep)
 }
 
 func jsonUnmarshal(s string, v any) error {

@@ -790,6 +790,14 @@ WHERE initiative_id = '' AND EXISTS (
 	`
 ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAULT '';
 `,
+	// 37: executor provenance on the run manifest: which executor kind was
+	// requested and which actually ran (an unset kind is "auto" and can fall
+	// back to the placeholder executor -- the manifest has to say so), the
+	// image, the fallback warning, and an ACP agent's permission requests with
+	// the answers the harness gave on the operator's behalf.
+	`
+ALTER TABLE run_manifests ADD COLUMN executor_json TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
