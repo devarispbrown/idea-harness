@@ -187,9 +187,10 @@ idea execute
 ```
 
 `execute` takes the next ready task and runs it, producing a **change set** — a content-addressed
-patch. By default the `internal` executor is a placeholder: deterministic and hermetic (no model,
-no network), it writes a placeholder file so the pipeline runs end to end. That's fine for
-learning the loop, but it is **not real code** — see the closing section for wiring a real agent.
+patch. With no model configured yet, `executor.kind` (unset, so `auto`) falls back to the
+`internal` executor and `execute` prints a warning saying so: it is deterministic and hermetic (no
+model, no network), and it writes a placeholder file so the pipeline runs end to end. That's fine
+for learning the loop, but it is **not real code** — see the closing section for a real agent.
 
 ```bash
 idea changes
@@ -256,11 +257,13 @@ default, and it is synthetic in two independent places:
 | Layer | Default | What it produces |
 |---|---|---|
 | Reasoning (framing, research, PRD, review, design, plan) | **demo provider** — used when no model is set and no provider is configured | Locally generated, input-aware, explicitly labeled text: "Synthetic demo PRD for: …", assumptions reading "This is synthetic demo output — no model provider is configured." Runs record `actual_model: demo`. |
-| Build (`idea execute`) | **`internal` executor** (`executor.kind: internal`) | A deterministic, hermetic placeholder file. No model call, no network, not code. |
+| Build (`idea execute`) | **`auto`** (`executor.kind` unset) | The pinned Hermes coding agent when Docker is running and the coding model's key is set; otherwise the `internal` placeholder file — no model call, no network, not code — with a warning on every surface saying so. |
 
-They are separate switches. A configured `OPENAI_API_KEY` gives you a real PRD and a real plan and
-still leaves `idea execute` writing a placeholder file; wiring an executor without a provider key
-leaves the reasoning synthetic. **The real path needs both.**
+They are mostly one switch now. A configured `OPENAI_API_KEY` with `idea model set openai/…`
+gives you a real PRD and a real plan, and — with Docker running — a real coding agent for
+`idea execute`, because an unset `executor.kind` resolves to Hermes. Without Docker, the reasoning
+is real and the build is a placeholder, and `idea execute` says so. `executor.kind: internal`
+keeps the placeholder on purpose.
 
 ### 1. A provider key
 

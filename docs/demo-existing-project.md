@@ -114,7 +114,7 @@ idea next --until-human
 ```text
 → advance …
 → execute …
-⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code.
+⚠ NO REAL CODE WILL BE WRITTEN: executor.kind is unset (auto) and no coding model is configured (demo mode), so this run uses the internal placeholder executor. Fix: run `idea model set <provider>/<model>` and set that provider's API key. To keep the placeholder on purpose, set executor.kind: internal in .idea-harness/harness.yaml.
 Next: review CHG-1 — idea review CHG-1 approve
 ```
 
@@ -156,7 +156,7 @@ git status --short
 md5 src/billing.py    # or md5sum on Linux
 ```
 
-The digest is the same before and after. That is the default `internal` executor doing
+The digest is the same before and after. That is the `internal` placeholder executor doing
 exactly what it says: it is deterministic, hermetic, makes no model call and no network
 request, and it writes a placeholder so the apply/verify/revert machinery can be exercised
 without a coding agent in the loop.

@@ -175,7 +175,17 @@ type executorReadiness struct {
 // (workflow.ImplementerProvider), so the Build page's "can this run" never
 // disagrees with what Execute then does.
 func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool) executorReadiness {
-	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) {
+	// An unset kind (auto) is judged as whatever it resolves to right now:
+	// hermes when it would run hermes, ready-as-placeholder otherwise -- the
+	// fallback is a warning (executorResolution), not a reason to block.
+	if kind == string(config.ExecutorAuto) {
+		res := r.executorResolution(context.Background(), pr)
+		if res.Resolved != string(config.ExecutorHermes) {
+			return executorReadiness{ImagePresent: true, KeySet: true}
+		}
+		kind = res.Resolved
+	}
+	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) && kind != string(config.ExecutorACP) {
 		return executorReadiness{ImagePresent: true, KeySet: true}
 	}
 	image := ""
@@ -188,6 +198,10 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 	st := executorReadiness{Image: image}
 	modelHint := workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry)
 	switch {
+	case image == "" && kind == string(config.ExecutorACP):
+		st.Problem = fmt.Sprintf("acp has no default image; run: idea executors setup --kind acp --image <image> --acp-command <argv> --model %s --yes", modelHint)
+	case kind == string(config.ExecutorACP) && selected && len(pr.cfg.Harness.Executor.ACP.Command) == 0:
+		st.Problem = fmt.Sprintf("acp needs executor.acp.command (the agent's argv inside %s); run: idea executors setup --kind acp --image %s --acp-command <argv> --yes", image, image)
 	case image == "":
 		st.Problem = fmt.Sprintf("%s has no default image; run: idea executors setup --kind %s --image <image> --model %s --yes",
 			kind, kind, modelHint)
@@ -237,4 +251,12 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 		}
 	}
 	return st
+}
+
+// executorResolution is which executor a run of this project would use right
+// now, and why -- the same answer Execute reaches (workflow.ResolveExecutor),
+// with the daemon's own key lookup.
+func (r *Runtime) executorResolution(ctx context.Context, pr *projectRuntime) workflow.ExecutorResolution {
+	dotEnv := pr.dotEnv
+	return workflow.ResolveExecutor(ctx, pr.cfg.Harness, pr.registry, func(name string) string { return lookupEnv(name, dotEnv) })
 }

@@ -39,7 +39,7 @@ name: my-product   # project display name
 # researcher fetches research.urls below, and whether its findings may be
 # typed "fact" (disabled downgrades every finding to "assumption"). It does
 # NOT gate the coding agent's network access or the build/test check
-# sandbox's: the coding agent (executor.kind omp/hermes) always has network
+# sandbox's: the coding agent (executor.kind omp/hermes/acp) always has network
 # egress, deliberately, to reach its model API (see docs/agents.md); the
 # check sandbox always runs with no network at all, unconditionally (see
 # docs/security-model.md). Neither reads this setting (review defect #3).
@@ -111,9 +111,13 @@ Top-level fields:
 | `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
 | `providers` | provider map (fields below) | none |
-| `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | container image for the non-internal kinds. The default is **per-kind**, not one blanket value: `alpine:3.20` only for `kind: container`; the pinned `nousresearch/hermes-agent:…` for `kind: hermes`; `kind: omp` has no default image at all and refuses every execute until one is set | `alpine:3.20` for `container`, the pinned Hermes image for `hermes`, none for `omp` |
-| `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
+| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp`. `auto` (what an unset kind means) runs `hermes` when Docker is reachable and the coding model's key is set, and otherwise falls back to `internal` with a warning on every surface that no real code will be written ([agents.md](agents.md#the-default-auto-with-a-loud-placeholder-fallback)). `internal` set explicitly keeps the placeholder quietly | `auto` |
+| `executor.image` | container image for the non-internal kinds. The default is **per-kind**, not one blanket value: `alpine:3.20` only for `kind: container`; the digest-pinned `nousresearch/hermes-agent:…@sha256:…` for `kind: hermes` (and for `auto` when it resolves to hermes); `kind: omp` and `kind: acp` have no default image at all and refuse every execute until one is set | `alpine:3.20` for `container`, the pinned Hermes image for `hermes`, none for `omp`/`acp` |
+| `executor.model` | coding model for the agent kinds (`omp`, `hermes`, `acp`) | — |
+| `executor.acp.command` | `acp` only: the ACP agent's argv inside the image, e.g. `[claude-code-acp]`; `{model}` and `{bare_model}` are substituted from `executor.model` | — (required for `acp`) |
+| `executor.acp.key_env` | `acp` only: the name the provider key is exposed under inside the container (e.g. `GEMINI_API_KEY`) | the provider's own variable |
+| `executor.acp.timeout_seconds` | `acp` only: bound on one prompt turn, after which the client sends `session/cancel` and then kills the container | `840` |
+| `executor.mcp_servers` | `acp` only: MCP servers passed in `session/new` — `name` plus `command`/`args`/`env` (stdio, runs inside the agent's container) or `type: http\|sse`/`url`/`headers`. Each `env`/`headers` entry is `{name, value}` for a literal or `{name, value_env}` naming a variable resolved from the daemon's environment, then `.env`; a literal that looks like a secret is refused at load. See [agents.md](agents.md#mcp-servers-acp-only) for the trust tradeoff | none |
 | `check.image` | image holding the project toolchain for the build/test checks | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check fails closed (see "Check auto-detection" below) |
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
 | `check_timeout_seconds` | per-check timeout | `600` |

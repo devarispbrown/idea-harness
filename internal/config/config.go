@@ -113,23 +113,30 @@ const (
 	ExecutorContainer ExecutorKind = "container"
 	ExecutorOMP       ExecutorKind = "omp"
 	ExecutorHermes    ExecutorKind = "hermes"
+	// ExecutorACP and ExecutorAuto are documented in executor.go.
+	ExecutorACP  ExecutorKind = "acp"
+	ExecutorAuto ExecutorKind = "auto"
 )
 
 func (k ExecutorKind) Valid() bool {
 	switch k {
-	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes:
+	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes, ExecutorACP, ExecutorAuto:
 		return true
 	}
 	return false
 }
 
 // ExecutorConfig selects and configures the execute-pipeline executor. Image is
-// the container image for the container kind; Model is the coding model for the
-// OMP kind. Neither is read by the internal kind.
+// the container image for the container and agent kinds; Model is the coding
+// model for the agent kinds. Neither is read by the internal kind.
 type ExecutorConfig struct {
 	Kind  ExecutorKind `json:"kind" yaml:"kind"`
 	Image string       `json:"image,omitempty" yaml:"image,omitempty"`
 	Model string       `json:"model,omitempty" yaml:"model,omitempty"`
+	// ACP configures kind: acp (executor.go). Ignored by every other kind.
+	ACP ACPConfig `json:"acp,omitempty" yaml:"acp,omitempty"`
+	// MCPServers are handed to an ACP agent in session/new (executor.go).
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 }
 
 // CheckConfig configures the deterministic build/test check sandbox (review H3).
@@ -254,14 +261,16 @@ type Config struct {
 
 // Default returns the default configuration. The network is disabled by
 // default so research never silently exfiltrates local content (§15). The
-// executor defaults to the deterministic internal executor.
+// executor defaults to auto: a real coding agent when Docker and the coding
+// model's key are both available, the placeholder internal executor -- with a
+// loud warning -- otherwise (executor.go).
 func Default() Config {
 	return Config{
 		Harness: HarnessConfig{
 			Network:   NetworkDisabled,
 			Review:    ReviewConfig{MaxCycles: 3, Rigor: "auto"},
 			Providers: map[string]ProviderConfig{},
-			Executor:  ExecutorConfig{Kind: ExecutorInternal},
+			Executor:  ExecutorConfig{Kind: ExecutorAuto},
 		},
 	}
 }
@@ -310,7 +319,10 @@ func Load(dir string) (Config, error) {
 		return cfg, fmt.Errorf("config: harness.network must be one of disabled|enabled, got %q", cfg.Harness.Network)
 	}
 	if !cfg.Harness.Executor.Kind.Valid() {
-		return cfg, fmt.Errorf("config: harness.executor.kind must be one of internal|container|omp|hermes, got %q", cfg.Harness.Executor.Kind)
+		return cfg, fmt.Errorf("config: harness.executor.kind must be one of auto|internal|container|omp|hermes|acp, got %q", cfg.Harness.Executor.Kind)
+	}
+	if err := validateExecutorExtras(cfg.Harness.Executor); err != nil {
+		return cfg, err
 	}
 	if cfg.Harness.Review.MaxCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
@@ -352,6 +364,6 @@ func (c *Config) applyDefaults() {
 		c.Harness.Review.Rigor = "auto"
 	}
 	if c.Harness.Executor.Kind == "" {
-		c.Harness.Executor.Kind = ExecutorInternal
+		c.Harness.Executor.Kind = ExecutorAuto
 	}
 }
