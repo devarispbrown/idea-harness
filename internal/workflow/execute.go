@@ -94,22 +94,46 @@ func (e *Engine) lookupKey(name string) string {
 // selectExecutor returns the executor selected by harness.executor.kind. The
 // kind is a config field (deterministic), never model output; an unknown kind
 // fails closed to the internal executor.
+//
+// An unset kind is auto, resolved first by ResolveExecutor; the resolution is
+// returned with the executor so Execute can record it on the run manifest
+// ("requested: auto, resolved: internal" plus the warning saying why).
 func (e *Engine) selectExecutor() (executor.Executor, error) {
-	switch e.cfg.Executor.Kind {
+	ex, _, err := e.selectExecutorResolved(context.Background())
+	return ex, err
+}
+
+func (e *Engine) selectExecutorResolved(ctx context.Context) (executor.Executor, ExecutorResolution, error) {
+	res := e.ResolveExecutor(ctx)
+	ex, err := e.executorFor(config.ExecutorKind(res.Resolved), res.Image)
+	return ex, res, err
+}
+
+// executorFor builds the executor for a resolved kind. image is the
+// configured image, or the pinned default an auto resolution chose.
+func (e *Engine) executorFor(kind config.ExecutorKind, image string) (executor.Executor, error) {
+	switch kind {
 	case config.ExecutorContainer:
 		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image), nil
-	case config.ExecutorOMP, config.ExecutorHermes:
+	case config.ExecutorOMP, config.ExecutorHermes, config.ExecutorACP:
 		model := e.implementerModel()
 		provider, err := e.implementerProvider()
 		if err != nil {
 			return nil, err
 		}
-		// OMP has no published image to default to. Without one, docker run
-		// failed with "invalid reference format" -- after the planner's model
-		// call had already been paid for.
-		if e.cfg.Executor.Image == "" && executor.DefaultAgentImage(string(e.cfg.Executor.Kind)) == "" {
+		// OMP and ACP agents have no published image to default to. Without
+		// one, docker run failed with "invalid reference format" -- after the
+		// planner's model call had already been paid for.
+		if image == "" && executor.DefaultAgentImage(string(kind)) == "" {
+			if kind == config.ExecutorACP {
+				return nil, fmt.Errorf("executor: acp has no default image; set one with idea executors setup --kind acp --image <image> --acp-command <argv> --model %s --yes", model)
+			}
 			return nil, fmt.Errorf("executor: %s has no default image; set one with idea executors setup --kind %s --image <image> --model %s --yes",
-				e.cfg.Executor.Kind, e.cfg.Executor.Kind, model)
+				kind, kind, model)
+		}
+		if kind == config.ExecutorACP && len(e.cfg.Executor.ACP.Command) == 0 {
+			return nil, fmt.Errorf("executor: acp needs executor.acp.command, the agent's argv inside %s (e.g. [claude-code-acp]); "+
+				"set it with idea executors setup --kind acp --image %s --acp-command <argv> --yes", image, image)
 		}
 		// A key variable that resolves to nothing is refused here, not left to
 		// the agent. Hermes exits 0 after a 401, so a keyless start of a keyed
@@ -126,7 +150,7 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 		// every run, with no signal until the agent produced nothing). An
 		// untested combination is only logged -- Execute is not the place to
 		// block on "nobody has tried this yet".
-		if compat := executor.CheckModelCompat(string(e.cfg.Executor.Kind), model); compat.Message != "" {
+		if compat := executor.CheckModelCompat(string(kind), model); compat.Message != "" {
 			if compat.Blocked {
 				return nil, fmt.Errorf("executor: %s", compat.Message)
 			}
@@ -136,14 +160,21 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 			// than requiring every such test to wire a logger for an advisory
 			// log line.
 			if e.log != nil {
-				e.log.Warn("untested executor/model combination", "kind", e.cfg.Executor.Kind, "model", model, "detail", compat.Message)
+				e.log.Warn("untested executor/model combination", "kind", kind, "model", model, "detail", compat.Message)
 			}
 		}
+		if kind == config.ExecutorACP {
+			opts := executor.ACPOptionsFrom(e.cfg.Executor, model)
+			opts.Image = image
+			ax := executor.NewACPExecutor(opts, provider)
+			ax.SetKeyLookup(e.lookupKey)
+			return ax, nil
+		}
 		var ex *executor.SandboxedAgentExecutor
-		if e.cfg.Executor.Kind == config.ExecutorOMP {
-			ex = executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
+		if kind == config.ExecutorOMP {
+			ex = executor.NewOMPExecutor(e.contentBlobs(), model, image, provider)
 		} else {
-			ex = executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
+			ex = executor.NewHermesExecutor(e.contentBlobs(), model, image, provider)
 		}
 		ex.SetKeyLookup(e.lookupKey)
 		return ex, nil
@@ -369,9 +400,13 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// missing provider key or an unresolvable provider is refused, and it ran
 	// after the planner's model call and after superseding the previous change
 	// set -- so a refusal cost money and discarded the change set being redone.
-	exec, err := e.selectExecutor()
+	exec, resolution, err := e.selectExecutorResolved(ctx)
 	if err != nil {
 		return domain.ChangeSet{}, err
+	}
+	if resolution.Warning != "" && e.log != nil {
+		e.log.Warn("executor fell back to the placeholder", "initiative", initiativeID, "requested", resolution.Requested,
+			"resolved", resolution.Resolved, "warning", resolution.Warning)
 	}
 	// The capability gate is the deterministic trust-tier policy, not the
 	// executor's self-declared capability list: the engine authorizes the
@@ -569,6 +604,17 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// changed nothing is the common failure, and this is the only record of why.
 	// The same 100 lines the live view showed, kept on the change set.
 	agentOutput := e.agentOutputLines(ctx, exec, attempt.ID, liveOutputLines)
+	// The fallback warning rides on the change set too, where the person
+	// reviewing a placeholder diff will actually look.
+	if resolution.Warning != "" {
+		agentOutput = strings.TrimSpace("⚠ " + resolution.Warning + "\n\n" + agentOutput)
+	}
+	// Also before Collect, which forgets the attempt: what an ACP agent asked
+	// permission for, and what the harness answered on the operator's behalf.
+	var permissions []domain.ACPPermission
+	if pl, ok := exec.(executor.PermissionLogger); ok {
+		permissions = pl.PermissionLog(attempt.ID)
+	}
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
@@ -991,6 +1037,13 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		ResultDigest:   patchDigest,
 		StartedAt:      agentStart,
 		FinishedAt:     time.Now().UTC(),
+		Executor: &domain.ExecutorProvenance{
+			Requested:   resolution.Requested,
+			Resolved:    resolution.Resolved,
+			Image:       resolution.Image,
+			Warning:     resolution.Warning,
+			Permissions: permissions,
+		},
 	}); err != nil {
 		return domain.ChangeSet{}, err
 	}

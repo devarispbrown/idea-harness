@@ -108,6 +108,22 @@ type Guidance struct {
 	// population note as NextTask: the daemon handler appends both this field
 	// and a sentence onto Why, since BuildGuidance has no store access.
 	StaleItems []StaleItemRef `json:"stale_items,omitempty"`
+	// ExecutorResolution is which executor the next run would use and why
+	// (workflow.ResolveExecutor). Its Warning is set when executor.kind is
+	// unset (auto) and the run would fall back to the placeholder executor --
+	// the Build page must show it, because that run writes no real code. Same
+	// population note as NextTask: composed by the daemon handler.
+	ExecutorResolution *ExecutorResolutionRef `json:"executor_resolution,omitempty"`
+}
+
+// ExecutorResolutionRef mirrors workflow.ExecutorResolution (projection does
+// not import workflow).
+type ExecutorResolutionRef struct {
+	Requested string `json:"requested"`
+	Resolved  string `json:"resolved"`
+	Image     string `json:"image,omitempty"`
+	Warning   string `json:"warning,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 // StaleItemRef names one stale item on the Recommended Next Move projection.

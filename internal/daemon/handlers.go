@@ -231,6 +231,14 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
 	}
+	// Build page readiness: which executor the next run uses, and -- when an
+	// unset kind would fall back to the placeholder -- the warning saying no
+	// real code will be written and how to fix it.
+	if g.NextTask != nil {
+		res := s.rt.executorResolution(r.Context(), pr)
+		g.ExecutorResolution = &projection.ExecutorResolutionRef{Requested: res.Requested, Resolved: res.Resolved,
+			Image: res.Image, Warning: res.Warning, Note: res.Note}
+	}
 	// Review A4 #5: "N items may be invalid since DEC-n changed", with the
 	// re-plan/review path named, plus the itemized list for the UI. Composed
 	// here for the same reason NextTask/RunBlockedReason/PartialWork are:
@@ -3160,10 +3168,20 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"operation_id":  opID,
-		"executor_kind": string(pr.cfg.Harness.Executor.Kind),
-	})
+	// executor_kind is what harness.yaml asked for (auto when unset);
+	// executor_resolved is what this run uses. executor_warning is set when
+	// auto fell back to the placeholder: a client must show it, because this
+	// run writes no real code.
+	res := s.rt.executorResolution(r.Context(), pr)
+	out := map[string]string{
+		"operation_id":      opID,
+		"executor_kind":     string(pr.cfg.Harness.Executor.Kind),
+		"executor_resolved": res.Resolved,
+	}
+	if res.Warning != "" {
+		out["executor_warning"] = res.Warning
+	}
+	writeJSON(w, http.StatusAccepted, out)
 }
 
 // handleVerify runs the verification gate and, when a requirement + disposition
@@ -3698,8 +3716,13 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		// credential and endpoint are deliberately empty rather than resolved.
 		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
+		executor.NewACPExecutor(executor.ACPOptionsFrom(pr.cfg.Harness.Executor, pr.cfg.Harness.Executor.Model), executor.AgentProvider{}),
 	}
 	list := make([]map[string]any, 0, len(execs))
+	// The row the next run would actually use carries the resolution: for an
+	// unset kind (auto) no row is `selected`, and this is how a client -- `idea
+	// doctor` -- learns that auto fell back to the placeholder, and why.
+	resolution := s.rt.executorResolution(r.Context(), pr)
 	for _, exec := range execs {
 		caps := exec.Capabilities(r.Context())
 		// C3: status is only meaningful for hermes/omp; executorStatus reports
@@ -3709,7 +3732,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		if selected {
 			status.LastSmoke = lastSmoke(r.Context(), pr, r.PathValue("projectId"))
 		}
-		list = append(list, map[string]any{
+		row := map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,
 			"sandbox_mode":  caps.SandboxMode,
@@ -3720,7 +3743,11 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 			"model":         pr.cfg.Harness.Executor.Model,
 			"default_image": executor.DefaultAgentImage(exec.Name()),
 			"status":        status,
-		})
+		}
+		if exec.Name() == resolution.Resolved {
+			row["resolution"] = resolution
+		}
+		list = append(list, row)
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -3738,6 +3765,9 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		Kind  string  `json:"kind"`
 		Image *string `json:"image"`
 		Model *string `json:"model"`
+		// ACPCommand and ACPKeyEnv set executor.acp.command/key_env.
+		ACPCommand *[]string `json:"acp_command"`
+		ACPKeyEnv  *string   `json:"acp_key_env"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -3768,15 +3798,33 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	if body.Model != nil {
 		cfg.Harness.Executor.Model = *body.Model // empty clears
 	}
+	if body.ACPCommand != nil {
+		cfg.Harness.Executor.ACP.Command = *body.ACPCommand // empty clears
+	}
+	if body.ACPKeyEnv != nil {
+		cfg.Harness.Executor.ACP.KeyEnv = *body.ACPKeyEnv
+	}
+	// acp has no canonical image or command, so selecting it without both
+	// would save a configuration every run then refuses.
+	if cfg.Harness.Executor.Kind == config.ExecutorACP {
+		if strings.TrimSpace(cfg.Harness.Executor.Image) == "" {
+			writeError(w, http.StatusBadRequest, "executor kind acp needs an image; there is no canonical ACP image")
+			return
+		}
+		if len(cfg.Harness.Executor.ACP.Command) == 0 {
+			writeError(w, http.StatusBadRequest, "executor kind acp needs acp_command, the agent's argv inside the image (e.g. [\"claude-code-acp\"])")
+			return
+		}
+	}
 
-	// C2: for hermes/omp, a configured model must actually resolve to a
+	// C2: for hermes/omp/acp, a configured model must actually resolve to a
 	// provider before it is saved. Without this, a typo or an unconfigured
 	// provider name was written to harness.yaml, forwarded into the agent
 	// container at execute time, and failed there -- minutes later, nowhere
 	// near the settings page that caused it, with `selectExecutor`'s own
 	// fail-closed check as the only thing standing between the typo and a
 	// leaked credential.
-	if cfg.Harness.Executor.Kind == config.ExecutorHermes || cfg.Harness.Executor.Kind == config.ExecutorOMP {
+	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP || k == config.ExecutorACP {
 		if cfg.Harness.Executor.Model != "" {
 			if _, err := executor.ResolveAgentProvider(cfg.Harness.Executor.Model, cfg.Harness.DefaultModel, cfg.Harness.Providers); err != nil {
 				writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "executor: "))

@@ -146,9 +146,10 @@ func commands() []command {
 		{names: []string{"next"}, usage: "next [--until-human]", summary: "run the next automatable step (--until-human: keep going until a human decision)", flags: nextFlags, run: cmdNext, inHelp: true},
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, maxPositional: 1, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
-			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool},
+			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool,
+				"--acp-command": flagValue, "--acp-key-env": flagValue},
 		}, subsAreRequired: true, maxPositional: 1, run: cmdExecutors, inHelp: true},
-		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp, default hermes (or --kind)", inHelp: true},
+		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp|acp, default hermes (or --kind; acp needs --image and --acp-command)", inHelp: true},
 		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
@@ -916,6 +917,10 @@ func cmdDoctor(stdout io.Writer) error {
 			fmt.Fprintln(stdout, warn("demo mode — no model configured; run `idea model set <provider>/<model>` for real output."))
 		}
 	}
+
+	// Which executor the next run uses -- loud when auto fell back to the
+	// placeholder (doctor_executor.go).
+	doctorExecutor(cfg, cfgErr, dotEnv, doctorClient, doctorProj, stdout)
 
 	// Product-graph edge audit (§M2 tail): untraced tasks/objects + cycles.
 	graphOK := true

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
 // cliChangeSet mirrors the change-set API response.
@@ -80,6 +82,8 @@ type cliExecutor struct {
 	Network      bool     `json:"network"`
 	Capabilities []string `json:"capabilities"`
 	Selected     bool     `json:"selected"`
+	// Resolution is present on the row the next run would use.
+	Resolution *workflow.ExecutorResolution `json:"resolution,omitempty"`
 }
 
 // cmdExecute launches the execute pipeline for the next ready task.
@@ -106,9 +110,7 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), body, &out); err != nil {
 		return err
 	}
-	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
-		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
-	}
+	printExecutorResolution(out, stdout)
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
 	opID := out["operation_id"]
 	if opID != "" {
@@ -494,8 +496,20 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	image, model := a.value("--image"), a.value("--model")
 	yes, smoke := a.has("--yes"), a.has("--smoke")
-	if kind != "hermes" && kind != "omp" {
-		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
+	if kind != "hermes" && kind != "omp" && kind != "acp" {
+		return fmt.Errorf("unsupported executor kind %q (use hermes, omp or acp)", kind)
+	}
+	acpCommand, err := parseACPCommand(a.value("--acp-command"))
+	if err != nil {
+		return err
+	}
+	acpKeyEnv := a.value("--acp-key-env")
+	if kind != "acp" && (len(acpCommand) > 0 || acpKeyEnv != "") {
+		return fmt.Errorf("--acp-command and --acp-key-env only apply to --kind acp")
+	}
+	if kind == "acp" && len(acpCommand) == 0 {
+		return fmt.Errorf("--acp-command is required for --kind acp: the agent's argv inside the image, e.g. --acp-command claude-code-acp " +
+			"or --acp-command \"gemini --experimental-acp\"")
 	}
 	if smoke && model == "" {
 		return fmt.Errorf("--smoke requires --model (to resolve the provider API key)")
@@ -545,13 +559,30 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("pull failed: %w", err)
 	}
-	if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
+	if kind == "acp" {
+		// An ACP adapter need not implement --version, so the presence check
+		// is the protocol itself: initialize, in the hardened container with
+		// no network and no key.
+		pctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		agent, err := executor.ProbeACP(pctx, image, acpCommand)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("verification failed: %w", err)
+		}
+		fmt.Fprintln(stderr, muted("ACP handshake ok: ")+code(agent))
+	} else if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
-	body := map[string]string{"kind": kind, "image": image}
+	body := map[string]any{"kind": kind, "image": image}
 	if model != "" {
 		body["model"] = model
+	}
+	if kind == "acp" {
+		body["acp_command"] = acpCommand
+		if acpKeyEnv != "" {
+			body["acp_key_env"] = acpKeyEnv
+		}
 	}
 	var out struct {
 		Warnings []string `json:"warnings"`
@@ -584,13 +615,61 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 			}
 			return dotEnv[name]
 		}
-		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup, ""); err != nil {
-			return fmt.Errorf("smoke failed: %w", err)
+		var serr error
+		if kind == "acp" {
+			opts := executor.ACPOptions{Image: image, Model: model, Command: acpCommand, KeyEnv: acpKeyEnv}
+			serr = executor.SmokeACPAgent(sctx, opts, provider, lookup, "")
+		} else {
+			serr = executor.SmokeAgent(sctx, kind, image, model, provider, lookup, "")
+		}
+		if serr != nil {
+			return fmt.Errorf("smoke failed: %w", serr)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
 	}
 	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil
+}
+
+// parseACPCommand reads --acp-command: a JSON array (`["gemini",
+// "--experimental-acp"]`) when an argument itself contains a space, otherwise
+// whitespace-separated words. No shell quoting is interpreted -- this argv
+// runs inside the container, and guessing at a shell's rules here would be a
+// second, subtly different shell.
+func parseACPCommand(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(s, "[") {
+		var argv []string
+		if err := json.Unmarshal([]byte(s), &argv); err != nil {
+			return nil, fmt.Errorf("--acp-command looks like a JSON array but is not one: %w", err)
+		}
+		if len(argv) == 0 || argv[0] == "" {
+			return nil, fmt.Errorf("--acp-command is an empty array")
+		}
+		return argv, nil
+	}
+	return strings.Fields(s), nil
+}
+
+// printExecutorResolution prints what POST .../execute said about the
+// executor: the fallback warning loudly (this run writes no real code), or
+// the quiet placeholder note for an explicit `kind: internal`.
+func printExecutorResolution(out map[string]string, stdout io.Writer) {
+	if w := out["executor_warning"]; w != "" {
+		fmt.Fprintln(stdout, errText("⚠ "+w))
+		return
+	}
+	resolved := out["executor_resolved"]
+	if resolved == "" {
+		// A daemon from before auto existed reports only the requested kind.
+		resolved = out["executor_kind"]
+	}
+	if resolved == "internal" || resolved == "" {
+		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); remove executor.kind from .idea-harness/harness.yaml (auto) or set it to hermes|omp|acp to generate real code."))
+	}
 }
 
 // cliCoverage mirrors the per-requirement verification coverage.

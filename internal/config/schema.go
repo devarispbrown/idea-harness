@@ -69,9 +69,35 @@ const harnessSchema = `{
     "executor": {
       "type": "object",
       "properties": {
-        "kind":  { "enum": ["internal", "container", "omp", "hermes"] },
+        "kind":  { "enum": ["auto", "internal", "container", "omp", "hermes", "acp"] },
         "image": { "type": "string" },
-        "model": { "type": "string" }
+        "model": { "type": "string" },
+        "acp": {
+          "type": "object",
+          "properties": {
+            "command":         { "type": "array", "items": { "type": "string" } },
+            "key_env":         { "type": "string" },
+            "timeout_seconds": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name":    { "type": "string" },
+              "type":    { "enum": ["stdio", "http", "sse"] },
+              "command": { "type": "string" },
+              "args":    { "type": "array", "items": { "type": "string" } },
+              "url":     { "type": "string" },
+              "env":     { "$ref": "#/$defs/nameValues" },
+              "headers": { "$ref": "#/$defs/nameValues" }
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -83,7 +109,22 @@ const harnessSchema = `{
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "nameValues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":      { "type": "string" },
+          "value":     { "type": "string" },
+          "value_env": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
 }`
 
 // HarnessTopLevelKeys returns the field names harness.yaml accepts at its top
