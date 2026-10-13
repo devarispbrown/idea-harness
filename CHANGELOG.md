@@ -21,6 +21,20 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   process default, so `slog.Default()` callers and `net/http`'s error log go
   through it. `GET /api/v1/logs` redacts each line again on read, which covers
   log files written before this release and raw stderr (a panic trace).
+- **`raw-blobs/` stays unredacted, and is now documented and locked down as
+  such.** Apply writes from it and revert restores from it, both keyed on the
+  digest of the real bytes, so masking it would write `[REDACTED]` into source
+  files. `docs/security-model.md` now states exactly what it holds, what can be
+  unmasked in it, and every reader (all API surfaces over it redact, except the
+  image-doc download). `blob.New` re-tightens an existing store directory to
+  `0700`; blobs were already `0600`.
+
+### Fixed
+
+- **Answered questions reached the model as "(answer not found)".** The answer
+  text is written to the redacted store and was read back from the raw one,
+  which in the daemon is a different directory; tests wired one store as both.
+  Found auditing every `raw-blobs/` read path.
 
 ## [0.6.0] - 2026-09-21
 
