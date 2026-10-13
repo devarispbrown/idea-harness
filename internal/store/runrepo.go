@@ -124,14 +124,14 @@ func (db *DB) CreateRunManifest(ctx context.Context, m *domain.RunManifest) erro
 // GetRunManifest returns a manifest by run id.
 func (db *DB) GetRunManifest(ctx context.Context, runID string) (domain.RunManifest, error) {
 	var m domain.RunManifest
-	var skills, tools, usage, executorRaw string
+	var skills, tools, usage, executorRaw, review string
 	var started, finished int64
 	err := db.SQL().QueryRowContext(ctx, `
-		SELECT id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at, executor_json
+		SELECT id, run_id, snapshot_digest, config_digest, workflow_digest, role_version, requested_model, actual_model, context_digest, skill_digests_json, tool_versions_json, usage_json, result_digest, started_at, finished_at, executor_json, review_json
 		FROM run_manifests WHERE run_id = ?`, runID).
 		Scan(&m.ID, &m.RunID, &m.SnapshotDigest, &m.ConfigDigest, &m.WorkflowDigest, &m.RoleVersion,
 			&m.RequestedModel, &m.ActualModel, &m.ContextDigest, &skills, &tools, &usage,
-			&m.ResultDigest, &started, &finished, &executorRaw)
+			&m.ResultDigest, &started, &finished, &executorRaw, &review)
 	if err != nil {
 		return m, err
 	}
@@ -146,7 +146,102 @@ func (db *DB) GetRunManifest(ctx context.Context, runID string) (domain.RunManif
 	_ = jsonUnmarshal(skills, &m.SkillDigests)
 	_ = jsonUnmarshal(tools, &m.ToolVersions)
 	_ = jsonUnmarshal(usage, &m.Usage)
+	if review != "" {
+		var t domain.ReviewTelemetry
+		if jsonUnmarshal(review, &t) == nil {
+			m.Review = &t
+		}
+	}
 	return m, nil
+}
+
+// SetRunManifestReview records one review cycle's convergence telemetry on
+// the adversarial reviewer's run manifest (migration 38).
+//
+// A separate write rather than a field CreateRunManifest fills, because the
+// manifest is written inside runModel the moment the reviewer's response
+// validates -- before the loop has classified a single finding. What the
+// telemetry records (re-raised, demoted, the outcome) only exists after that.
+// A run with no manifest (a failed call) has nothing to attach to; the UPDATE
+// then touches no row, which is reported rather than silently ignored.
+func (db *DB) SetRunManifestReview(ctx context.Context, runID string, t domain.ReviewTelemetry) error {
+	return db.Apply(ctx, Event{
+		AggregateType: "run_manifest",
+		AggregateID:   runID,
+		Actor:         ActorOrchestrator,
+		EventType:     "run_manifest.review_recorded",
+		Operation:     t.Outcome,
+	}, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE run_manifests SET review_json = ? WHERE run_id = ?`, mustJSON(t), runID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return &NotFoundError{Kind: "run manifest", Ref: runID}
+		}
+		return nil
+	})
+}
+
+// SumRunUsage sums the usage of every run manifest attributed to an
+// initiative (runs.initiative_id) and counts them -- the token figures GET
+// .../costs does not report. Summed in Go because usage is stored as JSON.
+func (db *DB) SumRunUsage(ctx context.Context, initiativeID string) (domain.RunUsage, int, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT m.usage_json
+		FROM runs r JOIN run_manifests m ON m.run_id = r.id
+		WHERE r.initiative_id = ?`, initiativeID)
+	if err != nil {
+		return domain.RunUsage{}, 0, err
+	}
+	defer rows.Close()
+	var total domain.RunUsage
+	n := 0
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return domain.RunUsage{}, 0, err
+		}
+		var u domain.RunUsage
+		if err := jsonUnmarshal(raw, &u); err != nil {
+			return domain.RunUsage{}, 0, fmt.Errorf("store: decode run usage: %w", err)
+		}
+		total.InputTokens += u.InputTokens
+		total.OutputTokens += u.OutputTokens
+		total.CostUSD += u.CostUSD
+		total.DurationMS += u.DurationMS
+		n++
+	}
+	return total, n, rows.Err()
+}
+
+// ListReviewTelemetry returns every review cycle's convergence record for an
+// initiative, oldest first -- the PRD loop's cycles and the plan review's
+// pass, across every invocation (a human revise starts a new loop at cycle 1,
+// so Cycle alone does not order them; started_at does).
+func (db *DB) ListReviewTelemetry(ctx context.Context, initiativeID string) ([]domain.ReviewTelemetry, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT m.review_json
+		FROM runs r JOIN run_manifests m ON m.run_id = r.id
+		WHERE r.initiative_id = ? AND m.review_json != ''
+		ORDER BY m.started_at ASC, m.rowid ASC`, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ReviewTelemetry
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var t domain.ReviewTelemetry
+		if err := jsonUnmarshal(raw, &t); err != nil {
+			return nil, fmt.Errorf("store: decode review telemetry: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // ---------- Operations ----------

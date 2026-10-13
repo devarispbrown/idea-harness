@@ -74,6 +74,12 @@ type Runtime struct {
 	images *imagePresenceCache
 	// smokes is the per-project claim for smoke tests started from the UI.
 	smokes smokeClaims
+
+	// extraProviders are registered into every project's model registry on
+	// top of what harness.yaml configures (RegisterProvider; eval_hooks.go).
+	// Its own mutex, because EnsureProject builds a registry while holding mu.
+	extraMu        sync.Mutex
+	extraProviders map[string]model.Provider
 }
 
 type projectRuntime struct {
@@ -298,6 +304,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
+	r.addExtraProviders(registry)
 	engine := workflow.New(db, blobs, registry, cfg.Harness, r.log)
 	engine.SetRawBlobs(rawBlobs)
 	engine.SetRedactor(redactor)
@@ -378,6 +385,7 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
+	r.addExtraProviders(registry)
 
 	// Rebuild config-derived components on the SAME engine (its own mutexes
 	// keep serializing execute/apply/revert, and cfgMu -- see engine.go --

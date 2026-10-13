@@ -52,6 +52,12 @@ review:
   max_tokens: 0        # requested output-token budget per call, 0 = each stage's own built-in size
   max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
   rigor: auto          # auto | quick | standard | thorough (review B1)
+  convergence:         # how a review loop decides it is done (all optional)
+    mode: guarded            # guarded | legacy
+    gate_severity: high      # high | critical — the lowest adversarial severity that blocks
+    require_citation: true   # a blocking finding must cite a requirement/task (or quote the idea)
+    later_findings: changed  # changed | critical | any — the bar for a NEW finding after cycle 1
+    stall_cycles: 1          # non-decreasing cycles tolerated before stopping for a human
 
 # Research sources (fetched — public addresses only — during research when
 # network is enabled). Offline/empty means the researcher marks everything as
@@ -107,6 +113,11 @@ Top-level fields:
 | `review.max_tokens` | the **output-token budget requested for every model call**, and the ceiling checked against the response — it is a per-call figure, not a pool that drains. Set, it directly overrides a stage's own built-in request size (still bounded by the model's real output ceiling — see "Model output ceilings" below); a response over it still fails that stage. Unset (`0`), each stage uses its own built-in request size as before | `0` (each stage's built-in size) |
 | `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |
 | `review.rigor` | `auto` \| `quick` \| `standard` \| `thorough` — how much scrutiny the PRD, plan and change-set reviews apply (review B1). See "Review rigor" below | `auto` |
+| `review.convergence.mode` | `guarded` \| `legacy` — whether the review convergence rules apply. `legacy` is the pre-0.7 loop exactly. See "Review convergence" below | `guarded` |
+| `review.convergence.gate_severity` | `high` \| `critical` — the lowest adversarial-reviewer severity that blocks the PRD or plan review; anything below is recorded as advisory. Deterministic checks are unaffected | `high` |
+| `review.convergence.require_citation` | whether an adversarial finding must cite an active requirement (or, on the plan, a task) — or the idea, quoting it — to block | `true` |
+| `review.convergence.later_findings` | `changed` \| `critical` \| `any` — what a finding first raised in cycle 2+ must be to block: about a requirement the revision added or changed (or critical), critical, or anything | `changed` |
+| `review.convergence.stall_cycles` | how many consecutive PRD review cycles the open blocking count may fail to decrease before the loop stops for a human, ahead of `max_cycles` | `1` |
 | `research.urls` | seed URLs fetched during research when `network: enabled` | none |
 | `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
@@ -175,6 +186,12 @@ become reachable without a provider key:
 demo:
   block_review_cycles: 3
 ```
+
+Under the default `review.convergence` (guarded) any value of 2 or more parks the review, and it
+parks at **cycle 2**: the demo's blocking finding cites the requirement and justifies its re-raise,
+so it is a genuine persisting blocker, and the stall detector stops the loop as soon as the
+blocking count fails to fall. The surplus queue entry stays on the `review` queue (a later
+`idea revise` would consume it). A value of 1 blocks once and converges at cycle 2.
 
 The three demo knobs write to **separate queues** — `review`, `plan_review` and
 `execution_plan` — so a leftover response cannot outlive the call it was meant
@@ -316,6 +333,68 @@ so it is worth being exact:
 Reading `0` as "unlimited" is right for `max_cost_usd`, "each stage's own built-in request size" for
 `max_tokens`, and wrong for `max_cycles`, which the engine rewrites to 3. `idea config validate`
 rejects a negative `max_cycles`.
+
+### Review convergence
+
+`review.convergence` decides when an adversarial review loop is done. It exists because the PRD
+review did not converge in 2 of 2 measured real-model runs, and the code — not the model — explained
+why:
+
+1. **The reviewer was memoryless.** Each cycle received the requirements and nothing else — not the
+   previous cycle's findings, not what the revision did about them — so every cycle was a fresh
+   adversarial review of a usually larger PRD, and a fresh adversarial review always finds something.
+2. **One finding anywhere blocked.** Convergence was "no open critical/high finding in one fresh
+   pass", including a finding about text the reviewer had already seen unchanged and one that cited
+   nothing at all.
+3. **No cross-cycle identity.** A reworded re-raise was a brand-new finding (the near-duplicate
+   matching only carried a *human's* disposition forward), and earlier cycles' findings stayed open,
+   so a parked initiative listed every cycle's findings as current.
+4. **The reviser was told imprecisely.** It got every finding the initiative ever had as
+   "[severity] text" — no evidence, recommendation or requirement — and its policy only obliged it to
+   act on a `mitigate` disposition no in-loop finding carries.
+5. **Nothing measured progress.** The loop ran to `max_cycles` whether the blocking count was falling
+   or flat, and recorded nothing either way.
+
+In `guarded` mode (the default) the loop answers each:
+
+- **The reviewer sees the previous cycle.** From cycle 2 it gets that cycle's blocking findings by
+  label (`F1`, `F2`, …), what each cited, the reviser's own response to each, and which requirements
+  the revision added or changed. A persisting finding is re-raised by label (`reraises`); re-raising
+  one the revision *addressed* — answered it, or changed or replaced the requirement it cited —
+  needs a `justification`, or it is recorded as advisory.
+- **Re-raises are recognized even unlabelled**, by the same token-Jaccard similarity the decision
+  and question de-duplication uses (requirement codes stripped, since a revision mints new ones).
+  The superseded finding is dispositioned `duplicate`; a previous finding nobody re-raised is
+  dispositioned `fixed` (if the revision addressed it) or `not_applicable`. Only the current cycle's
+  findings stay open.
+- **Only cited findings block.** A critical/high finding must name an active requirement (`REQ-n`),
+  or a task on the plan review, or — for a gap — cite `idea` and quote it. An uncited one is scope
+  expansion by construction and is recorded as advisory, never dropped.
+- **Later cycles have a higher bar.** A finding that is *new* in cycle 2+ blocks only if it is about a
+  requirement the revision added or changed, or is critical (`later_findings: changed`). Anything
+  about text already reviewed unchanged should have been raised then.
+- **Severity is a floor, not a hint.** Medium and below never blocked; they are now marked advisory so
+  the record says so. `gate_severity: critical` raises the floor further.
+- **The reviser gets a precise brief**: only the findings blocking *this* cycle, by label, with
+  evidence and recommendation, and is asked to answer each in `review_responses`.
+- **A stall stops the loop early.** The open blocking count must fall from one cycle to the next;
+  after `stall_cycles` cycles where it does not, the initiative parks in `needs_human_judgment`
+  without spending the rest of `max_cycles`. This is where a genuine blocker — a contradiction in the
+  idea, a decision only a human can make — still reaches a human, and sooner.
+- **Every cycle is recorded.** Each adversarial review run's manifest carries a `review` record:
+  findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
+  blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
+  or `blocked` for the single-pass plan review). `idea eval` reports them per case.
+
+Nothing here lowers the bar for a genuine blocker: a cited finding that persists, with a reason,
+keeps blocking until a human acts. Deterministic checks are never subject to any of it. The plan
+review is a single pass, so only the per-finding rules (severity floor, citation) apply there.
+A human `idea revise` (or resume) starts a new loop seeded with the still-open findings, so a
+reworded twin of something the human just revised away is a re-raise rather than a new blocker.
+
+`legacy` restores the pre-0.7 loop exactly — no prior-cycle context, no demotions, no stall
+detector — though telemetry is still recorded. It is there to measure the difference (`idea eval`
+runs the non-convergence scenario both ways) and as an escape hatch.
 
 ### Model output ceilings
 
