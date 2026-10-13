@@ -11,6 +11,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- The README's real-model numbers (PRD review did not converge in 2 of 2 runs) are now labelled as
+  measured before the convergence rules existed; they need re-measuring with `idea eval --model`.
 - **The PRD review loop converges on principle instead of by exhaustion** (`review.convergence`,
   `guarded` by default). In 2 of 2 measured real-model runs the PRD review never converged, and the
   causes were in the loop, not the model: the reviewer never saw the previous cycle's findings or
@@ -37,6 +39,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **`idea eval`** — the first measurement this project has. It runs a fixed suite of seven small
+  greenfield ideas end to end on a private in-process daemon (idea → PRD review → plan → change set
+  → apply → verify) with an automatic judgment policy (`--policy approve|stop`), and reports per
+  case and in aggregate: stage reached, PRD/plan review convergence and cycles, human-judgment stops
+  and where, change sets produced and applied, verification, cost, tokens, wall time, and every
+  review cycle's convergence record — as markdown, and as JSON with `--json-out`. `--baseline`
+  compares against a saved report and exits non-zero on a regression. Without `--model` it runs a
+  deterministic scripted provider whose scenarios include the measured non-convergence (a reviewer
+  re-raising rephrased findings, run under both the guarded and the legacy loop) and a genuine
+  blocker that must still park for a human; that run is a Go test, so CI gates on it against
+  `internal/eval/testdata/baseline-scripted.json`. With `--model` it measures a real provider.
+  Acceptance checks are skipped (and reported as skipped) under the placeholder internal executor.
+- `daemon.Runtime.RegisterProvider` and `daemon.Runtime.InitiativeRunStats` (Go-only, no HTTP
+  route): the hooks `idea eval` uses to put a scripted provider behind the real registry and to read
+  token usage and review telemetry. `store.SumRunUsage` sums an initiative's run usage.
 - **Convergence telemetry on the run manifest.** Each adversarial review run's manifest records the
   cycle: findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
   blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
