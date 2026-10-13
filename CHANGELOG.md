@@ -38,6 +38,22 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `brew install devarispbrown/tap/idea-harness` works once the repository is public.
   [RELEASING.md](RELEASING.md) has the verification commands.
 
+- **`idea mcp`: an MCP server, so Claude Code, Cursor, Codex or any Model Context Protocol client
+  can drive idea-harness.** A stdio server (`claude mcp add idea -- idea mcp`) that is a client of
+  the daemon like every other command — it auto-starts the daemon, uses the CLI's token, never
+  opens the state database, and is subject to every gate the daemon enforces. Twenty-two tools:
+  reads (`list_initiatives`, `status`, `next_step`, `show_prd`, `list_tasks`, `list_findings`,
+  `list_questions`, `list_decisions`, `why`, `impact`, `trace`, `changed`, `list_change_sets`,
+  `show_change_set`, `get_operation`), judgments (`new_initiative`, `answer_question`,
+  `resolve_decision`, `review_change_set`, `verify`) and, only with `--allow-apply`,
+  `apply_change_set` and `revert_change_set`. `--read-only` exposes the reads alone. Each tool has
+  a JSON Schema for its arguments and `readOnlyHint`/`destructiveHint` annotations, and answers
+  with concise text plus `structuredContent`. Artifacts are readable as
+  `idea://initiative/{id}/{kind}` resources. Daemon refusals come back as `isError` tool results
+  carrying the daemon's message; malformed requests are JSON-RPC errors. Speaks the `2026-07-28`
+  protocol revision and the `initialize`-handshake revisions back to `2024-11-05`. See
+  [`docs/mcp.md`](docs/mcp.md).
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING
