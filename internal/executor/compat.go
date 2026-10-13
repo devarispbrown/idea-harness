@@ -59,6 +59,11 @@ var verifiedModels = map[string][]string{
 		// name the same pull).
 		"ollama/qwen3.8",
 	},
+	// Deliberately empty, not absent: no ACP agent has been run end to end
+	// through `--smoke` against a real model yet, so every acp combination is
+	// reported untested rather than silently treated as known-good. Absent
+	// (nil) would mean "no table for this kind", which says nothing at all.
+	"acp": {},
 }
 
 // CheckModelCompat reports whether kind (hermes|omp) paired with modelSpec
@@ -83,6 +88,11 @@ func CheckModelCompat(kind, modelSpec string) ModelCompat {
 		if v == modelSpec || (len(modelSpec) >= len(v) && modelSpec[:len(v)] == v) {
 			return ModelCompat{}
 		}
+	}
+	if kind == "acp" {
+		return ModelCompat{Message: fmt.Sprintf(
+			"acp + %s is untested (no ACP agent is in docs/agents.md's verified list yet); run `idea executors setup --kind acp --image <image> --acp-command <argv> --model %s --smoke --yes` "+
+				"to confirm it can produce a real file change before relying on it for a real run.", modelSpec, modelSpec)}
 	}
 	return ModelCompat{Message: fmt.Sprintf(
 		"%s + %s is untested (not in docs/agents.md's verified list); run `idea executors setup --kind %s --model %s --smoke --yes` "+

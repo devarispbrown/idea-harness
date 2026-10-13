@@ -74,7 +74,7 @@ func TrustTierFor(name string) domain.ExecutorTrust {
 	switch name {
 	case "internal":
 		return domain.ExecutorInternal
-	case "container", "omp", "hermes":
+	case "container", "omp", "hermes", "acp":
 		return domain.ExecutorLocalExternal
 	default:
 		return domain.ExecutorRemoteExternal // fail-closed: no actions

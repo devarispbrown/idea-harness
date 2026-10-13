@@ -393,6 +393,8 @@ type RunManifest struct {
 	ResultDigest   string            `json:"result_digest,omitempty"`
 	StartedAt      time.Time         `json:"started_at"`
 	FinishedAt     time.Time         `json:"finished_at"`
+	// Executor is set on coding-agent (implementer) runs only.
+	Executor *ExecutorProvenance `json:"executor,omitempty"`
 }
 
 // RunUsage records token/cost/duration for a run (§17, §36).

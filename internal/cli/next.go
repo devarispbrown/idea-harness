@@ -123,10 +123,8 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 		if err := c.do("POST", initiativeResource(projectID, iniID, action), nil, &out); err != nil {
 			return err
 		}
-		if kind := out["executor_kind"]; kind == "internal" || kind == "" {
-			if action == "execute" {
-				fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
-			}
+		if action == "execute" {
+			printExecutorResolution(out, stdout)
 		}
 		opID := out["operation_id"]
 		if opID == "" {
