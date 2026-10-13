@@ -315,9 +315,24 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	target, resolved, err := resolveDecision(c, projectID, iniID, ref, resolution)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(target.Code)+" → "+resolved)
+	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
+	return nil
+}
+
+// resolveDecision finds the decision ref names (id or code) in an initiative,
+// turns an option number into that option's text, and resolves it. It returns
+// the decision and the resolution text actually recorded. Shared with the MCP
+// server's resolve_decision tool, so an option number means the same thing on
+// both surfaces.
+func resolveDecision(c *client, projectID, iniID, ref, resolution string) (cliDecision, string, error) {
 	var decs []cliDecision
 	if err := c.do("GET", initiativeResource(projectID, iniID, "decisions"), nil, &decs); err != nil {
-		return err
+		return cliDecision{}, "", err
 	}
 	var target *cliDecision
 	for i := range decs {
@@ -327,24 +342,22 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("no decision matching %q; `idea decisions` lists them", ref)
+		return cliDecision{}, "", fmt.Errorf("no decision matching %q; `idea decisions` lists them", ref)
 	}
 	resolved := resolution
 	if len(target.Options) > 0 {
 		if n, convErr := strconv.Atoi(resolution); convErr == nil {
 			if n < 1 || n > len(target.Options) {
-				return fmt.Errorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
+				return cliDecision{}, "", fmt.Errorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
 					target.Code, len(target.Options), n)
 			}
 			resolved = target.Options[n-1]
 		}
 	}
 	if err := c.do("POST", decisionResource(projectID, target.ID, "resolve"), map[string]string{"resolution": resolved}, nil); err != nil {
-		return err
+		return cliDecision{}, "", err
 	}
-	fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(target.Code)+" → "+resolved)
-	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
-	return nil
+	return *target, resolved, nil
 }
 
 // cmdReopenDecision returns a resolved decision to open, so it can be

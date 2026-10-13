@@ -26,6 +26,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Config | YAML + JSON Schema |
 | Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (OpenRouter, Ollama, custom) + fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |
+| MCP | stdio server (`idea mcp`), a client of the same API — see [`mcp.md`](mcp.md) |
 
 ## Process model
 
@@ -80,6 +81,7 @@ internal/workflow    stage graph + state machine + orchestrator
 internal/daemon      token-authenticated, project-scoped REST; an SSE endpoint exists, unused by the CLI and UI
 internal/projection  Current Understanding / Next Move / What Changed
 internal/cli         thin HTTP client + Charm-styled commands (Lip Gloss, Huh, Glamour, Bubble Tea)
+internal/mcp         stdio MCP server protocol (`idea mcp`); internal/cli supplies its tools
 internal/web         embedded React UI
 ```
 
@@ -91,7 +93,8 @@ internal/web         embedded React UI
   managed daemon (§29, D1).
 - **Source is written only by an approved apply**: `.idea-harness/` is the only thing written as a
   side effect of running the tool. Change sets do write into the working tree, but only through
-  `idea apply` after a human verdict, and only via the journal that makes `idea revert`
+  `idea apply` (or the MCP server's `apply_change_set`, which exists only when `idea mcp` is
+  started with `--allow-apply`) after a review verdict, and only via the journal that makes `idea revert`
   byte-for-byte. Git is optional and never auto-initialized (§24).
 - **Structured output is centralized**: model response → schema validation → bounded repair →
   validated object (§39).

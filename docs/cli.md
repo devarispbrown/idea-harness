@@ -72,6 +72,7 @@ if this file has drifted.
 | `idea daemon` | run the daemon in the foreground | `status`, `stop` | takes no flags |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
+| `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
 | `idea version` | print the version, commit and build state | none | takes no flags |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | `--format` | no |
 
@@ -178,6 +179,10 @@ to look at, not something a disposition resolves.
 The CLI is a thin HTTP client to the daemon (§29, D1). On the first state command it auto-starts a
 detached daemon if none is running, then retries. The daemon is the single writer; the CLI never
 mutates state directly.
+
+`idea mcp` puts the same client behind the Model Context Protocol, so Claude Code, Cursor or Codex
+can read an initiative and record judgments as tool calls — setup, tiers and the tool list are in
+[`mcp.md`](mcp.md).
 
 Environment variables:
 
