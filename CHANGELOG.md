@@ -28,6 +28,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   unmasked in it, and every reader (all API surfaces over it redact, except the
   image-doc download). `blob.New` re-tightens an existing store directory to
   `0700`; blobs were already `0600`.
+- **A vision description is redacted even with no redactor wired.** It already
+  went through the project redactor and the redacting blob store; an engine
+  built without a redactor now falls back to the pattern catalog instead of
+  relying on which store is wired. New tests pin that an OCR'd key never
+  reaches the stored description or a prompt, that a `.docx` carrying a key is
+  rejected on its extracted text, and that a key in an image's filename is
+  masked in its title.
 
 ### Fixed
 
