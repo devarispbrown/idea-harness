@@ -109,6 +109,7 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 	if onReady != nil {
 		onReady()
 	}
+	rt.setIntegrationUIBase("http://" + ln.Addr().String())
 
 	// Whatever an agent left under the state root now belongs to a daemon that
 	// is gone. Swept in the background so a slow Docker cannot hold up serving,
@@ -131,6 +132,10 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 	srv.RegisterOnShutdown(cancelBase)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
+	// Projects that configure Slack/Linear are opened now rather than on
+	// their first request, so notifications and the Linear poll resume after
+	// a restart without anyone touching the project.
+	go rt.startConfiguredIntegrations(ctx)
 	select {
 	case err := <-served:
 		return err
@@ -170,6 +175,9 @@ func NewServer(rt *Runtime) *Server {
 	s := &Server{rt: rt, mux: http.NewServeMux()}
 	s.routes()
 	s.mux.Handle("/", s.apiAwareNotFound(web.Handler(rt.Token())))
+	// Integration actions (a Slack button, a Linear import) go through this
+	// same handler -- auth, host guard and all -- never around it.
+	rt.setIntegrationHandler(s.Handler())
 	return s
 }
 
