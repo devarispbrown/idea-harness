@@ -316,6 +316,26 @@ repository is public, the canonical install stays `git clone` + `go install ./cm
 `go install github.com/devarispbrown/idea-harness/cmd/idea@latest` additionally requires the module
 path to be publicly fetchable.
 
+Once it is public, Homebrew installs the release binary:
+
+```bash
+brew install devarispbrown/tap/idea-harness
+```
+
+Each release's `checksums.txt` is signed with keyless cosign, each archive ships an SPDX SBOM and,
+on a public repository, a GitHub build-provenance attestation. To check a download before running
+it:
+
+```bash
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/devarispbrown/idea-harness/.github/workflows/ci.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+grep '_darwin_arm64.tar.gz' checksums.txt | shasum -a 256 -c
+```
+
+[`RELEASING.md`](RELEASING.md#verifying-a-release) has the full procedure, including
+`gh attestation verify`.
+
 ## Documentation
 
 **Start here — step-by-step walkthroughs of the whole loop, no API key required:**
