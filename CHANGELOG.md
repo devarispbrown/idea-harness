@@ -95,6 +95,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Edit every field of a metric from the Define page.** The metric edit form adds guardrail
+  (blank clears it), cadence, definition, source — recorded by hand, a command, or a URL with a JSON
+  pointer — and, with more than one objective, which objective it measures; `metric edit` is now
+  `ui` in the parity ledger. The form refuses what the API refuses before sending (a cadence
+  `ParseCadence` rejects, a negative guardrail on a maintain metric, a command source with no
+  command, a non-http(s) URL, a pointer not starting with `/`) and sends a changed source whole.
 - **List the OpenHands executor's remote runs.** `idea runs remote [<initiative>] [--all] [--json]`,
   `GET …/initiatives/{id}/remote-runs` and `GET …/remote-runs` (project-wide, `?active=true` for the
   runs not yet over) list every dispatch to an Agent Server, newest first: task, status, attempt,

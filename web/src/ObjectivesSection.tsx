@@ -11,6 +11,7 @@ import {
   updateMetric,
   updateObjective,
   type MetricDirection,
+  type MetricSourceKind,
   type Objective,
   type ObjectiveStatus,
   type OutcomeMetric,
@@ -41,7 +42,21 @@ interface Requirement extends RequirementLike {
   statement: string;
 }
 
-const emptyMetric = () => ({ name: "", direction: "increase" as MetricDirection, target: "", baseline: "", unit: "" });
+const emptyMetric = (): MetricDraft => ({
+  name: "",
+  direction: "increase",
+  target: "",
+  baseline: "",
+  unit: "",
+  guardrail: "",
+  cadence: "",
+  definition: "",
+  objective: "",
+  sourceKind: "manual",
+  command: "",
+  url: "",
+  pointer: "",
+});
 
 const OBJECTIVE_STATUSES: ObjectiveStatus[] = ["active", "achieved", "abandoned"];
 
@@ -335,6 +350,7 @@ export default function ObjectivesSection({
                           prefix={`${m.code}`}
                           draft={editingMetric.draft}
                           onChange={(draft) => setEditingMetric({ id: m.id, draft })}
+                          objectives={objectives.map((x) => x.code)}
                         />
                         <button className="jc-primary" disabled={busy} onClick={() => saveMetric(m)}>
                           Save {m.code}
@@ -522,16 +538,24 @@ function ObjectiveEditForm({
 // MetricFields are a metric's editable fields, shared by add and edit; every
 // input is labelled (visually by its placeholder, for a screen reader by
 // aria-label).
+//
+// With objectives (the edit form) it also shows what only an edit changes:
+// guardrail, cadence, definition, how it is measured (source), and which
+// objective it measures. The fields are validated as the API validates them
+// (outcomes.metricEditBody) when Save is pressed.
 function MetricFields({
   prefix,
   draft,
   onChange,
+  objectives,
 }: {
   prefix: string;
   draft: MetricDraft;
   onChange: (d: MetricDraft) => void;
+  objectives?: string[];
 }) {
   const small = { padding: "4px 8px", fontSize: 12 };
+  const full = objectives !== undefined;
   return (
     <>
       <input
@@ -579,6 +603,100 @@ function MetricFields({
         value={draft.unit}
         onChange={(e) => onChange({ ...draft, unit: e.target.value })}
       />
+      {full && (
+        <>
+          <input
+            className="text-input"
+            style={{ maxWidth: 110, ...small }}
+            placeholder="guardrail"
+            title={
+              draft.direction === "maintain"
+                ? "Largest allowed distance from the target"
+                : draft.direction === "increase"
+                  ? "Floor it must not fall below"
+                  : "Ceiling it must not rise above"
+            }
+            aria-label={`${prefix} guardrail (blank for none)`}
+            inputMode="decimal"
+            value={draft.guardrail}
+            onChange={(e) => onChange({ ...draft, guardrail: e.target.value })}
+          />
+          <input
+            className="text-input"
+            style={{ maxWidth: 110, ...small }}
+            placeholder="cadence, e.g. weekly"
+            title="hourly, daily, weekly, biweekly, monthly, quarterly, <n>d, <n>w or a duration like 36h; blank for none"
+            aria-label={`${prefix} cadence (blank for none)`}
+            value={draft.cadence}
+            onChange={(e) => onChange({ ...draft, cadence: e.target.value })}
+          />
+          <input
+            className="text-input"
+            style={{ minWidth: 220, flex: 1, ...small }}
+            placeholder="definition: exactly how the number is computed"
+            aria-label={`${prefix} definition`}
+            value={draft.definition}
+            onChange={(e) => onChange({ ...draft, definition: e.target.value })}
+          />
+          <select
+            className="text-input"
+            style={{ maxWidth: 130, ...small }}
+            aria-label={`${prefix} source`}
+            value={draft.sourceKind}
+            onChange={(e) => onChange({ ...draft, sourceKind: e.target.value as MetricSourceKind })}
+          >
+            <option value="manual">recorded by hand</option>
+            <option value="command">command</option>
+            <option value="url">URL (JSON)</option>
+          </select>
+          {draft.sourceKind === "command" && (
+            <input
+              className="text-input"
+              style={{ minWidth: 220, flex: 1, ...small }}
+              placeholder="shell command; its last number is the value"
+              aria-label={`${prefix} source command`}
+              value={draft.command}
+              onChange={(e) => onChange({ ...draft, command: e.target.value })}
+            />
+          )}
+          {draft.sourceKind === "url" && (
+            <>
+              <input
+                className="text-input"
+                style={{ minWidth: 200, flex: 1, ...small }}
+                placeholder="https://… returning JSON"
+                aria-label={`${prefix} source URL`}
+                inputMode="url"
+                value={draft.url}
+                onChange={(e) => onChange({ ...draft, url: e.target.value })}
+              />
+              <input
+                className="text-input"
+                style={{ maxWidth: 140, ...small }}
+                placeholder="JSON pointer, e.g. /data/value"
+                aria-label={`${prefix} source JSON pointer (blank: the document is the number)`}
+                value={draft.pointer}
+                onChange={(e) => onChange({ ...draft, pointer: e.target.value })}
+              />
+            </>
+          )}
+          {objectives.length > 1 && (
+            <select
+              className="text-input"
+              style={{ maxWidth: 110, ...small }}
+              aria-label={`${prefix} objective`}
+              value={draft.objective}
+              onChange={(e) => onChange({ ...draft, objective: e.target.value })}
+            >
+              {objectives.map((code) => (
+                <option key={code} value={code}>
+                  measures {code}
+                </option>
+              ))}
+            </select>
+          )}
+        </>
+      )}
     </>
   );
 }

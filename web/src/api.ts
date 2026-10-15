@@ -233,9 +233,16 @@ export interface MetricStatus {
   reasons?: string[];
 }
 
+export type MetricSourceKind = "manual" | "command" | "url";
+
+// MetricSource is how a metric is measured (domain.MetricSource): typed in
+// by hand, the last number a sandboxed shell command prints, or a number at
+// a JSON pointer in a fetched http(s) document.
 export interface MetricSource {
-  kind: "manual" | "command" | "url";
-  [key: string]: unknown;
+  kind: MetricSourceKind;
+  command?: string;
+  url?: string;
+  pointer?: string;
 }
 
 export interface OutcomeMetric {
@@ -244,6 +251,7 @@ export interface OutcomeMetric {
   objective_id: string;
   objective_code: string;
   name: string;
+  definition?: string;
   unit?: string;
   direction: MetricDirection;
   baseline?: number;
@@ -310,6 +318,8 @@ export interface NewMetric {
   guardrail?: number;
   unit?: string;
   cadence?: string;
+  definition?: string;
+  source?: MetricSource;
   hypothesis?: string;
 }
 
@@ -359,9 +369,12 @@ export const createMetric = (projectId: string, initiativeId: string, body: NewM
 
 // MetricEdit is the PATCH .../metrics/{id} body (docs/api.md): only the
 // fields being changed. clear_baseline / clear_guardrail remove a value,
-// which an omitted field cannot say.
+// which an omitted field cannot say. objective (a code) moves the metric to
+// another objective; source replaces the whole source.
 export interface MetricEdit {
+  objective?: string;
   name?: string;
+  definition?: string;
   direction?: MetricDirection;
   target?: number;
   baseline?: number;
@@ -369,6 +382,8 @@ export interface MetricEdit {
   guardrail?: number;
   clear_guardrail?: boolean;
   unit?: string;
+  cadence?: string;
+  source?: MetricSource;
 }
 
 export const updateMetric = (projectId: string, initiativeId: string, metricId: string, body: MetricEdit) =>
