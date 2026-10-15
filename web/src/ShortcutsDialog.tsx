@@ -1,5 +1,6 @@
+import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
-import { useDialog } from "./focus";
+import { dialogRoot, useDialog } from "./focus";
 import { isHelpShortcut, shortcutGroups } from "./shortcuts";
 
 // ShortcutsDialog is the `?` reference: every keyboard shortcut, from the
@@ -25,7 +26,9 @@ export default function ShortcutsDialog() {
 
   if (!open) return null;
   const groups = shortcutGroups();
-  return (
+  // Portaled into <body>, outside the app root, so useDialog can make the
+  // app root inert while this is open (focus.ts, inertOutside).
+  return createPortal(
     <div
       className="cmd-overlay"
       onMouseDown={(e) => {
@@ -72,6 +75,7 @@ export default function ShortcutsDialog() {
           ))}
         </div>
       </div>
-    </div>
+    </div>,
+    dialogRoot(),
   );
 }

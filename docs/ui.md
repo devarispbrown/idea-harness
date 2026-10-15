@@ -491,7 +491,10 @@ Each note field with a shortcut says so under it ("⌘ Enter to send it back"), 
   else the main region), once the page has rendered it — never on the first load, so the skip link
   stays first. The palette's Settings sections land on that section's heading instead.
 - **Dialogs** — the command palette and the shortcut reference are modal: focus moves in, Tab
-  cycles inside, Escape or a click outside closes, and focus returns to what had it.
+  cycles inside, Escape or a click outside closes, and focus returns to what had it. They render
+  into `<body>`, outside the app root, and while one is open the app root is `inert` (removed from
+  the accessibility tree, the Tab order and pointer hit testing — a screen reader's virtual cursor
+  cannot wander behind it); the live region stays outside it, so announcements are still heard.
 - **Inline forms** — Request changes, Ask for a revision…, the revert confirmation (an
   `alertdialog`, focus on **Cancel**), Write my own…, and the objective/metric edit and add forms:
   focus moves to the first field, Escape (while focus is inside) closes, and focus returns to the
@@ -699,8 +702,8 @@ intercept those requests: no product data is ever stored on the device.
   focus on route change, ⌘K to a node code and a Settings section, `?`, Escape and ⌘/Ctrl+Enter in
   a note form) and Settings. Every page gets an axe (WCAG 2 A/AA) check in **both colour schemes**
   (`prefers-color-scheme: light` and `dark`) that fails on a serious or critical violation; a
-  modal is checked on its own (`{ include }`), since the page under its overlay is dimmed on
-  purpose. Accepted exceptions, each with its reason, live in `web/e2e/a11y.ts` (none today).
+  modal is checked with the whole page, which is valid because the page under it is `inert`.
+  Accepted exceptions, each with its reason, live in `web/e2e/a11y.ts` (none today).
   `IDEA_E2E_A11Y=report` logs violations instead of failing, and `IDEA_E2E_SHOTS=<dir>` keeps a
   screenshot of each checked page in each scheme.
 - **Keyboard tests** — `web/src/keyboard.test.tsx` (jsdom) covers ⌘/Ctrl+Enter, Escape and focus

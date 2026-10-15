@@ -102,6 +102,36 @@ describe("ShortcutsDialog", () => {
     expect(document.activeElement).toBe(before);
   });
 
+  it("makes the app root inert while open, but not the live region, and restores it on close", async () => {
+    const { container } = render(
+      <>
+        <button>before</button>
+        <LiveAnnouncer />
+        <ShortcutsDialog />
+      </>,
+    );
+    // Already inert for its own reason: must stay inert after the dialog.
+    const other = document.createElement("div");
+    other.setAttribute("inert", "");
+    document.body.appendChild(other);
+    const before = screen.getByRole("button", { name: "before" });
+    before.focus();
+    fireEvent.keyDown(window, { key: "?", shiftKey: true });
+    const dialog = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+    await nextFrame();
+    // The dialog is outside the app root (a portal into <body>), so it is
+    // the one thing left reachable.
+    expect(container.contains(dialog)).toBe(false);
+    expect(container.hasAttribute("inert")).toBe(true);
+    expect(dialog.closest("[inert]")).toBeNull();
+    expect(screen.getByTestId("live-announcer").closest("[inert]")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(other.hasAttribute("inert")).toBe(true);
+    expect(document.activeElement).toBe(before);
+    other.remove();
+  });
+
   it("does not open while typing a question mark into a field", () => {
     render(
       <>
@@ -142,6 +172,16 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onNavigate).toHaveBeenCalledWith("#/i/i1/lineage/requirement/REQ-3");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("makes the app root inert while open, and lifts it when a command runs", async () => {
+    const { container } = render(<CommandPalette initiativeId="i1" onNavigate={() => {}} />);
+    const input = await open();
+    expect(container.hasAttribute("inert")).toBe(true);
+    expect(input.closest("[inert]")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.hasAttribute("inert")).toBe(false);
   });
 
   it("matches keywords: 'timeline' finds Activity", async () => {

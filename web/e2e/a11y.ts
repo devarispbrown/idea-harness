@@ -19,17 +19,17 @@ const SCHEMES = ["light", "dark"] as const;
 // gate is the two levels axe itself calls blocking. The page is left in the
 // light scheme.
 //
-// include scopes the check to one selector: a modal dialog, checked on its
-// own. Under a modal the page is dimmed by the overlay on purpose and is
-// not what anyone is reading; its own contrast was checked without it.
-export async function expectAccessible(page: Page, label: string, { include }: { include?: string } = {}) {
+// A modal dialog is checked with the whole page: while one is open the app
+// root is inert (focus.ts, inertOutside), so axe sees only the dialog and
+// what stays reachable, exactly what a screen reader gets.
+export async function expectAccessible(page: Page, label: string) {
   // Let the 2.5s poll settle so axe sees the page, not its loading state.
   await page.waitForLoadState("networkidle").catch(() => {});
   const failures: string[] = [];
   try {
     for (const scheme of SCHEMES) {
       await page.emulateMedia({ colorScheme: scheme });
-      const found = await violations(page, `${label} (${scheme})`, include);
+      const found = await violations(page, `${label} (${scheme})`);
       if (found) failures.push(found);
     }
   } finally {
@@ -46,7 +46,7 @@ export async function expectAccessible(page: Page, label: string, { include }: {
 
 // violations runs axe once and describes its blocking findings, or returns ""
 // when there are none.
-async function violations(page: Page, label: string, include?: string): Promise<string> {
+async function violations(page: Page, label: string): Promise<string> {
   // IDEA_E2E_SHOTS=<dir> keeps a full-page screenshot of every page checked,
   // for looking at what the suite saw.
   if (process.env.IDEA_E2E_SHOTS) {
@@ -55,9 +55,7 @@ async function violations(page: Page, label: string, include?: string): Promise<
       fullPage: true,
     });
   }
-  let axe = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
-  if (include) axe = axe.include(include);
-  const results = await axe.analyze();
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   const url = page.url();
   const blocking = results.violations.filter(
     (v) =>
