@@ -43,6 +43,9 @@ name: my-product   # project display name
 # egress, deliberately, to reach its model API (see docs/agents.md); the
 # check sandbox always runs with no network at all, unconditionally (see
 # docs/security-model.md). Neither reads this setting (review defect #3).
+# verify.setup.prepare and verify.security.scanners entries marked
+# network: true are the only sandboxed commands given network, and they do
+# not read this setting either -- listing them is the opt-in.
 network: disabled
 
 # Review budget (§11, §16). The three fields bound different things — see the
@@ -139,6 +142,13 @@ Top-level fields:
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. The change-set review runs exactly once, when the change set is created (right after checks pass) — not again on `approve` — so this only ever drains at most one entry off the queue; a surplus is harmless. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: a plain `approve` only evaluates the findings the one review already persisted (it never calls the model again), and the deny gate refuses outright until a human dispositions them | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
+| `verify.dimensions.<dimension>` | `off` \| `advisory` \| `gate` for one of `setup_reproducibility`, `docs_completeness`, `api_compatibility`, `api_ergonomics`, `security`, `performance`, `operational_readiness`. See "Quality dimensions" below | per effective rigor (below) |
+| `verify.setup.commands` | the exact commands setup_reproducibility runs, replacing README/Makefile detection | detected |
+| `verify.setup.prepare` | commands run **with network** before the offline run, to fetch dependencies ([security-model.md](security-model.md#execution-gateway)) | none |
+| `verify.security.scanners` | `{name, command, network}` scanners run in the sandbox; non-zero exit fails | none — vulnerability scan `not_measured` |
+| `verify.performance.budgets` | `{name, command, metric, unit, max, max_regression_pct}` budgets | none — performance `not_measured` |
+| `verify.model_review` | add a model-reviewed check to `docs_completeness` and/or `operational_readiness` | none |
+| `verify.timeout_seconds` | per-command bound for sandboxed quality commands | `check_timeout_seconds`, else `600` |
 
 ### Check auto-detection
 
@@ -525,6 +535,141 @@ preset name keeps inheriting its well-known `api_key_env`, so repointing it woul
 the full prompt context to another host. Point a differently-named provider at the endpoint instead.
 Keyless local presets (`ollama`) may still move between loopback ports. `idea config validate`
 reports a `harness.yaml` that breaks these rules, and the API rejects the write.
+
+### Quality dimensions (`verify`)
+
+`idea verify` measures more than the acceptance tests. Each **quality dimension** produces a
+result — `pass`, `warn`, `fail`, `not_measured` or `not_applicable` — made of checks, each saying
+whether it was **deterministic** or **model-reviewed** and citing the file:line (and requirement)
+its evidence is in. Results are recorded in the product record and linked to the requirements they
+bear on with a `verifies` edge, so `idea impact requirement REQ-1` lists them and
+`idea why quality_result docs_completeness` walks back to the requirements.
+
+`not_measured` is never a pass. It is what a dimension reports when the harness could not look
+(no Docker, no toolchain image, no scanner configured, a vulnerability database that needs the
+network, the demo model). A dimension's status is the worst of its checks in the order
+`fail` > `not_measured` > `warn` > `pass` > `not_applicable`, so one unmeasured check keeps a
+dimension from reading as passed.
+
+```yaml
+verify:
+  dimensions:                  # override the rigor defaults, per dimension
+    api_compatibility: gate    # off | advisory | gate
+    performance: advisory
+  setup:
+    commands: []               # set to replace README/Makefile detection
+    prepare: ["go mod download"]   # runs WITH network, before the offline run
+  security:
+    scanners:
+      - { name: govulncheck, command: "go run golang.org/x/vuln/cmd/govulncheck@latest ./...", network: true }
+  performance:
+    budgets:
+      - name: parse
+        command: go test -run '^$' -bench BenchmarkParse -benchtime 2000x ./internal/parse
+        metric: 'BenchmarkParse\S*\s+\d+\s+([0-9.]+) ns/op'   # first capture group is the number
+        unit: ns/op
+        max: 50000                # absolute ceiling (optional)
+        max_regression_pct: 20    # vs the previous measurement (optional)
+  model_review: [docs_completeness]
+```
+
+**Modes and the gate.** `off` is not measured. `advisory` is measured and reported and never
+blocks. `gate` holds the verification gate — the initiative is not completed, and `idea verify`
+exits `5` (`gate_unmet`) — while the dimension's latest result is `fail` or `not_measured`, or is
+**stale** (measured against different applied change sets, policy or verify config than the
+initiative has now). `warn` and `not_applicable` satisfy a gate. Edits made to the workspace
+outside the harness between two verifies do not make a result stale; re-run `idea verify` after
+them, or apply them through a change set.
+
+**Defaults follow the effective review rigor** (`review.rigor`, with `auto` calibrated from project
+size and the size of the initiative's applied change, as for the reviews):
+
+| rigor | setup_reproducibility, docs_completeness, api_compatibility | api_ergonomics, security, performance, operational_readiness |
+|---|---|---|
+| `quick` | off | off |
+| `standard` | advisory | off |
+| `thorough` | **gate** | advisory |
+
+`idea verify` measures every enabled dimension whose result is missing or stale before it runs the
+gate (`--no-measure` skips that and uses the last recorded scorecard), prints the scorecard, and
+includes it in `--json` as `quality`. `POST .../quality` measures from the API; `GET .../quality`
+reads.
+
+What each dimension checks:
+
+- **`setup_reproducibility`** (deterministic, sandboxed). Copies the workspace's committable files
+  (`git ls-files -co --exclude-standard`, minus `.env*` and `.idea-harness/`) — what a fresh clone
+  of the applied workspace holds — and runs the documented commands there in the check sandbox with
+  **no network**, in `check.image` or the image detected from the toolchain markers. Commands come
+  from `verify.setup.commands`; else the shell blocks under the README's
+  install/setup/build/test/development headings (only lines starting with a known tool —
+  `make`, `go`, `npm`, `pnpm`, `yarn`, `pip`, `pytest`, `cargo`, … — or `./script`; `cd <dir>` is
+  followed within a block when the directory exists); else the Makefile's `build`/`test` targets;
+  else the build/test commands [detected from the toolchain](#check-auto-detection), with a `warn`
+  that nothing documents them. Dependency-fetch commands (`npm ci`, `pip install`,
+  `go mod download`, `git clone`, `curl`, …) and long-running ones (`npm start`, `go run`,
+  `docker …`) are skipped and listed. A documented command that fails is a `fail` citing its README
+  line — except after a skipped fetch with no `verify.setup.prepare`, where the run cannot tell
+  missing dependencies from broken docs and reports `not_measured`. `verify.setup.prepare` commands
+  run first, with network; package caches are kept inside the copy so the offline run sees them.
+  No Docker or no image: `not_measured`.
+- **`docs_completeness`** (deterministic; optional model review). A root README exists (else
+  `fail`); it has a heading naming install/setup and one naming usage/examples (else `warn`);
+  every HTTP route and CLI flag the change added in source is mentioned in some Markdown/RST doc or
+  OpenAPI spec (else `fail`, citing the declaring line); every environment variable the change
+  started reading is mentioned (else `warn`), and the README has a configuration/environment
+  section when it added any; every exported Go declaration the change added has a doc comment, and
+  every OpenAPI operation it added has a summary or description (else `warn`). Routes are recognized
+  in Go (`HandleFunc`/`Handle`, gin/echo/chi/fiber verbs), Express/Fastify, Flask/FastAPI; flags in
+  Go `flag`/pflag/cobra, argparse, click, commander; env reads via `os.Getenv`/`LookupEnv`,
+  `process.env`, `os.environ`/`os.getenv`. A form not listed is not detected — silence, never a false
+  failure. `verify.model_review: [docs_completeness]` adds a verification_engineer review.
+- **`api_compatibility`** (deterministic). Diffs every changed OpenAPI 3 spec (YAML or JSON) before
+  and after the initiative's change sets. **Breaking:** a path or operation removed; a parameter
+  removed, a required parameter added, an optional one made required, or a parameter's type changed;
+  a request body made required, or one gaining a required property or changing type; a 2xx response
+  removed, a response media type removed, a response schema's type changed, or a property removed
+  from a response object. Additions are reported, not breaking. Enum, format and constraint changes,
+  and anything behind `oneOf`/`anyOf`/`allOf`, are out of scope. It also diffs the exported API of
+  every changed importable Go package (not `internal/`, not `main`, not tests) with `go/parser`:
+  a removed symbol, a changed func/method signature or field type, a changed type kind, or a method
+  added to an existing exported interface is breaking. It cannot see changes only a type checker
+  would (an underlying type changing behind a name). A breaking change is a `fail` unless an active
+  requirement (statement or criteria) or a decided decision names the path or symbol, in which case
+  it is a `warn` citing that requirement or decision.
+- **`api_ergonomics`** (model-reviewed). The verification_engineer reviews the diff of the change's
+  public surface — changed OpenAPI specs, changed importable Go files, source files adding a route or
+  flag — against a rubric: naming consistency, error shapes, pagination, idempotency, examples. A
+  finding counts only when it cites a file it was shown and a line inside one of that file's hunks;
+  others are recorded in the summary check and never move the scorecard. High/critical → `fail`,
+  medium → `warn`. The built-in demo provider declares it did not review, which is `not_measured`;
+  so is a failed model call. No public surface changed: `not_applicable`.
+- **`security`** (deterministic). Re-scans the applied files as they are now with the same
+  credential detector and allowlist the secret sweep uses (`fail`; generic assignments in test
+  fixtures `warn`); summarizes the deny checks — a denied change set never applied and is reported,
+  an undisposed deny-coded or sensitive-area finding on an applied one is a `warn`; and runs each
+  `verify.security.scanners` command in the sandbox (non-zero exit `fail`, exit 127 — not installed
+  in the image — `not_measured`). With no scanner configured the vulnerability check is
+  `not_measured`: govulncheck, `npm audit` and pip-audit need a vulnerability database from the
+  network, which the sandbox only has for a scanner marked `network: true`.
+- **`performance`** (deterministic, sandboxed). Runs each budget's command offline, reads the first
+  capture group of `metric` from its output, and fails over `max` or over `max_regression_pct`
+  against the previous measurement's value (the first measurement records the baseline). No budgets:
+  `not_measured`. A metric that matches nothing: `not_measured`.
+- **`operational_readiness`** (deterministic; optional model review). When the code starts a
+  network server (`http.ListenAndServe`, `grpc.NewServer`, `.listen(port)`, `createServer(`,
+  `uvicorn.run(`, `FastAPI(`, `Flask(__name__)`, `app.run(`): a route whose last segment is
+  `health`/`healthz`/`healthcheck`/`livez`/`readyz`/`ready`/`ping`; SIGTERM handled
+  (`signal.Notify`/`NotifyContext` naming `SIGTERM` plus a `Shutdown`/`GracefulStop` call in Go,
+  `process.on('SIGTERM')`, `signal.signal(signal.SIGTERM)`, or uvicorn/gunicorn); a structured logger
+  (slog, zap, zerolog, logrus, pino, winston, bunyan, structlog, python-json-logger); configuration
+  read from the environment. Each absent one is a `warn` — absence of a pattern is weak evidence.
+  Without a server they are `not_applicable`. Every Dockerfile has a `HEALTHCHECK` (`warn`).
+  Migration safety, for changed `.sql` files and files under `migrations/`/`migrate/`: editing an
+  already-present numbered migration is a `fail` (a database that applied it will not re-run it);
+  an added `DROP TABLE`/`DROP COLUMN`/`DROP SCHEMA`/`TRUNCATE`/`RENAME`/unqualified `DELETE` is a
+  `warn`. `verify.model_review: [operational_readiness]` adds a verification_engineer review for
+  what the patterns cannot see.
 
 ## Supported providers
 
