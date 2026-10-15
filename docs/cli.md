@@ -45,6 +45,17 @@ if this file has drifted.
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
+| `idea objectives [<initiative>]` | list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it | `--json` | yes |
+| `idea objective add\|edit\|link` | add, edit or link an objective (see the rows below) | `add --json`, `add --owner`, `add --rationale`, `edit --json`, `edit --owner`, `edit --rationale`, `edit --statement`, `edit --status`, `link --json`, `link --unlink` | takes no flags |
+| `idea objective add "<statement>"` | add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision | — | — |
+| `idea objective edit <OBJ>` | change --statement, --rationale, --owner or --status active\|achieved\|abandoned | — | — |
+| `idea objective link <REQ> <OBJ>` | record that a requirement serves an objective (--unlink removes it) | — | — |
+| `idea metrics [<initiative>]` | list outcome metrics with their drift: on track, off track, regressed, stale or no data | `--json` | yes |
+| `idea metric add\|edit\|record\|measure` | add, edit, record or measure an outcome metric (see the rows below) | `add --baseline`, `add --cadence`, `add --command`, `add --definition`, `add --direction`, `add --guardrail`, `add --hypothesis`, `add --json`, `add --manual`, `add --pointer`, `add --target`, `add --unit`, `add --url`, `edit --baseline`, `edit --cadence`, `edit --clear-baseline`, `edit --clear-guardrail`, `edit --command`, `edit --definition`, `edit --direction`, `edit --guardrail`, `edit --json`, `edit --manual`, `edit --name`, `edit --objective`, `edit --pointer`, `edit --target`, `edit --unit`, `edit --url`, `measure --json`, `record --at`, `record --json`, `record --note` | takes no flags |
+| `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective: --direction increase\|decrease\|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual | — | — |
+| `idea metric edit <MET>` | change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source | — | — |
+| `idea metric record <MET> <value>` | record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value | — | — |
+| `idea metric measure [<MET>]` | run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources | — | — |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |

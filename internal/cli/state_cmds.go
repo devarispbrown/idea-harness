@@ -166,6 +166,8 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 		if err := c.do("GET", initiativeResource(projectID, ini.ID, "costs"), nil, &costs); err == nil {
 			fmt.Fprintln(stdout, "  "+muted(costs.summary()))
 		}
+		// Outcome drift (objectives & outcomes). Best-effort like costs.
+		printOutcomeNote(c, projectID, ini.ID, "  ", stdout)
 		var nm cliGuidance
 		if err := c.do("GET", initiativeResource(projectID, ini.ID, "guidance"), nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)

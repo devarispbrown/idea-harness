@@ -280,7 +280,14 @@ func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout,
 		// point this loop exists to stop at.
 		return runVerify(cmdArgs{}, stdout, stderr, false)
 	}
-	return renderNextAction(step, stdout)
+	if err := renderNextAction(step, stdout); err != nil {
+		return err
+	}
+	// Outcome drift is something to know while taking the next step --
+	// most of all once the initiative is `done` and its metrics are the
+	// only thing still moving. Never a step of its own.
+	printOutcomeNote(c, projectID, iniID, "", stdout)
+	return nil
 }
 
 // renderNextAction prints the guidance for a step nothing will take on its own.
