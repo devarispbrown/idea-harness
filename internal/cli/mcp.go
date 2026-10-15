@@ -173,7 +173,7 @@ var mcpInitiativeProp = map[string]any{
 	"description": "Initiative id, as list_initiatives returns it. Optional: defaults to the most recently created initiative, the same default every idea command uses.",
 }
 
-var mcpGraphTypes = []string{"requirement", "task", "decision", "artifact", "assertion", "context_doc"}
+var mcpGraphTypes = []string{"requirement", "task", "decision", "artifact", "assertion", "context_doc", "objective", "metric", "change_set"}
 
 func mcpGraphSchema() map[string]any {
 	return mcpObject(map[string]any{
@@ -209,6 +209,10 @@ type mcpArgs struct {
 	AcceptFindings bool   `json:"accept_findings"`
 	Requirement    string `json:"requirement"`
 	OperationID    string `json:"operation_id"`
+	Metric         string `json:"metric"`
+	// Value is a pointer so record_metric can tell 0 from absent.
+	Value *float64 `json:"value"`
+	Note  string   `json:"note"`
 }
 
 // mcpHandler adapts a typed handler to mcp.Handler.
@@ -351,6 +355,19 @@ func mcpToolTable(tier mcpTier) []mcpToolDef {
 			Handler:     mcpHandler(mcpGetOperation),
 		}},
 
+		{tier: mcpTierRead, Tool: mcp.Tool{
+			Name: "list_objectives", Title: "List objectives",
+			Description: "The initiative's objectives (OBJ-n): the outcome each states, how many requirements serve it and how many metrics measure it.",
+			InputSchema: mcpObject(map[string]any{"initiative": mcpInitiativeProp}), Annotations: annRead,
+			Handler: mcpHandler(mcpListObjectives),
+		}},
+		{tier: mcpTierRead, Tool: mcp.Tool{
+			Name: "list_metrics", Title: "List outcome metrics with drift",
+			Description: "The initiative's outcome metrics (MET-n) with their deterministic drift (on_track, off_track, regressed, stale, no_data) and the reasons, plus the outcome summary: requirements that are verified but whose objective is failing, and objectives with no metric.",
+			InputSchema: mcpObject(map[string]any{"initiative": mcpInitiativeProp}), Annotations: annRead,
+			Handler: mcpHandler(mcpListMetrics),
+		}},
+
 		{tier: mcpTierJudgment, Tool: mcp.Tool{
 			Name: "new_initiative", Title: "Start a new initiative",
 			Description: "Create an initiative from an idea and start its workflow (framing, research, a reviewed PRD). Calls the configured model provider and spends its budget. Returns at once with an operation_id; poll get_operation or status.",
@@ -390,6 +407,18 @@ func mcpToolTable(tier mcpTier) []mcpToolDef {
 			}, "change_set", "verdict"),
 			Annotations: annDestructive,
 			Handler:     mcpHandler(mcpReviewChangeSet),
+		}},
+		{tier: mcpTierJudgment, Tool: mcp.Tool{
+			Name: "record_metric", Title: "Record a metric value",
+			Description: "Record a measured value for an outcome metric (MET-n), as the human who measured it. Returns the metric's drift after it and how many change sets landed since the previous value. Only record a number you or the human actually observed; never estimate one.",
+			InputSchema: mcpObject(map[string]any{
+				"metric":     mcpString("Metric code (MET-1) or id."),
+				"value":      map[string]any{"type": "number", "description": "The observed value, in the metric's unit."},
+				"note":       mcpString("Optional: where the number came from."),
+				"initiative": mcpInitiativeProp,
+			}, "metric", "value"),
+			Annotations: annJudgment,
+			Handler:     mcpHandler(mcpRecordMetric),
 		}},
 		{tier: mcpTierJudgment, Tool: mcp.Tool{
 			Name: "verify", Title: "Run the verification gate",
@@ -874,7 +903,98 @@ func mcpGetOperation(a mcpArgs) (mcp.Result, error) {
 	return mcp.Result{Text: text, Structured: op}, nil
 }
 
+func mcpListObjectives(a mcpArgs) (mcp.Result, error) {
+	c, projectID, iniID, err := mcpInitiative(a.Initiative)
+	if err != nil {
+		return mcp.Result{}, err
+	}
+	var objs []cliObjective
+	if err := c.do("GET", initiativeResource(projectID, iniID, "objectives"), nil, &objs); err != nil {
+		return mcp.Result{}, err
+	}
+	var b strings.Builder
+	if len(objs) == 0 {
+		b.WriteString("No objectives yet.")
+	}
+	for _, o := range objs {
+		fmt.Fprintf(&b, "%s [%s] %s (%d requirement(s), %d metric(s))\n", o.Code, o.Status, o.Statement, len(o.RequirementIDs), len(o.MetricIDs))
+	}
+	return mcp.Result{Text: strings.TrimRight(b.String(), "\n"), Structured: map[string]any{"initiative_id": iniID, "objectives": nonNil(objs)}}, nil
+}
+
+// mcpListMetrics reads the outcomes report (one request: metrics with
+// drift, the works-but-fails signals, gaps and counts).
+func mcpListMetrics(a mcpArgs) (mcp.Result, error) {
+	c, projectID, iniID, err := mcpInitiative(a.Initiative)
+	if err != nil {
+		return mcp.Result{}, err
+	}
+	var rep struct {
+		Metrics          []cliMetric `json:"metrics"`
+		RequirementDrift []struct {
+			Detail string `json:"detail"`
+		} `json:"requirement_drift"`
+		Gaps    json.RawMessage `json:"gaps"`
+		Summary json.RawMessage `json:"summary"`
+	}
+	if err := c.do("GET", initiativeResource(projectID, iniID, "outcomes"), nil, &rep); err != nil {
+		return mcp.Result{}, err
+	}
+	var b strings.Builder
+	if len(rep.Metrics) == 0 {
+		b.WriteString("No outcome metrics yet.")
+	}
+	for _, m := range rep.Metrics {
+		st := cliMetricStatus{Drift: "no_data"}
+		if m.Status != nil {
+			st = *m.Status
+		}
+		fmt.Fprintf(&b, "%s %s (%s) [%s] %s\n", m.Code, m.Name, m.ObjectiveCode, st.Drift, describeCLIMetric(m, st))
+		if st.Drift != "on_track" {
+			for _, r := range st.Reasons {
+				fmt.Fprintf(&b, "    %s\n", r)
+			}
+		}
+	}
+	for _, d := range rep.RequirementDrift {
+		fmt.Fprintf(&b, "works, but fails its objective: %s\n", d.Detail)
+	}
+	return mcp.Result{Text: strings.TrimRight(b.String(), "\n"), Structured: map[string]any{
+		"initiative_id":     iniID,
+		"metrics":           nonNil(rep.Metrics),
+		"requirement_drift": nonNil(rep.RequirementDrift),
+		"gaps":              rep.Gaps,
+		"summary":           rep.Summary,
+	}}, nil
+}
+
 // ---------- judgment handlers ----------
+
+func mcpRecordMetric(a mcpArgs) (mcp.Result, error) {
+	if strings.TrimSpace(a.Metric) == "" || a.Value == nil {
+		return mcp.Result{}, errors.New("metric and value are required")
+	}
+	c, projectID, iniID, err := mcpInitiative(a.Initiative)
+	if err != nil {
+		return mcp.Result{}, err
+	}
+	var res struct {
+		Observation map[string]any  `json:"observation"`
+		Status      cliMetricStatus `json:"status"`
+	}
+	body := map[string]any{"value": *a.Value, "note": a.Note}
+	if err := c.do("POST", outcomeRef(projectID, iniID, "metrics", strings.TrimSpace(a.Metric), "observations"), body, &res); err != nil {
+		return mcp.Result{}, err
+	}
+	text := fmt.Sprintf("recorded %s = %s; drift: %s", strings.ToUpper(strings.TrimSpace(a.Metric)), num(*a.Value), res.Status.Drift)
+	if cs, _ := res.Observation["change_set_ids"].([]any); len(cs) > 0 {
+		text += fmt.Sprintf(" (%d change set(s) landed since the previous value)", len(cs))
+	}
+	if res.Status.Drift != "on_track" && res.Status.Drift != "no_data" && len(res.Status.Reasons) > 0 {
+		text += " — " + strings.Join(res.Status.Reasons, "; ")
+	}
+	return mcp.Result{Text: text, Structured: map[string]any{"initiative_id": iniID, "observation": res.Observation, "status": res.Status}}, nil
+}
 
 func mcpNewInitiative(a mcpArgs) (mcp.Result, error) {
 	idea := strings.TrimSpace(a.Idea)

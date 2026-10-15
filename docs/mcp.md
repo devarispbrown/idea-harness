@@ -99,7 +99,9 @@ to the most recently created initiative — the same default every `idea` comman
 | `list_findings` | review findings | `idea reviews` |
 | `list_questions` | questions, with the short ref `answer_question` accepts | `idea questions` |
 | `list_decisions` | decisions, with numbered options | `idea decisions` |
-| `why` / `impact` / `trace` | the product graph around a requirement, task, decision, artifact, assertion or context doc | `idea why` / `idea impact` / `idea trace` |
+| `why` / `impact` / `trace` | the product graph around a requirement, task, decision, artifact, assertion, context doc, objective, metric or change set — up to the objective a requirement serves, and on to the outcome metrics its change sets moved | `idea why` / `idea impact` / `idea trace` |
+| `list_objectives` | objectives (`OBJ-n`), how many requirements serve each and how many metrics measure it | `idea objectives` |
+| `list_metrics` | outcome metrics (`MET-n`) with their drift and its reasons, plus the "works but fails its objective" signals and objectives with no metric | `idea metrics` |
 | `changed` | the initiative's timeline | `idea changed` |
 | `list_change_sets` | change sets and their review/apply state | `idea changes` |
 | `show_change_set` | one change set and its redacted diff (patches over 100 KiB are truncated) | `idea change` |
@@ -113,7 +115,12 @@ to the most recently created initiative — the same default every `idea` comman
 | `answer_question` | records an answer | `idea answer` |
 | `resolve_decision` | resolves a decision by option number or text | `idea resolve` |
 | `review_change_set` | `approve`, `reject`, `changes_requested`, or `rerun` (returns an `operation_id`); `accept_findings` with `approve` | `idea review` |
+| `record_metric` | records a measured value for an outcome metric, as the human who measured it; returns its drift and how many change sets landed since the previous value | `idea metric record` |
 | `verify` | runs the verification gate and reports coverage | `idea verify [<req>]` |
+
+`record_metric` records a number someone observed — the description tells the agent never to
+estimate one. `idea metric measure` is not exposed: it runs project commands in the check sandbox,
+which is a person's call, like `execute`.
 
 `verify` runs the gate and records no evidence. `idea verify REQ-n --pass|--fail|--waive` records
 evidence as a person's word, so it stays something a person types.
