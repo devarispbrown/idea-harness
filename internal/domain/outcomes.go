@@ -398,3 +398,127 @@ func fmtNum(v float64) string {
 
 // FormatMetricValue is fmtNum for callers outside the package (CLI, guidance).
 func FormatMetricValue(v float64) string { return fmtNum(v) }
+
+// OutcomeChainGaps is where the outcome end of the Product Graph is missing a
+// link or failing: the one definition the outcome report (GET …/outcomes, the
+// Health page), `idea gaps` and the PRD review's outcome checks all read, so
+// "which requirement serves nothing" or "which objective is unmeasured" has
+// exactly one answer. AnalyzeOutcomeChain computes it.
+type OutcomeChainGaps struct {
+	// ObjectivesMissing: there is at least one live requirement and no active
+	// objective at all -- the whole chain is absent, reported once rather than
+	// once per requirement.
+	ObjectivesMissing bool
+	// ObjectivesWithoutMetrics are the active objectives with no live,
+	// measurable metric (OutcomeMetric.Measurable).
+	ObjectivesWithoutMetrics []Objective
+	// ObjectivesWithoutRequirements are the active objectives no live
+	// requirement serves.
+	ObjectivesWithoutRequirements []Objective
+	// RequirementsWithoutObjectives are the live requirements that serve no
+	// active objective. Empty when ObjectivesMissing (or when there are no
+	// active objectives at all).
+	RequirementsWithoutObjectives []Requirement
+	// DriftingMetrics are the live metrics whose drift is off_track,
+	// regressed or stale (MetricDrift.Drifting). no_data is not drifting.
+	DriftingMetrics []OutcomeMetric
+	// RequirementDrift is the "works but fails its objective" signal.
+	RequirementDrift []RequirementOutcomeDrift
+}
+
+// AnalyzeOutcomeChain is the deterministic outcome-chain gap rule. Inputs may
+// include dead nodes; it applies the liveness filters itself:
+//
+//   - a live requirement is not removed and not superseded;
+//   - an active objective is Objective.Active (not superseded, status active);
+//   - a live metric is not superseded, and metrics carry their drift Status
+//     (store.ListMetrics evaluates it); one with no Status is not drifting.
+//
+// "Serves" is a requirement's ObjectiveIDs (its serves edges) naming an
+// active objective; serving only an achieved or abandoned objective is
+// serving none -- the same rule the PRD review applies.
+//
+// Output order follows input order (requirements and objectives as the store
+// lists them; RequirementDrift by requirement, then by its objectives).
+func AnalyzeOutcomeChain(reqs []Requirement, objectives []Objective, metrics []OutcomeMetric) OutcomeChainGaps {
+	out := OutcomeChainGaps{
+		ObjectivesWithoutMetrics: []Objective{}, ObjectivesWithoutRequirements: []Objective{},
+		RequirementsWithoutObjectives: []Requirement{}, DriftingMetrics: []OutcomeMetric{},
+		RequirementDrift: []RequirementOutcomeDrift{},
+	}
+	active := map[string]Objective{}
+	for _, o := range objectives {
+		if o.Active() {
+			active[o.ID] = o
+		}
+	}
+	measured := map[string]bool{}
+	failing := map[string][]string{} // objective id -> off_track/regressed metric codes
+	for _, m := range metrics {
+		if m.SupersededBy != "" {
+			continue
+		}
+		if m.Measurable() {
+			measured[m.ObjectiveID] = true
+		}
+		if m.Status == nil {
+			continue
+		}
+		if m.Status.Drift.Drifting() {
+			out.DriftingMetrics = append(out.DriftingMetrics, m)
+		}
+		if m.Status.OffTrack || m.Status.Regressed {
+			failing[m.ObjectiveID] = append(failing[m.ObjectiveID], m.Code)
+		}
+	}
+	served := map[string]bool{}
+	liveReqs := 0
+	for _, r := range reqs {
+		if r.Status == RequirementRemoved || r.SupersededBy != "" {
+			continue
+		}
+		liveReqs++
+		serves := false
+		for _, oid := range r.ObjectiveIDs {
+			if _, ok := active[oid]; ok {
+				serves, served[oid] = true, true
+			}
+		}
+		if !serves && len(active) > 0 {
+			out.RequirementsWithoutObjectives = append(out.RequirementsWithoutObjectives, r)
+		}
+		if r.Status != RequirementVerified {
+			continue
+		}
+		for _, oid := range r.ObjectiveIDs {
+			o, ok := active[oid]
+			codes := append([]string(nil), failing[oid]...)
+			if !ok || len(codes) == 0 {
+				continue
+			}
+			sort.Strings(codes)
+			verb := "is"
+			if len(codes) > 1 {
+				verb = "are"
+			}
+			out.RequirementDrift = append(out.RequirementDrift, RequirementOutcomeDrift{
+				RequirementID: r.ID, RequirementCode: r.Code, ObjectiveID: o.ID, ObjectiveCode: o.Code,
+				MetricCodes: codes, Signal: SignalWorksButFailsObjective,
+				Detail: fmt.Sprintf("%s is verified, but %s's %s %s off track", r.Code, o.Code, strings.Join(codes, ", "), verb),
+			})
+		}
+	}
+	out.ObjectivesMissing = len(active) == 0 && liveReqs > 0
+	for _, o := range objectives {
+		if !o.Active() {
+			continue
+		}
+		if !measured[o.ID] {
+			out.ObjectivesWithoutMetrics = append(out.ObjectivesWithoutMetrics, o)
+		}
+		if !served[o.ID] {
+			out.ObjectivesWithoutRequirements = append(out.ObjectivesWithoutRequirements, o)
+		}
+	}
+	return out
+}

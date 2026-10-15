@@ -24,7 +24,7 @@ type OutcomeReport struct {
 }
 
 // OutcomeGaps lists the codes of nodes the outcome chain is missing a link
-// for. Same questions as the store's gap queries, answered for display.
+// for: domain.AnalyzeOutcomeChain's answer, rendered for display.
 type OutcomeGaps struct {
 	ObjectivesWithoutMetrics      []string `json:"objectives_without_metrics"`
 	ObjectivesWithoutRequirements []string `json:"objectives_without_requirements"`
@@ -46,7 +46,10 @@ type OutcomeSummary struct {
 	WorksButFails int `json:"works_but_fails"`
 }
 
-// BuildOutcomes assembles the OutcomeReport at now.
+// BuildOutcomes assembles the OutcomeReport at now. Its gaps and
+// requirement drift are store.OutcomeChain (domain.AnalyzeOutcomeChain) --
+// the same answer `idea gaps` turns into orphan_requirement,
+// unmeasured_objective, unserved_objective and ineffective_requirement gaps.
 func BuildOutcomes(ctx context.Context, db *store.DB, initiativeID string, now time.Time) (OutcomeReport, error) {
 	rep := OutcomeReport{
 		Objectives: []domain.Objective{}, Metrics: []domain.OutcomeMetric{}, RequirementDrift: []domain.RequirementOutcomeDrift{},
@@ -57,18 +60,8 @@ func BuildOutcomes(ctx context.Context, db *store.DB, initiativeID string, now t
 		return rep, err
 	}
 	for _, o := range objs {
-		if o.SupersededBy != "" {
-			continue
-		}
-		rep.Objectives = append(rep.Objectives, o)
-		if !o.Active() {
-			continue
-		}
-		if len(o.MetricIDs) == 0 {
-			rep.Gaps.ObjectivesWithoutMetrics = append(rep.Gaps.ObjectivesWithoutMetrics, o.Code)
-		}
-		if len(o.RequirementIDs) == 0 {
-			rep.Gaps.ObjectivesWithoutRequirements = append(rep.Gaps.ObjectivesWithoutRequirements, o.Code)
+		if o.SupersededBy == "" {
+			rep.Objectives = append(rep.Objectives, o)
 		}
 	}
 	ms, err := db.ListMetrics(ctx, initiativeID, now)
@@ -89,29 +82,35 @@ func BuildOutcomes(ctx context.Context, db *store.DB, initiativeID string, now t
 		case domain.DriftNoData:
 			rep.Summary.NoData++
 		}
-		if m.Status.Drift.Drifting() {
-			rep.Summary.Drifting++
-		}
 	}
-	// Requirements serving nothing are only a gap once the initiative has
-	// objectives at all; before that the whole chain is missing, which the
-	// PRD review already reports once.
-	if len(rep.Objectives) > 0 {
-		orphans, err := db.RequirementsWithoutObjectives(ctx, initiativeID)
-		if err != nil {
-			return rep, err
-		}
-		for _, r := range orphans {
-			rep.Gaps.RequirementsWithoutObjectives = append(rep.Gaps.RequirementsWithoutObjectives, r.Code)
-		}
-	}
-	rd, err := db.RequirementOutcomeDrift(ctx, initiativeID, now)
+	reqs, err := db.ListRequirements(ctx, initiativeID)
 	if err != nil {
 		return rep, err
 	}
-	rep.RequirementDrift = rd
-	rep.Summary.Objectives, rep.Summary.Metrics, rep.Summary.WorksButFails = len(rep.Objectives), len(ms), len(rd)
+	chain := domain.AnalyzeOutcomeChain(reqs, objs, ms)
+	rep.Gaps = outcomeGapsOf(chain)
+	rep.RequirementDrift = chain.RequirementDrift
+	rep.Summary.Drifting = len(chain.DriftingMetrics)
+	rep.Summary.Objectives, rep.Summary.Metrics, rep.Summary.WorksButFails = len(rep.Objectives), len(ms), len(chain.RequirementDrift)
 	return rep, nil
+}
+
+// outcomeGapsOf renders the chain's gaps as the report's code lists.
+// Requirements serving nothing appear only once the initiative has an active
+// objective; before that the whole chain is missing, which the PRD review
+// (and `idea gaps`, as orphan_requirement / objectives_missing) reports once.
+func outcomeGapsOf(c domain.OutcomeChainGaps) OutcomeGaps {
+	g := OutcomeGaps{ObjectivesWithoutMetrics: []string{}, ObjectivesWithoutRequirements: []string{}, RequirementsWithoutObjectives: []string{}}
+	for _, o := range c.ObjectivesWithoutMetrics {
+		g.ObjectivesWithoutMetrics = append(g.ObjectivesWithoutMetrics, o.Code)
+	}
+	for _, o := range c.ObjectivesWithoutRequirements {
+		g.ObjectivesWithoutRequirements = append(g.ObjectivesWithoutRequirements, o.Code)
+	}
+	for _, r := range c.RequirementsWithoutObjectives {
+		g.RequirementsWithoutObjectives = append(g.RequirementsWithoutObjectives, r.Code)
+	}
+	return g
 }
 
 // OutcomeGuidance is the sentence `idea next` / the guidance projection

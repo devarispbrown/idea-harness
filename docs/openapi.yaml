@@ -4950,6 +4950,10 @@ components:
           items: { $ref: "#/components/schemas/RequirementOutcomeDrift" }
         gaps:
           type: object
+          description: |
+            Codes of the outcome chain's missing links -- the same rule (`domain.AnalyzeOutcomeChain`)
+            behind the `orphan_requirement`, `unmeasured_objective` and `unserved_objective` gaps of
+            GET …/gaps. `requirements_without_objectives` is empty until an objective is active.
           properties:
             objectives_without_metrics: { type: array, items: { type: string } }
             objectives_without_requirements: { type: array, items: { type: string } }
@@ -5168,7 +5172,7 @@ components:
       description: |
         The class of a Product Graph gap (`domain.GapKind`). Open-ended: new kinds are added, never
         renamed, so a client must tolerate one it does not know.
-      enum: [unimplemented_requirement, unverified_requirement, untested_acceptance_criterion, unvalidated_assumption, invalidated_decision, orphan_task, orphan_change_set, stale_artifact]
+      enum: [unimplemented_requirement, unverified_requirement, untested_acceptance_criterion, unvalidated_assumption, invalidated_decision, orphan_task, orphan_change_set, stale_artifact, orphan_requirement, unmeasured_objective, unserved_objective, drifting_metric, ineffective_requirement]
 
     GapState:
       type: string
@@ -5179,8 +5183,10 @@ components:
         untested_acceptance_criterion: no_evidence. unvalidated_assumption: unvalidated, disputed,
         refuted. invalidated_decision: dependents_stale, requirement_revised, requirements_removed,
         basis_refuted. orphan_task: no_requirement. orphan_change_set: task_missing, task_orphaned.
-        stale_artifact: upstream_newer.
-      enum: [no_task, not_applied, no_criteria, no_evidence, evidence_failed, evidence_stale, unvalidated, disputed, refuted, dependents_stale, requirement_revised, requirements_removed, basis_refuted, no_requirement, task_missing, task_orphaned, upstream_newer]
+        stale_artifact: upstream_newer. orphan_requirement: no_objective, objectives_missing.
+        unmeasured_objective: no_metric. unserved_objective: no_requirement. drifting_metric:
+        off_track, regressed, stale. ineffective_requirement: works_but_fails_objective.
+      enum: [no_task, not_applied, no_criteria, no_evidence, evidence_failed, evidence_stale, unvalidated, disputed, refuted, dependents_stale, requirement_revised, requirements_removed, basis_refuted, no_requirement, task_missing, task_orphaned, upstream_newer, no_objective, objectives_missing, no_metric, off_track, regressed, stale, works_but_fails_objective]
 
     GapNode:
       type: object
@@ -5189,13 +5195,13 @@ components:
       properties:
         type:
           type: string
-          description: "`requirement`, `acceptance_criterion`, `task`, `change_set`, `decision`, `assertion` or `artifact`."
+          description: "`requirement`, `acceptance_criterion`, `task`, `change_set`, `decision`, `assertion`, `artifact`, `objective`, `metric` or `initiative`."
         id:
           type: string
           description: The node's id. For an acceptance criterion, its criterion key (`<requirement id>:<index>`).
         code:
           type: string
-          description: The human handle -- `REQ-3`, `REQ-3/AC-2`, `TASK-2`, `CHG-4`, `DEC-1`, an artifact kind, or an assertion's 8-character id prefix.
+          description: The human handle -- `REQ-3`, `REQ-3/AC-2`, `TASK-2`, `CHG-4`, `DEC-1`, `OBJ-1`, `MET-2`, an artifact kind, or an assertion's (or initiative's) 8-character id prefix.
         label: { type: string }
       required: [type, id, code]
 

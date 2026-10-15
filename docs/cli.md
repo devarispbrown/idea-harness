@@ -282,13 +282,13 @@ Provider configuration is also available in the web UI under **Settings**.
 `idea gaps [<initiative>]` lists what the Product Graph is missing or no longer holds — requirements
 with no task or no applied change set, acceptance criteria with no evidence, evidence that failed or
 predates the code it verified, unvalidated assumptions, decisions whose basis moved, orphan tasks and
-change sets, artifacts older than what they were generated from — most severe first, each with the
+change sets, artifacts older than what they were generated from, requirements serving no objective, objectives with no metric or no requirement, drifting outcome metrics, and verified requirements whose objective is failing — most severe first, each with the
 command that closes it. Deterministic; no model call. Every kind and the exact trigger behind it are
 in [architecture.md](architecture.md#asking-the-graph-gaps).
 
 | Flag | Meaning |
 | --- | --- |
-| `--kind k,...` | only these kinds (`unimplemented_requirement`, `unverified_requirement`, `untested_acceptance_criterion`, `unvalidated_assumption`, `invalidated_decision`, `orphan_task`, `orphan_change_set`, `stale_artifact`); an unknown kind exits `2` and lists them |
+| `--kind k,...` | only these kinds (`unimplemented_requirement`, `unverified_requirement`, `untested_acceptance_criterion`, `unvalidated_assumption`, `invalidated_decision`, `orphan_task`, `orphan_change_set`, `stale_artifact`, `orphan_requirement`, `unmeasured_objective`, `unserved_objective`, `drifting_metric`, `ineffective_requirement`); an unknown kind exits `2` and lists them |
 | `--fail-on <severity>` | exit `5` (`gate_unmet`) when any gap is at or above `critical`, `high`, `medium`, `low` or `observation`. Without it `idea gaps` exits `0` whatever it finds |
 | `--all` | every initiative of the project, not just one |
 | `--json` | the `{"initiative_id", "gaps", "summary"}` report; with `--fail-on` the report stays the one document on stdout and the error object goes to stderr |
