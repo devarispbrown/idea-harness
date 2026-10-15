@@ -133,7 +133,8 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   answers; OpenHands from the Agent Server's events (exactly once, across daemon restarts); hermes,
   omp and container from their output and a work-root scan; internal from a few synthetic events.
   Events are redacted, bounded (per event, 5000 per run, 50 runs per project) and stored in a new
-  `run_events` table with a per-run `seq`. The Build page's running card shows them in a run panel:
+  `run_events` table (migration 44, which also adds `remote_runs.run_id`) with a per-run `seq`.
+  The Build page's running card shows them in a run panel:
   the current action, grouped tool calls, files with +/- counts, permissions answered, tokens, cost
   and elapsed time, errors. See [docs/ui.md](docs/ui.md#run-panel) and
   [docs/api.md](docs/api.md#run-events).

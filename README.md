@@ -62,6 +62,7 @@ that powers provenance, impact analysis, requirement verification, and outcome d
 |---|---|---|
 | Idea → PRD → plan | framing, research, a PRD with objectives and requirements, an adversarial review that converges on principle, a reviewed execution plan | [quickstart](docs/quickstart.md), [configuration → review](docs/configuration.md#review-convergence) |
 | Build | a change set per task from the coding agent you choose (`auto`, Hermes, OMP, ACP agents, OpenHands), reviewed, then applied and revertible byte for byte | [agents](docs/agents.md) |
+| Watching a run | a live run panel: the agent's current action, tool calls, files changing, permissions, tokens and cost, streamed and resumable after a reload; send the running agent a note (ACP, OpenHands); download a run report | [ui → run panel](docs/ui.md#run-panel), [agents → steering](docs/agents.md#steering-a-running-agent) |
 | Verify | per-criterion evidence, plus seven quality dimensions scored with citations | [Verification beyond the tests](#verification-beyond-the-tests-quality-dimensions) |
 | Outcomes | objectives (`OBJ-n`), outcome metrics (`MET-n`), observations and deterministic drift | [Objectives & outcomes](#objectives--outcomes) |
 | Asking the graph | `idea why` / `impact` / `trace`, and `idea gaps` for everything missing or no longer true | [architecture → gaps](docs/architecture.md#asking-the-graph-gaps) |

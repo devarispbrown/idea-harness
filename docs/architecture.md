@@ -23,7 +23,7 @@ them to objectives and outcome metrics. This document describes what exists now.
 | Web UI | React + TypeScript (Vite), built by `make build` and embedded into the binary |
 | Database | SQLite (pure-Go `modernc.org/sqlite`), WAL, single writer |
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
-| API | REST, described by [`openapi.yaml`](openapi.yaml), CI-checked against the routes — see [`api.md`](api.md). An SSE endpoint exists and nothing in-tree consumes it |
+| API | REST, described by [`openapi.yaml`](openapi.yaml), CI-checked against the routes — see [`api.md`](api.md). Server-sent events: the project stream (`GET /projects/{id}/events`) carries event-log changes and run events, and each run has its own resumable stream; the web UI consumes both (`web/src/useEventStream.ts`) |
 | Config | YAML + JSON Schema |
 | Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (DeepSeek, OpenRouter, Ollama, custom) + demo/fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |
