@@ -130,6 +130,76 @@ var harnessSchema = `{
       },
       "additionalProperties": false
     },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "dimensions": {
+          "type": "object",
+          "properties": {
+            "setup_reproducibility": { "$ref": "#/$defs/qualityMode" },
+            "docs_completeness":     { "$ref": "#/$defs/qualityMode" },
+            "api_compatibility":     { "$ref": "#/$defs/qualityMode" },
+            "api_ergonomics":        { "$ref": "#/$defs/qualityMode" },
+            "security":              { "$ref": "#/$defs/qualityMode" },
+            "performance":           { "$ref": "#/$defs/qualityMode" },
+            "operational_readiness": { "$ref": "#/$defs/qualityMode" }
+          },
+          "additionalProperties": false
+        },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "commands": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "prepare":  { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "security": {
+          "type": "object",
+          "properties": {
+            "scanners": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "command"],
+                "properties": {
+                  "name":    { "type": "string", "minLength": 1 },
+                  "command": { "type": "string", "minLength": 1 },
+                  "network": { "type": "boolean" }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "performance": {
+          "type": "object",
+          "properties": {
+            "budgets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "command", "metric"],
+                "properties": {
+                  "name":               { "type": "string", "minLength": 1 },
+                  "command":            { "type": "string", "minLength": 1 },
+                  "metric":             { "type": "string", "minLength": 1 },
+                  "unit":               { "type": "string" },
+                  "max":                { "type": "number" },
+                  "max_regression_pct": { "type": "number", "minimum": 0 }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "model_review": { "type": "array", "items": { "enum": ["docs_completeness", "operational_readiness"] } },
+        "timeout_seconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "integrations": {
       "type": "object",
       "properties": {
@@ -178,6 +248,7 @@ var harnessSchema = `{
   },
   "additionalProperties": false,
   "$defs": {
+    "qualityMode": { "enum": ["off", "advisory", "gate"] },
     "nameValues": {
       "type": "array",
       "items": {
