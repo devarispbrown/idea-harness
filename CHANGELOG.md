@@ -467,6 +467,17 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Security
 
+- **One guesser can no longer lock the owner out of remote sign-in.** Wrong pairing codes were
+  counted daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and
+  cancelled every outstanding code. Now each client has its own budget (10 per 15 minutes; only
+  that client is refused, codes survive), and a global ceiling of 100 is the backstop that still
+  pauses everyone and cancels codes. A client is the peer address (IPv6 by /64); proxy headers
+  (`Tailscale-User-Login`, the rightmost `X-Forwarded-For` entry) are believed only through a
+  loopback proxy answering to an `allowed_hosts` name, so a header cannot buy a fresh budget. The
+  session list's address and default label use the same rule (they used to believe
+  `X-Forwarded-For` on any loopback connection). The `429` now says which lock it is and carries
+  an accurate `Retry-After`. Design and code-space arithmetic: `docs/security-model.md` (Remote
+  access).
 - **A remote execution plane is a trust boundary, and the harness treats it as one.** For
   `openhands`, the server URL must be `https` unless loopback and carry no credentials (refused at
   config load, by `PUT /executors`, by setup and before every dispatch); the session key is read

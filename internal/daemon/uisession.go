@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,13 +57,10 @@ const (
 	// touchEvery throttles last_seen_at writes: a UI polls every few seconds,
 	// and a write per poll is a write per poll.
 	touchEvery = time.Minute
-
-	// loginFailureBudget failures inside loginFailureWindow lock sign-in for
-	// the rest of the window and expire every outstanding pairing code. With
-	// 50-bit codes that live ten minutes, ten guesses is not an attack.
-	loginFailureBudget = 10
-	loginFailureWindow = 15 * time.Minute
 )
+
+// The sign-in failure budgets, and the code-space arithmetic behind them, are
+// in loginlimit.go.
 
 // pairingAlphabet is Crockford-style base32 without I, L, O and U: nothing a
 // person reading a terminal and typing on a phone can confuse.
@@ -73,7 +70,7 @@ const pairingAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 // the last-seen throttle. Sessions themselves are in global.db.
 type uiAuth struct {
 	mu        sync.Mutex
-	failures  []time.Time
+	logins    loginLimiter
 	lastTouch map[string]time.Time
 	now       func() time.Time
 }
@@ -286,19 +283,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ua := s.rt.uiAuth()
 	now := ua.now()
+	client := loginClientKey(r, s.rt.hosts)
 	ua.mu.Lock()
-	kept := ua.failures[:0]
-	for _, t := range ua.failures {
-		if now.Sub(t) < loginFailureWindow {
-			kept = append(kept, t)
-		}
-	}
-	ua.failures = kept
-	locked := len(kept) >= loginFailureBudget
+	lock, wait := ua.logins.check(client, now)
 	ua.mu.Unlock()
-	if locked {
-		w.Header().Set("Retry-After", "900")
-		writeError(w, http.StatusTooManyRequests, "too many failed sign-ins: every pairing code has been cancelled. Wait 15 minutes, then run `idea ui pair` for a new one")
+	if lock != loginOpen {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Round(time.Second)/time.Second)))
+		mins := int((wait + time.Minute - 1) / time.Minute)
+		if lock == loginLockedGlobal {
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed sign-ins from too many places: sign-in is paused for everyone and every pairing code has been cancelled. Wait %d minute(s), then run `idea ui pair` for a new one", mins))
+		} else {
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed sign-ins from this device: wait %d minute(s) before trying again (your pairing code still works until it expires)", mins))
+		}
 		return
 	}
 	var body struct {
@@ -317,21 +313,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ttl := s.rt.remote.sessionTTL()
 	label := truncateBytes(body.Label, 80)
 	if label == "" {
-		label = truncateBytes(r.Header.Get("Tailscale-User-Login"), 80)
+		// Only a trusted proxy's word names the person (trustedProxyClient).
+		if who, ok := trustedProxyClient(r, s.rt.hosts); ok {
+			if login, isTS := strings.CutPrefix(who, "tailscale:"); isTS {
+				label = truncateBytes(login, 80)
+			}
+		}
 	}
 	sess := store.UISession{
-		ID: id.New(), Label: label, UserAgent: truncateBytes(r.UserAgent(), 200), RemoteAddr: clientAddr(r),
+		ID: id.New(), Label: label, UserAgent: truncateBytes(r.UserAgent(), 200), RemoteAddr: s.clientAddr(r),
 		CreatedAt: now.UTC(), LastSeenAt: now.UTC(), ExpiresAt: now.Add(ttl).UTC(),
 	}
 	sess, err := s.rt.global.RedeemPairingCode(r.Context(), hashSecret(normalizePairingCode(body.Code)), sess, hashSecret(secret), now)
 	if errors.Is(err, store.ErrPairingCodeInvalid) {
 		ua.mu.Lock()
-		ua.failures = append(ua.failures, now)
-		spent := len(ua.failures) >= loginFailureBudget
+		spent := ua.logins.fail(client, now)
 		ua.mu.Unlock()
 		if spent {
 			n, _ := s.rt.global.InvalidatePairingCodes(r.Context(), now)
-			s.rt.log.Warn("ui: sign-in failure budget spent; outstanding pairing codes cancelled", "cancelled", n, "remote", clientAddr(r))
+			s.rt.log.Warn("ui: global sign-in failure ceiling reached; sign-in paused and outstanding pairing codes cancelled", "cancelled", n, "remote", s.clientAddr(r))
 		}
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -340,6 +340,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	ua.mu.Lock()
+	ua.logins.succeed(client)
+	ua.mu.Unlock()
 	s.rt.log.Info("ui: browser signed in", "session", sess.ID, "label", sess.Label, "remote", sess.RemoteAddr)
 	setSessionCookie(w, r, secret, ttl)
 	writeJSON(w, http.StatusOK, sessionView{Auth: string(authSession), CSRFToken: csrfFor(secret), Session: &sess})
@@ -425,21 +428,17 @@ func (s *Server) handleRevokeAllUISessions(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]int64{"revoked": n})
 }
 
-// clientAddr is the address to show for a session: the proxy's client when
-// the connection is a loopback proxy's, the peer otherwise. Display only --
-// nothing decides anything on it.
-func clientAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			return truncateBytes(strings.TrimSpace(first), 64)
+// clientAddr is the address to show for a session: the trusted proxy's
+// client when the request came through one (trustedProxyClient), the peer
+// otherwise. It used to believe X-Forwarded-For on any loopback connection,
+// which let a client write its own entry in the session list. Display only.
+func (s *Server) clientAddr(r *http.Request) string {
+	if _, ok := trustedProxyClient(r, s.rt.hosts); ok {
+		if ip := lastForwardedFor(r); ip != "" {
+			return ip
 		}
 	}
-	return host
+	return peerHost(r)
 }
 
 func truncateBytes(s string, n int) string {

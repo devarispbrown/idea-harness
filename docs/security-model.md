@@ -495,10 +495,31 @@ flags):
 `idea ui pair` mints — which needs the token, so only someone already holding it on the daemon's
 machine can let a device in. A code is 10 characters from a 32-letter alphabet (50 bits), good for
 one sign-in within ten minutes, stored as a SHA-256 only, and typed into the page rather than put
-in a URL. Ten failed sign-ins within fifteen minutes lock sign-in for the rest of the window and
-cancel every outstanding code. The master token was considered and rejected as the thing to type
+in a URL. The master token was considered and rejected as the thing to type
 in: it cannot be rotated without re-configuring every CLI and MCP client, and a browser that has
 seen it once has it for good.
+
+**Guessing codes.** Wrong codes are counted twice (`internal/daemon/loginlimit.go`):
+
+- **Per client: 10 failures in 15 minutes** refuse *that client* (`429`, with `Retry-After`) for
+  the rest of the window. Nobody else is affected and no code is cancelled, so a guesser cannot
+  lock the owner out. A success clears the client's count.
+- **Globally: 100 failures in 15 minutes**, from any mix of clients, is the backstop: sign-in is
+  refused for everyone for the rest of the window and every outstanding code is cancelled.
+
+Why 100 is still safe: a code is 50 bits and lives ten minutes. With *k* codes outstanding each
+guess hits one with probability *k*/2⁵⁰; the ceiling caps guessing at 100 per window — about 3.5
+million a year — so a year of guessing at the ceiling succeeds with probability about *k* × 3×10⁻⁹.
+`TestPairingCodeSpaceArithmetic` keeps these numbers true.
+
+A *client* is the connection's peer address — an IPv6 address counted by its /64, which one host
+can otherwise walk through. Proxy headers are believed only for a request that arrived on a
+loopback connection **and** whose `Host` is an `allowed_hosts` name, i.e. through the proxy you
+configured; then the client is the `Tailscale-User-Login` identity if present (`tailscale serve`
+sets it and drops any copy the browser sent), otherwise the **rightmost** `X-Forwarded-For` entry —
+the address the proxy itself saw, not one the browser wrote. Everywhere else (the remote
+listener, a loopback `Host`) those headers are ignored, so they cannot buy a fresh budget. The
+same rule decides the address shown in the session list and a session's default label.
 
 **The session.** A successful sign-in sets one cookie holding a 256-bit random secret:
 `HttpOnly`, `SameSite=Strict`, `Path=/`, and — whenever the browser is on HTTPS, directly or
@@ -533,8 +554,14 @@ What this does **not** cover:
 - **A proxy that rewrites `Host` to loopback and strips every proxy header** is
   indistinguishable from a local browser, and is handed the token. `tailscale serve`, Caddy and
   nginx's defaults all add `X-Forwarded-For`; a hand-rolled proxy must too.
-- **Anyone who can reach the sign-in page can try codes.** The failure budget bounds guessing; it
-  also means someone on your network can lock sign-in for fifteen minutes.
+- **Anyone who can reach the sign-in page can try codes.** The budgets bound guessing. One
+  guesser locks out only itself, but someone with ten or more addresses — or ten tailnet
+  identities, behind `tailscale serve` — can spend the global ceiling and pause sign-in for
+  everyone for fifteen minutes, cancelling your outstanding code. That is the trade the backstop
+  makes: availability for a bound on guessing that holds against any number of addresses.
+- **Clients behind one shared address share a budget.** Everyone behind the same NAT, and every
+  request through a proxy the daemon does not trust (a proxy that rewrites `Host` to loopback,
+  or a chain of proxies — only the last hop is read), counts as one client.
 - **A pairing code read off your screen** before you use it signs its reader in. It is single use
   and short-lived, and `idea ui sessions` shows every session that exists.
 - **A signed-in phone is as powerful as the local UI.** It can approve and apply change sets.
