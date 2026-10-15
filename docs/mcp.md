@@ -100,6 +100,7 @@ to the most recently created initiative — the same default every `idea` comman
 | `list_questions` | questions, with the short ref `answer_question` accepts | `idea questions` |
 | `list_decisions` | decisions, with numbered options | `idea decisions` |
 | `why` / `impact` / `trace` | the product graph around a requirement, task, decision, artifact, assertion or context doc | `idea why` / `idea impact` / `idea trace` |
+| `gaps` | what the Product Graph is missing or no longer holds — unimplemented or unverified requirements, untested criteria, stale evidence, unvalidated assumptions, invalidated decisions, orphans, stale artifacts — each with the command that closes it; `kind` filters (comma-separated) | `idea gaps` |
 | `changed` | the initiative's timeline | `idea changed` |
 | `list_change_sets` | change sets and their review/apply state | `idea changes` |
 | `show_change_set` | one change set and its redacted diff (patches over 100 KiB are truncated) | `idea change` |

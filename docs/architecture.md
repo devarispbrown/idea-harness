@@ -90,6 +90,91 @@ internal/mcp         stdio MCP server protocol (`idea mcp`); internal/cli suppli
 internal/web         embedded React UI
 ```
 
+## Asking the graph: gaps
+
+`idea why`, `idea impact` and `idea trace` answer questions about one node. `idea gaps` asks the
+whole Product Graph what is missing or no longer holds, and names the command that closes each
+answer. It is a projection (`projection.BuildGaps`): deterministic, no model call, no score, and it
+never writes. Every trigger below is a comparison of recorded state — an edge, a status, an event's
+sequence number, a timestamp in the apply journal — so the same graph always gives the same report.
+
+```bash
+idea gaps                                   # the newest initiative, grouped by kind, most severe first
+idea gaps --kind unverified_requirement     # one kind (comma-separate several)
+idea gaps --all --json                      # every initiative, machine-readable
+idea gaps --fail-on high                    # CI gate: exit 5 (gate_unmet) on any high or critical gap
+```
+
+```text
+Gaps · 3 (1 high · 1 medium · 1 low)
+
+unimplemented_requirement · 1
+  high   REQ-3  REQ-3 is planned (TASK-2) but no change set implementing it has been applied
+         → idea apply CHG-2
+
+unverified_requirement · 1
+  medium REQ-1  pass evidence for REQ-1/AC-1 predates CHG-4 changing the code it verified (…)
+         → idea verify REQ-1 --pass
+
+unvalidated_assumption · 1
+  low    3f9a1c0e  assumption 3f9a1c0e was never validated
+         → idea assumption 3f9a1c0e accept|dispute|retract
+```
+
+The same report is `GET …/initiatives/{id}/gaps` (and `GET /projects/{projectId}/gaps` for every
+initiative), the MCP `gaps` tool, and the **Product gaps** list on the web UI's Health page.
+`/guidance` carries the counts as `gap_summary`, which `idea status` prints as one line.
+
+"In scope" below means a requirement that is live (not removed, not superseded by a PRD revision)
+and `approved`, `verified` or `failed` — not a draft nobody approved, not one a human waived. A
+change set "implements" a task only when it is `applied` and changed at least one file
+(`ChangeSet.ImplementsTask`: an applied no-op implements nothing).
+
+| Kind | State | Fires when | Severity |
+|---|---|---|---|
+| `unimplemented_requirement` | `no_task` | an in-scope, not-yet-verified requirement has no live (not cancelled, not superseded) task with an `implements` edge to it | by priority: must high, should medium, could low; **low** while no execution plan exists |
+| | `not_applied` | it has implementing tasks, and none of them has an applied, non-empty change set | by priority |
+| `unverified_requirement` | `evidence_failed` | the requirement's status is `failed`, or some criterion's latest decisive evidence (`pass`, `fail`, `blocked` or `waived`; a `needs_manual` placeholder decides nothing) is `fail` or `blocked`, or — when mapped-test evidence is available — a test mapped to it last failed | high |
+| | `evidence_stale` | a criterion's latest decisive evidence is a `pass` recorded *before* the most recent apply or revert of a non-empty change set whose task implements or verifies the requirement (apply-journal time, strictly later) | medium |
+| | `no_criteria` | the requirement has no acceptance criteria — the gate needs a pass per criterion and `--waive` refuses it, so it can never be verified | high |
+| `untested_acceptance_criterion` | `no_evidence` | a criterion of an in-scope requirement has no decisive evidence at all | medium for a must requirement already implemented, else low |
+| `unvalidated_assumption` | `unvalidated` | a live assumption or hypothesis (facts are not reported) is still `candidate` | medium if any live node rests on it, else low |
+| | `disputed` | it is `disputed` | same |
+| | `refuted` | it is `retracted` and live nodes still rest on it | high |
+| `invalidated_decision` | `dependents_stale` | the decision has active stale marks — it was resolved or reopened after requirements, tasks or change sets were built on it, and they have not been re-planned or acknowledged. The same mark `idea impact` reports as `stale` | high when a task or change set is marked, medium when only requirements are |
+| | `requirement_revised` | it is decided, and a live requirement with a `derived_from` edge to it has a `requirement.revised` event with a higher sequence number than the decision's last `decision.resolved` (or `decision.created`) | medium |
+| | `basis_refuted` | it is decided, and an assertion it derives from or that `supports` it is `retracted` or `disputed`, or any node `invalidates` or `contradicts` it (the edges `idea impact` calls obsolete) | high |
+| | `requirements_removed` | it is decided, requirements cited it, and every one of them has since been removed or superseded | low |
+| `orphan_task` | `no_requirement` | a live task has no `implements` or `verifies` edge to a live requirement | medium |
+| `orphan_change_set` | `task_missing` | a change set still holding work (not rejected or superseded) names a task that no longer exists | medium if applied, else low |
+| | `task_orphaned` | its task is an `orphan_task` | same |
+| `stale_artifact` | `upstream_newer` | the newest version of `technical_design`, `design_spec` or `verification_plan` is strictly older than the newest PRD, or the newest `execution_plan` is strictly older than any of those four | medium |
+
+"Rests on" (`dependents`, the ranking key within a severity) is the set of distinct live nodes
+reachable through incoming edges — what derives from, implements, verifies or depends on the node —
+plus the targets of its own `supports` edges, plus the change sets still holding work of every task
+reached, bounded like `idea impact` (depth 8, 500 nodes). Provenance edges (`produced_by`,
+`consumes`) are not dependence.
+
+What it deliberately does not do:
+
+- **No file-area heuristics.** A decision does not record which files it governs, so "a later change
+  set touched what this decision governs" is not a trigger; only the recorded edges and events are.
+- **Ties are fresh.** Evidence and an apply in the same millisecond, or two artifacts with the same
+  timestamp, are not stale.
+- **Some edges have no writer yet.** Nothing in the workflow links an assertion to a decision, writes
+  `supports`, `invalidates` or `contradicts`, or sets a requirement's source assertion, so
+  `basis_refuted` and assertion dependents are exercised only by tests today; the rules are in place
+  for when those edges are recorded. Framing and research assumptions therefore report as
+  unvalidated with no dependents (low) until judged with `idea assumption <id>
+  accept|dispute|retract` — the only path that moves an assertion out of `candidate`.
+- **Guidance counts omit mapped tests.** `gap_summary` is computed without the mapped-test parse
+  (it needs every check output); `idea gaps` includes it, so its verification counts can be higher.
+
+New kinds slot in as one more analyzer in `projection.gapAnalyzers` plus a `domain.GapKind`
+constant and its spec enum value; nothing that renders, filters or gates on gaps switches on the
+kind.
+
 ## Key invariants
 
 - **Relational state is authoritative**; events are appended atomically in the same SQLite

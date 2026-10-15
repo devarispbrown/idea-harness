@@ -64,6 +64,8 @@ type cliGuidance struct {
 	Action   string   `json:"action"`
 	Why      string   `json:"why"`
 	Affected []string `json:"affected"`
+	// GapSummary is set when the initiative has Product Graph gaps.
+	GapSummary *cliGapSummary `json:"gap_summary,omitempty"`
 }
 
 // cliTimelineEntry mirrors one entry of GET .../timeline (C1, wave 3
@@ -171,6 +173,9 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
 			if nm.Why != "" {
 				fmt.Fprintln(stdout, "    "+muted(nm.Why))
+			}
+			if nm.GapSummary != nil && nm.GapSummary.Total > 0 {
+				fmt.Fprintln(stdout, "  "+muted("gaps: "+nm.GapSummary.summaryLine()+" — ")+bold("idea gaps"))
 			}
 		}
 		fmt.Fprintln(stdout)

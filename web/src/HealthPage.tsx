@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
+import { gapKindLabel, gapSubject, gapSummaryLine, topGaps, type GapReport } from "./gaps";
+
+// How many gaps the page lists before "N more": the daemon sorts most severe
+// first, so the cut drops the least urgent. `idea gaps` has the full report.
+const GAPS_SHOWN = 8;
 
 interface RiskProfile {
   tier: string;
@@ -29,16 +34,19 @@ export default function HealthPage({
   const [risk, setRisk] = useState<RiskProfile | null>(null);
   const [doctor, setDoctor] = useState<Finding[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
+  const [gaps, setGaps] = useState<GapReport | null>(null);
 
   const load = useCallback(async () => {
-    const [r, d, h] = await Promise.all([
+    const [r, d, h, g] = await Promise.all([
       get<RiskProfile>(resource(projectId, initiativeId, "risk")).catch(() => null),
       get<Finding[]>(resource(projectId, initiativeId, "doctor")).catch(() => []),
       get<Health>("/health").catch(() => null),
+      get<GapReport>(resource(projectId, initiativeId, "gaps")).catch(() => null),
     ]);
     setRisk(r);
     setDoctor(d ?? []);
     setHealth(h);
+    setGaps(g);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -66,6 +74,40 @@ export default function HealthPage({
             ))}
           </div>
         </section>
+      )}
+
+      {gaps && (
+        <>
+          <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>
+            Product gaps · {gaps.summary?.total ?? gaps.gaps.length}
+            {gaps.gaps.length > 0 && <span className="muted"> · {gapSummaryLine(gaps.summary?.by_severity)}</span>}
+          </div>
+          <section className="health-card">
+            {topGaps(gaps.gaps, GAPS_SHOWN).shown.map((g, i) => (
+              <div key={`${g.kind}-${g.state}-${gapSubject(g)}-${i}`} className="health-row">
+                <span className={`health-sev sev-${g.severity}`}>{g.severity}</span>
+                <div className="health-body">
+                  <div className="health-title">
+                    <code>{gapSubject(g)}</code> {g.why}
+                  </div>
+                  <div className="health-sub">
+                    {gapKindLabel(g.kind)} · <code>{g.next}</code>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {topGaps(gaps.gaps, GAPS_SHOWN).hidden > 0 && (
+              <div className="muted" style={{ padding: "13px 16px" }}>
+                {topGaps(gaps.gaps, GAPS_SHOWN).hidden} more — <code>idea gaps</code> lists every one.
+              </div>
+            )}
+            {gaps.gaps.length === 0 && (
+              <div className="muted" style={{ padding: "13px 16px" }}>
+                No gaps: every in-scope requirement is implemented and verified.
+              </div>
+            )}
+          </section>
+        </>
       )}
 
       <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>

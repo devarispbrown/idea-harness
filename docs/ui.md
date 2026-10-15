@@ -244,6 +244,9 @@ recorded as evidence in the Product Graph.
 
 **Graph health** (`#/i/<id>/health`) — the deterministic risk profile with its tier and detected
 signals ("Derived deterministically from the patch contents — no model, no score"), a
+"Product gaps · *n*" list from `GET …/gaps` (the same report as `idea gaps`: the eight most severe,
+each with its why and the command that closes it — see
+[architecture.md](architecture.md#asking-the-graph-gaps)), a
 "Traceability gaps · *n*" list from the graph audit, and a daemon row showing the address, version
 and state directory. This is where Explore's **trace** button lands.
 
