@@ -62,13 +62,14 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `assumption` | ui | `#/i/<id>/gaps` — Accept / Dispute / Retract on unvalidated-assumption gaps | |
 | `objectives` | ui | `#/i/<id>/define` — Objectives section | |
 | `objective add` | ui | `#/i/<id>/define` — Objectives: add objective | |
-| `objective edit` | cli-only | CLI-only: gap — the Objectives section cannot edit statement/rationale/owner/status (`PATCH …/objectives/{id}`) | |
-| `objective link` | ui | `#/i/<id>/define` — Objectives: link a requirement | |
+| `objective edit` | ui | `#/i/<id>/define` — Objectives: Edit (statement, rationale, owner, status) | |
+| `objective link` | ui | `#/i/<id>/define` — Objectives: link a requirement; × unlinks one (`--unlink`) | |
+| `budget` | ui | `#/settings` — Budget: project default cap; `#/i/<id>/build` — spending meter with Raise cap / Clear; meter in the initiative header on every phase | |
 | `metrics` | ui | `#/i/<id>/define` — metrics under each objective; drift on `#/i/<id>/health` | |
 | `metric add` | ui | `#/i/<id>/define` — Objectives: add metric | |
-| `metric edit` | cli-only | CLI-only: gap — no UI control for `PATCH …/metrics/{id}` | |
+| `metric edit` | partial | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline incl. clearing it, target, unit) | guardrail, cadence, definition, source (`--command`/`--url`/`--manual`) and moving it to another objective are CLI-only |
 | `metric record` | ui | `#/i/<id>/define` — Objectives: record a value | |
-| `metric measure` | ui | `#/i/<id>/outcomes` — Measure for command/url sources | |
+| `metric measure` | ui | `#/i/<id>/outcomes` — Measure for command/url sources; `#/automations` — scheduled measurement and Run now | |
 | `diff` | cli-only | CLI-only: gap — the structured requirement/decision diff (`GET …/diff`) is not shown; `#/i/<id>/diff/<from>/<to>` is the text diff of two artifact versions, a different thing | |
 | `execute` | ui | `#/i/<id>/build` — Run TASK-n / Start over, with the Note to the agent field (`--note`) | |
 | `reopen-phase` | ui | `#/i/<id>/design` — Reopen on a design phase | |
@@ -84,10 +85,12 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `next` | partial | `#/i/<id>/<phase>` — the phase header's primary action is the next step | no "keep going until a human is needed" (`--until-human`) loop |
 | `risk` | ui | `#/i/<id>/health` — risk profile | |
 | `executors` | ui | `#/settings` — Executor section | |
-| `executors setup` | partial | `#/settings` — executor kind and smoke test | image pull and ACP/OpenHands wiring flags are CLI-only |
-| `integrations` | ui | `#/settings` — Integrations panel | |
+| `executors setup` | partial | `#/settings` — Executor profile: kind, image, model, ACP command/key env/timeout, OpenHands server/agent/key withholding/UI link, MCP servers, smoke test | pulling the image (`setup` pulls it) is CLI-only |
+| `integrations` | ui | `#/settings` — Integrations panel: health, and Slack/Linear settings editable (token variable names only) | |
 | `integrations test` | ui | `#/settings` — Integrations panel Test buttons | |
 | `watch` | ui | `#/i/<id>/build` — the run panel streams the running agent's events live and resumes after a reload | |
+| `run events` | ui | `#/i/<id>/build` — the run panel shows the current run's events live (`--follow`) and resumes after a reload; the last run stays under Last agent run | |
+| `steer` | ui | `#/i/<id>/build` — Send a note on the run panel, with Interrupt the current step (`--interrupt`) | |
 | `cancel` | ui | `#/i/<id>/<phase>` — Cancel on the running card | |
 | `config` | partial | `#/settings` — providers and executor settings are written to harness.yaml | no view of the whole config file |
 | `config validate` | cli-only | CLI-only: validates harness.yaml on disk with a non-zero exit, for scripts and CI | |
@@ -98,8 +101,10 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `daemon` | cli-only | CLI-only: runs the process that serves the UI | |
 | `daemon status\|stop` | cli-only | CLI-only: process management of the daemon serving the UI | |
 | `dev` | cli-only | CLI-only: starts the daemon and opens the UI | |
+| `ui pair` | cli-only | CLI-only: by design — a pairing code is minted with the API token on the daemon's machine; a signed-in browser cannot mint one, so a stolen session cannot outlive its own revocation | |
+| `ui sessions` | ui | `#/settings` — Remote access: every browser session, Revoke on each, Sign out on this one, Sign out everywhere | |
 | `mcp` | cli-only | CLI-only: stdio server for MCP clients; no UI by design | |
-| `eval` | cli-only | CLI-only: runs a private in-process daemon over an eval suite; a developer tool | |
+| `eval` | partial | `#/automations` — Scheduled eval: model, per-run cost cap, interval, Run now, history with cost and regressions | ad-hoc flags (`--policy`, `--harness`, `--keep`, scripted runs) are CLI-only |
 | `version` | ui | `#/i/<id>/health` — daemon version in the Health footer | |
 | `help` | cli-only | CLI-only: the CLI's own command list | |
 <!-- ui-parity:end -->

@@ -7,6 +7,38 @@ export const token =
     ? (document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "")
     : "";
 
+// A page served to a browser that is not on the daemon's machine carries no
+// token (docs/security-model.md "Remote access"): it signs in with a pairing
+// code and is authenticated by a session cookie the browser attaches on its
+// own. Every state-changing request it makes must then carry the session's
+// CSRF token, which the sign-in response and GET /ui/session hand to page
+// script -- and which lives only here, in memory.
+let csrfToken = "";
+
+export function setCsrfToken(v: string): void {
+  csrfToken = v;
+}
+
+// authHeaders is what every request carries: the token when the page has
+// one, otherwise (a signed-in remote browser) the CSRF token on writes.
+export function authHeaders(method: string): Record<string, string> {
+  if (token) return { "X-Idea-Token": token };
+  const m = method.toUpperCase();
+  if (csrfToken && m !== "GET" && m !== "HEAD" && m !== "OPTIONS") return { "X-Idea-CSRF": csrfToken };
+  return {};
+}
+
+// UNAUTHORIZED_EVENT is dispatched on window when a request is answered 401
+// on a page that has no token: the session expired or was revoked, and the
+// shell swaps to the sign-in page rather than showing a column of errors.
+export const UNAUTHORIZED_EVENT = "idea:unauthorized";
+
+function noteUnauthorized(res: Response): void {
+  if (res.status === 401 && !token && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+}
+
 // unwrapError turns a non-OK response body into the message the UI should
 // show. The daemon's error responses are `{"error": "..."}`; without this,
 // every failed call surfaced as `Error: {"error":"...<provider>..."}` because
@@ -63,6 +95,7 @@ async function callFetch(input: string, init?: RequestInit): Promise<Response> {
 
 async function throwOnError(res: Response): Promise<void> {
   if (!res.ok) {
+    noteUnauthorized(res);
     const text = await res.text();
     throw new Error(unwrapError(text, res.status, res.statusText));
   }
@@ -77,7 +110,7 @@ export async function api<T>(
     method,
     headers: {
       "Content-Type": "application/json",
-      "X-Idea-Token": token,
+      ...authHeaders(method),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -90,7 +123,7 @@ export async function api<T>(
 export async function apiRaw(method: string, path: string): Promise<string> {
   const res = await callFetch("/api/v1" + path, {
     method,
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders(method),
   });
   await throwOnError(res);
   return res.text();
@@ -130,7 +163,7 @@ export const del = <T>(path: string) => api<T>("DELETE", path);
 // apiBlob fetches a binary/text response as a Blob (context-doc download).
 export async function apiBlob(path: string): Promise<Blob> {
   const res = await callFetch("/api/v1" + path, {
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders("GET"),
   });
   await throwOnError(res);
   return res.blob();
@@ -150,7 +183,7 @@ export async function uploadDoc<T>(
   }
   const res = await callFetch("/api/v1" + path, {
     method: "POST",
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders("POST"),
     body: form,
   });
   await throwOnError(res);
@@ -323,6 +356,23 @@ export const listMetrics = (projectId: string, initiativeId: string) =>
 
 export const createMetric = (projectId: string, initiativeId: string, body: NewMetric) =>
   post<OutcomeMetric>(resource(projectId, initiativeId, "metrics"), body);
+
+// MetricEdit is the PATCH .../metrics/{id} body (docs/api.md): only the
+// fields being changed. clear_baseline / clear_guardrail remove a value,
+// which an omitted field cannot say.
+export interface MetricEdit {
+  name?: string;
+  direction?: MetricDirection;
+  target?: number;
+  baseline?: number;
+  clear_baseline?: boolean;
+  guardrail?: number;
+  clear_guardrail?: boolean;
+  unit?: string;
+}
+
+export const updateMetric = (projectId: string, initiativeId: string, metricId: string, body: MetricEdit) =>
+  patch<OutcomeMetric>(resource(projectId, initiativeId, `metrics/${seg(metricId)}`), body);
 
 export const recordObservation = (
   projectId: string,

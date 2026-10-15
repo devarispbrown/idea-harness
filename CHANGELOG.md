@@ -41,6 +41,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- **Every `harness.yaml` write keeps your comments and key order, and is validated like a load.**
+  `idea model set`, `idea executors setup` and the Settings saves used to re-marshal the whole file
+  (dropping every comment) and checked only `network`, so a write could produce a file the next
+  load refused. The write path now runs the schema, the inline-secret sweep and the structural
+  checks before writing, and merges onto the existing document's comments. The written file is
+  indented with two spaces (it was four).
+- Strict (closed) request bodies on the five new write endpoints from their first release:
+  `PUT …/integrations/{name}`, `PUT …/budget`, `PUT …/initiatives/{id}/budget`,
+  `PUT …/automations/{name}` and `POST …/automations/{name}/run`. Not a breaking change: none
+  existed before.
 - The project event stream's SSE id is now `<event seq>.<run event id>`. A client that stored a bare
   `<event seq>` still resumes correctly (run events start at now); one that parsed the id as an
   integer must split on `.`.
@@ -84,6 +94,88 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   metrics attributed to them.
 
 ### Added
+
+- **Use the UI from your phone or another computer, without the token leaving the machine.**
+  Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
+  `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),
+  or `listen` for a second listener — refused unless it is a Tailscale or private address or TLS
+  is configured (`tls_cert`/`tls_key`). Loopback behaves exactly as before. A remote browser signs
+  in with a one-time code from **`idea ui pair`** for an expiring, revocable session cookie;
+  **`idea ui sessions [revoke <id>|--all]`** and Settings → Remote access list and revoke them. The
+  model and its limits: [docs/security-model.md](docs/security-model.md#remote-access); setup:
+  [docs/configuration.md](docs/configuration.md#remote-access).
+- **Web Push notifications** for *needs your judgment*, *change set ready for review*,
+  *verification failed* and *outcome drifting*, chosen per browser in Settings → Notifications.
+  Each subscription is a subscriber on the integration bus, with Slack's outbox, retries and dead
+  letters; payloads are encrypted (RFC 8291) and VAPID-signed (RFC 8292) by a new stdlib-only
+  `internal/webpush`, tested against the RFC's own vector. VAPID keys live under the state root.
+- **Project switcher**, and **`#/p/<projectId>/…`** deep links: the address names its project,
+  and the last choice is remembered.
+- **Phone-first review**: wrapped, collapsible per-file diffs with `+/−` counts, a sticky
+  Approve / Request changes / Reject bar with **Reject with this note**, a **Needs you** entry in
+  the top bar.
+- **Installable app**: web manifest, icons, and a service worker that serves an offline page and
+  caches hashed assets only — never the HTML (which can carry the token) or `/api/`.
+- API: `POST /ui/pairing-codes`, `POST /ui/login`, `POST /ui/logout`, `GET /ui/session`,
+  `GET|DELETE /ui/sessions`, `DELETE /ui/sessions/{id}`, `GET /push/vapid-public-key`, and
+  `GET|POST /projects/{projectId}/push/subscriptions`, `PATCH|DELETE …/{id}`, `POST …/{id}/test`.
+  Migrations: global.db 2 (sessions, pairing codes), state.db 46 (push subscriptions).
+
+- **Keyboard and accessibility in the web UI** ([docs/ui.md](docs/ui.md#keyboard-and-accessibility)).
+  A **Skip to content** link is the first Tab stop; after a route change focus moves to the new
+  page's heading; the command palette, a new **`?` shortcut reference**, and inline forms (Request
+  changes, Ask for a revision, the revert confirmation, Write my own…, objective and metric edits)
+  take focus when they open, close on Escape and give focus back to the button that opened them
+  (the two modals also keep Tab inside). **⌘/Ctrl+Enter** sends the focused note — the run note,
+  Request changes, a plan revision, a retry, a note to the running agent. One polite live region
+  says when a change-set action lands ("CHG-2 applied."), when an operation or agent run starts or
+  ends, and when an objective or metric is saved — never per streamed event (the run panel's
+  action chip is no longer a live region). `prefers-reduced-motion` stops spinners, pulses and
+  transitions. The home cards' titles are buttons (the card was a mouse-only `<section onClick>`),
+  and Plan's ↑/↓ buttons say which task they move.
+- **The command palette (⌘K) reaches every page**: Gaps, Outcomes, Quality, Activity, Graph health,
+  Needs you, Settings and each Settings section (focus lands on the section), and a typed node
+  code — `REQ-3`, `TASK-2`, `OBJ-1`, `MET-1`, `DEC-1`, `CHG-1` — opens that node's lineage.
+- **Edit objectives and metrics, and unlink a requirement, on the Define page** — `idea objective
+  edit` (statement, rationale, owner, status), `idea metric edit` (name, direction, baseline —
+  blank clears it — target, unit) and `idea objective link --unlink` (the × beside each serving
+  requirement). Only changed fields are sent. In the parity ledger `objective edit` is now `ui` and
+  `metric edit` `partial` (guardrail, cadence, definition and source stay CLI-only).
+- **The browser suite checks accessibility in the dark colour scheme too.** `expectAccessible`
+  runs axe under `prefers-color-scheme: light` and `dark` on every page, and now also covers the
+  queue, Design, the document reader, the command palette and the shortcut reference.
+
+- **Spending caps per initiative** ([docs/configuration.md](docs/configuration.md#budget)).
+  `budget.default_initiative_usd` caps every initiative; `idea budget <initiative> --set <usd>` (or
+  the Build page's meter, or `PUT …/initiatives/{id}/budget`) sets one initiative's own. The cap is
+  checked before every model call and before the coding agent starts, for every executor kind
+  (`acp` and `openhands` included); reaching it parks the initiative on `needs_human_judgment` with
+  the new reason `budget_exceeded` (`idea next`: `resolve budget`) and publishes
+  `initiative.budget_exceeded` on the integration bus. Raising the cap returns the initiative to
+  where it stopped. Spend is the initiative's recorded spend (`GET …/costs`); a coding agent that
+  reports no cost (hermes, omp) is stated as not counted. The meter shows in the initiative header
+  and on Build; `idea budget` with no initiative lists every meter and `--set` there sets the
+  project default. `idea eval --max-cost <usd>` caps a whole eval run the same way.
+- **Automations** (`#/automations`, [docs/configuration.md](docs/configuration.md#automations)):
+  every background job in one place, each off until enabled, with its schedule, last and next run,
+  history (status, cost) and Run now. Linear inbound polling (existing; its switch is still
+  `integrations.linear.inbound`), **scheduled metric measurement** (new:
+  `automations.metric_measurement` measures command/url metrics on each one's cadence, at most every
+  15 minutes, still honouring `outcomes.allow_url_sources`) and a **scheduled eval** (new:
+  `automations.eval` runs `idea eval` against a configured model every `interval_hours`, capped at
+  `max_cost_usd` per run, writes reports to the project's state directory and publishes
+  `eval.regressed` when it regresses against its baseline). Run history is kept in the project
+  database (migration 47, with the spending caps). API: `GET/PUT …/automations[/{name}]`, `POST …/automations/{name}/run`.
+- **Integrations and executor profiles are editable in Settings.** Slack (channel, events, who is
+  mentioned, who may act) and Linear (team, project, inbound label, poll interval, state mapping)
+  through `PUT …/integrations/{name}`, showing whether each token variable is set and never a
+  value; the executor profile — kind, image, model, the ACP command/key variable/timeout, the
+  OpenHands server/agent/key withholding/UI link, and `executor.mcp_servers` (stdio, http, sse;
+  each env var or header a literal or a variable name, secret-looking literals refused) — through
+  `PUT …/executors` and the new `GET …/executors/config`, with each kind's trust trade-off and the
+  executor/model compatibility advisory beside it.
+- `demo.cost_per_call_usd`: the demo provider reports a cost per call, so a spending cap can be
+  reached in CI and the browser suite without a real provider.
 
 - **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
   page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full
@@ -147,8 +239,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **Steering.** `POST …/runs/{runId}/steer` sends a note to a running agent: ACP as its next prompt
   turn (or at once, ending the current turn, with `interrupt`), OpenHands as a message into the
   conversation; other executors answer `steering not supported by <kind>` and the note rides on the
-  task's next run. Notes are recorded on the run's events and manifest. See
+  task's next run. A held note is stored (migration 45, `held_steering_notes`, redacted), so a
+  daemon restart before that run no longer drops it, and the run takes each one exactly once.
+  Notes are recorded on the run's events and manifest. See
   [docs/agents.md](docs/agents.md#steering-a-running-agent).
+- **`idea run events` and `idea steer`.** The run panel from a terminal: `idea run events
+  <run-id|current> [--follow] [--json]` prints a run's events one per line (NDJSON with `--json`),
+  and `--follow` tails the live stream, resuming after a dropped connection, until the run ends;
+  `idea steer <run-id|current> "<note>" [--interrupt]` sends a steering note and says what became
+  of it. Steering a run that is not running exits `4` (`conflict`), pointing at
+  `idea execute --note`.
 - **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
   conversation in that UI.
 - **Run report.** `GET …/runs/{runId}/report?format=json|md|zip`: events, files with line counts,
@@ -441,6 +541,27 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
+  accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
+  the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on
+  the dark surface); `DEC-n`/`OBJ-n` chips used a hard-coded `#4338ca` (1.8:1). New tokens
+  (`--accent-fill`, `--on-accent`, `--text-secondary`, `--accent-strong`) carry them in both
+  schemes. Also: the "Needs you elsewhere" count was white on amber (2.1:1, both schemes); a
+  resolved judgment card faded its text with `opacity` (4.1–4.4:1); the deny chip and the phase
+  dot were literal white in dark mode.
+- **A stray merge marker in `styles.css`** (`=======`) made the browser drop the rule after it —
+  the run panel's own container style.
+- **A stopped run's tool calls no longer stay "in progress".** When a run ends — Stop, a failure, a
+  timeout, or an agent that never reported a call's end — every tool call still pending or in
+  progress gets a harness `tool_result` with `status: cancelled` on the same `tool_call_id`, so the
+  run panel and the run report show it as ended. The run panel reads such a call **cancelled** (⊘),
+  counts it as done in "n/m actions" with "· n cancelled", and closes any open call itself once the
+  run is over (a run recorded before this, or a result that was dropped).
+- **The PRD names objectives by their codes.** A model (and the demo provider) keys a new objective
+  `O1`, and `idea prd` / the document reader printed `O1: …` and `Serves: O1` — a label nothing else
+  uses. The PRD body is now rendered after the objectives are stored, with `OBJ-n` in both places.
+  The PRD artifact is also committed after its requirements, objectives and questions, rather than
+  before them.
 - **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
   `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
   findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer

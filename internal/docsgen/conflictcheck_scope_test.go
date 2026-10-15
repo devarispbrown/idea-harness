@@ -60,8 +60,10 @@ func TestConflictSourcesStayNarrow(t *testing.T) {
 	}
 
 	// A blunt bound on the same property: the narrow rule classifies a handful of
-	// handlers, not most of them.
-	if len(sources) > 30 {
+	// handlers, not most of them. (35, not 30, since writeHarness -- the shared
+	// settings write behind the integration, budget and automation editors --
+	// reaches writeReloadErr exactly as handleUpdateExecutors does.)
+	if len(sources) > 35 {
 		var names []string
 		for n := range sources {
 			names = append(names, n)

@@ -52,6 +52,7 @@ if this file has drifted.
 | `idea objective add "<statement>"` | add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision | — | — |
 | `idea objective edit <OBJ>` | change --statement, --rationale, --owner or --status active\|achieved\|abandoned | — | — |
 | `idea objective link <REQ> <OBJ>` | record that a requirement serves an objective (--unlink removes it) | — | — |
+| `idea budget [<initiative>] [--set <usd>\|--clear]` | show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted | `--clear`, `--json`, `--set` | yes |
 | `idea metrics [<initiative>]` | list outcome metrics with their drift: on track, off track, regressed, stale or no data | `--json` | yes |
 | `idea metric add\|edit\|record\|measure` | add, edit, record or measure an outcome metric (see the rows below) | `add --baseline`, `add --cadence`, `add --command`, `add --definition`, `add --direction`, `add --guardrail`, `add --hypothesis`, `add --json`, `add --manual`, `add --pointer`, `add --target`, `add --unit`, `add --url`, `edit --baseline`, `edit --cadence`, `edit --clear-baseline`, `edit --clear-guardrail`, `edit --command`, `edit --definition`, `edit --direction`, `edit --guardrail`, `edit --json`, `edit --manual`, `edit --name`, `edit --objective`, `edit --pointer`, `edit --target`, `edit --unit`, `edit --url`, `measure --json`, `record --at`, `record --json`, `record --note` | takes no flags |
 | `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective: --direction increase\|decrease\|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual | — | — |
@@ -77,6 +78,8 @@ if this file has drifted.
 | `idea integrations [status]` | show Slack/Linear integration health: tokens present, deliveries, socket and poll state | `--json`, `status --json`, `test --json` | yes |
 | `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
+| `idea run events <run-id\|current> [<initiative>] [--follow] [--json]` | print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line | `events --follow`, `events --json` | takes no flags |
+| `idea steer <run-id\|current> "<note>" [<initiative>] [--interrupt]` | send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run | `--interrupt`, `--json` | yes |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
 | `idea config validate` | validate .idea-harness/harness.yaml (non-zero exit when invalid) | — | — |
@@ -84,11 +87,14 @@ if this file has drifted.
 | `idea docs` | list uploaded context docs | `--json`, `add --kind`, `add --title` | yes |
 | `idea docs add <path>` | upload a context doc (--kind, --title) | — | — |
 | `idea logs [-f] [n]` | show (or follow) the daemon log | `--follow`, `-f`, `-n` | no |
-| `idea daemon` | run the daemon in the foreground | `status`, `stop` | takes no flags |
+| `idea daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]` | run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access") | `--allowed-hosts`, `--listen`, `--tls-cert`, `--tls-key`, `status`, `stop` | no |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
+| `idea ui pair\|sessions` | sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below) | `pair --json`, `pair --label`, `sessions --all`, `sessions --json` | takes no flags |
+| `idea ui pair [--label <name>]` | mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine | — | — |
+| `idea ui sessions [revoke <id>\|--all]` | list remote browser sessions; revoke one, or every one | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
 | `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
-| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
+| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--max-cost`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
 | `idea version` | print the version, commit and build state | none | takes no flags |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | `--format` | no |
 

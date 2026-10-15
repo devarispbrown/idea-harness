@@ -69,6 +69,9 @@ that powers provenance, impact analysis, requirement verification, and outcome d
 | Guardrails | system-deny conditions, protected auto-executing paths, credential and PII sweeps, redacted logs | [security](docs/security.md), [security model](docs/security-model.md) |
 | Surfaces | the CLI (stable exit codes, `--json` errors), the web UI, an MCP server, the HTTP API | [cli](docs/cli.md), [ui](docs/ui.md), [mcp](docs/mcp.md), [api](docs/api.md) |
 | Team tools | Slack notifications and approvals, Linear issue sync — no public URL | [integrations](docs/integrations.md) |
+| Spend and automations | per-initiative spending caps enforced before every model and agent call; scheduled metric measurement, scheduled evals and Linear polling, each off until enabled | [configuration → budget](docs/configuration.md#budget), [configuration → automations](docs/configuration.md#automations) |
+| From your phone | opt-in remote access (Tailscale recommended) with pairing-code sign-in, phone-friendly review and approval, browser push notifications, a project switcher | [configuration → remote access](docs/configuration.md#remote-access), [security model → remote access](docs/security-model.md#remote-access) |
+| Accessibility | keyboard-operable throughout (⌘K, `?`, ⌘/Ctrl+Enter), axe-checked in light and dark mode in CI | [ui → keyboard and accessibility](docs/ui.md#keyboard-and-accessibility) |
 | Measurement | `idea eval`: an end-to-end suite with a regression baseline | [Measured runs](#measured-runs-idea-eval) |
 
 ## Execution model

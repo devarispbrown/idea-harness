@@ -51,8 +51,9 @@ func (o Objective) Active() bool {
 	return o.SupersededBy == "" && o.Status == ObjectiveActive
 }
 
-// MetricSource says how an OutcomeMetric is measured. Command and URL are only
-// ever run on request (`idea metric measure`), never on a timer.
+// MetricSource says how an OutcomeMetric is measured. Command and URL run on
+// request (`idea metric measure`), and on the metric's cadence only once a
+// person enables the scheduled measurement (automations.metric_measurement).
 type MetricSource struct {
 	Kind MetricSourceKind `json:"kind"`
 	// Command is a shell command run with `sh -c` in the no-network check

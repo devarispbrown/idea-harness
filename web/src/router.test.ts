@@ -12,6 +12,11 @@ describe("parseRoute", () => {
     expect(parseRoute("")).toEqual({ name: "home" });
   });
 
+  it("resolves automations", () => {
+    expect(parseRoute("#/automations")).toEqual({ name: "automations" });
+    expect(parseRoute("#/automations/eval").name).toBe("not-found");
+  });
+
   it("resolves settings", () => {
     expect(parseRoute("#/settings")).toEqual({ name: "settings" });
   });

@@ -13,10 +13,17 @@ export interface IntegrationStatus {
   socket?: { connected: boolean; last_error?: string; reconnects: number };
   poll?: { last_poll_at?: string; last_error?: string };
   linked_issues?: number;
+  // The harness.yaml section as written (null when not configured), and the
+  // variables it reads -- for the Settings editor. Optional so a daemon that
+  // predates the editor still renders the read-only panel.
+  config?: Record<string, unknown> | null;
+  token_envs?: string[];
 }
 
 export interface IntegrationsView {
   integrations: IntegrationStatus[];
+  event_kinds?: string[];
+  default_slack_events?: string[];
 }
 
 export type IntegrationState = "off" | "ok" | "warn" | "down";
@@ -38,7 +45,7 @@ export function integrationState(s: IntegrationStatus): IntegrationState {
 export function integrationHeadline(s: IntegrationStatus): string {
   switch (integrationState(s)) {
     case "off":
-      return `Not configured. Add integrations.${s.name} to harness.yaml.`;
+      return `Not configured. Set it up below (it is written to integrations.${s.name} in harness.yaml).`;
     case "down":
       return "Configured but not running.";
     case "warn":

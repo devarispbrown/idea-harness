@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post, resource, token, unwrapError } from "./api";
+import { authHeaders, get, post, resource, unwrapError } from "./api";
 import PhasePage from "./PhasePage";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
@@ -11,6 +11,8 @@ import { planTaskActions } from "./judgmentCopy";
 import LineagePanel from "./LineagePanel";
 import ReviewConvergence from "./ReviewConvergence";
 import NoteField from "./NoteField";
+import InlinePanel from "./InlinePanel";
+import { announce } from "./announce";
 import { isOperationInFlight } from "./buildLogic";
 import { revisionOutcome, type PlanSnapshot } from "./planRevision";
 
@@ -172,7 +174,7 @@ export default function PlanPage({
     setError("");
     const res = await fetch(`/api/v1/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Idea-Token": token },
+      headers: { "Content-Type": "application/json", ...authHeaders("PATCH") },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -192,7 +194,7 @@ export default function PlanPage({
     setError("");
     const res = await fetch(`/api/v1/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}`, {
       method: "DELETE",
-      headers: { "X-Idea-Token": token },
+      headers: authHeaders("DELETE"),
     });
     if (!res.ok) {
       const t = await res.text();
@@ -259,6 +261,7 @@ export default function PlanPage({
       setError(e instanceof Error ? e.message : String(e));
       return;
     }
+    announce("Plan approved. Build is unlocked.");
     await load();
   };
   const snapshot = (): PlanSnapshot => ({ version: planVersion, codes: tasks.map((t) => t.code) });
@@ -537,14 +540,17 @@ export default function PlanPage({
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>
       {revisionNote !== null && (
-        <section className="revision-request" aria-label="Ask for a revision">
+        <InlinePanel className="revision-request" label="Ask for a revision" onClose={() => setRevisionNote(null)}>
           <NoteField
             id={`revise-plan-note-${initiativeId}`}
             label="What should the revised plan change?"
             placeholder="e.g. split the import step into its own task — joins the planner's inputs (optional)"
             value={revisionNote}
             onChange={setRevisionNote}
-            autoFocus
+            onSubmit={() => {
+              if (!pendingRevision) revisePlan();
+            }}
+            submitLabel="regenerate"
           />
           <div className="revision-request-actions">
             <button className="cs-green" disabled={!!pendingRevision} onClick={revisePlan}>
@@ -554,7 +560,7 @@ export default function PlanPage({
               Cancel
             </button>
           </div>
-        </section>
+        </InlinePanel>
       )}
       {pendingRevision && <p className="muted revision-status">Regenerating the plan…</p>}
       {revisionResult && (
@@ -778,11 +784,11 @@ export default function PlanPage({
                 // word per line at narrow widths. Built once, rendered twice
                 // below (flat above 600px, in a "⋯" menu under it) so the
                 // wiring can't drift between the two layouts.
-                const actions: { key: string; label: string; onClick: () => void }[] = [
+                const actions: { key: string; label: string; aria?: string; onClick: () => void }[] = [
                   ...(can.reorder
                     ? [
-                        { key: "up", label: "↑", onClick: () => move(i, -1) },
-                        { key: "down", label: "↓", onClick: () => move(i, 1) },
+                        { key: "up", label: "↑", aria: `Move ${t.code} up`, onClick: () => move(i, -1) },
+                        { key: "down", label: "↓", aria: `Move ${t.code} down`, onClick: () => move(i, 1) },
                       ]
                     : []),
                   ...(tasksEditable
@@ -808,16 +814,16 @@ export default function PlanPage({
                   <>
                     <span className="plan-row-actions">
                       {actions.map((a) => (
-                        <button key={a.key} className="plan-act" onClick={a.onClick}>
+                        <button key={a.key} className="plan-act" aria-label={a.aria} onClick={a.onClick}>
                           {a.label}
                         </button>
                       ))}
                     </span>
                     <details className="plan-actions-menu">
-                      <summary aria-label="More actions">⋯</summary>
+                      <summary aria-label={`More actions for ${t.code}`}>⋯</summary>
                       <div className="plan-actions-menu-list">
                         {actions.map((a) => (
-                          <button key={a.key} className="plan-act" onClick={a.onClick}>
+                          <button key={a.key} className="plan-act" aria-label={a.aria} onClick={a.onClick}>
                             {a.label}
                           </button>
                         ))}

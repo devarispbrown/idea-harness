@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { del, get, post, put } from "./api";
+import { del, get, put } from "./api";
 import {
   providerDetail,
   providerOptionSuffix,
@@ -8,24 +8,13 @@ import {
   providerListLabel,
   modelsLoadedMessage,
 } from "./providerStatus";
-import {
-  executorImagePlaceholder,
-  executorResolutionLine,
-  executorStatusLines,
-  hasExecutorStatusLines,
-  isModelFieldError,
-  requestedExecutorKind,
-  type ExecutorResolution,
-  type ExecutorStatusInput,
-} from "./executorStatus";
-import {
-  formatSmokeElapsed,
-  lastSmokeMessage,
-  smokeButtonState,
-} from "./smokeTest";
 import { chipsToShow, orderModels } from "./modelCatalog";
 import { resolveInitialProvider } from "./settingsLoad";
 import IntegrationsPanel from "./IntegrationsPanel";
+import NotificationsPanel from "./NotificationsPanel";
+import RemoteAccessPanel from "./RemoteAccessPanel";
+import ExecutorSettings from "./settings/ExecutorSettings";
+import BudgetSettings from "./settings/BudgetSettings";
 
 interface Provider {
   name: string;
@@ -97,27 +86,6 @@ const REVIEW_RIGOR_OPTIONS: { value: string; label: string; explanation: string 
   { value: "thorough", label: "Thorough", explanation: "Up to 20 findings. For a large or sensitive change." },
 ];
 
-interface ExecutorInfo {
-  name: string;
-  trust: string;
-  sandbox_mode: string;
-  network: string;
-  capabilities: string[];
-  selected: boolean;
-  image?: string;
-  model?: string;
-  default_image?: string;
-  // Added alongside this feature: image/key readiness and, when not ready,
-  // the reason (C3). Optional so a daemon that predates it still renders.
-  status?: ExecutorStatusInput;
-  // Present on the row the next run would actually use (requested vs
-  // resolved, and the placeholder warning when auto fell back).
-  resolution?: ExecutorResolution;
-}
-
-// "auto" first: it is what an unset kind means, and what `idea init` writes.
-const EXECUTOR_KINDS = ["auto", "internal", "container", "omp", "hermes"];
-
 // api.ts throws an Error whose .message is already the server's plain `error`
 // string (no JSON to parse here) — this just narrows the catch(e: unknown)
 // down to that .message for the one inline error this page shows next to a
@@ -166,33 +134,6 @@ export default function Settings({ projectId }: { projectId: string }) {
   const [preset, setPreset] = useState("openai");
   const [baseUrl, setBaseUrl] = useState("");
   const [keyEnv, setKeyEnv] = useState("");
-
-  // executor form state
-  const [executors, setExecutors] = useState<ExecutorInfo[]>([]);
-  const [executorKind, setExecutorKind] = useState("internal");
-  const [executorImage, setExecutorImage] = useState("");
-  const [executorModel, setExecutorModel] = useState("");
-  const [initialKind, setInitialKind] = useState("internal");
-  const [initialImage, setInitialImage] = useState("");
-  const [initialModel, setInitialModel] = useState("");
-  // The reason a 400 gave for the model field specifically (C3), shown next
-  // to that field instead of only in the page-level error banner.
-  const [executorModelError, setExecutorModelError] = useState("");
-
-  // S3: "Run smoke test". `smokeOpId` is only ever held in memory -- a
-  // reload loses track of it on purpose (the daemon has no "operations for
-  // this browser tab" concept), and that's fine: `last_smoke` off the
-  // executors list is what the button state falls back to after a reload,
-  // never a locally-remembered operation id.
-  const [smokeOpId, setSmokeOpId] = useState<string | null>(null);
-  const [smokeStartedAt, setSmokeStartedAt] = useState<number | null>(null);
-  const [smokeNow, setSmokeNow] = useState(() => Date.now());
-  const [smokeResult, setSmokeResult] = useState<"succeeded" | "failed" | "cancelled" | null>(null);
-  const [smokeError, setSmokeError] = useState("");
-  // A refusal from the POST itself (400 wrong kind/model, 409 already
-  // running) rather than the operation later failing -- shown the same way,
-  // but without an operation to poll.
-  const [smokeStartError, setSmokeStartError] = useState("");
 
   // git commit on apply toggle, plus the two wave-3 companions (review
   // changes #2/D3): the default-branch guard and branch-per-initiative.
@@ -293,35 +234,6 @@ export default function Settings({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
-  const loadExecutors = useCallback(async () => {
-    try {
-      const list = await get<ExecutorInfo[]>(`/projects/${projectId}/executors`);
-      setExecutors(list);
-      const selected = list.find((e) => e.selected);
-      // Under `auto` no row is selected; the kind shown is what harness.yaml
-      // asks for, never a default of this page's own.
-      const requested = requestedExecutorKind(list);
-      if (!selected && EXECUTOR_KINDS.includes(requested)) {
-        setExecutorKind(requested);
-        setInitialKind(requested);
-      }
-      if (selected && EXECUTOR_KINDS.includes(selected.name)) {
-        setExecutorKind(selected.name);
-        setInitialKind(selected.name);
-        // C3: show what is actually stored, never a default it never saved.
-        // This used to fall back to `selected.default_image`, which meant a
-        // reload showed an image nobody had chosen — that fallback moved to
-        // the field's placeholder (executorImagePlaceholder) instead.
-        setExecutorImage(selected.image || "");
-        setInitialImage(selected.image || "");
-        setExecutorModel(selected.model || "");
-        setInitialModel(selected.model || "");
-      }
-    } catch {
-      // executors endpoint may not exist yet; leave defaults in place.
-    }
-  }, [projectId]);
-
   const loadAllowlist = useCallback(async () => {
     try {
       const list = await get<SecretAllowlistEntry[]>(`/projects/${projectId}/secret-allowlist`);
@@ -338,50 +250,8 @@ export default function Settings({ projectId }: { projectId: string }) {
   }, [load]);
 
   useEffect(() => {
-    loadExecutors();
-  }, [loadExecutors]);
-
-  useEffect(() => {
     loadAllowlist();
   }, [loadAllowlist]);
-
-  // S3: poll the smoke operation until it leaves pending/running. Cleared
-  // whenever smokeOpId changes (a new run replaces the old poll) or the page
-  // unmounts.
-  useEffect(() => {
-    if (!smokeOpId) return;
-    let cancelled = false;
-    const poll = async () => {
-      let op: { status: string; error?: string };
-      try {
-        op = await get<{ status: string; error?: string }>(`/operations/${smokeOpId}`);
-      } catch {
-        return; // transient error: keep polling
-      }
-      if (cancelled) return;
-      if (op.status === "running" || op.status === "pending") return;
-      setSmokeResult(op.status as "succeeded" | "failed" | "cancelled");
-      setSmokeError(op.error ?? "");
-      setSmokeOpId(null);
-      // Refresh so status.last_smoke (S2) reflects this run immediately,
-      // rather than waiting for whatever next triggers loadExecutors.
-      loadExecutors();
-    };
-    poll();
-    const id = setInterval(poll, 1500);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [smokeOpId, loadExecutors]);
-
-  // Ticks the elapsed-time display while a smoke test is running; idle
-  // (no interval) the rest of the time.
-  useEffect(() => {
-    if (!smokeOpId) return;
-    const id = setInterval(() => setSmokeNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [smokeOpId]);
 
   // C1: live models load in their own effect, keyed on the selected
   // provider -- not folded into `load`. `load` sets `selectedProvider` from
@@ -458,75 +328,6 @@ export default function Settings({ projectId }: { projectId: string }) {
       await load();
     } catch (e) {
       setError(errorMessage(e));
-    }
-  };
-
-  const saveExecutor = async () => {
-    setError("");
-    setSaved("");
-    setWarning("");
-    setExecutorModelError("");
-    const body: { kind?: string; image?: string; model?: string } = {};
-    if (executorKind !== initialKind) body.kind = executorKind;
-    if (executorImage !== initialImage) body.image = executorImage;
-    if (executorModel !== initialModel) body.model = executorModel;
-    if (Object.keys(body).length === 0) {
-      setSaved("Executor is unchanged.");
-      return;
-    }
-    try {
-      await put(`/projects/${projectId}/executors`, body);
-      setSaved("Executor saved.");
-      setInitialKind(executorKind);
-      setInitialImage(executorImage);
-      setInitialModel(executorModel);
-      // No separate "not ready" warning here: the executor status panel,
-      // refreshed below, already states the problem with its fix, and a
-      // second copy at the bottom of the page said it a third time.
-      await loadExecutors();
-    } catch (e) {
-      // Low: this used to route EVERY failure here to the Model field. Only
-      // a message that actually names the model (C3: a 400 from
-      // executor.ResolveAgentProvider refusing it — unknown provider, bad
-      // name/type) belongs next to that field; a bad image reference, an
-      // unknown kind, or a transient 5xx belongs on the general error line,
-      // where it used to never appear at all.
-      const msg = errorMessage(e);
-      if (isModelFieldError(msg)) {
-        setExecutorModelError(msg);
-      } else {
-        setError(msg);
-      }
-    }
-  };
-
-  // S3: runs `executor.SmokeAgent` for real, through the SAVED executor
-  // (the daemon reads its own config, not whatever's pending in this form) --
-  // a small real model call using the project's own key. The result arrives
-  // via the poll effect above; this only starts it and surfaces a refusal
-  // (400 wrong kind/model, 409 already running) that happens before an
-  // operation id even exists.
-  // Set synchronously on click, before any await: a double click sent two
-  // POSTs, and the second one's 409 showed as a red error over a healthy run
-  // and stopped the timer.
-  const smokeStarting = useRef(false);
-  const runSmoke = async () => {
-    if (smokeStarting.current || smokeOpId) return;
-    smokeStarting.current = true;
-    setSmokeStartError("");
-    setSmokeError("");
-    setSmokeResult(null);
-    setSmokeStartedAt(Date.now());
-    try {
-      const res = await post<{ operation_id: string }>(`/projects/${projectId}/executors/smoke`, {});
-      setSmokeOpId(res.operation_id);
-    } catch (e) {
-      setSmokeStartedAt(null);
-      setSmokeStartError(errorMessage(e));
-      // Another tab's smoke, say: pick its result up when it lands.
-      loadExecutors();
-    } finally {
-      smokeStarting.current = false;
     }
   };
 
@@ -618,40 +419,6 @@ export default function Settings({ projectId }: { projectId: string }) {
   // lets a typed query reach past that bound (I "Bound OpenRouter's 446
   // chips").
   const visibleModels = chipsToShow(liveModels, modelQuery);
-
-  // The full executors list (one entry per kind, C3) so the Image
-  // placeholder and status panel track whichever kind is selected in the
-  // dropdown right now, not only the one already saved.
-  // Under "auto" the status that matters is the kind it resolves to.
-  const resolvedRow = executors.find((e) => e.resolution);
-  const executorEntry =
-    executorKind === "auto" ? resolvedRow : executors.find((e) => e.name === executorKind);
-  // S3: the smoke test runs against the SAVED executor, not the dropdown's
-  // unsaved preview -- `last_smoke` is only ever populated on this row (the
-  // daemon computes it for `selected` only), and the daemon's own
-  // POST .../executors/smoke reads pr.cfg.Harness.Executor.Kind, not
-  // anything pending in this form.
-  const selectedExecutor = executors.find((e) => e.selected) ?? (initialKind === "auto" ? resolvedRow : undefined);
-  // A smoke started before a reload (or in another tab) has no id here. Keep
-  // refreshing the executors until its last_smoke leaves "running", so the
-  // result appears instead of "A smoke test is running." forever.
-  const otherSmokeRunning =
-    !smokeOpId && ["running", "pending"].includes(selectedExecutor?.status?.last_smoke?.status ?? "");
-  useEffect(() => {
-    if (!otherSmokeRunning) return;
-    const id = setInterval(() => loadExecutors(), 3000);
-    return () => clearInterval(id);
-  }, [otherSmokeRunning, loadExecutors]);
-  const smokeState = smokeButtonState(selectedExecutor?.name ?? "", selectedExecutor?.status);
-  const smokeRunning = smokeOpId !== null;
-  // The smoke tests the SAVED setup. With unsaved edits in the form it would
-  // test something other than what the page shows.
-  const executorUnsaved =
-    !!selectedExecutor &&
-    ((executorKind !== selectedExecutor.name && !(executorKind === "auto" && initialKind === "auto")) ||
-      executorModel !== (selectedExecutor.model ?? "") ||
-      executorImage !== (selectedExecutor.image ?? ""));
-  const lastSmokeLine = lastSmokeMessage(selectedExecutor?.status?.last_smoke, smokeNow);
 
   return (
     <div className="settings-page">
@@ -804,156 +571,9 @@ export default function Settings({ projectId }: { projectId: string }) {
         </div>
       </section>
 
-      <section className="card">
-        <h2>Executor</h2>
+      <ExecutorSettings projectId={projectId} />
 
-        <label className="field-label" htmlFor="executor-kind">
-          Kind
-        </label>
-        <select
-          id="executor-kind"
-          className="text-input"
-          value={executorKind}
-          onChange={(e) => setExecutorKind(e.target.value)}
-        >
-          {EXECUTOR_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
-
-        <label className="field-label" htmlFor="executor-image">
-          Image
-        </label>
-        <input
-          id="executor-image"
-          className="text-input"
-          value={executorImage}
-          placeholder={executorImagePlaceholder(executorEntry?.default_image)}
-          onChange={(e) => setExecutorImage(e.target.value)}
-        />
-
-        <label className="field-label" htmlFor="executor-model">
-          Model
-        </label>
-        <input
-          id="executor-model"
-          className="text-input"
-          value={executorModel}
-          placeholder="provider/model — leave empty for default"
-          onChange={(e) => setExecutorModel(e.target.value)}
-        />
-        {/* C3: a 400 from PUT .../executors names the reason a model's
-            provider can't be used — shown next to the field it's about. */}
-        {executorModelError && <p className="error">{executorModelError}</p>}
-
-        {/* Requested vs resolved: harness.yaml's `kind: auto` resolves to a
-            concrete kind per run, and the one that matters is what actually
-            runs -- `auto → internal` writes no real code. */}
-        {executorKind === "auto" && initialKind === "auto" && resolvedRow?.resolution && (
-          <div className="executor-resolution" role="status">
-            <p>{executorResolutionLine(resolvedRow.resolution)}</p>
-            {resolvedRow.resolution.warning && <p className="warn-text">{resolvedRow.resolution.warning}</p>}
-          </div>
-        )}
-        {/* C3: image/key readiness for whichever kind is selected above, so
-            switching kinds previews what would happen before Save is even
-            clicked. */}
-        {executorEntry?.status &&
-          hasExecutorStatusLines(executorStatusLines(executorEntry.status, executorEntry.default_image ?? "")) && (
-          <div className="executor-status">
-            {(() => {
-              const lines = executorStatusLines(executorEntry.status!, executorEntry.default_image ?? "");
-              return (
-                <>
-                  {lines.imageLine && (
-                    <div className={`executor-status-line ${lines.imageLine.ok ? "ok" : "warn"}`}>
-                      <span className="executor-status-dot" />
-                      {lines.imageLine.text}
-                    </div>
-                  )}
-                  {lines.keyLine && (
-                    <div className={`executor-status-line ${lines.keyLine.ok ? "ok" : "warn"}`}>
-                      <span className="executor-status-dot" />
-                      {lines.keyLine.text}
-                    </div>
-                  )}
-                  {lines.noteLine && <div className="executor-status-line">{lines.noteLine}</div>}
-                  {lines.problemLine && (
-                    <div className="executor-status-problem">{lines.problemLine}</div>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        )}
-
-        {(executorKind === "omp" || executorKind === "hermes") && (
-          <p className="warn-text">
-            Runs with network egress + auto-approve and receives its provider
-            API key. Only use an image you trust.
-          </p>
-        )}
-        {(executorKind === "internal" || (executorKind === "auto" && resolvedRow?.name === "internal")) && (
-          <p className="muted" style={{ marginTop: 12 }}>
-            placeholder executor — writes no real code. Select hermes/omp for
-            real code.
-          </p>
-        )}
-
-        <div className="row">
-          <button onClick={saveExecutor}>Save executor</button>
-        </div>
-
-        {/* S3: proves the SAVED executor setup actually works, from the
-            daemon's own environment -- `idea executors setup --smoke` proves
-            it from the CLI's, which is not always the same one. */}
-        <div className="smoke-test">
-          <div className="row">
-            <button
-              className="cs-secondary"
-              disabled={!smokeState.enabled || smokeRunning || executorUnsaved}
-              onClick={runSmoke}
-            >
-              {smokeRunning
-                ? `Running smoke test… ${formatSmokeElapsed(smokeNow - (smokeStartedAt ?? smokeNow))}`
-                : "Run smoke test"}
-            </button>
-          </div>
-          <p className="muted">
-            Makes one small real model call using your key — this isn't a dry run.
-          </p>
-          {executorUnsaved ? (
-            <p className="muted">Save the executor first — the smoke test runs the saved setup.</p>
-          ) : (
-            /* The status panel above already states a readiness problem;
-               repeating it here made the missing-key sentence appear three
-               times. Only reasons the panel does not show are repeated. */
-            !smokeState.enabled &&
-            smokeState.reason &&
-            smokeState.reason !== selectedExecutor?.status?.problem && (
-              <p className="muted">{smokeState.reason}</p>
-            )
-          )}
-          {smokeStartError && <p className="error">{smokeStartError}</p>}
-          {smokeResult === "succeeded" && <p className="ok-text">Smoke test passed.</p>}
-          {(smokeResult === "failed" || smokeResult === "cancelled") && (
-            <div className="error">
-              {smokeResult === "cancelled" ? "Smoke test was cancelled." : "Smoke test failed."}
-              {smokeError && (
-                <details>
-                  <summary>Details</summary>
-                  <pre className="cs-finding-evidence">{smokeError}</pre>
-                </details>
-              )}
-            </div>
-          )}
-          {!smokeRunning && smokeResult === null && lastSmokeLine && lastSmokeLine !== smokeState.reason && (
-            <p className="muted">{lastSmokeLine}</p>
-          )}
-        </div>
-      </section>
+      <BudgetSettings projectId={projectId} />
 
       {/* Git settings were hidden — wave 3 gives git_commit its companions
           (review changes #2/D3): the default-branch guard and
@@ -1069,6 +689,8 @@ export default function Settings({ projectId }: { projectId: string }) {
       </section>
 
       <IntegrationsPanel projectId={projectId} />
+      <NotificationsPanel projectId={projectId} />
+      <RemoteAccessPanel />
 
       {saved && <p className="ok-text">{saved}</p>}
       {warning && <p className="warn-text">{warning}</p>}

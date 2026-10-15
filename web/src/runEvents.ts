@@ -142,13 +142,20 @@ export interface ToolCallGroup {
   id: string;
   call: RunEvent; // the tool_call (or the first result, if the call was dropped)
   title: string;
-  status: string; // latest: pending | in_progress | completed | failed
+  status: string; // latest: pending | in_progress | completed | failed | cancelled
   results: RunEvent[];
 }
 
 // groupToolCalls collects tool_call/tool_result events by tool_call_id, in
 // the order the calls started. A call with no id is its own group.
-export function groupToolCalls(events: RunEvent[]): ToolCallGroup[] {
+//
+// runOver: the run has ended (finished, failed or stopped). A call still
+// open then never got its result -- the agent was stopped mid-call, or its
+// last events were lost -- and reads "cancelled" rather than spinning "in
+// progress" forever under a finished run. The engine records a cancelled
+// result for such calls itself; this covers runs recorded before it did,
+// and events dropped on the way.
+export function groupToolCalls(events: RunEvent[], runOver = false): ToolCallGroup[] {
   const byID = new Map<string, ToolCallGroup>();
   const order: string[] = [];
   for (const e of events) {
@@ -168,15 +175,25 @@ export function groupToolCalls(events: RunEvent[]): ToolCallGroup[] {
     }
     if (e.status) g.status = e.status;
   }
-  return order.map((id) => byID.get(id)!);
+  const out = order.map((id) => byID.get(id)!);
+  if (runOver) for (const g of out) if (isOpen(g.status)) g.status = "cancelled";
+  return out;
 }
 
-// actionSummary is "7/12 actions": finished (completed or failed) of all.
-export function actionSummary(groups: ToolCallGroup[]): { done: number; total: number; failed: number; label: string } {
+// actionSummary is "7/12 actions": finished (completed, failed or cancelled)
+// of all.
+export function actionSummary(groups: ToolCallGroup[]): {
+  done: number;
+  total: number;
+  failed: number;
+  cancelled: number;
+  label: string;
+} {
   const done = groups.filter((g) => !isOpen(g.status)).length;
   const failed = groups.filter((g) => g.status === "failed").length;
+  const cancelled = groups.filter((g) => g.status === "cancelled").length;
   const total = groups.length;
-  return { done, total, failed, label: `${done}/${total} action${total === 1 ? "" : "s"}` };
+  return { done, total, failed, cancelled, label: `${done}/${total} action${total === 1 ? "" : "s"}` };
 }
 
 // ---------- files ----------

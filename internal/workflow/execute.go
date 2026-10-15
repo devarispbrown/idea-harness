@@ -528,7 +528,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	// Steering notes sent to an earlier run that could not take them mid-run
 	// (runevents.go) ride on this one, the same way.
-	if held := e.takePendingNotes(initiativeID); len(held) > 0 {
+	if held := e.takePendingNotes(ctx, initiativeID, task.ID); len(held) > 0 {
 		note = strings.TrimSpace(note + "\n\n" + strings.Join(held, "\n\n"))
 	}
 	if note != "" {
@@ -601,6 +601,15 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// After the before snapshot, so what is carried is part of the diff.
 	carried := e.resumePartial(initiativeID, task.ID, req.WorkRoot)
 
+	// The spending cap, checked once more right before the agent starts: the
+	// planner's model call above may be the one that reached it, and an
+	// agent run is usually the most expensive call an initiative makes. The
+	// same check for every executor kind -- hermes, omp, acp and openhands
+	// all start here (budget.go).
+	if err := e.checkBudget(ctx, initiativeID, "the "+exec.Name()+" agent run"); err != nil {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "Stopped at the budget cap", Detail: err.Error()})
+		return domain.ChangeSet{}, err
+	}
 	attempt, err := exec.Start(ctx, req)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)

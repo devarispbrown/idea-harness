@@ -350,6 +350,10 @@ jobs:
             web/e2e/.report
             web/e2e/.results
             web/e2e/.work/state/daemon.log
+          # upload-artifact v4 skips dot-directories unless told otherwise,
+          # and every path above is one: without this a failed run kept only
+          # the daemon log, never the trace or screenshot.
+          include-hidden-files: true
           retention-days: 7
 
   # The release. It lives HERE, and not in a workflow of its own, because

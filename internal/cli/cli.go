@@ -18,6 +18,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/daemon"
 	"github.com/devarispbrown/idea-harness/internal/docparse"
+	"github.com/devarispbrown/idea-harness/internal/eval"
 )
 
 // cmdArgs is what a command receives after dispatch has parsed its flags. One
@@ -140,6 +141,7 @@ func commands() []command {
 		{usage: `objective add "<statement>"`, summary: "add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision"},
 		{usage: "objective edit <OBJ>", summary: "change --statement, --rationale, --owner or --status active|achieved|abandoned"},
 		{usage: "objective link <REQ> <OBJ>", summary: "record that a requirement serves an objective (--unlink removes it)"},
+		{names: []string{"budget"}, usage: "budget [<initiative>] [--set <usd>|--clear]", summary: "show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted", flags: budgetFlags, maxPositional: 1, run: cmdBudget, inHelp: true},
 		{names: []string{"metrics"}, usage: "metrics [<initiative>]", summary: "list outcome metrics with their drift: on track, off track, regressed, stale or no data", flags: jsonFlag, maxPositional: 1, run: cmdMetrics},
 		{names: []string{"metric"}, usage: "metric add|edit|record|measure", summary: "add, edit, record or measure an outcome metric (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"add": {"--target": flagValue, "--direction": flagValue, "--baseline": flagValue, "--guardrail": flagValue, "--unit": flagValue,
@@ -184,6 +186,10 @@ func commands() []command {
 		}, maxPositional: 1, run: cmdIntegrations, inHelp: true},
 		{usage: "integrations test slack|linear", summary: "post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label", inHelp: true},
 		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
+		{names: []string{"run"}, usage: "run events <run-id|current> [<initiative>] [--follow] [--json]", summary: "print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line", flags: flagSpec{}, subs: map[string]flagSpec{
+			"events": {"--follow": flagBool, "--json": flagBool},
+		}, subsAreRequired: true, maxPositional: 2, run: cmdRun, inHelp: true},
+		{names: []string{"steer"}, usage: `steer <run-id|current> "<note>" [<initiative>] [--interrupt]`, summary: "send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run", flags: flagSpec{"--interrupt": flagBool, "--json": flagBool}, maxPositional: 3, run: cmdSteer, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
 		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)"},
@@ -193,11 +199,17 @@ func commands() []command {
 		}, run: cmdDocs, inHelp: true},
 		{usage: "docs add <path>", summary: "upload a context doc (--kind, --title)", inHelp: true},
 		{names: []string{"logs"}, usage: "logs [-f] [n]", summary: "show (or follow) the daemon log", flags: flagSpec{"-f": flagBool, "--follow": flagBool, "-n": flagValue}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdLogs(a, stdout) }, inHelp: true},
-		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", flags: flagSpec{}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
+		{names: []string{"daemon"}, usage: "daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]", summary: "run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md \"Remote access\")", flags: flagSpec{"--listen": flagValue, "--tls-cert": flagValue, "--tls-key": flagValue, "--allowed-hosts": flagValue}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
+		{names: []string{"ui"}, usage: "ui pair|sessions", summary: "sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
+			"pair":     {"--label": flagValue, "--json": flagBool},
+			"sessions": {"--all": flagBool, "--json": flagBool},
+		}, subsAreRequired: true, maxPositional: 2, run: cmdUI, inHelp: true},
+		{usage: "ui pair [--label <name>]", summary: "mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine", inHelp: true},
+		{usage: "ui sessions [revoke <id>|--all]", summary: "list remote browser sessions; revoke one, or every one", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
 		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
-		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
+		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
 		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}
@@ -405,7 +417,28 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 	// Written only once this process owns the address and the state dir. A
 	// second `idea daemon` wrote it first and then failed on the port, leaving
 	// the running daemon with a pidfile naming a dead process.
-	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log, writePID)
+	// The scheduled eval (harness.yaml automations.eval) runs through the
+	// eval package, which the daemon cannot import: it drives a daemon.
+	daemon.SetEvalRunner(eval.RunScheduled)
+	return daemon.RunWith(daemonAddr(), daemon.DefaultStateRoot(), log, writePID, func(c *daemon.DaemonConfig) {
+		if v := a.value("--listen"); v != "" {
+			c.Listen = v
+		}
+		if v := a.value("--tls-cert"); v != "" {
+			c.TLSCert = v
+		}
+		if v := a.value("--tls-key"); v != "" {
+			c.TLSKey = v
+		}
+		if v := a.value("--allowed-hosts"); v != "" {
+			c.AllowedHosts = nil
+			for _, h := range strings.Split(v, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					c.AllowedHosts = append(c.AllowedHosts, h)
+				}
+			}
+		}
+	})
 }
 
 func pidPath() string {

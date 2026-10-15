@@ -112,6 +112,8 @@ func judgmentReasonText(reason string) string {
 		return "the execution plan has unresolved task dependencies"
 	case domain.JudgmentVerification:
 		return "a requirement failed verification after completion"
+	case domain.JudgmentBudget:
+		return "it reached its spending cap"
 	case "":
 		return "a human decision is needed"
 	}
@@ -174,6 +176,18 @@ func headline(ev integrations.Event) string {
 			msg += " (" + escape(ev.ObjectiveCode) + ")"
 		}
 		return msg + " for " + title
+	case integrations.KindBudgetExceeded:
+		msg := ":money_with_wings: " + title + " reached its spending cap and stopped"
+		if ev.Reason != "" {
+			msg += ": " + escape(clip(ev.Reason, 200))
+		}
+		return msg
+	case integrations.KindEvalRegressed:
+		msg := ":chart_with_downwards_trend: The scheduled eval regressed against its baseline"
+		if ev.Reason != "" {
+			msg += ": " + escape(clip(ev.Reason, 300))
+		}
+		return msg
 	}
 	return escape(string(ev.Kind))
 }
