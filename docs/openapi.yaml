@@ -5066,8 +5066,10 @@ paths:
         session's CSRF token, which every state-changing cookie-authenticated request must echo in
         `X-Idea-CSRF`.
 
-        Ten failed attempts within fifteen minutes lock sign-in (`429`, `Retry-After: 900`) and
-        cancel every outstanding pairing code.
+        Wrong codes are counted per client and globally (docs/security-model.md, "Remote access"):
+        10 failures from one client within fifteen minutes refuse that client only (`429`); 100
+        failures from anyone refuse everyone and cancel every outstanding pairing code. Either
+        `429` carries `Retry-After` (seconds until the budget has room) and says which lock it is.
       security: []
       requestBody:
         required: true
@@ -5098,7 +5100,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: The failure budget is spent; every pairing code was cancelled.
+          description: "A failure budget is spent: this client's (the code still works elsewhere), or the global ceiling (every pairing code was cancelled). See `Retry-After`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

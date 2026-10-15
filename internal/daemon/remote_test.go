@@ -271,6 +271,10 @@ type browser struct {
 	cookies []*http.Cookie
 	csrf    string
 	https   bool
+	// host and headers override the defaults (the allowed proxy host, one
+	// tailnet client address) for every request this browser sends.
+	host    string
+	headers map[string]string
 }
 
 func (b *browser) do(method, path, body string, hdr map[string]string) (*http.Response, string) {
@@ -285,6 +289,16 @@ func (b *browser) do(method, path, body string, hdr map[string]string) (*http.Re
 		req.Header.Set("X-Forwarded-Proto", "https")
 	}
 	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	if b.host != "" {
+		req.Host = b.host
+	}
+	for k, v := range b.headers {
+		if v == "" {
+			req.Header.Del(k)
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -327,7 +341,11 @@ func pairingCode(t *testing.T, ts *httptest.Server, token string) string {
 }
 
 func (b *browser) login(code string) (*http.Response, string) {
-	resp, body := b.do("POST", "/api/v1/ui/login", `{"code":"`+code+`"}`, map[string]string{"Origin": remoteOrigin})
+	origin := remoteOrigin
+	if b.host != "" && isLoopbackHost(b.host) {
+		origin = "http://" + b.host
+	}
+	resp, body := b.do("POST", "/api/v1/ui/login", `{"code":"`+code+`"}`, map[string]string{"Origin": origin})
 	if resp.StatusCode == http.StatusOK {
 		b.cookies = resp.Cookies()
 		var v sessionView
@@ -539,30 +557,6 @@ func TestPairingCodeExpires(t *testing.T) {
 	b := &browser{t: t, ts: ts}
 	if resp, _ := b.login(code); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expired code: %d, want 401", resp.StatusCode)
-	}
-}
-
-// TestLoginFailureBudget: ten wrong guesses lock sign-in and cancel every
-// outstanding code -- including the right one, which an attacker was
-// guessing at.
-func TestLoginFailureBudget(t *testing.T) {
-	rt, ts := newRemoteTestServer(t)
-	good := pairingCode(t, ts, rt.Token())
-	b := &browser{t: t, ts: ts}
-	for i := 0; i < loginFailureBudget; i++ {
-		if resp, _ := b.login("AAAAA-AAAAA"); resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("guess %d: %d", i, resp.StatusCode)
-		}
-	}
-	if resp, _ := b.login(good); resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("after the budget: %d, want 429", resp.StatusCode)
-	}
-	ua := rt.uiAuth()
-	real := ua.now
-	t.Cleanup(func() { ua.now = real })
-	ua.now = func() time.Time { return real().Add(loginFailureWindow + time.Second) }
-	if resp, _ := b.login(good); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("the code outstanding during the attack must have been cancelled: %d", resp.StatusCode)
 	}
 }
 

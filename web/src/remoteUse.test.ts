@@ -102,6 +102,8 @@ describe("remote sign-in helpers", () => {
   it("explains each sign-in failure with what to do", () => {
     expect(loginErrorMessage(401, "")).toMatch(/idea ui pair/);
     expect(loginErrorMessage(429, "")).toMatch(/15 minutes/);
+    // The daemon's own 429 says whether only this device is paused.
+    expect(loginErrorMessage(429, "too many failed sign-ins from this device: wait 3 minute(s)")).toMatch(/this device/);
     expect(loginErrorMessage(403, "")).toMatch(/directly/);
     expect(loginErrorMessage(500, "boom")).toBe("boom");
   });
