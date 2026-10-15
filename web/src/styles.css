@@ -3600,3 +3600,164 @@ a.code, a.idchip { text-decoration: none; }
   padding: 4px 0;
 }
 .run-last[open] > summary { margin-bottom: 8px; }
+
+/* ==== Remote use and phones (UI plan Phase 3) ====
+   Sign-in for a remote browser, the project switcher, the "Needs you" entry
+   in the shell, phone-first change-set review (wrap/collapse per file, a
+   sticky decision bar), and the Notifications / Remote access panels in
+   Settings. Appended as its own section so it layers over the rules above
+   without editing them. */
+
+/* Sign-in */
+.login-page { max-width: 420px; }
+.login-form { display: grid; gap: 8px; margin-top: 18px; }
+.login-code {
+  font: 600 1.35rem ui-monospace, Menlo, monospace;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.login-submit { min-height: 44px; font-size: 15px; margin-top: 6px; }
+
+/* Project switcher (PhaseNav) */
+.project-switcher { display: grid; gap: 3px; margin: 2px 0 12px; }
+.project-switcher-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.project-switcher-select {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+/* "Needs you" in the shell when no initiative is focused */
+.pn-needs-you {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--needs-you-bg);
+  color: var(--needs-you-fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Change-set review: the diff toolbar, per-file collapse, line wrapping */
+.cs-diff-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.cs-diff-wrap-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-body); }
+.cs-file-toggle {
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.cs-file-path { min-width: 0; overflow-wrap: anywhere; }
+.cs-file-stat { font: 600 11px ui-monospace, Menlo, monospace; flex: none; }
+.cs-file-stat-add { color: var(--verified-fg); }
+.cs-file-stat-del { color: var(--failing-fg); }
+.cs-file-collapsed .cs-file-head { border-bottom: 0; }
+/* Wrapping is the long-standing default (.cs-file-content is pre-wrap);
+   unchecking "Wrap long lines" keeps each line whole and scrolls the file
+   sideways instead -- per file, never the page. */
+.cs-files:not(.cs-diff-wrap) .cs-file-content { white-space: pre; word-break: normal; overflow-x: auto; }
+.cs-files:not(.cs-diff-wrap) .cs-diff-line { width: max-content; min-width: 100%; box-sizing: border-box; }
+
+/* Settings: notifications and remote access */
+.push-subs, .remote-sessions { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 10px; }
+.push-sub, .remote-session {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.remote-session { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-session-meta { font-size: 12px; margin-top: 2px; }
+.push-sub-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.push-events { border: 0; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.push-event { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.push-sub-actions, .remote-access-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* body's overflow-x: hidden (above) made <body> a scroll container that
+   never scrolls -- html scrolls -- and position: sticky resolves against the
+   nearest scroll container, so nothing in the app could stick. clip stops the
+   same sideways overflow without creating one; browsers without clip keep
+   hidden. */
+body { overflow-x: clip; }
+
+@media (max-width: 999px) {
+  /* The top bar on Home/Settings/queue: the switcher and the queue entry sit
+     beside the logo instead of stacking. */
+  .phase-nav:not(:has(.pn-rail)) .project-switcher { margin: 0 0 0 10px; grid-template-columns: auto; }
+  .phase-nav:not(:has(.pn-rail)) .project-switcher-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .phase-nav:not(:has(.pn-rail)) .pn-needs-you { margin: 0 0 0 10px; white-space: nowrap; }
+  .phase-nav:has(.pn-rail) .project-switcher { display: none; }
+  .phase-nav:not(:has(.pn-rail)) { flex-wrap: wrap; row-gap: 6px; }
+  .phase-nav:not(:has(.pn-rail)) .project-switcher { flex: 1 1 140px; min-width: 0; }
+}
+
+@media (max-width: 760px) {
+  /* The phone top bar: the mark alone, a switcher wide enough to read the
+     project's name, and no keyboard hint on a device without a keyboard. */
+  .phase-nav:not(:has(.pn-rail)) .pn-logo-text { display: none; }
+  .phase-nav:not(:has(.pn-rail)) .pn-kbd { display: none; }
+}
+
+@media (max-width: 760px) {
+  /* Files scroll with the page on a phone, not inside a 280px box. */
+  .cs-file-content { max-height: none; }
+  .cs-file-head { flex-wrap: wrap; row-gap: 4px; }
+  .cs-file-toggle { min-height: 44px; min-width: 44px; }
+  /* The decision stays in reach while the diff scrolls. */
+  .cs-decision-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+    margin: 10px -16px -13px;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 12px 12px;
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.08);
+  }
+  .cs-decision-bar .cs-actions { flex-wrap: wrap; margin-top: 0; }
+  .cs-decision-bar .cs-actions button { flex: 1 1 auto; }
+  .cs-decision-bar .request-changes-form { margin-top: 8px; }
+  .cs-decision-bar .request-changes-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cs-decision-bar .request-changes-actions button { flex: 1 1 auto; }
+  .remote-session { flex-direction: column; align-items: stretch; }
+  /* A change set's header row: the title gets its own line instead of being
+     squeezed to a letter beside the pill and the diff toggle. */
+  .cs-row { flex-wrap: wrap; row-gap: 6px; }
+  .cs-body { flex-basis: 100%; order: -1; }
+  .cs-title { white-space: normal; }
+  .cs-meta { overflow-wrap: anywhere; }
+  .cs-row .cs-action { margin-left: auto; min-height: 44px; }
+  /* A page title and its one-line purpose stack rather than share a row. */
+  .phase-header { flex-wrap: wrap; row-gap: 2px; }
+  .phase-purpose { flex-basis: 100%; order: 1; }
+}

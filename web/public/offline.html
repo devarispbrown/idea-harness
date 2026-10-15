@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f766e" />
+    <title>idea-harness — offline</title>
+    <style>
+      body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #1f2933; background: #fff; }
+      main { max-width: 32rem; margin: 18vh auto; padding: 0 1.5rem; }
+      h1 { font-size: 1.4rem; }
+      p { line-height: 1.5; color: #52606d; }
+      a.retry { display: inline-flex; align-items: center; min-height: 44px; padding: 0 1.2rem; border-radius: 8px; background: #0f766e; color: #fff; text-decoration: none; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #111418; color: #e4e7eb; }
+        p { color: #9aa5b1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>The daemon isn't reachable</h1>
+      <p>
+        idea-harness runs on your own machine, and this device can't reach it right now — it may be
+        asleep, off your tailnet, or the daemon may be stopped (<code>idea daemon</code> starts it).
+        Nothing here is cached: every decision and diff comes live from the daemon.
+      </p>
+      <a class="retry" href="/">Try again</a>
+    </main>
+  </body>
+</html>
