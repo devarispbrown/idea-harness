@@ -293,3 +293,24 @@ func (db *DB) SetRemoteRunAgentRun(ctx context.Context, remoteRunID, agentRunID 
 	}
 	return nil
 }
+
+// ListInitiativeRemoteRuns returns one initiative's remote runs, newest
+// first -- every attempt, terminal or not. It is the listing `idea runs
+// remote` and GET …/initiatives/{id}/remote-runs serve; reconciliation keeps
+// using ListRemoteRuns, which spans the project.
+func (db *DB) ListInitiativeRemoteRuns(ctx context.Context, initiativeID string) ([]domain.RemoteRun, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT `+remoteRunColumns+` FROM remote_runs WHERE initiative_id = ? ORDER BY created_at DESC, id DESC`, initiativeID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list remote runs: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.RemoteRun{}
+	for rows.Next() {
+		r, err := scanRemoteRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}

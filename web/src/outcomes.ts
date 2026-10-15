@@ -5,6 +5,8 @@ import type {
   MetricDirection,
   MetricDrift,
   MetricEdit,
+  MetricSource,
+  MetricSourceKind,
   Objective,
   ObjectiveEdit,
   ObjectiveStatus,
@@ -187,32 +189,101 @@ export function objectiveEditBody(
   return { body };
 }
 
+// MetricDraft is the metric form's state: every field the metric edit API
+// takes, as typed. The add form shows the first five; the edit form all of
+// them.
 export interface MetricDraft {
   name: string;
   direction: MetricDirection;
   target: string;
   baseline: string;
   unit: string;
+  guardrail: string;
+  cadence: string;
+  definition: string;
+  // objective is the code of the objective the metric measures; changing it
+  // moves the metric.
+  objective: string;
+  sourceKind: MetricSourceKind;
+  command: string;
+  url: string;
+  pointer: string;
 }
 
-export function metricDraft(m: Pick<OutcomeMetric, "name" | "direction" | "target" | "baseline" | "unit">): MetricDraft {
+type MetricLike = Pick<OutcomeMetric, "name" | "direction" | "target" | "baseline" | "unit"> &
+  Partial<Pick<OutcomeMetric, "guardrail" | "cadence" | "definition" | "source" | "objective_code">>;
+
+const numText = (v: number | null | undefined) => (v === undefined || v === null ? "" : String(v));
+
+export function metricDraft(m: MetricLike): MetricDraft {
+  const src = m.source ?? { kind: "manual" as const };
   return {
     name: m.name,
     direction: m.direction,
     target: String(m.target),
-    baseline: m.baseline === undefined || m.baseline === null ? "" : String(m.baseline),
+    baseline: numText(m.baseline),
     unit: m.unit ?? "",
+    guardrail: numText(m.guardrail),
+    cadence: m.cadence ?? "",
+    definition: m.definition ?? "",
+    objective: m.objective_code ?? "",
+    sourceKind: src.kind,
+    command: src.command ?? "",
+    url: src.url ?? "",
+    pointer: src.pointer ?? "",
   };
 }
 
-// metricEditBody is metric edit's PATCH body: the changed fields only. A
-// baseline emptied in the form is clear_baseline (an omitted field would
-// leave it as it was); a non-numeric target or baseline is an error, not a
-// silently dropped field.
-export function metricEditBody(
-  m: Pick<OutcomeMetric, "name" | "direction" | "target" | "baseline" | "unit">,
-  d: MetricDraft,
-): { body: MetricEdit } | { error: string } {
+// CADENCE_WORDS and parseCadence mirror domain.ParseCadence: a named cadence,
+// <n>d, <n>w, or a positive Go duration ("36h", "90m", "1h30m"); blank is no
+// cadence. The form refuses what the API would, before the round trip.
+const CADENCE_WORDS = new Set(["hourly", "daily", "weekly", "biweekly", "monthly", "quarterly"]);
+const GO_DURATION = /^\+?((\d+(\.\d*)?|\.\d+)(ns|us|µs|ms|s|m|h))+$/;
+
+export function cadenceError(s: string): string | undefined {
+  const c = s.trim().toLowerCase();
+  if (!c || CADENCE_WORDS.has(c)) return undefined;
+  const nd = /^(\d+)[dw]$/.exec(c);
+  if (nd && Number(nd[1]) > 0) return undefined;
+  if (GO_DURATION.test(c) && /[1-9]/.test(c)) return undefined;
+  return `Cadence "${s.trim()}" is not hourly, daily, weekly, biweekly, monthly, quarterly, <n>d, <n>w or a duration like 36h.`;
+}
+
+// metricSourceFromDraft builds the source the draft describes, or the reason
+// the API would refuse it (domain.MetricSource.Validate).
+export function metricSourceFromDraft(d: MetricDraft): { source: MetricSource } | { error: string } {
+  switch (d.sourceKind) {
+    case "manual":
+      return { source: { kind: "manual" } };
+    case "command": {
+      const command = d.command.trim();
+      if (!command) return { error: "A command source needs a command." };
+      return { source: { kind: "command", command } };
+    }
+    case "url": {
+      const url = d.url.trim();
+      const pointer = d.pointer.trim();
+      if (!url.startsWith("https://") && !url.startsWith("http://")) return { error: "A URL source needs an http(s) URL." };
+      if (pointer && !pointer.startsWith("/")) return { error: `Pointer "${pointer}" is not a JSON pointer (it must start with /).` };
+      return { source: pointer ? { kind: "url", url, pointer } : { kind: "url", url } };
+    }
+  }
+  return { error: `Unknown source kind "${d.sourceKind}".` };
+}
+
+const sameSource = (a: MetricSource | undefined, b: MetricSource) =>
+  (a?.kind ?? "manual") === b.kind &&
+  (a?.command ?? "") === (b.command ?? "") &&
+  (a?.url ?? "") === (b.url ?? "") &&
+  (a?.pointer ?? "") === (b.pointer ?? "");
+
+// metricEditBody is metric edit's PATCH body: the changed fields only, after
+// the same validation the API applies (store.ValidateMetric). A baseline or
+// guardrail emptied in the form is clear_baseline / clear_guardrail (an
+// omitted field would leave it as it was); a non-numeric number is an error,
+// not a silently dropped field; a changed source is sent whole, as the API
+// replaces it whole.
+export function metricEditBody(m: MetricLike, d: MetricDraft): { body: MetricEdit } | { error: string } {
   const name = d.name.trim();
   if (!name) return { error: "A metric needs a name." };
   const target = parseNumber(d.target);
@@ -220,12 +291,30 @@ export function metricEditBody(
   const hadBaseline = m.baseline !== undefined && m.baseline !== null;
   const baseline = parseNumber(d.baseline);
   if (d.baseline.trim() && baseline === undefined) return { error: "Baseline must be a number (or blank)." };
+  const hadGuardrail = m.guardrail !== undefined && m.guardrail !== null;
+  const guardrail = parseNumber(d.guardrail);
+  if (d.guardrail.trim() && guardrail === undefined) return { error: "Guardrail must be a number (or blank)." };
+  if (guardrail !== undefined && d.direction === "maintain" && guardrail < 0) {
+    return { error: "A maintain metric's guardrail is the allowed distance from the target and cannot be negative." };
+  }
+  const cadErr = cadenceError(d.cadence);
+  if (cadErr) return { error: cadErr };
+  const src = metricSourceFromDraft(d);
+  if ("error" in src) return { error: src.error };
+
   const body: MetricEdit = {};
   if (name !== m.name) body.name = name;
   if (d.direction !== m.direction) body.direction = d.direction;
   if (target !== m.target) body.target = target;
   if (baseline === undefined && hadBaseline) body.clear_baseline = true;
   else if (baseline !== undefined && baseline !== m.baseline) body.baseline = baseline;
+  if (guardrail === undefined && hadGuardrail) body.clear_guardrail = true;
+  else if (guardrail !== undefined && guardrail !== m.guardrail) body.guardrail = guardrail;
   if (d.unit.trim() !== (m.unit ?? "")) body.unit = d.unit.trim();
+  if (d.cadence.trim() !== (m.cadence ?? "")) body.cadence = d.cadence.trim();
+  if (d.definition.trim() !== (m.definition ?? "")) body.definition = d.definition.trim();
+  const objective = d.objective.trim();
+  if (objective && objective !== (m.objective_code ?? "")) body.objective = objective;
+  if (!sameSource(m.source, src.source)) body.source = src.source;
   return { body };
 }

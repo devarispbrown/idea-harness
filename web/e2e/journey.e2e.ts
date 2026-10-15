@@ -278,6 +278,39 @@ test("define: edit an objective from the UI", async () => {
   await expect(page.getByTestId("live-announcer")).toContainText(`${code} saved`);
 });
 
+test("define: edit a metric's guardrail, cadence and source from the UI", async () => {
+  await page.goto(at("define"));
+  const edit = page.getByRole("button", { name: /^Edit MET-\d+$/ }).first();
+  await expect(edit).toBeVisible();
+  const code = ((await edit.getAttribute("aria-label")) ?? "").replace("Edit ", "");
+  await edit.click();
+  // What the API refuses, the form refuses first.
+  await page.getByLabel(`${code} cadence (blank for none)`).fill("fortnightly");
+  await page.getByRole("button", { name: `Save ${code}` }).click();
+  await expect(page.getByText(/Cadence "fortnightly" is not/)).toBeVisible();
+
+  await page.getByLabel(`${code} guardrail (blank for none)`).fill("0.5");
+  await page.getByLabel(`${code} cadence (blank for none)`).fill("weekly");
+  await page.getByLabel(`${code} source`, { exact: true }).selectOption("url");
+  await page.getByLabel(`${code} source URL`).fill("https://stats.example.com/api/shares");
+  await page.getByLabel(`${code} source JSON pointer (blank: the document is the number)`).fill("/data/count");
+  await expectAccessible(page, "define (metric edit)");
+  await page.getByRole("button", { name: `Save ${code}` }).click();
+  await expect(page.getByTestId("live-announcer")).toContainText(`${code} saved`);
+
+  // Reopened, the form reads back what the daemon stored.
+  await page.getByRole("button", { name: `Edit ${code}` }).click();
+  await expect(page.getByLabel(`${code} guardrail (blank for none)`)).toHaveValue("0.5");
+  await expect(page.getByLabel(`${code} cadence (blank for none)`)).toHaveValue("weekly");
+  await expect(page.getByLabel(`${code} source`, { exact: true })).toHaveValue("url");
+  await expect(page.getByLabel(`${code} source URL`)).toHaveValue("https://stats.example.com/api/shares");
+  // Back to recorded by hand: settings-automations.e2e.ts expects a project
+  // with nothing a scheduled measurement could fetch.
+  await page.getByLabel(`${code} source`, { exact: true }).selectOption("manual");
+  await page.getByRole("button", { name: `Save ${code}` }).click();
+  await expect(page.getByRole("button", { name: `Edit ${code}` })).toBeVisible();
+});
+
 test("settings: executor shows requested and resolved, one demo banner", async () => {
   await page.goto("/#/settings");
   await expect(page.locator("#executor-kind")).toHaveValue("auto");

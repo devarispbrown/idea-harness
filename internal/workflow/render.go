@@ -92,6 +92,9 @@ func renderPRD(obj map[string]any) string {
 		if serves := strSlice(r["objectives"]); len(serves) > 0 {
 			fmt.Fprintf(&b, "Serves: %s\n\n", strings.Join(serves, ", "))
 		}
+		if basis := strSlice(r["based_on"]); len(basis) > 0 {
+			fmt.Fprintf(&b, "Rests on: %s\n\n", strings.Join(basis, ", "))
+		}
 		b.WriteString("Acceptance criteria:\n\n")
 		for _, ac := range objSlice(r["acceptance_criteria"]) {
 			fmt.Fprintf(&b, "- %s %s (%s)\n", str(ac["metric"]), str(ac["target"]), str(ac["condition"]))

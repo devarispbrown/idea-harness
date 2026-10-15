@@ -88,6 +88,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/runs/{runId}/steer", s.handleSteerRun)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/runs/{runId}/report", s.handleRunReport)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/current-run", s.handleCurrentRun)
+	// The openhands executor's dispatch records (remoteruns.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/remote-runs", s.handleListRemoteRuns)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/remote-runs", s.handleListProjectRemoteRuns)
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", s.handleExecute)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", s.handleVerify)

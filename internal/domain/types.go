@@ -29,10 +29,13 @@ type ProvenanceRef struct {
 	Trust  TrustLevel `json:"trust"`
 }
 
-// Assertion is a structured Fact/Assumption/Hypothesis (§18).
+// Assertion is a structured Fact/Assumption/Hypothesis (§18). Code is its
+// initiative-scoped human code (ASM-n): what a PRD cites in a requirement's or
+// decision's based_on, and what `idea assumption` accepts.
 type Assertion struct {
 	ID             string          `json:"id"`
 	InitiativeID   string          `json:"initiative_id"`
+	Code           string          `json:"code"`
 	Type           AssertionType   `json:"type"`
 	Status         AssertionStatus `json:"status"`
 	Statement      string          `json:"statement"`
