@@ -11,11 +11,13 @@ The UI and the CLI drive the **same state** — anything you click here is immed
 
 Two things to know before reading the rest:
 
-- **There is no live event stream, and not every screen even polls.** The shell and the five phase
-  pages re-fetch on a **2.5-second timer** (`setInterval(load, 2500)` in each phase page;
-  `App.tsx:154` uses the same interval with an inline closure). There is no SSE or WebSocket client
-  anywhere in `web/src` — the daemon does serve `GET /projects/{id}/events`, but nothing in the UI
-  opens it — so a change made elsewhere shows up within a few seconds, not instantly.
+- **The shell follows the project's event stream; most pages still poll.** The shell (`App.tsx`:
+  initiatives, the What changed and attention badges, the open initiative's data), the running card
+  and the queue page refetch when `GET /projects/{id}/events` (SSE) reports a change, with a slow
+  timer as a backstop, and fall back to their old timer when the stream cannot be opened
+  (`web/src/useEventStream.ts`). The run panel streams its run's events live. The five phase pages
+  still re-fetch on a **2.5-second timer** (`setInterval(load, 2500)`), so a change made elsewhere
+  shows up there within a few seconds, not instantly.
 
   **Five screens do not poll at all** and go stale until you reload: Health, Decision, the doc
   reader, the artifact diff, and Settings. Each loads once on mount.
@@ -225,6 +227,36 @@ from the credential sweep carries a deny code and is not acceptable either way.
 
 A change set rejected by a deterministic boundary renders instead as a **SYSTEM DENY** card carrying
 the deny code: it cannot be approved, overridden or applied, and the task is re-planned.
+
+### Run panel
+
+While an execute runs, the running card shows the run panel (`web/src/RunPanel.tsx`). When nothing
+is running, the Build page keeps the last run under a collapsed **Last agent run**, with its files,
+actions, notes and report. The panel shows:
+
+- **Current action** - a chip with what the agent is doing now: "editing src/x.ts", "running npm
+  test", "reading …". It falls back to **Thinking** while the agent reasons (only the fact is
+  shown; the reasoning text is never stored).
+- **Actions** - tool calls grouped by call, summarized as "7/12 actions" (with the failed count),
+  expandable to the list with each call's status.
+- **Files** - the files the agent has written, live, with +/- line counts; replaced by the
+  orchestrator's own diff once the agent finishes.
+- **Permissions answered for you** - for an ACP agent, every permission it asked for and the answer
+  the harness gave.
+- **Meter** - elapsed time, tokens and cost where the executor reports them, and the executor.
+- **Errors** - surfaced at the top as an alert.
+- **Send a note** - steer the running agent (see [agents.md](agents.md#steering-a-running-agent)).
+  For an executor that cannot be steered the box says the note will apply to the next run, and
+  notes held for the next run are listed.
+- **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
+
+It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
+far, then follows the run's SSE stream (`web/src/useEventStream.ts`). A dropped connection
+reconnects with backoff (1 s doubling to 30 s) and resumes after the last event it has - never
+replaying the run - the stream is closed while the tab is hidden and resumed when it is shown, and
+if the stream cannot be opened at all the panel polls instead (and says "polling"). The running
+card, the What changed and attention badges and the queue page refetch when the project's event
+stream reports a change, with a slow timer as a backstop, instead of polling every few seconds.
 
 ## Verify
 

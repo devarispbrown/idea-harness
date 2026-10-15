@@ -118,6 +118,8 @@ tags:
     description: Providers, models and executors, backed by harness.yaml.
   - name: events
     description: The event timeline and its SSE stream.
+  - name: runs
+    description: A coding agent's run, live - its normalized events (paged and streamed), steering, and its report.
   - name: outcomes
     description: Objectives, outcome metrics, observations and drift — the outcome end of the Product Graph.
 
@@ -4225,12 +4227,23 @@ paths:
     get:
       tags: [events]
       operationId: streamEvents
-      summary: SSE stream of product-graph events
+      summary: SSE stream of product-graph events and run events
       description: |
-        **Not JSON.** `text/event-stream`, one event per product-graph event, with the event
-        sequence as the SSE id. `Last-Event-ID` resumes from a sequence. The stream polls the store
-        once a second and pushes up to 200 events per tick, so it is at-least-once catch-up rather
-        than a true push.
+        **Not JSON.** `text/event-stream`. Two kinds of message:
+
+        - unnamed messages, one per product-graph event (`data:` an Event row as JSON), as before;
+        - `event: run_event` messages, one per run event of any agent run in the project
+          (`data:` a [RunEvent](#/components/schemas/RunEvent)), pushed the moment they are stored.
+
+        The SSE id is `<event seq>.<run event id>`, both cursors, so a reconnect resumes both:
+        `Last-Event-ID` (sent by `EventSource` on its own reconnects) or `?after=` sends only what
+        the client missed, never the whole log again. A bare `<event seq>` (an id from before run
+        events existed) resumes the product-graph events and starts run events at now - run history
+        is read through `GET .../runs/{runId}/events`. `?after=now` skips the product-graph backlog
+        as well (a page that has just fetched its data). With no cursor the product-graph log is
+        sent from the start, as it always was. Product-graph events are polled once a second; an
+        idle stream sends a `: ping` comment every 15 s so a proxy never closes it, and the
+        response carries `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no`.
 
         **This is the one path that accepts the token as a query parameter** (`?token=`), because
         `EventSource` cannot set request headers. Everywhere else the header is required, so the
@@ -4248,8 +4261,15 @@ paths:
         - name: Last-Event-ID
           in: header
           required: false
-          description: Resume from this event sequence. Unparseable values are treated as 0.
-          schema: { type: integer, format: int64 }
+          description: |
+            Resume from `<event seq>.<run event id>` (or a bare `<event seq>`). Unparseable parts
+            are treated as 0.
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: The same cursor as `Last-Event-ID`, or `now`; the header wins when both are sent.
+          schema: { type: string }
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -4258,7 +4278,9 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: "`id: <seq>` and `data: <Event as JSON>` per event."
+                description: |
+                  `id: <seq>.<run event id>` and `data: <Event as JSON>` per product-graph event;
+                  `id: ...`, `event: run_event` and `data: <RunEvent as JSON>` per run event.
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -4267,6 +4289,208 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/current-run:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [runs]
+      operationId: getCurrentRun
+      summary: The run the run view should show
+      description: |
+        The initiative's running agent run, or else its most recent run that has events, so a page
+        loaded mid-run (or after) knows which run to read and stream. `run_id` is empty when the
+        initiative has never run an agent.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The current run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/events:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: listRunEvents
+      summary: A run's events, paged
+      description: |
+        The run's stored events with `seq > after`, oldest first, for a client joining late: page
+        with `after` = the last seq of each page until `more` is false, then stream from `last_seq`
+        (`GET .../events/stream?after=<last_seq>`). Each run keeps its newest 5000 events and only
+        the 50 most recent runs keep any; `first_seq` greater than 1 means earlier events were
+        dropped.
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Return events after this seq (default 0, from the start).
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, at most 500 (the default).
+          schema: { type: integer, minimum: 0, maximum: 500 }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunEventPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/events/stream:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: streamRunEvents
+      summary: SSE stream of one run's events
+      description: |
+        **Not JSON.** `text/event-stream`: `event: run_event` messages with the event's seq as the
+        SSE id. A reconnect resumes after the client's cursor - `Last-Event-ID` (sent by
+        `EventSource` itself) or `?after=<seq>` - and gets only what it missed, never the run
+        again from the start. Without either it starts at the oldest stored event. New events are
+        pushed the moment they are stored. Once the run is over and its last events are sent, the
+        stream sends `event: end` (`data: {"run_status": ...}`) and closes, so an `EventSource`
+        client can stop reconnecting. Starts with a `retry: 3000` hint; an idle stream sends a
+        `: ping` comment every 15 s. Accepts the token as `?token=` like the project stream.
+      security:
+        - ideaToken: []
+        - bearerToken: []
+        - sseQueryToken: []
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: The API token, for `EventSource` clients that cannot set a header.
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Resume after this seq; wins over `after`.
+          schema: { type: integer, format: int64 }
+        - name: after
+          in: query
+          required: false
+          description: Resume after this seq.
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "`id: <seq>`, `event: run_event`, `data: <RunEvent as JSON>` per event; `event: end` last."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/steer:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [runs]
+      operationId: steerRun
+      summary: Send a note to a running agent
+      description: |
+        Delivers a human's note to the running agent run, as far as its executor allows:
+
+        | Executor | What happens | `delivery` |
+        |---|---|---|
+        | `acp` | Queued and sent as the agent's next `session/prompt` turn once the current turn ends (ACP defines no concurrent prompts). With `interrupt`, the turn is ended with `session/cancel` first and the note sent at once. | `queued` / `delivered` |
+        | `openhands` | Sent into the conversation as a user message (`POST /api/conversations/{id}/events`, `run: true`); the agent reads it at its next step. | `delivered` |
+        | `internal`, `container`, `hermes`, `omp` | Cannot be reached mid-run: `steering not supported by <kind>`. The note is held and appended to the task's next run's brief, like the rerun note on execute. | `next_run` |
+
+        An agent that is finishing (its session over) cannot take a note either; it is held for
+        the next run. Every note is recorded as a `message` run event (`source: user`) and on the
+        run manifest's executor provenance. Held notes are kept in memory: a daemon restart drops
+        them. Stop is the operation's own cancel (`POST /api/v1/operations/{id}/cancel`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, description: "Required; at most 8000 bytes." }
+                interrupt:
+                  type: boolean
+                  description: acp only - end the current turn with session/cancel and send the note at once.
+              required: [note]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: What became of the note.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SteerResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The run is not running; send the note with the task's next run
+            (`POST .../execute {"note": ...}`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502":
+          description: The executor could not deliver the note (the Agent Server refused it, say).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/report:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: getRunReport
+      summary: Download a run report
+      description: |
+        The run written down: what ran, its events, the files it changed with line counts, the
+        findings on its change set, its cost and the steering notes sent to it. Everything in it is
+        redacted. `format=json` (the default), `md` (Markdown for a person), or `zip` (both, as
+        `run-<id>/report.json` and `run-<id>/report.md`). Served as an attachment.
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [json, md, zip] }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunReport" }
+            text/markdown:
+              schema: { type: string }
+            application/zip:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
 
 components:
   securitySchemes:
@@ -4298,8 +4522,9 @@ components:
       in: query
       name: token
       description: |
-        The same token as a query parameter, accepted **only** on
-        `GET /api/v1/projects/{projectId}/events` - the SSE stream - because the browser's
+        The same token as a query parameter, accepted **only** on the two SSE streams -
+        `GET /api/v1/projects/{projectId}/events` and
+        `GET /api/v1/projects/{projectId}/runs/{runId}/events/stream` - because the browser's
         `EventSource` API cannot set request headers. It is consulted only when neither header is
         present. Every other endpoint requires a header, so the token never appears in a URL and so
         never reaches server logs, shell history or a `Referer`.
@@ -4310,6 +4535,12 @@ components:
       in: path
       required: true
       description: Project id from `POST /api/v1/projects` or `GET /api/v1/projects`.
+      schema: { type: string }
+    RunId:
+      name: runId
+      in: path
+      required: true
+      description: An agent run id (`runs.id`), e.g. `run_id` from `GET .../current-run`.
       schema: { type: string }
     InitiativeId:
       name: id
@@ -4547,7 +4778,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 115 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 120 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -5572,6 +5803,171 @@ components:
             the workspace file was edited after the agent ran. Clients show it and fall back to
             `content`.
       required: [path, change_type, size, content]
+
+    RunEventKind:
+      type: string
+      title: RunEventKind
+      description: |
+        What one step of a running agent was (`domain.RunEventKind`). `thought` carries no text:
+        chain-of-thought is never exposed, only the fact that the agent is reasoning.
+      enum: [action, tool_call, tool_result, file_change, permission, message, thought, cost, status, error]
+
+    RunEvent:
+      type: object
+      title: RunEvent
+      description: |
+        One normalized step of a coding agent's run (`domain.RunEvent`), whichever executor ran
+        it. Redacted before it is stored; `title` is bounded to 240 characters, `detail` to 4096
+        bytes (`truncated` says a field was cut).
+      properties:
+        seq: { type: integer, format: int64, description: "Monotonic per run, from 1: the resume cursor." }
+        run_id: { type: string }
+        operation_id: { type: string }
+        initiative_id: { type: string }
+        task_id: { type: string }
+        executor: { type: string, description: "internal, container, hermes, omp, acp or openhands." }
+        at: { type: string, format: date-time }
+        kind: { $ref: "#/components/schemas/RunEventKind" }
+        source:
+          type: string
+          enum: [agent, harness, user]
+          description: The coding agent, the harness (executor or engine), or the human (a steering note).
+        title: { type: string }
+        detail: { type: string }
+        path: { type: string, description: "Work-root-relative file the event is about." }
+        tool_call_id: { type: string, description: "Ties a tool_call to its tool_result(s) and permission." }
+        tool_kind: { type: string }
+        status:
+          type: string
+          description: |
+            A tool call's state (pending, in_progress, completed, failed); a permission's decision
+            (allow_once, ...); a note's delivery (delivered, queued, next_run); a status event's
+            state (starting, running, agent_finished, finished, stopped, ...); on a `harness`
+            file_change, the change type of the orchestrator's own diff (add, modify, delete) -
+            the authoritative file list.
+        added: { type: integer }
+        removed: { type: integer }
+        input_tokens: { type: integer, format: int64, description: "A delta, not a total." }
+        output_tokens: { type: integer, format: int64, description: "A delta, not a total." }
+        cost_usd: { type: number, description: "A delta, not a total." }
+        change_set_id: { type: string, description: "On the status event that ends a run which produced a change set." }
+        truncated: { type: boolean }
+      required: [seq, run_id, at, kind, title]
+
+    RunEventPage:
+      type: object
+      title: RunEventPage
+      properties:
+        run_id: { type: string }
+        run_status: { type: string, description: "The run's status: pending, running, succeeded or failed." }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/RunEvent" }
+        first_seq: { type: integer, format: int64, description: "Oldest stored seq; above 1 means earlier events were dropped." }
+        last_seq: { type: integer, format: int64, description: "Newest stored seq." }
+        more: { type: boolean, description: "Another page follows; ask with after = the last event's seq." }
+      required: [run_id, run_status, events, first_seq, last_seq, more]
+
+    CurrentRun:
+      type: object
+      title: CurrentRun
+      properties:
+        run_id: { type: string, description: "Empty when the initiative has never run an agent." }
+        live: { type: boolean, description: "The run is in progress; its events are still coming." }
+        status: { type: string }
+        executor: { type: string }
+        steerable:
+          type: boolean
+          description: A note reaches the running agent itself (acp, openhands); false means it is held for the next run.
+        ui_url:
+          type: string
+          description: |
+            "Open in OpenHands": the run's conversation in the OpenHands UI named by
+            `executor.openhands.ui_url`. Omitted otherwise - never guessed.
+        pending_notes:
+          type: array
+          items: { type: string }
+          description: Steering notes held for the task's next run.
+        started_at: { type: string, format: date-time }
+      required: [run_id, live, steerable, pending_notes]
+
+    SteerResult:
+      type: object
+      title: SteerResult
+      properties:
+        run_id: { type: string }
+        executor: { type: string }
+        delivery: { type: string, enum: [delivered, queued, next_run] }
+        message: { type: string, description: "A sentence for the person who sent it." }
+      required: [run_id, delivery, message]
+
+    RunReport:
+      type: object
+      title: RunReport
+      description: The run report (`workflow.RunReport`). Already redacted.
+      properties:
+        generated_at: { type: string, format: date-time }
+        run:
+          type: object
+          properties:
+            id: { type: string }
+            status: { type: string }
+            initiative_id: { type: string }
+            task_id: { type: string }
+            task_code: { type: string }
+            task_title: { type: string }
+            executor: { type: string }
+            note: { type: string }
+            started_at: { type: string, format: date-time }
+            finished_at: { type: string, format: date-time }
+          required: [id, status, started_at]
+        manifest: { type: object, description: "The run manifest, when the run finished with one." }
+        change_set:
+          type: object
+          properties:
+            id: { type: string }
+            human_id: { type: string }
+            status: { type: string }
+            no_op: { type: boolean }
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              change: { type: string }
+              added: { type: integer }
+              removed: { type: integer }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string }
+              category: { type: string }
+              finding: { type: string }
+              disposition: { type: string }
+        cost:
+          type: object
+          properties:
+            input_tokens: { type: integer, format: int64 }
+            output_tokens: { type: integer, format: int64 }
+            cost_usd: { type: number }
+            duration_ms: { type: integer, format: int64 }
+        steering:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              note: { type: string }
+              delivery: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/RunEvent" }
+        events_dropped: { type: integer, format: int64 }
+        openhands_url: { type: string }
+      required: [generated_at, run, files, findings, cost, steering, events]
 
     OperationStatus:
       type: string

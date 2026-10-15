@@ -60,7 +60,7 @@ reason the file survived the round.
 | U7 | Demo banner is global | Settings-only | `absent:docs/ui.md:when the daemon reports demo mode` | fixed 0213fa3 |
 | U8 | Build-done criterion | Does not match `phases.ts` | `absent:docs/ui.md:at least one change set and` | fixed 0213fa3 |
 | U9 | Context docs enter one stage | They enter every stage | `absent:docs/ui.md:not into a single stage` | fixed 0213fa3 |
-| U10 | "Live activity feed via SSE" | No SSE client in `web/src`; the UI polls on timers | `absent:docs/ui.md:There is no SSE` | fixed 0213fa3 |
+| U10 | "Live activity feed via SSE" | No SSE client in `web/src`; the UI polled on timers. (Since the live run view the shell follows the stream; ui.md says which pages still poll.) | `absent:docs/ui.md:most pages still poll` | fixed 0213fa3 |
 
 ## docs/quickstart.md
 
