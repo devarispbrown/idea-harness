@@ -46,6 +46,12 @@ until "$IDEA" daemon status 2>/dev/null | grep -q running; do
 done
 
 cd "$WORK/project"
+# Its own repository, and not optional: the work dir sits inside this repo
+# under web/e2e/.work, which web/e2e/.gitignore ignores. Without a repository
+# boundary here, the daemon's after-run snapshot honours the OUTER repo's
+# ignore rules, ignores every file the agent writes, and every change set
+# comes out a no-op.
+git init -q
 "$IDEA" init >/dev/null
 # `idea new` waits for M1 (framing -> research -> PRD -> review) by default.
 "$IDEA" new "A recipe sharing app for home cooks" >/dev/null
