@@ -158,17 +158,32 @@ func scriptedPRD(req model.Request, n int) string {
 		Condition string `json:"condition"`
 	}
 	type requirement struct {
-		Code               string `json:"code,omitempty"`
-		Statement          string `json:"statement"`
-		Priority           string `json:"priority"`
-		AcceptanceCriteria []ac   `json:"acceptance_criteria"`
+		Code               string   `json:"code,omitempty"`
+		Statement          string   `json:"statement"`
+		Priority           string   `json:"priority"`
+		Objectives         []string `json:"objectives"`
+		AcceptanceCriteria []ac     `json:"acceptance_criteria"`
 	}
+	// Both requirements serve the one objective, so the PRD review's
+	// deterministic outcome check (review.OutcomeChecks) raises nothing and
+	// each scenario's cycle counts measure the reviewer they script, not the
+	// outcome chain. The objective's statement is the same every cycle, so a
+	// revision continues it (same OBJ code) instead of minting another.
 	reqs := []requirement{
-		{Statement: "Deliver the core flow of: " + idea, Priority: "must",
+		{Statement: "Deliver the core flow of: " + idea, Priority: "must", Objectives: []string{"O1"},
 			AcceptanceCriteria: []ac{{Metric: "documented example completes", Target: "100%", Condition: "running the documented example end to end"}}},
-		{Statement: "Reject invalid input with a clear error message", Priority: "must",
+		{Statement: "Reject invalid input with a clear error message", Priority: "must", Objectives: []string{"O1"},
 			AcceptanceCriteria: []ac{{Metric: "invalid inputs rejected with a message", Target: ">= 1 test case", Condition: "for each entry point"}}},
 	}
+	objectives := []map[string]any{{
+		"key":       "O1",
+		"statement": "First-time users complete the core flow without help",
+		"rationale": "Scripted eval objective.",
+		"metrics": []map[string]any{{
+			"name": "first-run completion rate", "unit": "%", "direction": "increase", "target": 80, "cadence": "weekly",
+			"hypothesis": "We believe a documented core flow with clear input errors will raise first-run completion",
+		}},
+	}}
 	if listed := listedRequirements(req.System); n > 1 && len(listed) > 0 {
 		for i := range reqs {
 			if i < len(listed) {
@@ -185,6 +200,7 @@ func scriptedPRD(req model.Request, n int) string {
 	b, _ := json.Marshal(map[string]any{
 		"summary":          "Scripted eval PRD for: " + idea,
 		"requirements":     reqs,
+		"objectives":       objectives,
 		"decisions":        []any{},
 		"open_questions":   []string{},
 		"risks":            []string{"Scripted eval output, not a real PRD."},

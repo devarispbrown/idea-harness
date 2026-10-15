@@ -320,10 +320,27 @@ func demoResponse(schemaName, idea string) string {
 			"summary": "Synthetic demo PRD for: " + idea,
 			"requirements": []any{
 				map[string]any{
-					"statement": "Deliver: " + idea,
-					"priority":  "must",
+					"statement":  "Deliver: " + idea,
+					"priority":   "must",
+					"objectives": []string{"O1"},
 					"acceptance_criteria": []any{
 						map[string]any{"metric": "delivered outcome", "target": "1", "condition": "matching the described idea"},
+					},
+				},
+			},
+			// One objective with one manual metric, so the demo walks the
+			// whole outcome chain (requirement -> objective -> metric) and
+			// the PRD review's deterministic outcome check has nothing to
+			// report. No baseline: the demo does not know one, and an
+			// invented number would be worse than none.
+			"objectives": []any{
+				map[string]any{
+					"key":       "O1",
+					"statement": "Synthetic demo objective: people get the value of " + idea,
+					"rationale": "This is synthetic demo output — no model provider is configured.",
+					"metrics": []any{
+						map[string]any{"name": "synthetic demo outcome", "direction": "increase", "target": 1,
+							"definition": "count of people who got the described value (demo placeholder)"},
 					},
 				},
 			},

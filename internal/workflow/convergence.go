@@ -121,7 +121,13 @@ type classifyInput struct {
 	// requirements -- the plan review's TASK-n. A finding citing one is
 	// cited, but not re-targeted (a plan finding always targets the plan).
 	taskCodes map[string]bool
-	idea      string
+	// outcomeRefs are the live objectives' and metrics' codes (normalized,
+	// OBJ-n / MET-n), each with the node it names. A finding citing one is
+	// cited -- "objective has no measurable metric" is about an objective,
+	// not a requirement -- and is re-targeted at that node, exactly as a
+	// requirement citation is.
+	outcomeRefs map[string]NodeRef
+	idea        string
 	prior     []priorFinding
 	// changed is the set of active requirement codes the revision since the
 	// previous cycle added or changed. nil means unknown (a seeded first
@@ -156,7 +162,7 @@ func classifyFindings(in classifyInput, findings []domain.Finding) classificatio
 
 	for i := range findings {
 		f := &findings[i]
-		cited := resolveCitation(f, byCode, in.taskCodes, in.idea)
+		cited := resolveCitation(f, byCode, in.taskCodes, in.outcomeRefs, in.idea)
 		out.cites[i] = cited
 
 		if p := matchPrior(f, in.prior); p >= 0 {
@@ -229,7 +235,7 @@ func classifyFindings(in classifyInput, findings []domain.Finding) classificatio
 // response) the first active REQ code the finding or its evidence mentions
 // counts, since a finding that names REQ-3 in its own text is about REQ-3
 // whether or not it filled in a field.
-func resolveCitation(f *domain.Finding, byCode map[string]domain.Requirement, taskCodes map[string]bool, idea string) string {
+func resolveCitation(f *domain.Finding, byCode map[string]domain.Requirement, taskCodes map[string]bool, outcomeRefs map[string]NodeRef, idea string) string {
 	cite := NormalizeRequirementRef(f.Cites)
 	if cite == citeIdea {
 		if quotesIdea(f.Evidence, idea) || quotesIdea(f.Finding, idea) {
@@ -245,6 +251,10 @@ func resolveCitation(f *domain.Finding, byCode map[string]domain.Requirement, ta
 			f.TargetType, f.TargetID = "requirement", r.ID
 			return true
 		}
+		if ref, ok := outcomeRefs[c]; ok {
+			f.TargetType, f.TargetID = ref.Type, ref.ID
+			return true
+		}
 		return taskCodes[c]
 	}
 	if try(cite) {
@@ -258,12 +268,13 @@ func resolveCitation(f *domain.Finding, byCode map[string]domain.Requirement, ta
 	return ""
 }
 
-var citableCodeRe = regexp.MustCompile(`(?i)\b(?:REQ|TASK)-\d+\b`)
+var citableCodeRe = regexp.MustCompile(`(?i)\b(?:REQ|TASK|OBJ|MET)-\d+\b`)
 
-// codeRe strips requirement and task codes before two findings are compared:
+// codeRe strips requirement, task, objective and metric codes before two
+// findings are compared:
 // a revision that supersedes REQ-1 with REQ-4 re-raises the same concern
 // under a different code, and the code must not be what tells them apart.
-var codeRe = regexp.MustCompile(`(?i)\b(REQ|TASK|DEC|F|D)-?\d+\b`)
+var codeRe = regexp.MustCompile(`(?i)\b(REQ|TASK|DEC|OBJ|MET|F|D)-?\d+\b`)
 
 // quotesIdea reports whether text substantially quotes the idea: at least
 // three significant tokens, at least 60% of them present in the idea. A
