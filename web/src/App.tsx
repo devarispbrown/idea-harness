@@ -43,6 +43,7 @@ import type { StaleItemRef } from "./staleItems";
 import type { CostsView } from "./cost";
 import type { TimelineEntry } from "./timeline";
 import { setLastVisit } from "./lastVisit";
+import { useProjectChanges } from "./useEventStream";
 
 interface Project {
   id: string;
@@ -300,19 +301,25 @@ export default function App() {
     };
   }, [currentInitiativeId]);
 
-  // Poll for freshness (SSE live-update arrives with the running-state work).
+  // Freshness: refetch when the project's event stream (SSE) says something
+  // changed -- the What-changed and queue badges, the initiative's data. The
+  // timer stays as a backstop: slow while the stream is live, the old 2.5s
+  // poll when it is not (no EventSource, a proxy that strips it).
+  const refresh = useCallback(() => {
+    if (!projectId) return;
+    loadInitiatives(projectId);
+    loadAttention(projectId);
+    if (currentInitiativeId) {
+      loadInitiativeData(projectId, currentInitiativeId);
+      loadWave3Data(projectId, currentInitiativeId);
+    }
+  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData, loadWave3Data]);
+  const projectStreamLive = useProjectChanges(projectId ?? "", refresh);
   useEffect(() => {
     if (!projectId) return;
-    const id = setInterval(() => {
-      loadInitiatives(projectId);
-      loadAttention(projectId);
-      if (currentInitiativeId) {
-        loadInitiativeData(projectId, currentInitiativeId);
-        loadWave3Data(projectId, currentInitiativeId);
-      }
-    }, 2500);
+    const id = setInterval(refresh, projectStreamLive ? 15000 : 2500);
     return () => clearInterval(id);
-  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData, loadWave3Data]);
+  }, [projectId, refresh, projectStreamLive]);
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",

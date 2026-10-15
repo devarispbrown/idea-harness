@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get } from "./api";
 import { navigate } from "./router";
+import { useProjectChanges } from "./useEventStream";
 import { queueItemText, queueKindBadge, sortByRank, type QueueItem } from "./queue";
 
 // QueuePage is the "Needs you" view across initiatives (D-b): "Nothing
@@ -24,11 +25,14 @@ export default function QueuePage({ projectId }: { projectId: string }) {
     }
   }, [projectId]);
 
+  // Refetch on change (the project's event stream); the timer is the
+  // backstop, slower while the stream is live.
+  const streamLive = useProjectChanges(projectId, load);
   useEffect(() => {
     load();
-    const id = setInterval(load, 5000);
+    const id = setInterval(load, streamLive ? 30000 : 5000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, streamLive]);
 
   const ranked = sortByRank(items ?? []);
 
