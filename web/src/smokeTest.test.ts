@@ -15,10 +15,15 @@ describe("smokeButtonState", () => {
     expect(smokeButtonState("omp", { problem: "" })).toEqual({ enabled: true, reason: "" });
   });
 
+  it("is enabled for acp and openhands, which the daemon smokes too", () => {
+    expect(smokeButtonState("acp", { problem: "" }).enabled).toBe(true);
+    expect(smokeButtonState("openhands", { problem: "" }).enabled).toBe(true);
+  });
+
   it("disables and names the reason for any other kind", () => {
     const s = smokeButtonState("internal", { problem: "" });
     expect(s.enabled).toBe(false);
-    expect(s.reason).toContain("hermes or omp");
+    expect(s.reason).toContain("hermes, omp, acp or openhands");
   });
 
   it("disables and surfaces the executor's own problem", () => {
@@ -29,10 +34,10 @@ describe("smokeButtonState", () => {
 
   // Mutation guard: kind must be checked, not derived only from `problem` --
   // an internal/container executor with an (impossible) non-empty problem
-  // must still fail on "select hermes or omp", not report the problem text.
+  // must still fail on "select a coding-agent executor", not report the problem text.
   it("checks kind before problem", () => {
     const s = smokeButtonState("container", { problem: "something" });
-    expect(s.reason).toContain("hermes or omp");
+    expect(s.reason).toContain("hermes, omp, acp or openhands");
   });
 
   it("disables with no reason before the executors list has loaded", () => {
