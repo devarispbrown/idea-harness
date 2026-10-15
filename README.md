@@ -24,6 +24,7 @@ before you change it:
 idea why requirement REQ-1      # the evidence → assertions → decisions behind it
 idea impact requirement REQ-1   # what breaks or goes stale if you change it
 idea trace task TASK-1          # both directions (why + dependents)
+idea gaps                       # what the graph is missing: unbuilt or unverified requirements, stale evidence, unvalidated assumptions, …
 idea changed                    # What Changed since your last look
 ```
 

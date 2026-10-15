@@ -65,6 +65,25 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
+  missing or no longer holds" — no model call, every trigger a comparison of recorded state:
+  `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence
+  failed, evidence **stale** because the code changed after the pass was recorded, or no acceptance
+  criteria at all), `untested_acceptance_criterion`, `unvalidated_assumption` (ranked by how many
+  live nodes rest on it), `invalidated_decision` (dependents stale since it changed, a citing
+  requirement revised after it was decided, a refuted basis, or every citing requirement removed),
+  `orphan_task`, `orphan_change_set` and `stale_artifact`. Each gap carries a stable `kind`, a
+  `state` naming the trigger, a severity, the nodes (REQ-3, REQ-3/AC-2, TASK-2, CHG-4, DEC-1), a
+  one-line why and the command that closes it. `--kind` filters, `--all` covers every initiative,
+  `--json` is machine-readable, and `--fail-on <severity>` exits `5` (`gate_unmet`) so it can gate
+  CI; without it the command exits `0`. Exact triggers:
+  [architecture.md](docs/architecture.md#asking-the-graph-gaps). Also served as
+  `GET …/initiatives/{id}/gaps` and `GET /projects/{projectId}/gaps`, the read-only MCP `gaps`
+  tool, a **Product gaps** list on the web UI's Health page, and a `gap_summary` on `/guidance`
+  that `idea status` prints as one line.
+- **`idea assumption <id> accept|dispute|retract`** (`POST /projects/{projectId}/assertions/{id}/status`)
+  records a human judgment on an assumption or hypothesis. Nothing moved an assertion out of
+  `candidate` before, so an unvalidated assumption could be reported but never closed.
 - **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
   K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's
   GitHub OIDC identity), records a GitHub build-provenance attestation for every archive, ships an
