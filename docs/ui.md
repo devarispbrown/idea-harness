@@ -26,8 +26,8 @@ Two things to know before reading the rest:
 
 ## Routes
 
-Routing is hash-based (`web/src/router.ts`). Seven shapes are recognised; anything else falls back
-to home.
+Routing is hash-based (`web/src/router.ts`). The shapes below are recognised; anything else shows
+"Page not found".
 
 | Hash | Screen |
 |---|---|
@@ -35,6 +35,10 @@ to home.
 | `#/i/<initiativeId>/<phase>` | A phase page. `<phase>` is one of `explore`, `define`, `design`, `plan`, `build`, `verify` |
 | `#/i/<initiativeId>/decision/<decisionId>` | Decision discussion |
 | `#/i/<initiativeId>/health` | Graph health |
+| `#/i/<initiativeId>/lineage/<type>/<ref>` | One Product Graph node's lineage. `<type>` is a graph node type (`requirement`, `task`, `decision`, `assertion`, `artifact`, `context_doc`, `objective`, `metric`, `change_set`, `quality_result`, `question`, `run`); `<ref>` is its code (`REQ-3`, `CHG-1`), an artifact kind, a quality dimension, or an id |
+| `#/i/<initiativeId>/gaps` | Every Product Graph gap |
+| `#/i/<initiativeId>/outcomes` | Outcomes dashboard |
+| `#/i/<initiativeId>/quality` | Quality scorecard and history |
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
 | `#/settings` | Settings |
@@ -245,7 +249,7 @@ recorded as evidence in the Product Graph.
 **Graph health** (`#/i/<id>/health`) — the deterministic risk profile with its tier and detected
 signals ("Derived deterministically from the patch contents — no model, no score"), a
 "Product gaps · *n*" list from `GET …/gaps` (the same report as `idea gaps`: the eight most severe,
-each with its why and the command that closes it — see
+each with its why and the command that closes it, and a **See all** link to the Gaps page — see
 [architecture.md](architecture.md#asking-the-graph-gaps)), a
 "Traceability gaps · *n*" list from the graph audit, a **Quality** card (below), and a daemon row
 showing the address, version and state directory. This is where Explore's **trace** button lands.
@@ -267,11 +271,73 @@ comment into an open question.
 `-` removed, everything else context.
 
 **Decision discussion** (`#/i/<id>/decision/<decisionId>`) — a thread you can add to, resolve
-buttons for the recommendation and each option, and a "What changed" panel with **Mark seen**. No
-button in the app navigates here today; reach it by typing the URL.
+buttons for the recommendation and each option, a **Why / Impact** panel, and a "What changed"
+panel with **Mark seen**. Reached from a decision's timeline entry, a decision node's lineage
+(**Open where it lives**), or an invalidated-decision gap.
 
 **Command palette** — `⌘K` / `Ctrl-K` opens a filter box over the six phases of the current
 initiative plus **All initiatives** and **Settings**. `↑`/`↓` move, Enter runs, Escape closes.
+
+## Product Graph views
+
+The sidebar's **Product graph** group (below the phases; a second row under them on a narrow
+screen) opens the three initiative-wide views. Every node in them, and in the panels below, is
+written code-first (`REQ-3`, `TASK-2`, `CHG-1`) and links to its own lineage page.
+
+**Lineage** (`#/i/<id>/lineage/<type>/<ref>`) — the answers `idea why`, `idea impact` and
+`idea trace` give, from the same `GET …/trace`. **Why** is the provenance tree: what the node points
+at (derived from, implements, serves, produced by), followed up to its sources. **Impact** is the
+dependents tree — everything that points at it, through to the change sets built from its tasks
+and the metrics attributed to those change sets — with a count per staleness class (`stale`,
+`obsolete`, `to revalidate`); rows are badged only when stale or obsolete. A node reachable two ways
+is expanded once and marked "(shown above)" elsewhere. **Full trace** is every edge as a table. The
+`<ref>` resolves exactly as the CLI resolves it (id, code, kind or title; codes case-insensitively;
+a live row before a superseded one), plus an artifact's graph id and an unambiguous id prefix.
+**Open where it lives** goes to the page that shows the node; the `idea trace` command is there to
+copy.
+
+**Why / Impact panel** — a disclosure on each requirement (Define's **Requirements** list), task
+(Plan), change set (Build), the decision page, and each objective and metric (Define's Objectives
+section, Outcomes). Nothing is fetched until it is opened. It shows the first ring each way, the
+transitive dependent count with how many are stale, and **Full lineage →**.
+
+**Gaps** (`#/i/<id>/gaps`) — the whole `GET …/gaps` report (Health shows the top eight and links
+here), grouped by kind with the most severe group first, filterable by kind and severity. Each gap
+shows its why, the nodes it is about and its trigger. The closing action is a button where the UI
+can take it — **Accept** / **Dispute** / **Retract** on an unvalidated assumption records the
+judgment in place (`POST /assertions/{id}/status`); unimplemented requirements and orphan tasks link
+to Plan, unverified requirements and untested criteria to Verify, an invalidated decision to its
+discussion, and gaps about objectives or metrics to Outcomes. Every gap also shows its `idea …`
+command with a **Copy** button, which is the only action for a kind the UI does not know yet.
+
+**Outcomes** (`#/i/<id>/outcomes`) — each objective with its metrics. A metric card shows the latest
+value, baseline → target, a progress bar (the share of the way from the effective baseline to the
+target; absent for `maintain` metrics or before a value exists), the drift badge (`on track`,
+`off track`, `regressed`, `stale`, `no data`) with the daemon's reasons, guardrail and target-met
+chips, and an inline-SVG sparkline of the observations against the target (dashed) and baseline
+(dotted). **Observation history** lists every reading newest first with its change and the change
+sets that landed since the previous one, each linked to its lineage. **Record value** (value and an
+optional note) is `idea metric record`; **Measure** appears for command and url sources and is
+`idea metric measure`. Above the objectives, **Works, but fails its objective** lists verified
+requirements whose objective is drifting; below them, the outcome chain's gaps.
+
+**Quality** (`#/i/<id>/quality`) — the full form of the Quality card. Per enabled dimension: its
+mode (`gate`/`advisory`), status (pass, warn, fail, not measured, stale), every check with its
+method (`deterministic`/`model`), detail and citations (`path:line`, or a requirement linked to its
+lineage), the requirements the result is evidence for, and a strip of its past measurements from
+`GET …/quality/history`. Checks that had nothing to judge fold under "*n* not applicable checks".
+Dimensions that are off are listed in one line. **Measure** / **Re-measure** starts the same
+operation as the card.
+
+**Review convergence** (Define for the PRD review, Plan for the plan review) — one timeline per
+review loop from `GET …/review-telemetry`; a human revise starts a new loop. Each cycle shows its
+outcome (converged, revised, stalled, hit max cycles, blocked), the open blocking count and how it
+moved since the previous cycle, findings raised / new / re-raised / resolved by severity, findings
+demoted to advisory by rule, and gating deterministic findings. Hidden until a review has run.
+
+**Graph diagram** (top of Graph health) — the chain objective → requirement → task → change set →
+quality evidence as five linked boxes with counts (and how many are on track, verified, done or
+applied); each opens the page holding that layer.
 
 ## Settings
 

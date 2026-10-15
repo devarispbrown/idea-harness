@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import PhasePage from "./PhasePage";
 import ObjectivesSection from "./ObjectivesSection";
+import RequirementsLineage from "./RequirementsLineage";
+import ReviewConvergence from "./ReviewConvergence";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
 import type { StatusPill } from "./PhaseHeader";
@@ -338,6 +340,10 @@ export default function DefinePage({
       {/* The outcome end of the chain: what this PRD's requirements are for,
           and the metrics that say whether they worked. */}
       <ObjectivesSection projectId={projectId} initiativeId={initiativeId} />
+      {/* The PRD's requirements as graph nodes (Why / Impact), and how the
+          PRD review loop converged. */}
+      <RequirementsLineage projectId={projectId} initiativeId={initiativeId} />
+      <ReviewConvergence projectId={projectId} initiativeId={initiativeId} review="prd" />
     </PhasePage>
   );
 }

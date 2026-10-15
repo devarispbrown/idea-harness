@@ -3,6 +3,7 @@ import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import QualityScorecard from "./QualityScorecard";
+import LineagePanel from "./LineagePanel";
 import {
   advisoryBacklogLabel,
   appliedPillLabel,
@@ -781,6 +782,7 @@ export default function BuildPage({
               <div className="cs-body">
                 <div className="cs-title">{tasks.find((t) => t.id === cs.task_id)?.title ?? cs.task_id}</div>
                 {cs.patch_digest && <div className="cs-meta">digest {cs.patch_digest.slice(0, 12)}…</div>}
+                <LineagePanel projectId={projectId} initiativeId={initiativeId} type="change_set" id={cs.id} code={cs.human_id} />
               </div>
               <span className={`cs-pill pill-${STATUS_PILL[cs.status]?.state ?? "inactive"}`}>
                 {pillLabel}
