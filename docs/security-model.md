@@ -18,7 +18,7 @@ conditions. Everything else is ordinary policy that a human may override.
 | `path_escape` | ApplyChangeSet (before any write) | A change's path is absolute, not a clean relative path (`..`, `a//b`), or — against the workspace as it is at apply time — resolves outside the workspace or into `.git/`/`.idea-harness/` through a symlink (`fsdiff.Escapes`). A path cannot be made to escape at Execute: the orchestrator's snapshot never follows symlinks. What can change is the workspace by apply time, which is where this runs — before the change set is marked `applying` and before the stale-base check, so nothing is written. One finding per offending path; the change set is rejected and its task reopened, as for an apply-time secret, and the error is a `workflow.SystemDenyError` carrying the code. `security.ResolveWithin` still guards every `Prepare`/`Commit`/`Restore` write independently. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
-| `trust_deny` | Execute and ExecutePrecondition | The selected executor's engine-assigned trust tier (below) does not allow `write_file`. Refused before any spend with a `workflow.SystemDenyError` carrying the code. Every kind `selectExecutor` can build today maps to a tier that allows it, so no shipped configuration trips this: it is the fail-closed backstop for an executor kind added without a trust-tier mapping, which lands in `remote_external` and may do nothing. |
+| `trust_deny` | Execute and ExecutePrecondition | The selected executor's engine-assigned trust tier (below) does not allow `write_file`. Refused before any spend with a `workflow.SystemDenyError` carrying the code. Every kind `selectExecutor` can build today maps to a tier that allows it, so no shipped configuration trips this: it is the fail-closed backstop for an executor kind added without a trust-tier mapping, which gets no tier at all (`executor.TrustUnassigned`) and may do nothing. |
 | `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. The adversarial review that raises these findings runs exactly once, inside `Execute` right after checks pass (ICP re-run defect A) — not again on `approve` — so a plain `approve` only ever evaluates findings already on the change set plus whatever a human has since dispositioned; it makes no model call. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies. For every code but `pii` the change set carrying it was already rejected, so no disposition reopens it; a `pii` finding blocks a change set that is still awaiting review, and only that finding's own human `accepted_risk` (or `fixed`) disposition clears it. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
@@ -276,7 +276,16 @@ from the executor's self-declared capabilities:
 | omp | `local_external` | allow | allow | deny |
 | hermes | `local_external` | allow | allow | deny |
 | acp | `local_external` | allow | allow | deny |
-| unknown | `remote_external` | deny | deny | deny (fail-closed) |
+| openhands | `remote_external` | allow | allow | deny |
+| unknown | none (`TrustUnassigned`) | deny | deny | deny (fail-closed) |
+
+`remote_external` is an agent on another machine. Its read and write are of its
+own remote copy of the work root; what it wrote reaches this machine only through
+the executor's own download into the local work root, and from there through the
+same snapshot, diff, secret sweep and review as any local agent's. An unknown
+kind used to land in `remote_external`, which then had to allow nothing; it now
+gets no tier, so a real remote kind could be granted read/write without opening
+the fail-closed backstop.
 
 Note: `run_command` on the host is separately gated by the deterministic-check
 sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
@@ -284,7 +293,7 @@ sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
 <!-- claim:executor-isolation -->
 ## Execution gateway
 
-There is no single "the executor sandbox". Five executor kinds are selectable via
+There is no single "the executor sandbox". Six executor kinds are selectable via
 `harness.executor.kind` (plus `auto`, the unset default, which resolves per run to
 `hermes` or `internal`), and they do not share an isolation posture. Every row
 below is the actual `docker run` argv, not a summary of intent.
@@ -295,6 +304,7 @@ below is the actual `docker run` argv, not a summary of intent.
 | `container` | `ContainerExecutor` | `--network none` | `/work` | no |
 | `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
 | `acp` | `ACPExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `-e NAME` (value from the docker CLI's environment) |
+| `openhands` | `OpenHandsExecutor` | **whatever the Agent Server allows** — no container here | a **copy** of the work root, uploaded to the server | **yes, sent to the server** in the conversation request, unless `withhold_provider_key` |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
 
 **`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
@@ -378,6 +388,53 @@ signature verification.
 <!-- /claim -->
 
 <!-- claim:redaction -->
+### The remote execution plane (`openhands`)
+
+The `openhands` kind runs no container on this machine: it hands the run to an
+OpenHands Agent Server, which is a **trust boundary** — a separate machine, run by
+whoever runs it. What leaves this machine, per run:
+
+- **The work root**: the seeded copy of the workspace, which is already stripped
+  of `.env` files, files the credential check flags, symbolic links, `.git/` and
+  `.idea-harness/` (see `seed.go`), uploaded as one tarball.
+- **The implementation brief** for the task.
+- **The coding model's provider key**, in the conversation request (`llm.api_key`,
+  or a conversation secret for an ACP agent on the server) — unless
+  `executor.openhands.withhold_provider_key` is set, in which case the server
+  must have its own.
+- **The server's session key**, in the `X-Session-API-Key` header and the
+  websocket's first frame (never in a URL).
+
+What the harness enforces at that boundary:
+
+- **Transport**: `executor.openhands.url` must be `https` unless the host is
+  loopback (`localhost`, `127.0.0.0/8`, `::1` — a server on this machine or an
+  SSH tunnel); a plain-http URL to another host, or one carrying credentials, is
+  refused when the config loads, by `PUT /executors`, by setup, and again before
+  every dispatch.
+- **Secrets stay named, not stored**: the session key is read from the variable
+  `api_key_env` names (default `OPENHANDS_API_KEY`), from the daemon's
+  environment then `.env`, like a provider key. Both keys are removed from
+  everything stored or shown from the server's events, which also pass through
+  the project's redactor before they are written to `remote_runs.progress`.
+- **The way back is untrusted input**: the downloaded tarball is unpacked into a
+  staging directory first, entry by entry — absolute paths, `..`, symlinks,
+  hard links, devices, `.git/` and `.idea-harness/` entries are skipped, and the
+  archive is refused outright past 100,000 files or 1 GiB unpacked — and only
+  then mirrored into the work root, never writing through a symlink. A file is
+  deleted locally only if it was uploaded and the server no longer has it.
+- **The same gates as any agent**: the engine then snapshots the work root and
+  computes the diff itself, so the returned files go through the secret sweep
+  (`secret_sweep`), the PII and protected-path findings, the deterministic
+  checks and review exactly as a local agent's do. The server decides nothing
+  about approval or workflow state.
+
+What it does not: anything about the server itself. The Agent Server's own
+sandbox, who can read the uploaded work root and the keys on it, how long it
+keeps the conversation and its workspace (idea-harness does not delete either
+after a run, so they are there for inspection) — those are the server
+operator's. `executor.kind: auto` never resolves to `openhands`.
+
 ## What this does not protect against
 
 Kept as a section so the negative space has somewhere to live. The failure this
@@ -392,6 +449,10 @@ page had was an unscoped generalisation, not a typo.
   `host.docker.internal`, not only to Ollama. The daemon's own API requires a
   token the container never sees, but anything on the host that trusts local
   connections without authentication is reachable.
+- **An `openhands` Agent Server sees everything it is sent** — the work root,
+  the brief, the provider key unless withheld — and runs the agent in a sandbox
+  this harness neither inspects nor enforces. Only the way back is checked
+  (above).
 - **The raw blob store is deliberately redaction-free.** For *that* store —
   `raw-blobs/`, the one holding file content and uploaded bytes, which must
   round-trip byte-for-byte — redaction happens at the read/display surface
