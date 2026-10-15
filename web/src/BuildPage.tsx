@@ -3,6 +3,7 @@ import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import QualityScorecard from "./QualityScorecard";
+import RunPanel from "./RunPanel";
 import {
   advisoryBacklogLabel,
   appliedPillLabel,
@@ -516,6 +517,7 @@ export default function BuildPage({
         purpose="Nothing touches your repo until you approve it."
         meta={buildHeaderMeta(executorName)}
       />
+      <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
 
       {/* task 3: the initiative's dedicated branch and its PR, once
           git.branch_per_initiative has created one. Absent (not just
