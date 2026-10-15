@@ -23,10 +23,11 @@ Two things to know before reading the rest:
   the doc reader, the artifact diff, and the Product Graph pages (lineage, Gaps, Outcomes,
   Quality). Each loads once on mount. Settings loads once too, and polls only while a smoke test it
   is showing is still running.
-- **The project is not selectable.** The app loads `GET /api/v1/projects` and uses the **first**
-  entry (`App.tsx`). There is no project switcher. With no projects registered it renders "Run
-  `idea init` in a project directory to get started"; when the daemon is unreachable it renders
-  "Lost connection to the daemon at 127.0.0.1:8787".
+- **One project at a time, switchable.** When the daemon serves more than one project, the
+  sidebar's project switcher picks which; links carry the project (`#/p/<projectId>/…`, see
+  [Routes](#routes)). With no projects registered it renders "Run `idea init` in a project directory
+  to get started"; when the daemon is unreachable it renders "Lost connection to the daemon at
+  127.0.0.1:8787".
 
 ## Routes
 
@@ -86,7 +87,9 @@ The sidebar shows:
 
 Above both, on every page, a **Demo mode** banner while no model is selected for the project — "every
 document, review and change you see here is synthetic" — linking to Settings. It is the only one;
-Settings no longer adds a second.
+Settings no longer adds a second. On a screen wide enough for the sidebar column (1000px and up)
+the banner stays at the top while the page scrolls, and the sidebar fills the rest of the window
+under it, so its footer is always on screen.
 
 The main region renders, above the routed page:
 

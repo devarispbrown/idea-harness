@@ -51,7 +51,7 @@ reason the file survived the round.
 
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
-| U1 | Top bar with a project selector | No top bar; project is hardcoded | `absent:docs/ui.md:There is no project switcher` | fixed 0213fa3 |
+| U1 | Top bar with a project selector | No top bar; project is hardcoded | `absent:docs/ui.md:project switcher` | fixed 0213fa3 |
 | U2 | "Blocked"/"locked" stepper states | Not in `phases.ts` | `absent:docs/ui.md:There are no blocked or locked states` | fixed 0213fa3 |
 | U3 | Counts under the stepper | `PhaseNav` renders none | `absent:docs/ui.md:no counts are rendered under the rail` | fixed 0213fa3 |
 | U4 | Trace link opens a trace view | Goes to the health page (documented as such in 0213fa3; the link itself now opens the document's lineage route) | `absent:web/src/ExplorePage.tsx:lineageHref(initiativeId, "context_doc"` | fixed ui-review |

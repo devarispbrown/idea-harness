@@ -375,8 +375,8 @@ idea metrics                                      # each metric with its drift a
 `metric record` prints the metric's drift after the value and how many change sets landed since the
 previous one (`idea trace metric MET-3` names them). `metric measure` runs a command source in the
 no-network check sandbox — never the host — and exits `9` (`run_failed`) when any measurement failed,
-after printing every result. The drift rules are in the README's
-[Objectives & outcomes](../README.md#objectives--outcomes) section. `idea status` and `idea next`
+after printing every result. The drift rules are in
+[configuration.md](configuration.md#drift). `idea status` and `idea next`
 print an `outcomes:` line whenever the initiative has a metric (how many, and how many are on track,
 off track, regressed, stale or without data), plus a "works, but fails its objective" line for each
 verified requirement whose objective is failing.

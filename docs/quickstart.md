@@ -141,8 +141,8 @@ would show it moved (`MET-1`, …), the core **requirements** (`REQ-1`, `REQ-2`,
 measurable acceptance criteria and the objectives it serves, **decisions** (`DEC-1`, …) the team asks
 you to confirm, and any **open questions** and **review findings** still needing your judgment. The
 review checks that chain: a requirement serving no objective, or an objective nothing can measure, is
-a high finding (a PRD with no objectives at all gets one medium finding instead). `idea objectives` and `idea metrics` list them; the README's
-[Objectives & outcomes](../README.md#objectives--outcomes) has the drift rules.
+a high finding (a PRD with no objectives at all gets one medium finding instead). `idea objectives` and `idea metrics` list them;
+[configuration.md](configuration.md#drift) has the drift rules.
 
 > **On the no-key path, most of that is empty by construction.** The demo provider emits exactly
 > one objective (`OBJ-1`) with one metric (`MET-1`), one requirement (`REQ-1`) serving it,
@@ -244,8 +244,8 @@ Before the gate reads anything, `verify` also measures the work's **quality dime
 reproducibility, docs completeness, API compatibility and more — and prints a scorecard. Which ones
 it measures, and whether any of them can hold the gate, follows the effective review rigor: on the
 no-key path the project is tiny, the rigor is `quick`, and nothing is measured; at `thorough` the
-first three must pass for the initiative to complete. See the README's
-[quality dimensions](../README.md#verification-beyond-the-tests-quality-dimensions).
+first three must pass for the initiative to complete. See
+[quality dimensions](configuration.md#quality-dimensions-verify).
 
 ```bash
 idea next
