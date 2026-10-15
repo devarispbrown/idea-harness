@@ -17,7 +17,9 @@ import (
 // names what is missing or no longer holds -- a requirement nothing
 // implements, a criterion nothing verified, evidence recorded against code
 // that has since changed, an assumption the plan rests on that nobody
-// validated, a decision whose basis moved. No model call, no score, no fuzzy
+// validated, a decision whose basis moved, a requirement serving no objective,
+// an objective nobody measures, a metric drifting, verified work whose
+// objective is failing. No model call, no score, no fuzzy
 // matching: every trigger is a comparison of recorded state, and
 // docs/architecture.md ("Asking the graph: gaps") states each one exactly.
 //
@@ -34,6 +36,9 @@ type GapOptions struct {
 	// failing mapped test is not seen, and only recorded verification evidence
 	// decides the verification kinds.
 	EvidenceTests map[string][]domain.EvidenceTest
+	// Now is when metric drift is evaluated (staleness is relative to it);
+	// zero means time.Now().
+	Now time.Time
 }
 
 // gapAnalyzer is one kind's rule. The table, not a switch, is the extension
@@ -50,6 +55,8 @@ var gapAnalyzers = []gapAnalyzer{
 	{[]domain.GapKind{domain.GapInvalidatedDecision}, (*gapGraph).invalidatedDecisions},
 	{[]domain.GapKind{domain.GapOrphanTask, domain.GapOrphanChangeSet}, (*gapGraph).orphans},
 	{[]domain.GapKind{domain.GapStaleArtifact}, (*gapGraph).staleArtifacts},
+	{[]domain.GapKind{domain.GapOrphanRequirement, domain.GapUnmeasuredObjective, domain.GapUnservedObjective,
+		domain.GapDriftingMetric, domain.GapIneffectiveRequirement}, (*gapGraph).outcomeGaps},
 }
 
 // ParseGapKinds parses a comma-separated --kind / ?kind= value. Empty is "all".
@@ -76,7 +83,11 @@ func ParseGapKinds(s string) ([]domain.GapKind, error) {
 // BuildGaps runs every analyzer (or those opts.Kinds selects) over one
 // initiative and returns its gaps, most severe first. Never nil.
 func BuildGaps(ctx context.Context, db *store.DB, ini domain.Initiative, opts GapOptions) ([]domain.Gap, error) {
-	g, err := loadGapGraph(ctx, db, ini, opts.EvidenceTests)
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	g, err := loadGapGraph(ctx, db, ini, opts.EvidenceTests, now)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +191,13 @@ type gapGraph struct {
 	decByID  map[string]domain.Decision
 	stale    []domain.StaleItem
 	arts     []store.ArtifactView
+	objs     []domain.Objective
+	objByID  map[string]domain.Objective
+	metrics  []domain.OutcomeMetric
+	metByID  map[string]domain.OutcomeMetric
+	// outcome is domain.AnalyzeOutcomeChain over the graph above: the same
+	// rule the outcome report (GET …/outcomes) and the PRD review read.
+	outcome domain.OutcomeChainGaps
 
 	edgesFrom map[string][]domain.GraphEdge // "type:id" -> outgoing
 	edgesTo   map[string][]domain.GraphEdge // "type:id" -> incoming
@@ -190,9 +208,11 @@ type gapGraph struct {
 	eventSeq      map[string]int64     // "<id>|<event type>" -> max seq
 }
 
-func loadGapGraph(ctx context.Context, db *store.DB, ini domain.Initiative, evidenceTests map[string][]domain.EvidenceTest) (*gapGraph, error) {
+func loadGapGraph(ctx context.Context, db *store.DB, ini domain.Initiative, evidenceTests map[string][]domain.EvidenceTest, now time.Time) (*gapGraph, error) {
 	g := &gapGraph{
 		ini:           ini,
+		objByID:       map[string]domain.Objective{},
+		metByID:       map[string]domain.OutcomeMetric{},
 		reqByID:       map[string]domain.Requirement{},
 		taskByID:      map[string]domain.Task{},
 		cssByTsk:      map[string][]domain.ChangeSet{},
@@ -257,6 +277,19 @@ func loadGapGraph(ctx context.Context, db *store.DB, ini domain.Initiative, evid
 	if g.eventSeq, err = db.GraphEventSeqs(ctx, ini.ID); err != nil {
 		return nil, err
 	}
+	if g.objs, err = db.ListObjectives(ctx, ini.ID); err != nil {
+		return nil, err
+	}
+	for _, o := range g.objs {
+		g.objByID[o.ID] = o
+	}
+	if g.metrics, err = db.ListMetrics(ctx, ini.ID, now); err != nil {
+		return nil, err
+	}
+	for _, m := range g.metrics {
+		g.metByID[m.ID] = m
+	}
+	g.outcome = domain.AnalyzeOutcomeChain(g.reqs, g.objs, g.metrics)
 	return g, nil
 }
 
@@ -457,6 +490,16 @@ func (g *gapGraph) node(typ, id string) domain.GapNode {
 				n.Code = string(a.Kind)
 			}
 		}
+	case "objective":
+		if o, ok := g.objByID[id]; ok {
+			n.Code, n.Label = o.Code, trimLabel(o.Statement)
+		}
+	case "metric":
+		if m, ok := g.metByID[id]; ok {
+			n.Code, n.Label = m.Code, trimLabel(m.Name)
+		}
+	case "initiative":
+		n.Label = trimLabel(g.ini.Title)
 	}
 	return n
 }
@@ -1025,6 +1068,144 @@ func (g *gapGraph) staleArtifacts() []domain.Gap {
 			Severity: domain.SeverityMedium, Nodes: nodes,
 			Why:  fmt.Sprintf("%s v%d was generated before %s", rule.kind, down.Version, strings.Join(newer, ", ")),
 			Next: next})
+	}
+	return out
+}
+
+// ---------- orphan_requirement / unmeasured_objective / unserved_objective /
+// drifting_metric / ineffective_requirement ----------
+
+// outcomeGaps turns the outcome chain's gaps (domain.AnalyzeOutcomeChain --
+// the same answer the outcome report shows) into gaps, with severities that
+// match the PRD review's outcome checks where the review has one:
+//
+//   - orphan_requirement / objectives_missing: live requirements exist and
+//     no objective is active -- one gap about the PRD, medium (the review's
+//     single medium finding), not one per requirement.
+//   - orphan_requirement / no_objective: with at least one active objective,
+//     a live requirement serves none of them -- high (the review blocks on
+//     it).
+//   - unmeasured_objective / no_metric: an active objective with no live,
+//     measurable metric -- high (the review blocks on it).
+//   - unserved_objective / no_requirement: an active objective no live
+//     requirement serves -- medium: an outcome nothing in the plan aims at.
+//   - drifting_metric / regressed (high), off_track (high when the guardrail
+//     is breached, else medium), stale (low): a live metric's drift
+//     (domain.EvaluateMetricDrift). no_data is not a gap: a metric never
+//     observed with no cadence has no expectation yet to miss, and one whose
+//     cadence has lapsed since it was defined already evaluates as stale.
+//   - ineffective_requirement / works_but_fails_objective: a verified live
+//     requirement serving an active objective with an off_track or regressed
+//     metric -- high: it passed verification and is failing what it was for.
+func (g *gapGraph) outcomeGaps() []domain.Gap {
+	var out []domain.Gap
+	c := g.outcome
+
+	if c.ObjectivesMissing {
+		subject := domain.GapNode{Type: "initiative", ID: g.ini.ID, Code: shortID(g.ini.ID), Label: trimLabel(g.ini.Title)}
+		var prd *store.ArtifactView
+		for i := range g.arts {
+			if g.arts[i].Kind == domain.ArtifactPRD && (prd == nil || !g.arts[i].CreatedAt.Before(prd.CreatedAt)) {
+				prd = &g.arts[i]
+			}
+		}
+		if prd != nil {
+			subject = g.node("artifact", prd.ArtifactID)
+		}
+		nodes := []domain.GapNode{subject}
+		for _, r := range g.reqs {
+			if liveRequirement(r) {
+				nodes = append(nodes, g.node("requirement", r.ID))
+			}
+		}
+		out = append(out, domain.Gap{Kind: domain.GapOrphanRequirement, State: domain.GapStateObjectivesMissing,
+			Severity: domain.SeverityMedium, Nodes: nodes, Dependents: len(nodes) - 1,
+			Why:  fmt.Sprintf("no active objective is defined, so none of the %d live requirement(s) can be traced to an outcome", len(nodes)-1),
+			Next: `idea objective add "<statement>"`})
+	}
+
+	// With exactly one active objective the link command is complete;
+	// otherwise the human picks which objective the requirement serves.
+	var activeCodes []string
+	for _, o := range g.objs {
+		if o.Active() {
+			activeCodes = append(activeCodes, o.Code)
+		}
+	}
+	soleObjective := "<OBJ>"
+	if len(activeCodes) == 1 {
+		soleObjective = activeCodes[0]
+	}
+	for _, r := range c.RequirementsWithoutObjectives {
+		out = append(out, domain.Gap{Kind: domain.GapOrphanRequirement, State: domain.GapStateNoObjective,
+			Severity: domain.SeverityHigh, Nodes: []domain.GapNode{g.node("requirement", r.ID)},
+			Why:  r.Code + " serves no active objective, so it can pass verification with nobody able to say what outcome it was for",
+			Next: "idea objective link " + r.Code + " " + soleObjective})
+	}
+
+	for _, o := range c.ObjectivesWithoutMetrics {
+		out = append(out, domain.Gap{Kind: domain.GapUnmeasuredObjective, State: domain.GapStateNoMetric,
+			Severity: domain.SeverityHigh, Nodes: []domain.GapNode{g.node("objective", o.ID)}, Dependents: len(o.RequirementIDs),
+			Why:  o.Code + " has no measurable metric, so nobody can tell whether it is being met and drift cannot be detected",
+			Next: "idea metric add " + o.Code + ` "<name>" --target <n>`})
+	}
+
+	for _, o := range c.ObjectivesWithoutRequirements {
+		out = append(out, domain.Gap{Kind: domain.GapUnservedObjective, State: domain.GapStateNoRequirement,
+			Severity: domain.SeverityMedium, Nodes: []domain.GapNode{g.node("objective", o.ID)},
+			Why:  o.Code + " is active but no live requirement serves it: nothing in the plan is aimed at it",
+			Next: "idea objective link <REQ> " + o.Code})
+	}
+
+	for _, m := range c.DriftingMetrics {
+		st := m.Status
+		nodes := []domain.GapNode{g.node("metric", m.ID)}
+		if _, ok := g.objByID[m.ObjectiveID]; ok {
+			nodes = append(nodes, g.node("objective", m.ObjectiveID))
+		}
+		gap := domain.Gap{Kind: domain.GapDriftingMetric, Why: m.Code + ": " + strings.Join(st.Reasons, "; ")}
+		if o, ok := g.objByID[m.ObjectiveID]; ok {
+			gap.Dependents = len(o.RequirementIDs)
+		}
+		switch st.Drift {
+		case domain.DriftRegressed:
+			gap.State, gap.Severity = domain.GapStateRegressed, domain.SeverityHigh
+			for _, csID := range st.RegressedBy {
+				nodes = append(nodes, g.node("change_set", csID))
+			}
+			gap.Next = "idea trace metric " + m.Code
+		case domain.DriftOffTrack:
+			gap.State, gap.Severity = domain.GapStateOffTrack, domain.SeverityMedium
+			if st.GuardrailBreached {
+				gap.Severity = domain.SeverityHigh
+			}
+			gap.Next = "idea trace metric " + m.Code
+		case domain.DriftStale:
+			gap.State, gap.Severity = domain.GapStateStale, domain.SeverityLow
+			gap.Next = "idea metric record " + m.Code + " <value>"
+			if m.Source.Kind == domain.MetricSourceCommand || m.Source.Kind == domain.MetricSourceURL {
+				gap.Next = "idea metric measure " + m.Code
+			}
+		default:
+			continue
+		}
+		gap.Nodes = nodes
+		out = append(out, gap)
+	}
+
+	for _, d := range c.RequirementDrift {
+		nodes := []domain.GapNode{g.node("requirement", d.RequirementID), g.node("objective", d.ObjectiveID)}
+		for _, mc := range d.MetricCodes {
+			for _, m := range g.metrics {
+				if m.Code == mc {
+					nodes = append(nodes, g.node("metric", m.ID))
+				}
+			}
+		}
+		out = append(out, domain.Gap{Kind: domain.GapIneffectiveRequirement, State: domain.GapStateWorksButFailsObjective,
+			Severity: domain.SeverityHigh, Nodes: nodes,
+			Why:  d.Detail + " -- it works, but fails its objective",
+			Next: "idea trace metric " + d.MetricCodes[0]})
 	}
 	return out
 }

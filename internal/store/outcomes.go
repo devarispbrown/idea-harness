@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -796,75 +795,59 @@ func (db *DB) observationsByMetric(ctx context.Context, initiativeID string) (ma
 // ---------- Gap & drift queries ----------
 //
 // These are the clean, read-only questions graph-gap analysis (`idea gaps`)
-// and the drift surfaces ask. Each considers only LIVE nodes: an active
-// objective (not superseded, status active), a non-superseded metric, and an
-// active requirement (not removed, not superseded).
+// and the drift surfaces ask. Every one is a view of OutcomeChain, which is
+// domain.AnalyzeOutcomeChain over the initiative's current graph -- the one
+// definition the outcome report, `idea gaps` and the PRD review share. Each
+// considers only LIVE nodes: an active objective (not superseded, status
+// active), a non-superseded metric, and an active requirement (not removed,
+// not superseded).
 
-// ObjectivesWithoutMetrics returns the active objectives with no live metric:
-// promises nobody can check.
-func (db *DB) ObjectivesWithoutMetrics(ctx context.Context, initiativeID string) ([]domain.Objective, error) {
+// OutcomeChain loads the initiative's requirements, objectives and metrics
+// (drift evaluated at now) and returns the outcome chain's gaps.
+func (db *DB) OutcomeChain(ctx context.Context, initiativeID string, now time.Time) (domain.OutcomeChainGaps, error) {
+	reqs, err := db.ListRequirements(ctx, initiativeID)
+	if err != nil {
+		return domain.OutcomeChainGaps{}, err
+	}
 	objs, err := db.ListObjectives(ctx, initiativeID)
 	if err != nil {
-		return nil, err
+		return domain.OutcomeChainGaps{}, err
 	}
-	out := make([]domain.Objective, 0)
-	for _, o := range objs {
-		if o.Active() && len(o.MetricIDs) == 0 {
-			out = append(out, o)
-		}
+	ms, err := db.ListMetrics(ctx, initiativeID, now)
+	if err != nil {
+		return domain.OutcomeChainGaps{}, err
 	}
-	return out, nil
+	return domain.AnalyzeOutcomeChain(reqs, objs, ms), nil
+}
+
+// ObjectivesWithoutMetrics returns the active objectives with no live,
+// measurable metric: promises nobody can check.
+func (db *DB) ObjectivesWithoutMetrics(ctx context.Context, initiativeID string) ([]domain.Objective, error) {
+	c, err := db.OutcomeChain(ctx, initiativeID, time.Now())
+	return c.ObjectivesWithoutMetrics, err
 }
 
 // ObjectivesWithoutRequirements returns the active objectives no active
 // requirement serves: outcomes nothing in the plan is aimed at.
 func (db *DB) ObjectivesWithoutRequirements(ctx context.Context, initiativeID string) ([]domain.Objective, error) {
-	objs, err := db.ListObjectives(ctx, initiativeID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Objective, 0)
-	for _, o := range objs {
-		if o.Active() && len(o.RequirementIDs) == 0 {
-			out = append(out, o)
-		}
-	}
-	return out, nil
+	c, err := db.OutcomeChain(ctx, initiativeID, time.Now())
+	return c.ObjectivesWithoutRequirements, err
 }
 
 // RequirementsWithoutObjectives returns the active requirements that serve no
-// live objective: work with no stated outcome.
+// active objective: work with no stated outcome. Empty while the initiative
+// has no active objective at all (OutcomeChainGaps.ObjectivesMissing is that
+// case, reported once).
 func (db *DB) RequirementsWithoutObjectives(ctx context.Context, initiativeID string) ([]domain.Requirement, error) {
-	reqs, err := db.ListRequirements(ctx, initiativeID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Requirement, 0)
-	for _, r := range reqs {
-		if r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
-			continue
-		}
-		if len(r.ObjectiveIDs) == 0 {
-			out = append(out, r)
-		}
-	}
-	return out, nil
+	c, err := db.OutcomeChain(ctx, initiativeID, time.Now())
+	return c.RequirementsWithoutObjectives, err
 }
 
 // DriftingMetrics returns the live metrics whose drift at now is off_track,
 // regressed or stale (MetricDrift.Drifting), each with its Status.
 func (db *DB) DriftingMetrics(ctx context.Context, initiativeID string, now time.Time) ([]domain.OutcomeMetric, error) {
-	ms, err := db.ListMetrics(ctx, initiativeID, now)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.OutcomeMetric, 0)
-	for _, m := range ms {
-		if m.Status != nil && m.Status.Drift.Drifting() {
-			out = append(out, m)
-		}
-	}
-	return out, nil
+	c, err := db.OutcomeChain(ctx, initiativeID, now)
+	return c.DriftingMetrics, err
 }
 
 // RequirementOutcomeDrift returns the "works but fails its objective" signals:
@@ -872,53 +855,6 @@ func (db *DB) DriftingMetrics(ctx context.Context, initiativeID string, now time
 // whose live metrics include one that is off_track or regressed. Stale alone
 // does not count -- not knowing is not the same as failing.
 func (db *DB) RequirementOutcomeDrift(ctx context.Context, initiativeID string, now time.Time) ([]domain.RequirementOutcomeDrift, error) {
-	reqs, err := db.ListRequirements(ctx, initiativeID)
-	if err != nil {
-		return nil, err
-	}
-	objs, err := db.ListObjectives(ctx, initiativeID)
-	if err != nil {
-		return nil, err
-	}
-	ms, err := db.ListMetrics(ctx, initiativeID, now)
-	if err != nil {
-		return nil, err
-	}
-	objByID := map[string]domain.Objective{}
-	for _, o := range objs {
-		objByID[o.ID] = o
-	}
-	failing := map[string][]string{} // objective id -> failing metric codes
-	for _, m := range ms {
-		if m.Status != nil && (m.Status.OffTrack || m.Status.Regressed) {
-			failing[m.ObjectiveID] = append(failing[m.ObjectiveID], m.Code)
-		}
-	}
-	out := make([]domain.RequirementOutcomeDrift, 0)
-	for _, r := range reqs {
-		if r.Status != domain.RequirementVerified || r.SupersededBy != "" {
-			continue
-		}
-		for _, oid := range r.ObjectiveIDs {
-			o, ok := objByID[oid]
-			codes := failing[oid]
-			if !ok || !o.Active() || len(codes) == 0 {
-				continue
-			}
-			sort.Strings(codes)
-			out = append(out, domain.RequirementOutcomeDrift{
-				RequirementID: r.ID, RequirementCode: r.Code, ObjectiveID: o.ID, ObjectiveCode: o.Code,
-				MetricCodes: codes, Signal: domain.SignalWorksButFailsObjective,
-				Detail: fmt.Sprintf("%s is verified, but %s's %s %s off track", r.Code, o.Code, strings.Join(codes, ", "), isAre(len(codes))),
-			})
-		}
-	}
-	return out, nil
-}
-
-func isAre(n int) string {
-	if n == 1 {
-		return "is"
-	}
-	return "are"
+	c, err := db.OutcomeChain(ctx, initiativeID, now)
+	return c.RequirementDrift, err
 }

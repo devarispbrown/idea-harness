@@ -330,7 +330,7 @@ func mcpToolTable(tier mcpTier) []mcpToolDef {
 		}},
 		{tier: mcpTierRead, Tool: mcp.Tool{
 			Name: "gaps", Title: "Product Graph gaps",
-			Description: "What the Product Graph is missing or no longer holds, most severe first: requirements with no task or no applied change set, acceptance criteria with no evidence, failed or stale (code changed since) evidence, unvalidated assumptions the plan rests on, decisions whose basis moved, orphan tasks and change sets, artifacts older than what they were generated from. Deterministic, no model call. Each gap names its nodes, why, and the command that closes it.",
+			Description: "What the Product Graph is missing or no longer holds, most severe first: requirements with no task or no applied change set, acceptance criteria with no evidence, failed or stale (code changed since) evidence, unvalidated assumptions the plan rests on, decisions whose basis moved, orphan tasks and change sets, artifacts older than what they were generated from, and the outcome chain: requirements serving no objective, objectives with no metric or no requirement, drifting metrics, and verified requirements whose objective is failing. Deterministic, no model call. Each gap names its nodes, why, and the command that closes it.",
 			InputSchema: mcpObject(map[string]any{
 				"kind":       mcpString("Comma-separated gap kinds to keep, e.g. unverified_requirement,invalidated_decision. Defaults to every kind."),
 				"initiative": mcpInitiativeProp,

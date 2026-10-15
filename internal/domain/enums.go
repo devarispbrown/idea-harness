@@ -716,7 +716,7 @@ func (m SandboxMode) Valid() bool {
 // filter, the MCP `gaps` tool): add new ones, never rename one.
 //
 // The set is deliberately open-ended. Each kind is one analyzer in
-// projection.BuildGaps' table; a new kind (objective gaps, say) is a new
+// projection.BuildGaps' table; a new kind is a new
 // constant here, its spec enum entry, and one more analyzer -- nothing that
 // renders or filters gaps switches on the kind.
 type GapKind string
@@ -730,6 +730,14 @@ const (
 	GapOrphanTask                  GapKind = "orphan_task"
 	GapOrphanChangeSet             GapKind = "orphan_change_set"
 	GapStaleArtifact               GapKind = "stale_artifact"
+	// The outcome chain (domain.AnalyzeOutcomeChain): work with no stated
+	// outcome, outcomes nobody measures or aims at, metrics drifting, and
+	// verified work whose objective is failing.
+	GapOrphanRequirement      GapKind = "orphan_requirement"
+	GapUnmeasuredObjective    GapKind = "unmeasured_objective"
+	GapUnservedObjective      GapKind = "unserved_objective"
+	GapDriftingMetric         GapKind = "drifting_metric"
+	GapIneffectiveRequirement GapKind = "ineffective_requirement"
 )
 
 // GapKinds is every kind in report order: the order human output groups
@@ -738,6 +746,8 @@ var GapKinds = []GapKind{
 	GapUnimplementedRequirement, GapUnverifiedRequirement, GapUntestedAcceptanceCriterion,
 	GapUnvalidatedAssumption, GapInvalidatedDecision,
 	GapOrphanTask, GapOrphanChangeSet, GapStaleArtifact,
+	GapOrphanRequirement, GapUnmeasuredObjective, GapUnservedObjective,
+	GapDriftingMetric, GapIneffectiveRequirement,
 }
 
 func (k GapKind) Valid() bool {
@@ -779,6 +789,17 @@ const (
 	GapStateTaskOrphaned  GapState = "task_orphaned"
 	// stale_artifact
 	GapStateUpstreamNewer GapState = "upstream_newer"
+	// orphan_requirement
+	GapStateNoObjective       GapState = "no_objective"
+	GapStateObjectivesMissing GapState = "objectives_missing"
+	// unmeasured_objective (unserved_objective reuses no_requirement)
+	GapStateNoMetric GapState = "no_metric"
+	// drifting_metric (the MetricDrift values that count as drifting)
+	GapStateOffTrack  GapState = "off_track"
+	GapStateRegressed GapState = "regressed"
+	GapStateStale     GapState = "stale"
+	// ineffective_requirement
+	GapStateWorksButFailsObjective GapState = "works_but_fails_objective"
 )
 
 func (s GapState) Valid() bool {
@@ -787,7 +808,9 @@ func (s GapState) Valid() bool {
 		GapStateEvidenceFailed, GapStateEvidenceStale, GapStateUnvalidated, GapStateDisputed,
 		GapStateRefuted, GapStateDependentsStale, GapStateRequirementRevised,
 		GapStateRequirementsRemoved, GapStateBasisRefuted, GapStateNoRequirement,
-		GapStateTaskMissing, GapStateTaskOrphaned, GapStateUpstreamNewer:
+		GapStateTaskMissing, GapStateTaskOrphaned, GapStateUpstreamNewer,
+		GapStateNoObjective, GapStateObjectivesMissing, GapStateNoMetric,
+		GapStateOffTrack, GapStateRegressed, GapStateStale, GapStateWorksButFailsObjective:
 		return true
 	}
 	return false

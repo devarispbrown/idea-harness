@@ -210,16 +210,10 @@ const OutcomeCategory = "outcome"
 // objectives and metrics are the LIVE (non-superseded) ones; requirements
 // carry ObjectiveIDs from the store.
 func OutcomeChecks(initiativeID string, reqs []domain.Requirement, objectives []domain.Objective, metrics []domain.OutcomeMetric) []domain.Finding {
-	active := map[string]domain.Objective{}
-	for _, o := range objectives {
-		if o.Active() {
-			active[o.ID] = o
-		}
-	}
-	if len(active) == 0 {
-		if len(reqs) == 0 {
-			return nil
-		}
+	// The same rule the outcome report and `idea gaps` read, so the review
+	// cannot block on a gap the Health page does not show (or vice versa).
+	chain := domain.AnalyzeOutcomeChain(reqs, objectives, metrics)
+	if chain.ObjectivesMissing {
 		return []domain.Finding{{
 			Severity: domain.SeverityMedium, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
 			Finding:        "the PRD defines no active objective, so no requirement can be traced to an outcome",
@@ -230,17 +224,7 @@ func OutcomeChecks(initiativeID string, reqs []domain.Requirement, objectives []
 		}}
 	}
 	var out []domain.Finding
-	for _, r := range reqs {
-		serves := false
-		for _, oid := range r.ObjectiveIDs {
-			if _, ok := active[oid]; ok {
-				serves = true
-				break
-			}
-		}
-		if serves {
-			continue
-		}
+	for _, r := range chain.RequirementsWithoutObjectives {
 		out = append(out, domain.Finding{
 			Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
 			Finding:        fmt.Sprintf("%s serves no objective", r.Code),
@@ -250,24 +234,9 @@ func OutcomeChecks(initiativeID string, reqs []domain.Requirement, objectives []
 			TargetType:     "requirement", TargetID: r.ID,
 		})
 	}
-	hasMetric := map[string]bool{}
-	for _, m := range metrics {
-		if m.SupersededBy == "" && m.Measurable() {
-			hasMetric[m.ObjectiveID] = true
-		}
-	}
-	codes := make([]string, 0, len(active))
-	byCode := map[string]domain.Objective{}
-	for _, o := range active {
-		codes = append(codes, o.Code)
-		byCode[o.Code] = o
-	}
-	sort.Strings(codes)
-	for _, c := range codes {
-		o := byCode[c]
-		if hasMetric[o.ID] {
-			continue
-		}
+	unmeasured := append([]domain.Objective(nil), chain.ObjectivesWithoutMetrics...)
+	sort.SliceStable(unmeasured, func(i, j int) bool { return unmeasured[i].Code < unmeasured[j].Code })
+	for _, o := range unmeasured {
 		out = append(out, domain.Finding{
 			Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
 			Finding:        fmt.Sprintf("%s has no measurable metric", o.Code),

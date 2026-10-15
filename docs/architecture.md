@@ -154,6 +154,26 @@ change set "implements" a task only when it is `applied` and changed at least on
 | `orphan_change_set` | `task_missing` | a change set still holding work (not rejected or superseded) names a task that no longer exists | medium if applied, else low |
 | | `task_orphaned` | its task is an `orphan_task` | same |
 | `stale_artifact` | `upstream_newer` | the newest version of `technical_design`, `design_spec` or `verification_plan` is strictly older than the newest PRD, or the newest `execution_plan` is strictly older than any of those four | medium |
+| `orphan_requirement` | `no_objective` | at least one objective is active (not superseded, status `active`), and a live requirement has no `serves` edge to an active one — serving only an achieved or abandoned objective is serving none. → `idea objective link REQ-n OBJ-n` (the objective is named when exactly one is active) | high |
+| | `objectives_missing` | live requirements exist and no objective is active. One gap about the PRD (the initiative when there is no PRD artifact), not one per requirement. → `idea objective add "<statement>"` | medium |
+| `unmeasured_objective` | `no_metric` | an active objective has no live (not superseded), measurable (`OutcomeMetric.Measurable`: a name, a direction, a parseable cadence) metric. → `idea metric add OBJ-n "<name>" --target <n>` | high |
+| `unserved_objective` | `no_requirement` | an active objective has no live requirement serving it. → `idea objective link <REQ> OBJ-n` | medium |
+| `drifting_metric` | `regressed` | a live metric's drift (`domain.EvaluateMetricDrift`, evaluated at report time) is `regressed`; the change sets that landed before the bad reading are listed as evidence. → `idea trace metric MET-n` | high |
+| | `off_track` | its drift is `off_track`. → `idea trace metric MET-n` | high if the guardrail is breached, else medium |
+| | `stale` | its drift is `stale` — including a never-observed metric whose cadence has lapsed since it was defined. → `idea metric measure MET-n` for a `command` or `url` source, else `idea metric record MET-n <value>` | low |
+| `ineffective_requirement` | `works_but_fails_objective` | a live, `verified` requirement serves an active objective with a live metric that is off track (including a guardrail breach) or regressed — "works, but fails its objective". One gap per requirement and objective. → `idea trace metric MET-n` | high |
+
+The five outcome kinds are one rule, `domain.AnalyzeOutcomeChain`: the outcome report
+(`GET …/outcomes`, the Health page's outcome gaps), the store's outcome gap queries and the PRD
+review's outcome checks all read it, so `idea gaps` and the Health page cannot disagree about which
+requirement serves nothing or which objective is unmeasured, and the severities match the review's
+(high for a requirement serving no objective and an unmeasured objective, one medium finding for a
+PRD with no objectives). `no_data` is deliberately not a `drifting_metric` state: a metric never
+observed with no cadence has no expectation yet to miss, and one whose cadence has lapsed is already
+`stale`. Reporting it would flag every metric the moment it is defined. For these kinds, a live
+requirement is any one not removed or superseded — drafts and waived ones included, as in the
+review — and `dependents` counts the live requirements serving the objective (for
+`objectives_missing`, the live requirements).
 
 "Rests on" (`dependents`, the ranking key within a severity) is the set of distinct live nodes
 reachable through incoming edges — what derives from, implements, verifies or depends on the node —

@@ -24,7 +24,7 @@ before you change it:
 idea why requirement REQ-1      # the evidence → assertions → decisions behind it
 idea impact requirement REQ-1   # what breaks or goes stale if you change it
 idea trace task TASK-1          # both directions (why + dependents)
-idea gaps                       # what the graph is missing: unbuilt or unverified requirements, stale evidence, unvalidated assumptions, …
+idea gaps                       # what the graph is missing: unbuilt or unverified requirements, stale evidence, unvalidated assumptions, drifting outcomes, …
 idea changed                    # What Changed since your last look
 ```
 
@@ -369,6 +369,12 @@ is still reported. A requirement that is **verified** while an objective it serv
 off-track or regressed metric is flagged **"works, but fails its objective"** — on `idea status`,
 `idea next`, the Health page, the MCP `list_metrics` tool, and `GET …/outcomes`. An observation that
 moves a metric into `off_track` or `regressed` publishes `outcome.drifted` to Slack.
+
+`idea gaps` reports the same chain, from the same rule as the outcome report: `orphan_requirement`,
+`unmeasured_objective`, `unserved_objective`, `drifting_metric` and `ineffective_requirement`, each
+with the command that closes it (`idea objective link`, `idea metric add`, `idea metric record` or
+`measure`, `idea trace metric`). Exact triggers and severities:
+[architecture.md](docs/architecture.md#asking-the-graph-gaps).
 
 ## Model providers
 

@@ -147,7 +147,7 @@ func gapsGate(report cliGapReport, failOn string) error {
 // severe first), with the closing command under each gap.
 func renderGaps(report cliGapReport, all bool, stdout io.Writer) {
 	if len(report.Gaps) == 0 {
-		fmt.Fprintln(stdout, ok("✓ No gaps: every in-scope requirement is implemented and verified, and nothing the graph rests on has moved."))
+		fmt.Fprintln(stdout, ok("✓ No gaps: every in-scope requirement is implemented, verified and traced to a measured objective that is not drifting, and nothing the graph rests on has moved."))
 		return
 	}
 	fmt.Fprintf(stdout, "%s %s\n", heading(fmt.Sprintf("Gaps · %d", report.Summary.Total)), muted("("+report.Summary.summaryLine()+")"))

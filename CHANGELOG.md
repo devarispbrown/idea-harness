@@ -84,7 +84,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   criteria at all), `untested_acceptance_criterion`, `unvalidated_assumption` (ranked by how many
   live nodes rest on it), `invalidated_decision` (dependents stale since it changed, a citing
   requirement revised after it was decided, a refuted basis, or every citing requirement removed),
-  `orphan_task`, `orphan_change_set` and `stale_artifact`. Each gap carries a stable `kind`, a
+  `orphan_task`, `orphan_change_set` and `stale_artifact` — and the outcome chain:
+  `orphan_requirement` (a requirement serving no active objective, high; or, when no objective is
+  defined at all, one medium `objectives_missing` gap, matching the PRD review), `unmeasured_objective`
+  (no measurable metric, high), `unserved_objective` (no requirement serves it, medium),
+  `drifting_metric` (`regressed` high, `off_track` medium or high on a guardrail breach, `stale`
+  low; `no_data` is not a gap) and `ineffective_requirement` (verified, but an objective it serves
+  has an off-track or regressed metric: "works, but fails its objective", high). Each gap carries a stable `kind`, a
   `state` naming the trigger, a severity, the nodes (REQ-3, REQ-3/AC-2, TASK-2, CHG-4, DEC-1), a
   one-line why and the command that closes it. `--kind` filters, `--all` covers every initiative,
   `--json` is machine-readable, and `--fail-on <severity>` exits `5` (`gate_unmet`) so it can gate
@@ -171,7 +177,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
     `list_objectives` and `list_metrics`, judgment tool `record_metric`.
   - **For graph-gap analysis.** Read-only store queries `ObjectivesWithoutMetrics`,
     `ObjectivesWithoutRequirements`, `RequirementsWithoutObjectives`, `DriftingMetrics` and
-    `RequirementOutcomeDrift`.
+    `RequirementOutcomeDrift` — all views of one rule, `domain.AnalyzeOutcomeChain`, which the
+    outcome report (`GET …/outcomes`, the Health page), `idea gaps` and the PRD review's outcome
+    checks now share. A requirement counts as serving an objective only if that objective is
+    *active* (not achieved or abandoned), as the review already required; the outcome report's
+    `requirements_without_objectives` is now gated on an active objective existing (it was any
+    non-superseded one), and `objectives_without_metrics` counts only measurable metrics.
 
 - **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
   K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's

@@ -100,7 +100,7 @@ to the most recently created initiative — the same default every `idea` comman
 | `list_questions` | questions, with the short ref `answer_question` accepts | `idea questions` |
 | `list_decisions` | decisions, with numbered options | `idea decisions` |
 | `why` / `impact` / `trace` | the product graph around a requirement, task, decision, artifact, assertion, context doc, objective, metric or change set — up to the objective a requirement serves, and on to the outcome metrics its change sets moved | `idea why` / `idea impact` / `idea trace` |
-| `gaps` | what the Product Graph is missing or no longer holds — unimplemented or unverified requirements, untested criteria, stale evidence, unvalidated assumptions, invalidated decisions, orphans, stale artifacts — each with the command that closes it; `kind` filters (comma-separated) | `idea gaps` |
+| `gaps` | what the Product Graph is missing or no longer holds — unimplemented or unverified requirements, untested criteria, stale evidence, unvalidated assumptions, invalidated decisions, orphans, stale artifacts, requirements serving no objective, unmeasured or unserved objectives, drifting metrics, verified requirements failing their objective — each with the command that closes it; `kind` filters (comma-separated) | `idea gaps` |
 | `list_objectives` | objectives (`OBJ-n`), how many requirements serve each and how many metrics measure it | `idea objectives` |
 | `list_metrics` | outcome metrics (`MET-n`) with their drift and its reasons, plus the "works but fails its objective" signals and objectives with no metric | `idea metrics` |
 | `changed` | the initiative's timeline | `idea changed` |
