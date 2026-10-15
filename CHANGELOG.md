@@ -93,6 +93,32 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   rule, open blocking count, outcome — read from the reviewer runs' manifests, oldest first.
 - **`GET …/initiatives/{id}/quality/history`** (`?dimension=`): every recorded quality result,
   oldest first, with its linked requirement codes; an unknown dimension is a 400.
+
+- **A browser suite with an accessibility gate: `make e2e`** (`web/e2e`, Playwright + Chromium), and a
+  CI job that gates the release. It starts a hermetic demo daemon (isolated state dir and port, every
+  provider key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op
+  revision → run with a note → diff → request changes with a note → approve → apply → verify →
+  activity and health, with an axe check (WCAG 2 A/AA) on every page that fails on serious or
+  critical violations. Fixing what it found raised `--text-faint`, `--text-muted`, `--inactive-fg`
+  and the primary green button to AA contrast and labelled Settings' Add-provider fields.
+- **Component tests** in jsdom (`web/src/components.test.tsx`, `@testing-library/react`) against a
+  stubbed daemon, for the note inputs, the change-set chip, NotFound, the decision page and
+  Settings' executor display.
+- **CLI/UI parity ledger** ([docs/ui-parity.md](docs/ui-parity.md)): every CLI verb with its UI
+  surface or the reason it is CLI-only (47 ui, 10 partial, 17 CLI-only today).
+  `TestUIParityLedger` fails when a verb is added without a row.
+- `GET …/questions` returns an answered question's `answer` text.
+
+- **Request changes says what to change.** `idea review <CHG> changes_requested --note "..."` (and
+  `reject --note`), `POST …/change-sets/{id}/review {"note"}`, and a note field behind Build's
+  **Request changes…**: the note is stored on the change set (`review_note`, migration 43) and
+  appended to the implementer's brief on the task's next run, labelled with the change set it came
+  from — that run only. Before, the verdict was all that was recorded and the rerun had the same
+  brief that produced the rejected work. A note with `approve` or `rerun` is a 400.
+- **`idea revise-plan --note "..."`, `POST …/revise-plan {"note"}`**, and a note field behind Plan's
+  **Ask for a revision**: the note joins the planner's inputs for that revision and is recorded on
+  its run.
+
 - **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
   missing or no longer holds" — no model call, every trigger a comparison of recorded state:
   `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence
@@ -379,6 +405,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   MCP values reach the agent in `session/new` on its stdin.
 
 ### Fixed
+
+- **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
+  `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
+  findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer
+  outlives the change set; the run note is a labelled field and the failed-run banner's Retry takes
+  a note too. Plan: the pill says "approved" on every viewport and the bar stays (pointing at Build)
+  once a change set exists. Verify: Pass/Fail are not shown under the note saying they are locked.
+  Settings: the executor kind shows what `harness.yaml` asks for (`auto`) and what it resolves to;
+  no "pinned default image is pulled" for `internal`; a ready provider in demo mode reads "ready ·
+  not selected"; the model-list status stays in the Model card instead of an unprompted key error
+  at the bottom; one demo banner, not two. Navigation: **Activity** opens the What changed
+  timeline, Explore's **trace** opens the document's lineage route, and Health has its own link.
+  Define: "Accept all recommendations" says what it did and that questions are never answered for
+  you (and is not offered when only questions are open); answered questions stay, with their
+  answer, under Resolved. Every initiative route renders "Initiative not found" for an unknown id,
+  and a bad decision id renders "Decision not found" instead of an empty thread with a Send box.
+
+- **A plan revision that changed nothing minted "v2" and renumbered every task.** Every regenerated
+  document started a new artifact family at v1, so Plan offered "Diff v1 → v1" (which the diff
+  endpoint then refused: different artifacts), and revise-plan recreated every task through the
+  monotonic task counter, turning TASK-1 into TASK-2. A regenerated design document or plan is now
+  the next version of the same artifact and an identical one records nothing; a regenerated task
+  that kept its title keeps its code. A revised PRD is likewise v2 of the PRD, not a second v1.
+- **The What changed panel showed raw event names** (`stale.cleared`, `tasks.deleted`,
+  `change_set.status_changed`, category `Change_set`). Every event type now narrates as words.
 
 - **Answered questions reached the model as "(answer not found)".** The answer
   text is written to the redacted store and was read back from the raw one,

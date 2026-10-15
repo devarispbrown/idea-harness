@@ -1745,6 +1745,15 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 // RevisePlanInitiative regenerates the execution plan (and its review)
 // asynchronously, keeping the PRD/design artifacts. Returns the operation id.
 func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	return r.RevisePlanInitiativeWithNote(ctx, projectID, initiativeID, "")
+}
+
+// RevisePlanInitiativeWithNote is RevisePlanInitiative with the human's note
+// on what to change. "Ask for a revision" used to take no input, so the
+// planner regenerated from exactly the inputs that produced the plan being
+// revised. The note joins the planner's inputs for this one revision and is
+// recorded on its run, the same contract as execute's and retry's notes.
+func (r *Runtime) RevisePlanInitiativeWithNote(ctx context.Context, projectID, initiativeID, note string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -1829,6 +1838,9 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	// The plan this changes may change the task a stopped run's kept files
 	// belong to; carrying them into a rewritten task would be wrong.
 	_ = pr.engine.DiscardPartial(initiativeID)
+	if strings.TrimSpace(note) != "" {
+		pr.engine.SetNoteOverride(initiativeID, note)
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.RevisePlan(bg, initiativeID)
 		if runErr != nil {

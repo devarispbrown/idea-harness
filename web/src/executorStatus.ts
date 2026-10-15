@@ -34,7 +34,10 @@ export interface ExecutorStatusLine {
 }
 
 export interface ExecutorStatusLines {
-  imageLine: ExecutorStatusLine;
+  // Omitted for a kind that runs no image at all (internal): there is nothing
+  // to name, and "the pinned default image is pulled." under the placeholder
+  // executor claimed an image that does not exist.
+  imageLine?: ExecutorStatusLine;
   // Omitted for a keyless executor kind (e.g. one that needs no provider
   // credential at all) rather than shown as a false "missing key".
   keyLine?: ExecutorStatusLine;
@@ -43,13 +46,16 @@ export interface ExecutorStatusLines {
   noteLine?: string;
 }
 
-export function executorStatusLines(status: ExecutorStatusInput): ExecutorStatusLines {
-  const imageName = status.image || "the pinned default image";
+export function executorStatusLines(status: ExecutorStatusInput, defaultImage = ""): ExecutorStatusLines {
+  const imageName = status.image || defaultImage || "the pinned default image";
   // When Docker itself is unreachable the image cannot be checked, and saying
   // it "is not pulled" under a "Docker is not running" problem contradicted it.
   const dockerDown =
     status.image_state === "docker_unavailable" || /docker is not running/i.test(status.problem || "");
-  const imageLine: ExecutorStatusLine = status.image_present
+  const usesImage = !!(status.image || defaultImage || status.image_state || !status.image_present);
+  const imageLine: ExecutorStatusLine | undefined = !usesImage
+    ? undefined
+    : status.image_present
     ? { text: `${imageName} is pulled.`, ok: true }
     : dockerDown
       ? { text: `${imageName}: cannot check while Docker is unavailable.`, ok: false }
@@ -108,4 +114,40 @@ export function executorImagePlaceholder(defaultImage: string | undefined): stri
   return defaultImage
     ? `container image — leave blank to use the default (${defaultImage})`
     : "container image (e.g. ghcr.io/org/agent:latest)";
+}
+
+// ExecutorResolution is GET .../executors' `resolution`, carried on the row the
+// next run would actually use: what harness.yaml asked for (`auto` when the
+// kind is unset) and what that resolves to right now.
+export interface ExecutorResolution {
+  requested: string;
+  resolved: string;
+  warning?: string;
+}
+
+// requestedExecutorKind is the kind harness.yaml asks for. No row is
+// `selected` under `auto` (selected means "the configured kind is this row"),
+// and Settings used to fall back to its own default, "internal" -- so the page
+// said Kind: internal while harness.yaml said `kind: auto`.
+export function requestedExecutorKind(
+  rows: { name: string; selected: boolean; resolution?: ExecutorResolution }[],
+): string {
+  const selected = rows.find((r) => r.selected);
+  if (selected) return selected.name;
+  return rows.find((r) => r.resolution)?.resolution?.requested || "auto";
+}
+
+// executorResolutionLine says what will actually run, beside what was asked
+// for: "auto → internal" is the case that matters, because it means no real
+// code will be written.
+export function executorResolutionLine(resolution: ExecutorResolution | undefined): string {
+  if (!resolution) return "";
+  if (resolution.requested === resolution.resolved) return `Runs: ${resolution.resolved}.`;
+  return `Requested: ${resolution.requested} · resolves to: ${resolution.resolved}.`;
+}
+
+// hasExecutorStatusLines is false when there is nothing to say -- the internal
+// executor needs no image and no key -- so Settings renders no empty panel.
+export function hasExecutorStatusLines(lines: ExecutorStatusLines): boolean {
+  return !!(lines.imageLine || lines.keyLine || lines.problemLine || lines.noteLine);
 }

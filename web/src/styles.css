@@ -3358,3 +3358,76 @@ a.code, a.idchip { text-decoration: none; }
 .gd-arrowhead { fill: var(--text-faint); }
 .qp-na { margin-top: 8px; font-size: 12px; }
 .qp-na > summary { cursor: pointer; color: var(--text-muted); }
+
+/* ==========================================================================
+   Feedback inputs, status markers and not-found states (UI review fixes).
+   Additive only: new classes for NoteField, the change-set marker, the
+   request-changes / revision forms, Settings' executor resolution, answered
+   questions, and NotFound. The one shared rule touched is .failed-banner,
+   which gains flex-wrap so its note field can take its own line.
+   ========================================================================== */
+.note-field { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.note-field-label { font-size: 12px; font-weight: 600; color: var(--text-body); }
+.note-field-input { width: 100%; resize: vertical; font-family: inherit; }
+
+/* The status stays the pill; what is also true about it rides beside it. */
+.cs-pill-marker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--needs-you-fg);
+  border: 1px dashed var(--needs-you-line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  flex: none;
+}
+
+.request-changes-form,
+.revision-request {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.request-changes-actions,
+.revision-request-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.revision-request { margin: 0 0 14px; }
+.revision-status { margin: 0 0 14px; font-size: 13px; color: var(--text-body); }
+.cs-review-note { margin-top: 8px; font-size: 12px; }
+
+.failed-banner { flex-wrap: wrap; }
+.failed-note { flex-basis: 100%; }
+
+.executor-resolution { margin-top: 12px; font-size: 13px; }
+.executor-resolution p { margin: 0 0 4px; }
+
+.judgment-card.resolved { opacity: 0.9; }
+.jc-answer { margin-top: 6px; font-size: 13px; color: var(--text-body); }
+
+.accept-recommendations-none { margin: 0 0 12px; }
+.not-found h1 { font-size: 20px; }
+
+/* Accessibility (axe, WCAG 2 AA colour contrast). --text-faint was #a8a29e on
+   white (2.5:1) and --text-muted #78716c on the sunken panels (4.4:1), and
+   both carry real text -- initiative numbers, phase-bar labels, timestamps.
+   Redefined here rather than at :root above so this section stays additive;
+   the dark scheme re-states its own values so this cannot leak into it. */
+:root {
+  --text-faint: #6f6a64;
+  --text-muted: #6d6761;
+  --inactive-fg: #6d6761;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text-faint: #8f8a84;
+    --text-muted: #a29d97;
+    --inactive-fg: #a29d97;
+  }
+}
+/* The primary green button: white on #16a34a is 3.3:1. */
+.cs-green { background: #15803d; }

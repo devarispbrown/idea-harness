@@ -1185,7 +1185,26 @@ paths:
       tags: [initiatives]
       operationId: revisePlan
       summary: Regenerate the execution plan and its review
-      description: Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
+      description: |
+        Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
+
+        A regenerated plan is the next version of the same execution-plan artifact. One identical
+        to the current plan records no new version, and a regenerated task with the title of a
+        task it replaced keeps that task's code, so a revision that changes nothing leaves the plan
+        at its version with TASK-1 still TASK-1.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                  description: |
+                    What to change. Joins the planner's inputs for this revision only and is
+                    recorded on its run. Optional; the body is decoded leniently, so a caller that
+                    sends none keeps working unchanged.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -3664,6 +3683,14 @@ paths:
 
                     Ignored without `approved`. A 400 with `rerun`: there is nothing to sign off
                     before rerun's review has even produced findings.
+                note:
+                  type: string
+                  description: |
+                    What the human wants changed, with `changes_requested` or `rejected` — the two
+                    verdicts that send the task back for another run. Recorded on the change set
+                    (`review_note`) and appended to the implementer's brief on the task's next
+                    `execute`, labelled with this change set's id; only the next run, never one
+                    after it. A 400 with `approved` or `rerun`: there is no next run for it to steer.
               required: [verdict]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
@@ -3682,7 +3709,8 @@ paths:
           description: |
             `verdict is required`, the engine's rejection of the verdict or the change set's
             state, `accept_findings: true` with `rerun` (nothing to sign off before rerun's review
-            has even produced findings), or `json: unknown field "..."`. The body is closed: this
+            has even produced findings), a `note` with `approved` or `rerun`, or
+            `json: unknown field "..."`. The body is closed: this
             operation decodes strictly and rejects any key it does not declare, so `acceptFindings`
             (camelCase) is a 400 rather than a silently-dropped field. Closed only up to Go's
             ASCII-case-insensitive field matching — `Verdict` is accepted as `verdict`.
@@ -5142,6 +5170,11 @@ components:
         answer_digest:
           type: string
           description: The answer is stored content-addressed; only its digest is on the row.
+        answer:
+          type: string
+          description: |
+            The answer's text, read from the store by the questions list. Omitted while the
+            question is open.
         answered_by: { type: string }
         created_at: { type: string, format: date-time }
         resolved_at:
@@ -5575,6 +5608,12 @@ components:
             was cancelled mid-review — in which case the change set carries only mechanical-check
             observations (build/tests/patch-applies/workspace-copy), `approved` refuses it, and
             `POST .../review {"verdict":"rerun"}` is the way forward.
+        review_note:
+          type: string
+          description: |
+            What the human asked for when they requested changes on, or rejected, this change set
+            (`POST .../review` with a `note`). The task's next run carries it in its brief.
+            Omitted for a verdict given without one.
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
     PRChecksResult:

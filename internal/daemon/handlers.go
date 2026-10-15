@@ -657,7 +657,17 @@ func (s *Server) handleReopenPhase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRevisePlan(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
-	opID, err := s.rt.RevisePlanInitiative(r.Context(), projectID, initiativeID)
+	// Optional {"note": "..."}: what the human wants changed, joined to the
+	// planner's inputs for this revision. Decoded leniently, like execute's
+	// and retry's: this route has always ignored its body, and a caller that
+	// sends none must keep working unchanged.
+	var body struct {
+		Note string `json:"note"`
+	}
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
+	}
+	opID, err := s.rt.RevisePlanInitiativeWithNote(r.Context(), projectID, initiativeID, body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -1404,6 +1414,18 @@ func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	// The answer text, from the REDACTED store -- where handleAnswerQuestion
+	// put it (see workflow.answerText for why it is never the raw store). A
+	// blob that cannot be read leaves the field empty rather than failing the
+	// whole list.
+	for i := range list {
+		if list[i].AnswerDigest == "" {
+			continue
+		}
+		if data, err := pr.blobs.Get(list[i].AnswerDigest); err == nil {
+			list[i].Answer = strings.TrimSpace(string(data))
+		}
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -3477,6 +3499,11 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		// set and approves without re-reviewing. Only the reviewer's: a finding
 		// carrying a deny code is untouched and still refuses.
 		AcceptFindings bool `json:"accept_findings"`
+		// Note is what the human wants changed, with changes_requested or
+		// rejected: recorded on the change set and carried into the task's
+		// next run. "Request changes" used to take no input at all, so the
+		// rerun had nothing to go on but the same brief that produced this.
+		Note string `json:"note"`
 	}
 	// decodeStrict, so a NEW CLI against an OLD daemon gets
 	// `400 json: unknown field "accept_findings"` rather than having the flag
@@ -3513,6 +3540,10 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "accept_findings does not apply to rerun")
 			return
 		}
+		if strings.TrimSpace(body.Note) != "" {
+			writeError(w, http.StatusBadRequest, "note does not apply to rerun; it goes with changes_requested or rejected")
+			return
+		}
 		opID, err := s.rt.RerunChangeSetReviewInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
 		if err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
@@ -3521,9 +3552,8 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 		return
 	}
-	review := pr.engine.ReviewChangeSet
-	if body.AcceptFindings {
-		review = pr.engine.ReviewChangeSetAccepting
+	review := func(ctx context.Context, initiativeID, changeSetID, verdict string) error {
+		return pr.engine.ReviewChangeSetWithNote(ctx, initiativeID, changeSetID, verdict, body.AcceptFindings, body.Note)
 	}
 	// E1: an "approved" verdict used to run the adversarial reviewer
 	// synchronously, inside this request, and shared the request's own

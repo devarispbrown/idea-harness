@@ -131,9 +131,14 @@ type Question struct {
 	Question     string         `json:"question"`
 	Status       QuestionStatus `json:"status"`
 	AnswerDigest string         `json:"answer_digest,omitempty"`
-	AnsweredBy   string         `json:"answered_by,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	ResolvedAt   *time.Time     `json:"resolved_at,omitempty"`
+	// Answer is the answer's text, filled at read time by the questions list
+	// (never stored on the row: the text lives in the blob store under
+	// AnswerDigest). The UI's Resolved section shows it; without it an
+	// answered question simply vanished from Define.
+	Answer     string     `json:"answer,omitempty"`
+	AnsweredBy string     `json:"answered_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
 // DocComment is a human comment anchored to a section of an artifact version.
@@ -630,6 +635,12 @@ type ChangeSet struct {
 	// ReviewNeverCompletedCause, which falls back to "likely cancelled
 	// mid-review" in that case). See ReviewUnavailable.
 	ReviewUnavailableReason string `json:"review_unavailable_reason,omitempty"`
+	// ReviewNote is what the human asked for when they requested changes on,
+	// or rejected, this change set (`idea review <id> changes_requested
+	// --note`, POST .../review {"note"}). The task's next run carries it in the
+	// implementer's brief, so "request changes" says what to change. Empty for
+	// a verdict given without one.
+	ReviewNote string `json:"review_note,omitempty"`
 }
 
 // ReviewCompleted reports whether the adversarial reviewer actually finished

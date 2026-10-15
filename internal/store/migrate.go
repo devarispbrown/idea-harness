@@ -990,6 +990,16 @@ CREATE TABLE IF NOT EXISTS metric_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_metric_observations_metric ON metric_observations(metric_id, observed_at);
 `,
+	// 43: review_note -- what the human asked for when they requested changes
+	// on (or rejected) a change set. "Request changes" used to record only the
+	// verdict: the next run of the task got no word of what to change, so the
+	// only way to steer it was to remember to type the same thing into a run
+	// note. Execute now appends the newest such note to the implementer's
+	// brief for the task's next run (see priorReviewNote in execute.go). '' for
+	// every change set reviewed without one, and every one written before this.
+	`
+ALTER TABLE change_sets ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in
