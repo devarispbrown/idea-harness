@@ -125,9 +125,19 @@ test("budget: a cap stops a demo run, and raising it sends the initiative back",
   } finally {
     // Leave the project as it was for anything after this file.
     await page.goto("/#/settings");
+    // isVisible() does not wait: on a slow runner Settings had not rendered
+    // its Budget section yet, the click was skipped, and the assertion below
+    // timed out -- masking whatever the test body reported. Wait for the
+    // button the first step created, then remove the default.
     const remove = page.getByRole("button", { name: "Remove default" });
-    if (await remove.isVisible()) await remove.click();
-    await expect(page.getByText(/Project default removed/)).toBeVisible();
+    const present = await remove
+      .waitFor({ state: "visible", timeout: 20_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (present) {
+      await remove.click();
+      await expect(page.getByText(/Project default removed/)).toBeVisible();
+    }
     const now = readFileSync(harnessPath(), "utf8");
     writeFileSync(harnessPath(), now.replace(/\ndemo:\n\s+cost_per_call_usd: 0\.1\n?/, "\n"));
   }
