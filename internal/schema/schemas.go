@@ -56,6 +56,7 @@ const PRD = `{
           "priority": {"enum": ["must", "should", "could"]},
           "code": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"REQ-4\") of the requirement this one continues/updates, copied from the Requirements context. Leave empty for a genuinely new requirement."},
           "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
+          "objectives": {"type": "array", "items": {"type": "string"}, "description": "The key(s) or OBJ code(s) of the objective(s) listed under objectives that this requirement serves. Every requirement must serve at least one."},
           "acceptance_criteria": {
             "type": "array",
             "items": {
@@ -85,6 +86,38 @@ const PRD = `{
           }
         },
         "required": ["question", "options", "recommendation"]
+      }
+    },
+    "objectives": {
+      "type": "array",
+      "description": "The product outcomes this initiative exists to move -- what success looks like for users or the business, not features. Every requirement must serve at least one objective, and every objective needs at least one measurable metric.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"OBJ-1\") of the objective this one continues, copied from the Objectives context. Otherwise a short new key (e.g. \"O1\") that requirements cite in their objectives field."},
+          "statement": {"type": "string", "description": "The outcome, stated as a change in the world (e.g. \"New users reach their first successful sync on day one\")."},
+          "rationale": {"type": "string", "description": "Why this outcome matters."},
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"MET-2\") of the metric this one continues; otherwise leave empty."},
+                "name": {"type": "string"},
+                "definition": {"type": "string", "description": "Exactly how the number is computed."},
+                "unit": {"type": "string"},
+                "direction": {"enum": ["increase", "decrease", "maintain"]},
+                "baseline": {"type": ["number", "null"], "description": "The value today, if known. Omit or null when unknown -- do not invent one."},
+                "target": {"type": "number"},
+                "guardrail": {"type": ["number", "null"], "description": "Optional hard limit on the bad side: a floor for increase, a ceiling for decrease, the largest allowed distance from the target for maintain."},
+                "cadence": {"type": "string", "description": "How often it should be observed: hourly, daily, weekly, biweekly, monthly, quarterly, <n>d, <n>w, or a duration like 36h."},
+                "hypothesis": {"type": "string", "description": "We believe <which requirement(s) / change> will move this metric <how>. Recorded as a hypothesis linked to the metric."}
+              },
+              "required": ["name", "direction", "target"]
+            }
+          }
+        },
+        "required": ["statement", "metrics"]
       }
     },
     "open_questions": {"type": "array", "items": {"type": "string"}},
@@ -124,7 +157,7 @@ const Review = `{
           "recommendation": {"type": "string"},
           "path": {"type": "string", "description": "The file this finding is about, if it names a specific one (change-set review only; review B2)."},
           "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."},
-          "requirement": {"type": "string", "description": "The code of the requirement (or task) this finding is about, exactly as listed -- or \"idea\" for something the idea asks for that no requirement covers, with evidence quoting the idea. A critical/high finding citing neither is recorded as advisory."},
+          "requirement": {"type": "string", "description": "The code of the requirement (or task, objective or metric) this finding is about, exactly as listed -- or \"idea\" for something the idea asks for that no requirement covers, with evidence quoting the idea. A critical/high finding citing none of these is recorded as advisory."},
           "reraises": {"type": "string", "description": "When this repeats a finding listed under prior_findings, that finding's label, e.g. \"F1\"."},
           "justification": {"type": "string", "description": "Required with reraises when the prior finding was addressed: specifically why the revision did not resolve it."}
         },
