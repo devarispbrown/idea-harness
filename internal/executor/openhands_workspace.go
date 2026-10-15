@@ -136,12 +136,18 @@ type mirrorResult struct {
 	Skipped []string
 }
 
+// archiveManifestName is the metadata file the archive route adds at the
+// root of every tarball it serves (CONFIRMED against the v1.54.0 image: JSON
+// of the excludes, file count and size). It is not part of the directory, so
+// it is never mirrored from the tarball; mirrorInto fetches a file of that
+// name on its own, which finds one only if the agent really wrote it.
+const archiveManifestName = "archive_manifest.json"
+
 // stripArchivePrefix normalises one entry name from the server's archive.
 //
-// ASSUMED: whether entries are rooted at the directory itself ("a/b.go",
-// "./a/b.go") or under its base name ("<dir>/a/b.go") is not pinned by the
-// route's documentation, so both are accepted: a leading "./" and a leading
-// "<base>/" are removed.
+// CONFIRMED against the v1.54.0 image: entries are rooted under the
+// directory's base name ("<base>/a/b.go"). A leading "./" (a server rooting
+// them at the directory itself) is accepted too.
 func stripArchivePrefix(name, base string) string {
 	name = strings.TrimPrefix(name, "./")
 	if base != "" && (name == base || strings.HasPrefix(name, base+"/")) {
@@ -204,6 +210,11 @@ func unpackArchive(data []byte, staging, base string) (files map[string]bool, sk
 			if why != "" {
 				skipped = append(skipped, h.Name+" ("+why+")")
 			}
+			continue
+		}
+		if rel == archiveManifestName {
+			// The route's own metadata; mirrorInto asks the server whether
+			// a real file of that name exists.
 			continue
 		}
 		switch h.Typeflag {
@@ -269,12 +280,32 @@ func mirrorInto(ctx context.Context, c *ohClient, data []byte, workRoot, remoteD
 	res.Skipped = skipped
 
 	// Uploaded files the archive does not carry: deleted, or merely
-	// excluded by the archive route? Ask for each.
+	// excluded by the archive route? Ask for each. archive_manifest.json is
+	// always asked about, uploaded or not, since the tarball's copy of it is
+	// the route's metadata, never the file.
 	var missing []string
+	askedManifest := false
 	for _, e := range uploaded {
 		if !files[e.Path] {
 			missing = append(missing, e.Path)
+			askedManifest = askedManifest || e.Path == archiveManifestName
 		}
+	}
+	var manifestBody []byte
+	if !askedManifest {
+		body, found, err := c.download(ctx, remoteDir+"/"+archiveManifestName, ohMaxSingleFile)
+		if err != nil {
+			return res, fmt.Errorf("openhands: check %s on the server: %w", archiveManifestName, err)
+		}
+		if found {
+			manifestBody = body
+		}
+	}
+	if manifestBody != nil {
+		if err := os.WriteFile(filepath.Join(staging, archiveManifestName), manifestBody, 0o644); err != nil {
+			return res, err
+		}
+		files[archiveManifestName] = true
 	}
 	sort.Strings(missing)
 	var deleted []string

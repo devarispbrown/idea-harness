@@ -35,13 +35,12 @@ import (
 //	clients, openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
 //	and .../workspace/remote/remote_workspace_mixin.py, call these same routes)
 //
-// What is confirmed against that source, and what is assumed, is listed in
-// docs/agents.md ("OpenHands Agent Server"). The assumed parts are each
-// confined to one function here, so a server that differs breaks in one
-// place: the paging semantics of events/search (searchEventsAfter), the
-// layout of the tar.gz the archive route returns (stripArchivePrefix in
-// openhands_workspace.go), and the JSON shape of a conversation secret
-// (acpSecrets in openhands.go).
+// What is confirmed, and how, is listed in docs/agents.md ("OpenHands Agent
+// Server"): most of it from the source, and the paging, archive layout, tar,
+// 404 and auth behaviour also against the real image
+// (TestOpenHandsAgainstRealAgentServer). The one part still assumed -- the
+// JSON shape of a conversation secret -- is confined to acpSecrets in
+// openhands.go, so a server that differs breaks in one place.
 const (
 	// OpenHandsAPIVersion is the server release this client was written
 	// against. GET /server_info reports the server's own; a different one is
@@ -378,11 +377,10 @@ type ohEventHeader struct {
 // searchEventsAfter returns the events after cursor, oldest first, at most
 // one page (limit <= 100). next reports whether more remain.
 //
-// ASSUMED (not confirmed against the server's source): page_id names the
-// event a page starts AT, inclusively, so passing the last event already
-// seen returns it again first, and it is dropped here. If the server instead
-// starts AFTER page_id, nothing is dropped and nothing is lost either way --
-// the cursor event is only removed when it is actually present.
+// CONFIRMED against the v1.54.0 image: page_id names the event a page starts
+// AT, inclusively, so passing the last event already seen returns it again
+// first, and it is dropped here. A server that started AFTER page_id would
+// lose nothing either: the cursor event is only removed when it is present.
 func (c *ohClient) searchEventsAfter(ctx context.Context, convID, cursor string, limit int) (events []json.RawMessage, headers []ohEventHeader, next bool, err error) {
 	q := url.Values{"limit": {strconv.Itoa(limit)}, "sort_order": {"TIMESTAMP"}}
 	if cursor != "" {
