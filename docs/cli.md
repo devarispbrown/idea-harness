@@ -217,7 +217,7 @@ idea logs -f        # tail the log
 idea daemon         # then run `idea new` in another terminal
 ```
 
-The web UI shows a **Live activity** feed (the same events, polled on a timer — see [`ui.md`](ui.md)).
+The web UI shows a **Live activity** feed (the same events, refetched when the project's SSE stream reports a change, with a timer as a backstop — see [`ui.md`](ui.md)).
 
 ## Apply and revert protect edits made outside the harness
 

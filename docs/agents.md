@@ -533,9 +533,52 @@ rather than CI defaults — so it runs manually (workflow_dispatch), not on ever
 
 ## Watching and stopping a run
 
-While the agent runs, the Build page's running card shows its latest output: the last 100 lines,
-refreshed every couple of seconds, with known secrets redacted. When the run finishes, the same
-lines stay on the change set it produced, under "Agent output".
+While the agent runs, the Build page's running card shows the **run panel** (see
+[ui.md](ui.md#run-panel)): what the agent is doing now, its tool calls, the files it has written
+with line counts, the permissions answered for it, tokens, cost and elapsed time, and any error. It
+is fed by the run's normalized event stream ([api.md](api.md#run-events)), which every executor
+produces at the grain it can:
+
+| Executor | Where its events come from |
+|---|---|
+| `acp` | The agent's own `session/update` notifications (messages, tool calls and their updates, plans, thought markers), its `fs/write_text_file` calls with +/- counts against the previous content, and every permission answer. |
+| `openhands` | The Agent Server's events, ingested by the run's watcher from the same cursor as the progress log (so exactly once, across daemon restarts): actions, observations, the agent's messages, errors, status, and a `stats` update's running cost turned into deltas. |
+| `hermes`, `omp`, `container` | Coarse: each new line of the agent's output tail is an action, a work-root scan (size and mtime, every 2 s) reports files as they change, and status changes become events. |
+| `internal` | A few synthetic events: started, one per phase, the placeholder file. |
+
+Whatever the executor, once the agent finishes the engine adds the authoritative file list from its
+own diff, with +/- counts, then the checks and review stages and the change set it produced. The
+agent's raw output (the last 100 lines, secrets redacted) is still there under "Agent output", and
+stays on the change set when the run finishes.
+
+### Steering a running agent
+
+The run panel's note box sends a note to the agent while it runs (`POST …/runs/{runId}/steer`).
+What happens depends on the executor:
+
+| Executor | Steering | How |
+|---|---|---|
+| `acp` | Yes | Queued and sent as the agent's next `session/prompt` turn, in the same session, once its current turn ends. ACP defines no concurrent prompts in a session ("once a prompt turn completes, the Client may send another `session/prompt`"), so a note is never sent mid-turn. **Interrupt the current step** ends the turn first with `session/cancel` - which the agent must answer with `stopReason: cancelled` - then sends the note at once. |
+| `openhands` | Yes | Sent into the conversation as a user message (`POST /api/conversations/{id}/events`, `SendMessageRequest` with `run: true`); the agent reads it at its next step. Sent once, never retried, so it cannot arrive twice. |
+| `internal`, `container`, `hermes`, `omp` | No | The reply is `steering not supported by <kind>`. The note is held and appended to the task's **next** run's brief, the same way the rerun note on execute is. |
+
+A note sent while an agent is finishing (its session already over) is held for the next run too.
+Every note is recorded as a run event and on the run manifest's executor provenance. Held notes live
+in the daemon's memory: a daemon restart drops them. **Stop** is the running card's Stop button (the
+operation's cancel), unchanged.
+
+### Open in OpenHands
+
+An Agent Server serves no UI of its own. If you also run an OpenHands web UI that shows the server's
+conversations, set `executor.openhands.ui_url` and the run panel links each run to
+`<ui_url>/conversations/<conversation id>`. Without it there is no link; the address is never
+guessed.
+
+### Run report
+
+**Report (JSON)** / **Report (MD)** on the run panel download the run written down - its events,
+the files it changed with line counts, the findings on its change set, cost, and the steering notes
+- from `GET …/runs/{runId}/report?format=json|md|zip`. Everything in it is redacted.
 
 **Stop keeps what the agent wrote.** When a run ends without a change set, the files the agent had
 written are kept. That covers Stop, a failure, a timeout and the daemon stopping. The next run of the
