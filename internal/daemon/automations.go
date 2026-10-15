@@ -191,6 +191,10 @@ func (s *scheduler) openProjects() map[string]*projectRuntime {
 func (s *scheduler) tick(ctx context.Context) {
 	now := s.now()
 	for id, pr := range s.openProjects() {
+		// A hand edit of harness.yaml (enabling a job, say) is picked up here
+		// as it is on the next HTTP request, not only once someone opens the
+		// project in the UI.
+		pr = s.rt.maybeAutoReload(ctx, id, pr)
 		s.sweepOnce(ctx, id, pr)
 		a := pr.cfg.Harness.Automations
 		if a.MetricMeasurement != nil && a.MetricMeasurement.Enabled {
@@ -260,6 +264,13 @@ func (s *scheduler) start(projectID, name, target, trigger string, fn func(ctx c
 			s.mu.Lock()
 			delete(s.inflight, key)
 			s.mu.Unlock()
+		}()
+		// A background job must never take the daemon down with it: a panic
+		// in a runner is logged and the run left as the sweep will find it.
+		defer func() {
+			if p := recover(); p != nil {
+				s.rt.log.Error("automations: a run panicked", "job", key, "panic", fmt.Sprint(p))
+			}
 		}()
 		fn(s.rt.lifetimeContext())
 	}()
