@@ -630,6 +630,12 @@ type ChangeSet struct {
 	// ReviewNeverCompletedCause, which falls back to "likely cancelled
 	// mid-review" in that case). See ReviewUnavailable.
 	ReviewUnavailableReason string `json:"review_unavailable_reason,omitempty"`
+	// ReviewNote is what the human asked for when they requested changes on,
+	// or rejected, this change set (`idea review <id> changes_requested
+	// --note`, POST .../review {"note"}). The task's next run carries it in the
+	// implementer's brief, so "request changes" says what to change. Empty for
+	// a verdict given without one.
+	ReviewNote string `json:"review_note,omitempty"`
 }
 
 // ReviewCompleted reports whether the adversarial reviewer actually finished
