@@ -3359,7 +3359,8 @@ a.code, a.idchip { text-decoration: none; }
 .qp-na { margin-top: 8px; font-size: 12px; }
 .qp-na > summary { cursor: pointer; color: var(--text-muted); }
 
-/* ==========================================================================
+/* ===================================================================
+
    Feedback inputs, status markers and not-found states (UI review fixes).
    Additive only: new classes for NoteField, the change-set marker, the
    request-changes / revision forms, Settings' executor resolution, answered
@@ -3431,3 +3432,171 @@ a.code, a.idchip { text-decoration: none; }
 }
 /* The primary green button: white on #16a34a is 3.3:1. */
 .cs-green { background: #15803d; }
+=======
+/* ---------- Run panel (RunPanel.tsx) ----------
+   The live view of a coding-agent run inside the running card: current-action
+   chip, meter, tool calls, files, permissions, errors, steering. */
+.run-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12.5px;
+  color: var(--text-body);
+}
+.run-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--running-pill);
+  color: var(--running-fg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-chip-done { background: var(--inactive-pill); color: var(--inactive-fg); }
+.run-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-chip-pulse 1.4s ease-in-out infinite;
+}
+@keyframes run-chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-chip-dot { animation: none; }
+}
+.run-meter {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.run-panel-links {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.run-report { display: inline-flex; gap: 4px; align-items: center; }
+.run-report button { font-size: 11.5px; padding: 2px 8px; }
+.run-errors {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--failing-bg);
+  border: 1px solid var(--failing-line);
+  border-radius: 7px;
+  color: var(--failing-fg);
+}
+.run-error + .run-error { margin-top: 6px; }
+.run-error-detail {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.run-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+@media (max-width: 720px) {
+  .run-panel-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.run-section-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.run-actions > summary,
+.run-permissions > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.run-failed-count { color: var(--failing-fg); }
+.run-action-list {
+  margin: 6px 0 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.run-action { padding: 2px 0; overflow-wrap: anywhere; }
+.run-action-status { display: inline-block; width: 1em; color: var(--text-faint); }
+.run-action-completed .run-action-status { color: var(--verified-fg); }
+.run-action-failed { color: var(--failing-fg); }
+.run-action-failed .run-action-status { color: var(--failing-fg); }
+.run-action-detail {
+  display: block;
+  margin-left: 1.2em;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.run-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.run-file-list li { padding: 2px 0; overflow-wrap: anywhere; }
+.run-file-counts { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.run-added { color: var(--verified-fg); }
+.run-removed { color: var(--failing-fg); }
+.run-permissions { margin-top: 10px; }
+.run-permissions ul { margin: 6px 0 0; padding-left: 18px; }
+.run-allow { color: var(--verified-fg); font-weight: 600; }
+.run-deny { color: var(--failing-fg); font-weight: 600; }
+.run-pending { margin: 10px 0 0; }
+.run-notes { margin: 10px 0 0; padding-left: 18px; }
+.run-steer { margin-top: 12px; }
+.run-steer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  resize: vertical;
+}
+.run-steer-hint { margin: 0 0 6px; }
+.run-steer-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.run-steer-interrupt { margin-right: auto; color: var(--text-muted); }
+.run-steer-result { margin: 6px 0 0; }
+.run-steer-error { margin: 6px 0 0; color: var(--failing-fg); }
+/* Build page: the last run, collapsed, while nothing is running. */
+.run-last { margin: 0 0 16px; }
+.run-last > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+.run-last[open] > summary { margin-bottom: 8px; }

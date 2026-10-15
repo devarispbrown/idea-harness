@@ -309,10 +309,29 @@ func (s *Server) hostOriginGuard(next http.Handler) http.Handler {
 	})
 }
 
-// isSSEEventsPath reports whether path is the project events SSE stream, the
-// only endpoint allowed to accept the API token as a query parameter.
+// isSSEEventsPath reports whether path is one of the two SSE streams -- the
+// project's (/api/v1/projects/{p}/events) and a run's
+// (/api/v1/projects/{p}/runs/{r}/events/stream) -- the only endpoints allowed
+// to accept the API token as a query parameter, because EventSource cannot
+// set a header. Matched by exact shape, not suffix: GET .../runs/{r}/events
+// is the run's JSON page and requires the header like everything else.
 func isSSEEventsPath(path string) bool {
-	return strings.HasPrefix(path, "/api/v1/projects/") && strings.HasSuffix(path, "/events")
+	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/projects/"), "/")
+	if !strings.HasPrefix(path, "/api/v1/projects/") {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	switch len(parts) {
+	case 2:
+		return parts[1] == "events"
+	case 5:
+		return parts[1] == "runs" && parts[3] == "events" && parts[4] == "stream"
+	}
+	return false
 }
 
 func isLoopbackHost(host string) bool {

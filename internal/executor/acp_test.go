@@ -540,17 +540,90 @@ func runFakeAgent(scenario string) {
 			cwd, mcp = params.Cwd, params.MCPServers
 			reply(map[string]string{"sessionId": "s1"})
 		case "session/prompt":
+			var params struct {
+				Prompt []struct {
+					Text string `json:"text"`
+				} `json:"prompt"`
+			}
+			_ = json.Unmarshal(m["params"], &params)
+			fakeTurn++
+			fakePromptText = ""
+			if len(params.Prompt) > 0 {
+				fakePromptText = params.Prompt[0].Text
+			}
 			stop := fakePrompt(p, scenario, "s1", cwd, mcp)
 			if stop == "" {
 				return
+			}
+			if scenario == "events" {
+				// An ACP draft extension: usage on the prompt response.
+				reply(map[string]any{"stopReason": stop, "usage": map[string]int{"inputTokens": 100, "outputTokens": 20}})
+				continue
 			}
 			reply(map[string]string{"stopReason": stop})
 		}
 	}
 }
 
+// fakeTurn counts the session/prompt turns the fake agent has received, and
+// fakePromptText is the current turn's prompt (the steering scenarios answer
+// differently on a later turn).
+var (
+	fakeTurn       int
+	fakePromptText string
+)
+
 func fakePrompt(p *fakePeer, scenario, sid, cwd string, mcp json.RawMessage) string {
 	switch scenario {
+	case "events":
+		// One of each session/update the run-event mapping handles.
+		p.update(sid, map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "private reasoning one"}})
+		p.update(sid, map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "private reasoning two"}})
+		p.say(sid, "I will edit ")
+		p.say(sid, "src/a.txt.")
+		p.update(sid, map[string]any{"sessionUpdate": "plan", "entries": []map[string]string{
+			{"content": "read", "status": "completed"}, {"content": "edit", "status": "in_progress"}, {"content": "test", "status": "pending"}}})
+		p.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Run tests", "kind": "execute", "status": "pending",
+			"rawInput": map[string]any{"command": []string{"npm", "test"}}})
+		p.update(sid, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed",
+			"content": []map[string]any{{"type": "content", "content": map[string]string{"type": "text", "text": "1 test failed"}}}})
+		p.update(sid, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t2", "title": "Edit src/b.txt", "kind": "edit",
+			"locations": []map[string]string{{"path": "/work/src/b.txt"}}})
+		p.update(sid, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "t2", "status": "completed",
+			"content": []map[string]any{{"type": "diff", "path": "/work/src/b.txt", "oldText": "x\ny\n", "newText": "x\nY\nz\n"}}})
+		p.update(sid, map[string]any{"sessionUpdate": "usage_update", "used": 1000, "size": 200000, "cost": map[string]any{"amount": 0.01, "currency": "USD"}})
+		p.update(sid, map[string]any{"sessionUpdate": "usage_update", "used": 2000, "size": 200000, "cost": map[string]any{"amount": 0.03, "currency": "USD"}})
+		_, _ = p.request("session/request_permission", map[string]any{"sessionId": sid,
+			"toolCall": map[string]string{"toolCallId": "t3", "title": "Write src/a.txt", "kind": "edit"},
+			"options":  []map[string]string{{"optionId": "once", "name": "Once", "kind": "allow_once"}}})
+		_, _ = p.request("fs/write_text_file", map[string]any{"sessionId": sid, "path": "/work/src/a.txt", "content": "one\nTWO\nthree\n"})
+		p.update(sid, map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": []any{}})
+		return "end_turn"
+	case "steer":
+		// Turn 1 works for a while without reading stdin (so a note can only
+		// arrive as a later turn); turn 2 writes the prompt it got.
+		if fakeTurn == 1 {
+			time.Sleep(1500 * time.Millisecond)
+			return "end_turn"
+		}
+		_, _ = p.request("fs/write_text_file", map[string]any{"sessionId": sid, "path": fmt.Sprintf("/work/turn%d.txt", fakeTurn), "content": fakePromptText})
+		return "end_turn"
+	case "steer-interrupt":
+		// Turn 1 hangs until session/cancel and answers "cancelled", as ACP
+		// requires; turn 2 writes the prompt it got.
+		if fakeTurn == 1 {
+			for {
+				m, ok := p.read()
+				if !ok {
+					return ""
+				}
+				if string(m["method"]) == `"session/cancel"` {
+					return "cancelled"
+				}
+			}
+		}
+		_, _ = p.request("fs/write_text_file", map[string]any{"sessionId": sid, "path": "/work/turn2.txt", "content": fakePromptText})
+		return "end_turn"
 	case "write":
 		p.update(sid, map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "secret thought"}})
 		p.say(sid, "working on it, key is "+os.Getenv("AGENT_KEY")+"\n")

@@ -222,13 +222,14 @@ func TestOpenHandsConfigLoadsAndRefusesUnsafeShapes(t *testing.T) {
     withhold_provider_key: true
     max_iterations: 50
     timeout_seconds: 600
+    ui_url: https://openhands.example.com
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
 	o := cfg.Harness.Executor.OpenHands
 	if cfg.Harness.Executor.Kind != ExecutorOpenHands || o.URL != "https://agents.example.com" || o.EffectiveAPIKeyEnv() != "OH_KEY" ||
-		o.EffectiveAgent() != "acp" || o.EffectiveWorkspaceDir() != "/srv/work" || !o.WithholdProviderKey {
+		o.EffectiveAgent() != "acp" || o.EffectiveWorkspaceDir() != "/srv/work" || !o.WithholdProviderKey || o.UIURL != "https://openhands.example.com" {
 		t.Fatalf("loaded %+v", o)
 	}
 	var zero OpenHandsConfig
@@ -250,6 +251,11 @@ func TestOpenHandsConfigLoadsAndRefusesUnsafeShapes(t *testing.T) {
 		{"unclean dir", "workspace_dir: /a/../b", "clean absolute directory"},
 		{"shell chars in dir", "workspace_dir: /a;rm", "clean absolute directory"},
 		{"negative timeout", "timeout_seconds: -1", ""},
+		// ui_url is rendered as a link: never a javascript: URL, never one
+		// carrying credentials.
+		{"ui_url javascript", "ui_url: 'javascript:alert(1)'", "ui_url"},
+		{"ui_url relative", "ui_url: /conversations", "ui_url"},
+		{"ui_url credentials", "ui_url: https://u:p@openhands.example.com", "ui_url"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadHarness(t, "executor:\n  kind: openhands\n  openhands:\n    "+tc.block+"\n")

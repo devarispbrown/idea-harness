@@ -89,6 +89,9 @@ func (e *InternalExecutor) Start(ctx context.Context, req Request) (Attempt, err
 		status: "running",
 		phase:  "Planning",
 	}
+	req.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Source: domain.RunEventSourceHarness, Status: "running",
+		Title:  "Started the internal placeholder executor",
+		Detail: "No coding agent runs: this executor writes a deterministic placeholder file. Set executor.kind to hermes, omp, acp or openhands for real code."})
 	return Attempt{
 		ID:       attemptID,
 		Executor: "internal",
@@ -119,10 +122,17 @@ func (e *InternalExecutor) Status(ctx context.Context, id string) (Status, error
 		idx = len(internalProgression) - 1
 	}
 	p := internalProgression[idx]
+	if p.phase != a.phase || p.status != a.status {
+		// Synthetic, deterministic events: one per phase of the progression.
+		a.req.Emit(domain.RunEvent{Kind: domain.RunEventAction, Source: domain.RunEventSourceHarness, Title: p.phase, Status: p.status})
+	}
 	a.status = p.status
 	a.phase = p.phase
 	return Status{Status: p.status, Phase: p.phase, Action: p.action}, nil
 }
+
+// EmitsRunEvents: the internal executor emits its own synthetic events.
+func (e *InternalExecutor) EmitsRunEvents() bool { return true }
 
 // Cancel marks an attempt cancelled. It is a no-op after the attempt has
 // already succeeded or been cancelled.
@@ -160,5 +170,6 @@ func (e *InternalExecutor) Collect(ctx context.Context, id string) (Result, erro
 	if err := os.WriteFile(filepath.Join(a.req.WorkRoot, "hello.txt"), content, 0o644); err != nil {
 		return Result{}, fmt.Errorf("executor: internal: write hello.txt: %w", err)
 	}
+	a.req.Emit(domain.RunEvent{Kind: domain.RunEventFileChange, Source: domain.RunEventSourceHarness, Title: "Wrote hello.txt", Path: "hello.txt"})
 	return Result{}, nil
 }

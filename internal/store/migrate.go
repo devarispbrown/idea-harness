@@ -1000,6 +1000,32 @@ CREATE INDEX IF NOT EXISTS idx_metric_observations_metric ON metric_observations
 	`
 ALTER TABLE change_sets ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
 `,
+	// 44: run_events: the normalized, redacted, bounded event stream of a coding
+	// agent's run (domain.RunEvent), whichever executor ran it. A table of its
+	// own rather than remote_runs.progress: that column is one capped text
+	// blob per OpenHands run, with no per-event structure and no cursor a
+	// client can resume from, and the hermes/omp/acp/internal kinds have no
+	// remote_runs row at all. seq is monotonic per run (the client's resume
+	// cursor); id is monotonic across the project, which is what the
+	// project-wide SSE stream resumes from. body_json is the event itself.
+	//
+	// remote_runs.run_id ties an OpenHands run to the agent run whose events
+	// it feeds: its watcher outlives the Execute that started it (and the
+	// daemon), so it cannot be handed the run id in memory.
+	`
+CREATE TABLE IF NOT EXISTS run_events (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	run_id        TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	initiative_id TEXT NOT NULL DEFAULT '',
+	kind          TEXT NOT NULL,
+	at            INTEGER NOT NULL,
+	body_json     TEXT NOT NULL,
+	UNIQUE (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_run_events_initiative ON run_events(initiative_id, id);
+ALTER TABLE remote_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

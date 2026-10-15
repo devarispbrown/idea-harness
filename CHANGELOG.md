@@ -41,6 +41,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- The project event stream's SSE id is now `<event seq>.<run event id>`. A client that stored a bare
+  `<event seq>` still resumes correctly (run events start at now); one that parsed the id as an
+  integer must split on `.`.
+- `?token=` is accepted only on the two SSE streams' exact paths; it was accepted on any path ending
+  in `/events`.
 - The README's real-model numbers (PRD review did not converge in 2 of 2 runs) are now labelled as
   measured before the convergence rules existed; they need re-measuring with `idea eval --model`.
 - **The PRD review loop converges on principle instead of by exhaustion** (`review.convergence`,
@@ -122,6 +127,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   **Ask for a revision**: the note joins the planner's inputs for that revision and is recorded on
   its run.
 
+- **Live run view.** Every executor now narrates a coding agent's run as normalized **run events**
+  (`action`, `tool_call`, `tool_result`, `file_change`, `permission`, `message`, `thought`, `cost`,
+  `status`, `error`): ACP from its `session/update` notifications, fs writes and permission
+  answers; OpenHands from the Agent Server's events (exactly once, across daemon restarts); hermes,
+  omp and container from their output and a work-root scan; internal from a few synthetic events.
+  Events are redacted, bounded (per event, 5000 per run, 50 runs per project) and stored in a new
+  `run_events` table with a per-run `seq`. The Build page's running card shows them in a run panel:
+  the current action, grouped tool calls, files with +/- counts, permissions answered, tokens, cost
+  and elapsed time, errors. See [docs/ui.md](docs/ui.md#run-panel) and
+  [docs/api.md](docs/api.md#run-events).
+- **Streaming that resumes.** `GET …/runs/{runId}/events` (paged) and
+  `GET …/runs/{runId}/events/stream` (SSE, resumes from `Last-Event-ID` or `?after=` - only what
+  was missed, never the whole run - and ends with `event: end`); `GET …/initiatives/{id}/current-run`.
+  The project stream `GET …/events` now also carries `run_event` messages, sends heartbeats and
+  proxy-friendly headers, and accepts `?after=` (including `now`). The UI follows the streams
+  instead of polling, with backoff, visibility awareness and a polling fallback.
+- **Steering.** `POST …/runs/{runId}/steer` sends a note to a running agent: ACP as its next prompt
+  turn (or at once, ending the current turn, with `interrupt`), OpenHands as a message into the
+  conversation; other executors answer `steering not supported by <kind>` and the note rides on the
+  task's next run. Notes are recorded on the run's events and manifest. See
+  [docs/agents.md](docs/agents.md#steering-a-running-agent).
+- **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
+  conversation in that UI.
+- **Run report.** `GET …/runs/{runId}/report?format=json|md|zip`: events, files with line counts,
+  findings, cost and steering notes, from the run panel's Report buttons.
 - **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
   missing or no longer holds" — no model call, every trigger a comparison of recorded state:
   `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence

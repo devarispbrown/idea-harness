@@ -80,6 +80,13 @@ func TestIsSSEEventsPath(t *testing.T) {
 		"/api/v1/projects":                         false,
 		"/api/v1/logs":                             false,
 		"/api/v1/projects/p/events/":               false,
+		"/api/v1/projects/p/runs/r/events/stream":   true,
+		// The run's JSON page is not a stream: header token only.
+		"/api/v1/projects/p/runs/r/events":         false,
+		"/api/v1/projects/p/runs/r/report":         false,
+		"/api/v1/projects/p/runs//events/stream":   false,
+		"/api/v1/projects/p/initiatives/i/events":  false,
+		"/api/v1/projects//events":                 false,
 	}
 	for path, want := range cases {
 		if got := isSSEEventsPath(path); got != want {

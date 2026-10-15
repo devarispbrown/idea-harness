@@ -59,6 +59,17 @@ type Conv struct {
 	events  []map[string]any
 	subs    []chan struct{}
 	release chan struct{} // closed to let a blocking agent finish
+	// messages are the texts of user messages sent into the running
+	// conversation (POST /api/conversations/{id}/events).
+	messages []string
+}
+
+// Messages returns the user messages sent into the conversation after it
+// started, in order.
+func (c *Conv) Messages() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.messages...)
 }
 
 func New(t *testing.T, key string) *Server {
@@ -432,6 +443,26 @@ func (f *Server) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		f.writeJSON(w, 200, map[string]bool{"success": true})
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "search":
 		f.searchEvents(w, r, c)
+	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodPost:
+		// SendMessageRequest: {role, content: [{type, text}], run}.
+		var body struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Run bool `json:"run"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" || len(body.Content) == 0 {
+			f.writeJSON(w, 422, map[string]string{"detail": "bad SendMessageRequest"})
+			return
+		}
+		c.mu.Lock()
+		c.messages = append(c.messages, body.Content[0].Text)
+		c.mu.Unlock()
+		c.Emit(map[string]any{"kind": "MessageEvent", "source": "user",
+			"llm_message": map[string]any{"role": body.Role, "content": body.Content}})
+		f.writeJSON(w, 200, map[string]bool{"success": true})
 	default:
 		f.writeJSON(w, 404, map[string]string{"detail": "no route"})
 	}
