@@ -71,12 +71,18 @@ type OpenHandsConfig struct {
 	// expires the run is interrupted on the server. Zero uses the default
 	// (840 s, under the engine's own 15-minute ceiling, as for acp).
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
+	// UIURL is an OpenHands web UI that shows this server's conversations,
+	// e.g. https://openhands.example.com. Optional: when set, a run on the
+	// server links to <ui_url>/conversations/<conversation id> ("Open in
+	// OpenHands"). The Agent Server itself serves no UI, so without this
+	// there is no link -- its address is never guessed.
+	UIURL string `json:"ui_url,omitempty" yaml:"ui_url,omitempty"`
 }
 
 // IsZero lets yaml.v3's omitempty drop an unset openhands: block.
 func (o OpenHandsConfig) IsZero() bool {
 	return o.URL == "" && o.APIKeyEnv == "" && o.Agent == "" && len(o.ACPCommand) == 0 && o.WorkspaceDir == "" &&
-		!o.WithholdProviderKey && o.MaxIterations == 0 && o.TimeoutSeconds == 0
+		!o.WithholdProviderKey && o.MaxIterations == 0 && o.TimeoutSeconds == 0 && o.UIURL == ""
 }
 
 // DefaultOpenHandsAPIKeyEnv is the session-key variable when api_key_env is
@@ -151,6 +157,14 @@ func validateOpenHands(o OpenHandsConfig) error {
 	if o.URL != "" {
 		if err := ValidateOpenHandsURL(o.URL); err != nil {
 			return fmt.Errorf("config: harness.%v", err)
+		}
+	}
+	if o.UIURL != "" {
+		// Only ever a link the browser follows: an absolute http(s) URL with
+		// no credentials, so a config cannot turn it into a javascript: link.
+		u, err := url.Parse(o.UIURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+			return fmt.Errorf("config: harness.executor.openhands.ui_url %q must be an absolute http(s) URL without credentials", o.UIURL)
 		}
 	}
 	if o.APIKeyEnv != "" && !envNameRe.MatchString(o.APIKeyEnv) {

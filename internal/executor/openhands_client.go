@@ -353,6 +353,27 @@ func (c *ohClient) interrupt(ctx context.Context, id string) error {
 		path: "/api/conversations/" + url.PathEscape(id) + "/interrupt", notFound: true}, nil, nil)
 }
 
+// sendMessage is POST /api/conversations/{id}/events (event_router.py) with
+// a SendMessageRequest (openhands-sdk conversation/message_request.py: role,
+// content, run): a user message into a running conversation. run=true
+// starts the agent loop again if it had stopped; a running loop picks the
+// message up at its next step. Sent once, never retried: a retry after a
+// response lost in transit would post the note twice.
+func (c *ohClient) sendMessage(ctx context.Context, id, text string) error {
+	body, err := json.Marshal(map[string]any{
+		"role":    "user",
+		"content": []map[string]string{{"type": "text", "text": text}},
+		"run":     true,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.once(ctx, ohRequest{op: "send message", method: http.MethodPost,
+		path: "/api/conversations/" + url.PathEscape(id) + "/events", body: body, contentType: "application/json",
+		notFound: true, timeout: 30 * time.Second}, ohMaxJSONBytes)
+	return err
+}
+
 func (c *ohClient) pause(ctx context.Context, id string) error {
 	return c.doJSON(ctx, ohRequest{op: "pause conversation", method: http.MethodPost,
 		path: "/api/conversations/" + url.PathEscape(id) + "/pause", notFound: true}, nil, nil)

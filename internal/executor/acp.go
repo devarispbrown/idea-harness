@@ -160,6 +160,55 @@ type acpAttempt struct {
 	proc      *acpProc
 	agentHome string
 	secrets   []string
+
+	// events maps session/update, fs writes and permission answers onto
+	// normalized run events (acp_events.go).
+	events *acpEvents
+
+	// Steering (guarded by mu): notes a human sent while a turn ran, sent as
+	// the next prompt turn; interrupted asks the running turn to end first
+	// (interruptCh wakes it). steerClosed is set once no further turn will
+	// be sent, after which Steer refuses rather than accept a note nobody
+	// will read.
+	notes       []string
+	interrupted bool
+	steerClosed bool
+	interruptCh chan struct{}
+}
+
+// takeNotes returns and clears the pending steering notes. When there are
+// none the session is about to end, and steering closes in the same
+// critical section, so a note cannot slip in between "none pending" and the
+// end of the session.
+func (a *acpAttempt) takeNotes() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := a.notes
+	a.notes = nil
+	if len(n) == 0 {
+		a.steerClosed = true
+	}
+	return n
+}
+
+// takeInterrupt reports and clears a pending interrupt request.
+func (a *acpAttempt) takeInterrupt() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	v := a.interrupted
+	a.interrupted = false
+	select {
+	case <-a.interruptCh:
+	default:
+	}
+	return v
+}
+
+// closeSteering refuses further notes: the session is ending.
+func (a *acpAttempt) closeSteering() {
+	a.mu.Lock()
+	a.steerClosed = true
+	a.mu.Unlock()
 }
 
 func (a *acpAttempt) set(status, phase, action string) {
@@ -269,7 +318,8 @@ func (e *ACPExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 		return Attempt{}, err
 	}
 	a := &acpAttempt{status: "running", phase: "Planning", action: "starting the agent",
-		done: make(chan struct{}), agentHome: home}
+		done: make(chan struct{}), agentHome: home, interruptCh: make(chan struct{}, 1),
+		events: newACPEvents(req.Events)}
 	a.out.max = acpOutputLines
 	// Everything the agent was handed that is secret, for OutputTail to
 	// redact: an agent can echo its environment or its MCP configuration.
@@ -381,6 +431,8 @@ func (e *ACPExecutor) session(ctx context.Context, conn *acpConn, a *acpAttempt,
 	}
 	if initRes.AgentInfo != nil && initRes.AgentInfo.Name != "" {
 		a.out.addLine(fmt.Sprintf("agent: %s %s", initRes.AgentInfo.Name, initRes.AgentInfo.Version))
+		a.events.emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "running", Source: domain.RunEventSourceHarness,
+			Title: strings.TrimSpace(fmt.Sprintf("Connected to %s %s", initRes.AgentInfo.Name, initRes.AgentInfo.Version))})
 	}
 
 	var newRes struct {
@@ -400,50 +452,113 @@ func (e *ACPExecutor) session(ctx context.Context, conn *acpConn, a *acpAttempt,
 	if stmt == "" {
 		stmt = req.TaskTitle
 	}
-	a.set("running", "Editing", "working")
+	// The first turn is the brief; each later one is the steering notes a
+	// human sent while the previous turn ran (Steer). ACP defines no
+	// concurrent prompts in one session -- "once a prompt turn completes,
+	// the Client may send another session/prompt" -- so a note is never
+	// sent mid-turn: it waits for the turn to end, or (interrupt) ends the
+	// turn with session/cancel first, which the agent MUST answer with
+	// stopReason "cancelled".
+	text := stmt
+	for {
+		a.set("running", "Editing", "working")
+		stop, why, perr := e.turn(ctx, conn, a, newRes.SessionID, text)
+		if why != "" {
+			return "", why
+		}
+		if perr != nil {
+			a.closeSteering()
+			return fail("session/prompt", perr)
+		}
+		interrupted := a.takeInterrupt()
+		if stop != "end_turn" && !(stop == "cancelled" && interrupted) {
+			a.closeSteering()
+			return stop, "the agent stopped: " + stop
+		}
+		notes := a.takeNotes()
+		if len(notes) == 0 {
+			if stop == "cancelled" {
+				return stop, "the agent stopped: " + stop
+			}
+			return "end_turn", ""
+		}
+		text = steeringPrompt(notes)
+		a.out.addLine("idea-harness: sent a steering note as the next prompt turn")
+	}
+}
+
+// steeringPrompt is the prompt turn a human's steering notes become.
+func steeringPrompt(notes []string) string {
+	return "A note from the human watching this run. Take it into account and carry on with the task:\n\n" + strings.Join(notes, "\n\n")
+}
+
+// turn runs one session/prompt. why is non-empty when the run's context
+// ended (timeout or Stop): session/cancel was sent and the turn is over.
+func (e *ACPExecutor) turn(ctx context.Context, conn *acpConn, a *acpAttempt, sessionID, text string) (stop, why string, err error) {
 	type promptResult struct {
-		stop string
-		err  error
+		stop  string
+		usage *acpUsage
+		err   error
 	}
 	resCh := make(chan promptResult, 1)
 	go func() {
 		var res struct {
-			StopReason string `json:"stopReason"`
+			StopReason string    `json:"stopReason"`
+			Usage      *acpUsage `json:"usage"`
 		}
 		// Not ctx: on cancel the agent is expected to answer this very call
 		// with stopReason "cancelled", and that answer is still wanted.
 		err := conn.call(context.Background(), "session/prompt", map[string]any{
-			"sessionId": newRes.SessionID,
-			"prompt":    []map[string]string{{"type": "text", "text": stmt}},
+			"sessionId": sessionID,
+			"prompt":    []map[string]string{{"type": "text", "text": text}},
 		}, &res)
-		resCh <- promptResult{res.StopReason, err}
+		resCh <- promptResult{res.StopReason, res.Usage, err}
 	}()
+	defer a.events.flushMessage()
 
 	select {
 	case r := <-resCh:
-		if r.err != nil {
-			return fail("session/prompt", r.err)
+		if r.err == nil {
+			// The turn's text first, then what it cost: the order it happened.
+			a.events.flushMessage()
+			a.events.promptUsage(r.usage)
 		}
-		if r.stop != "end_turn" {
-			return r.stop, "the agent stopped: " + r.stop
+		return r.stop, "", r.err
+	case <-a.interruptCh:
+		// A steering note asked to interrupt: end this turn cleanly, and
+		// the caller sends the note as the next one.
+		a.out.addLine("idea-harness: interrupting the turn for a steering note; sent session/cancel")
+		_ = conn.notify("session/cancel", map[string]string{"sessionId": sessionID})
+		select {
+		case r := <-resCh:
+			if r.err == nil {
+				a.events.flushMessage()
+				a.events.promptUsage(r.usage)
+			}
+			return r.stop, "", r.err
+		case <-time.After(e.cancelGrace):
+			a.closeSteering()
+			a.proc.kill()
+			return "", "the agent did not stop for a steering interrupt", nil
+		case <-ctx.Done():
 		}
-		return r.stop, ""
 	case <-ctx.Done():
 	}
-	// Timed out or cancelled: ask the agent to stop, then give it a moment to
-	// say it has.
-	why := "cancelled"
+	// Timed out or cancelled: ask the agent to stop, then give it a moment
+	// to say it has.
+	why = "cancelled"
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		why = fmt.Sprintf("timed out after %s", e.opts.Timeout)
 	}
+	a.closeSteering()
 	a.out.addLine("idea-harness: " + why + "; sent session/cancel")
-	_ = conn.notify("session/cancel", map[string]string{"sessionId": newRes.SessionID})
+	_ = conn.notify("session/cancel", map[string]string{"sessionId": sessionID})
 	select {
 	case <-resCh:
 	case <-time.After(e.cancelGrace):
 		a.proc.kill()
 	}
-	return "", why
+	return "", why, nil
 }
 
 // handle answers one request from the agent.
@@ -459,6 +574,7 @@ func (e *ACPExecutor) handle(a *acpAttempt, workRoot, method string, params json
 		a.permissions = append(a.permissions, rec)
 		a.mu.Unlock()
 		a.out.addLine(fmt.Sprintf("permission: %s %s", rec.Decision, firstNonEmpty(rec.Title, rec.ToolCallID)))
+		a.events.permission(rec)
 		return map[string]any{"outcome": outcome}, nil
 	case "fs/read_text_file":
 		var p struct {
@@ -495,10 +611,19 @@ func (e *ACPExecutor) handle(a *acpAttempt, workRoot, method string, params json
 		if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
 			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
 		}
+		// The previous content, for the live file list's +/- counts. Read
+		// only when it is a file of source size; a missing file is new.
+		var prev string
+		if fi, err := os.Stat(host); err == nil && !fi.IsDir() && fi.Size() <= acpMaxReadFileBytes {
+			if b, err := os.ReadFile(host); err == nil {
+				prev = string(b)
+			}
+		}
 		if err := os.WriteFile(host, []byte(p.Content), 0o644); err != nil {
 			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
 		}
 		a.out.addLine("wrote " + p.Path)
+		a.events.fileWrite(p.Path, prev, p.Content)
 		return map[string]any{}, nil
 	default:
 		// terminal/* lands here: it is not advertised, so an agent that
@@ -593,6 +718,7 @@ func (a *acpAttempt) onNotification(method string, params json.RawMessage) {
 	if method != "session/update" {
 		return
 	}
+	a.events.update(params)
 	var n struct {
 		Update struct {
 			SessionUpdate string          `json:"sessionUpdate"`

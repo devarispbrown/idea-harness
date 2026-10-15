@@ -17,7 +17,7 @@ import (
 // through its own RemoteRunStore interface, so it never imports this one.
 
 const remoteRunColumns = `id, executor, idempotency_key, initiative_id, task_id, attempt, server_url, conversation_id,
-	remote_dir, base_digest, status, remote_status, last_event_id, event_count, progress, error, created_at, updated_at, finished_at`
+	remote_dir, base_digest, status, remote_status, last_event_id, event_count, progress, error, created_at, updated_at, finished_at, run_id`
 
 // RemoteRunProgressMax bounds the stored progress log. It is a live view and
 // a post-restart summary, not an archive: the remote server keeps the full
@@ -34,7 +34,7 @@ func scanRemoteRun(row interface{ Scan(...any) error }) (*domain.RemoteRun, erro
 	var finished sql.NullInt64
 	if err := row.Scan(&r.ID, &r.Executor, &r.IdempotencyKey, &r.InitiativeID, &r.TaskID, &r.Attempt, &r.ServerURL,
 		&r.ConversationID, &r.RemoteDir, &r.BaseDigest, &status, &r.RemoteStatus, &r.LastEventID, &r.EventCount,
-		&r.Progress, &r.Error, &created, &updated, &finished); err != nil {
+		&r.Progress, &r.Error, &created, &updated, &finished, &r.RunID); err != nil {
 		return nil, err
 	}
 	r.Status = domain.RemoteRunStatus(status)
@@ -66,9 +66,9 @@ func (db *DB) CreateRemoteRun(ctx context.Context, r domain.RemoteRun) (*domain.
 	}
 	now := nowMS()
 	_, err := db.sql.ExecContext(ctx, `INSERT INTO remote_runs (`+remoteRunColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
 		r.ID, r.Executor, r.IdempotencyKey, r.InitiativeID, r.TaskID, r.Attempt, r.ServerURL, r.ConversationID,
-		r.RemoteDir, r.BaseDigest, string(r.Status), r.RemoteStatus, r.LastEventID, r.EventCount, r.Progress, r.Error, now, now)
+		r.RemoteDir, r.BaseDigest, string(r.Status), r.RemoteStatus, r.LastEventID, r.EventCount, r.Progress, r.Error, now, now, r.RunID)
 	if err != nil {
 		if isUniqueOrPKViolation(err) {
 			existing, gerr := db.GetRemoteRunByKey(ctx, r.IdempotencyKey)
@@ -90,6 +90,19 @@ func (db *DB) GetRemoteRun(ctx context.Context, runID string) (*domain.RemoteRun
 	r, err := scanRemoteRun(db.sql.QueryRowContext(ctx, `SELECT `+remoteRunColumns+` FROM remote_runs WHERE id = ?`, runID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrRemoteRunNotFound, runID)
+	}
+	return r, err
+}
+
+// GetRemoteRunByAgentRun returns the newest remote run feeding agent run
+// runID's events, or nil.
+func (db *DB) GetRemoteRunByAgentRun(ctx context.Context, runID string) (*domain.RemoteRun, error) {
+	if runID == "" {
+		return nil, nil
+	}
+	r, err := scanRemoteRun(db.sql.QueryRowContext(ctx, `SELECT `+remoteRunColumns+` FROM remote_runs WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
 	return r, err
 }
@@ -215,9 +228,21 @@ func (db *DB) UpdateRemoteRun(ctx context.Context, runID string, u RemoteRunUpda
 // reconciler -- cannot both append them: the loser matches nothing and gets
 // applied=false, and re-reads the cursor.
 func (db *DB) AppendRemoteRunProgress(ctx context.Context, runID, fromEventID, lastEventID string, events int, lines []string) (applied bool, err error) {
+	return db.AppendRemoteRunProgressEvents(ctx, runID, fromEventID, lastEventID, events, lines, nil)
+}
+
+// AppendRemoteRunProgressEvents is AppendRemoteRunProgress that also stores
+// the same remote events, normalized (already redacted by the caller), on
+// the agent run this remote run feeds (remote_runs.run_id) -- in the same
+// transaction and under the same cursor guard, so the exactly-once ingestion
+// the progress log has holds for the event stream too. With no run id
+// recorded (a run dispatched before run events existed) the events are
+// dropped and the progress log is still written.
+func (db *DB) AppendRemoteRunProgressEvents(ctx context.Context, runID, fromEventID, lastEventID string, events int, lines []string, evs []domain.RunEvent) (applied bool, err error) {
+	stored := false
 	err = db.InTx(ctx, func(tx *sql.Tx) error {
-		var progress, cursor string
-		if err := tx.QueryRowContext(ctx, `SELECT progress, last_event_id FROM remote_runs WHERE id = ?`, runID).Scan(&progress, &cursor); err != nil {
+		var progress, cursor, agentRun string
+		if err := tx.QueryRowContext(ctx, `SELECT progress, last_event_id, run_id FROM remote_runs WHERE id = ?`, runID).Scan(&progress, &cursor, &agentRun); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: %s", ErrRemoteRunNotFound, runID)
 			}
@@ -240,11 +265,31 @@ func (db *DB) AppendRemoteRunProgress(ctx context.Context, runID, fromEventID, l
 			progress, lastEventID, events, nowMS(), runID); err != nil {
 			return err
 		}
+		if agentRun != "" && len(evs) > 0 {
+			if _, err := appendRunEventsTx(ctx, tx, agentRun, evs); err != nil {
+				return err
+			}
+			stored = true
+		}
 		applied = true
 		return nil
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: remote run progress: %w", err)
 	}
+	if stored {
+		db.signalRunEvents()
+	}
 	return applied, nil
+}
+
+// SetRemoteRunAgentRun records which agent run a remote run's events feed.
+// An Execute that re-attaches to a run another Execute (or a previous
+// daemon) dispatched moves it to its own run: that is the run being watched.
+func (db *DB) SetRemoteRunAgentRun(ctx context.Context, remoteRunID, agentRunID string) error {
+	_, err := db.sql.ExecContext(ctx, `UPDATE remote_runs SET run_id = ?, updated_at = ? WHERE id = ?`, agentRunID, nowMS(), remoteRunID)
+	if err != nil {
+		return fmt.Errorf("store: remote run: set run id: %w", err)
+	}
+	return nil
 }

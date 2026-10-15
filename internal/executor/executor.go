@@ -5,6 +5,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
@@ -48,7 +49,54 @@ type Request struct {
 	TaskStatement string `json:"task_statement"`
 	Brief         string `json:"brief,omitempty"`
 	WorkRoot      string `json:"work_root"`
+	// RunID is the agent run (runs.id) this attempt belongs to. An executor
+	// whose events outlive the attempt in memory (openhands: its watcher
+	// survives a daemon restart) records it durably so they still reach the
+	// run's event stream.
+	RunID string `json:"run_id,omitempty"`
+	// Events receives the attempt's normalized run events as they happen.
+	// May be nil (a smoke test, a probe); executors call Emit, which is
+	// nil-safe. The sink redacts, bounds and persists -- an executor only
+	// maps its own vocabulary onto domain.RunEvent, and must not block on it.
+	Events EventSink `json:"-"`
 }
+
+// EventSink receives one normalized run event. Implementations must be safe
+// for concurrent use and must not block for long: an ACP agent's stdout
+// reader calls it inline.
+type EventSink func(domain.RunEvent)
+
+// Emit sends ev to the request's sink, if it has one.
+func (r Request) Emit(ev domain.RunEvent) {
+	if r.Events != nil {
+		r.Events(ev)
+	}
+}
+
+// RunEventEmitter is implemented by executors that emit structured run
+// events themselves (tool calls, file writes, permissions). For every other
+// executor the engine derives coarse events from the agent's output tail and
+// a scan of the work root.
+type RunEventEmitter interface {
+	EmitsRunEvents() bool
+}
+
+// Steerer is implemented by executors that can take a human's note while
+// the agent runs. Steer returns how the note was delivered:
+// domain.SteeringDelivered (the agent has it now, or the moment its current
+// turn has been interrupted) or domain.SteeringQueued (it is sent as the
+// agent's next turn once the current one ends). interrupt asks for the
+// current turn to be ended first where the protocol has a clean way to do
+// that; an executor without one ignores it. An executor that cannot steer
+// this particular attempt (finished, or not running yet) returns
+// ErrSteeringUnsupported.
+type Steerer interface {
+	Steer(ctx context.Context, attemptID, note string, interrupt bool) (delivery string, err error)
+}
+
+// ErrSteeringUnsupported is what a Steerer returns for an attempt it cannot
+// deliver a note to (finished, or not running yet).
+var ErrSteeringUnsupported = errors.New("executor: this run cannot be steered")
 
 // Attempt is the durable handle returned by Start.
 type Attempt struct {

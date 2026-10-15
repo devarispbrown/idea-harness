@@ -515,6 +515,11 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// wave 3 contract specifies, and cleared once Execute returns so it never
 	// bleeds into a later, unrelated run of this initiative.
 	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	// Steering notes sent to an earlier run that could not take them mid-run
+	// (runevents.go) ride on this one, the same way.
+	if held := e.takePendingNotes(initiativeID); len(held) > 0 {
+		note = strings.TrimSpace(note + "\n\n" + strings.Join(held, "\n\n"))
+	}
 	if note != "" {
 		brief += "\n\nNote from the human, for this run only:\n" + note
 	}
@@ -555,6 +560,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}()
 
+	// The run's event stream (runevents.go): the executor emits into it, the
+	// engine adds stages, coarse events for executors that have none, and
+	// the final file list. Closed (flushed) before the live entry goes.
+	rec := e.newRunRecorder(agentRunID, e.db.RunningOperationID(ctx, initiativeID), initiativeID, task.ID, exec.Name())
+	defer rec.Close()
+	e.registerLiveRun(initiativeID, agentRunID, exec, rec)
+	req.RunID, req.Events = agentRunID, rec.Sink()
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "starting",
+		Title: fmt.Sprintf("Starting %s on the %s executor", task.Code, exec.Name())})
+	if note != "" {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventMessage, Source: domain.RunEventSourceUser, Status: domain.SteeringQueued,
+			Title: "Note for this run", Detail: note})
+	}
+
 	// Snapshot the isolated work root BEFORE the executor runs, so the
 	// orchestrator computes the real diff itself — never trusting the executor's
 	// self-declaration (review B3).
@@ -578,6 +597,26 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if t, ok := exec.(executor.OutputTailer); ok {
 		e.setLive(initiativeID, t, attempt.ID)
 	}
+	e.setLiveAttempt(initiativeID, attempt.ID)
+	// Coarse events for an executor with no structured ones of its own.
+	pumpCtx, stopPump := context.WithCancel(ctx)
+	defer stopPump()
+	_, structured := exec.(executor.RunEventEmitter)
+	if !structured {
+		go e.pumpCoarseEvents(pumpCtx, exec, attempt.ID, req.WorkRoot, rec)
+	}
+	onStatus := func(executor.Status) {}
+	if !structured {
+		var last executor.Status
+		onStatus = func(st executor.Status) {
+			if st.Phase == last.Phase && st.Action == last.Action {
+				return
+			}
+			last = st
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: st.Status,
+				Title: strings.TrimSpace(st.Phase + ": " + st.Action)})
+		}
+	}
 	// Cancel the attempt on any early-exit path so a hung agent never leaks a
 	// running container/subprocess (review B6). Collect already cleans up on the
 	// success path, so this is a harmless no-op there.
@@ -587,7 +626,13 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			_ = exec.Cancel(context.Background(), attempt.ID)
 		}
 	}()
-	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
+	if err := waitForCompletion(ctx, exec, attempt.ID, onStatus); err != nil {
+		stopPump()
+		if ctx.Err() != nil {
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "stopped", Title: "Stopped"})
+		} else {
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "The agent run failed", Detail: err.Error()})
+		}
 		err = e.withAgentOutput(ctx, exec, attempt.ID, err)
 		// Keep what the agent wrote, so Run again continues from it -- but
 		// only once its container is confirmed gone, so nothing is still
@@ -649,7 +694,9 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if pl, ok := exec.(executor.PermissionLogger); ok {
 		permissions = pl.PermissionLog(attempt.ID)
 	}
+	stopPump()
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "Could not collect the agent's result", Detail: err.Error()})
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	completed = true
@@ -717,6 +764,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	e.emitFinalFileChanges(rec, req.WorkRoot, files)
 
 	// Computed here (config-derived, known before the agent ever ran) so it can
 	// be stored on the change set at creation, not just on the run manifest --
@@ -1092,6 +1140,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			Server:      resolution.Server,
 			Warning:     resolution.Warning,
 			Permissions: permissions,
+			Steering:    e.liveSteering(initiativeID),
 		},
 	}); err != nil {
 		return domain.ChangeSet{}, err
@@ -1105,6 +1154,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "finished", ChangeSetID: got.ID,
+		Title: fmt.Sprintf("%s is %s", got.HumanID, strings.ReplaceAll(string(got.Status), "_", " "))})
 	return *got, nil
 }
 
@@ -1828,7 +1879,7 @@ func (e *Engine) RestoreWorkspace(ctx context.Context, changeSetID, manifestDige
 // state. It never exposes chain-of-thought: only the terminal status is used.
 // External executors (container, OMP) can take minutes, so it polls with
 // exponential backoff up to a generous ceiling, still honoring ctx cancellation.
-func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID string) error {
+func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID string, onStatus func(executor.Status)) error {
 	const (
 		maxDuration = 15 * time.Minute
 		maxSleep    = time.Second
@@ -1850,6 +1901,9 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 		if err != nil {
 			_ = exec.Cancel(context.Background(), attemptID)
 			return fmt.Errorf("workflow: execute: %w", err)
+		}
+		if onStatus != nil {
+			onStatus(st)
 		}
 		switch st.Status {
 		case "succeeded":

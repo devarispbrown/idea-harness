@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"modernc.org/sqlite"
@@ -17,6 +18,13 @@ import (
 // DB wraps a SQLite connection pool with the schema and event helpers.
 type DB struct {
 	sql *sql.DB
+
+	// runEventsMu/runEventsCh wake run-event streams the moment an event is
+	// appended (runevent.go), so a live run view is not a poll interval
+	// behind the agent. The daemon is the single writer, so an in-process
+	// signal sees every append.
+	runEventsMu sync.Mutex
+	runEventsCh chan struct{}
 }
 
 // Open opens (or creates) the SQLite database at path, applies migrations, and
