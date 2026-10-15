@@ -756,9 +756,23 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		// same gate call.
 		body["confirm_passing_tests"] = true
 	}
+	// Quality dimensions (verify.dimensions) are measured BEFORE the gate
+	// runs, so the gate reads a scorecard for the work as it is now. Only
+	// when something enabled is unmeasured or stale; --no-measure keeps the
+	// last recorded scorecard (a stale gated dimension then stays unmet).
+	if !a.has("--no-measure") {
+		progress := stdout
+		if a.has("--json") {
+			progress = stderr // stdout is the JSON document
+		}
+		if err := measureQualityIfStale(c, projectID, iniID, progress); err != nil {
+			return err
+		}
+	}
 	var out struct {
 		Status   string        `json:"status"`
 		Coverage []cliCoverage `json:"coverage"`
+		Quality  *cliScorecard `json:"quality,omitempty"`
 	}
 	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
@@ -786,10 +800,16 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 			}
 		}
 	}
+	// Only GATED quality dimensions count; the daemon has already applied the
+	// policy, so gate_unmet is exactly that list.
+	if out.Quality != nil {
+		for _, u := range out.Quality.GateUnmet {
+			unmet = append(unmet, "quality: "+u)
+		}
+	}
 	if a.has("--json") {
-		// The JSON payload is unchanged (still just {status, coverage}) --
-		// only the exit code gains the same gate the human-readable path
-		// already applies below.
+		// {status, coverage, quality} -- and the exit code applies the same
+		// gate the human-readable path applies below.
 		if err := dumpJSON(stdout, out); err != nil {
 			return err
 		}
@@ -820,6 +840,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		}
 		fmt.Fprintln(stdout)
 	}
+	renderScorecard(stdout, out.Quality)
 
 	// The gate has to be able to fail.
 	//
