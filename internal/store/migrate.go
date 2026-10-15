@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS ui_pairing_codes (
 	expires_at INTEGER NOT NULL,
 	used_at    INTEGER
 );
+`,
+	// 3: a pairing code's own guessing budget (docs/security-model.md
+	// "Remote access"). Every wrong code typed at the sign-in page is a
+	// guess at every code outstanding at that moment, so each of them counts
+	// it in failed_attempts; a code that reaches the budget is burned
+	// (burned_at set) and can never be redeemed. This replaces a daemon-wide
+	// lock-out: the bound on guessing is per code, and it is in the database,
+	// so a daemon restart does not reset it. Burned rows are kept a week so
+	// `idea ui pair`, `idea ui sessions` and Settings can say it happened.
+	`
+ALTER TABLE ui_pairing_codes ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ui_pairing_codes ADD COLUMN burned_at INTEGER;
 `}
 
 // migrations is the ordered state.db schema history. Append-only: never edit an

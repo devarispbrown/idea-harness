@@ -50,6 +50,7 @@ nothing in it.
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
 | `#/automations` | **Automations** — every scheduled background job (Linear inbound polling, metric measurement, eval), each off until enabled, with its schedule, last and next run, history and Run now; reached from the sidebar's **Automations** button and the command palette |
+| `#/runs` | **Remote runs** — every OpenHands remote run in the project, across initiatives, newest first (`GET …/remote-runs`, at most 200; `idea runs remote --all`), each linking to its initiative's Build; **Only runs not yet over** adds `?active=true`. Reached from the sidebar's **Remote runs** button and the command palette |
 | `#/settings` | Settings |
 
 Every route may carry a **project prefix**, `#/p/<projectId>/…` — `#/p/<projectId>/i/<id>/build`
@@ -332,7 +333,8 @@ actions, notes and report. The panel shows:
 - **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
 - **Remote runs** (when the run's executor is `openhands`): every dispatch of this initiative's
   tasks to the Agent Server - status, attempt, server, conversation id, last event, error - read
-  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`).
+  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`). Every initiative's are on
+  `#/runs` (`web/src/RemoteRunsPage.tsx`; `idea runs remote --all`).
 
 It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
 far, then follows the run's SSE stream (`web/src/useEventStream.ts`). A dropped connection
@@ -418,7 +420,9 @@ written code-first (`REQ-3`, `TASK-2`, `CHG-1`) and links to its own lineage pag
 at (derived from, implements, serves, produced by), followed up to its sources. **Impact** is the
 dependents tree — everything that points at it, through to the change sets built from its tasks
 and the metrics attributed to those change sets — with a count per staleness class (`stale`,
-`obsolete`, `to revalidate`); rows are badged only when stale or obsolete. A node reachable two ways
+`obsolete`, `to revalidate`); rows are badged only when stale or obsolete. A node resting on a
+retracted assertion is `obsolete` in that assertion's impact, and its Why lists the assertion's
+`invalidates` edge. A node reachable two ways
 is expanded once and marked "(shown above)" elsewhere. **Full trace** is every edge as a table. The
 `<ref>` resolves exactly as the CLI resolves it (id, code, kind or title; codes case-insensitively;
 a live row before a superseded one), plus an artifact's graph id and an unambiguous id prefix.
@@ -674,6 +678,9 @@ browser without push — on an iPhone, add the app to the Home Screen first.
 The browsers signed in from other devices, each with **Revoke** (or **Sign out** on this one), and
 **Sign out everywhere**. Signing a device in is deliberately not here: `idea ui pair` on the
 daemon's machine mints the one-time code. See [`configuration.md`](configuration.md#remote-access).
+If pairing codes were burned in the last 7 days — too many wrong codes tried at the sign-in page
+while they were outstanding — the panel says how many and when: someone who can reach the daemon
+may be guessing ([`security-model.md`](security-model.md#remote-access)).
 
 ## Remote use and phones
 
@@ -682,6 +689,10 @@ The same app serves a phone. Turned on and secured as in
 browser on another device gets the page **without the API token** and a **Sign in** screen asking
 for a pairing code from `idea ui pair`; after that it is the full UI, on a session that expires and
 can be revoked. If the session ends, the next request returns it to Sign in.
+
+Wrong codes never lock you out. Too many from one device refuse that device for up to 15 minutes.
+Too many from anywhere while your code is waiting burn that code, and Sign in says so; run
+`idea ui pair` again and the new code works straight away. A signed-in browser is never affected.
 
 At phone widths (≤ 760px) the sidebar is a top bar, and change-set review is built for the thumb:
 
@@ -737,9 +748,12 @@ intercept those requests: no product data is ever stored on the device.
   (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
   it now and reads its history.
 - **Every route, two widths, two schemes** — `web/e2e/views.e2e.ts` runs last, on the state the
-  others left, and visits every route (Home, Settings, Automations, Needs you, not-found, the six
-  phases, health, activity, gaps, outcomes, quality, a task's lineage, a decision, a document, an
-  unknown initiative) at 390px and 1280px. On each it checks exactly one `h1`; no horizontal
+  others left, and visits every route (Home, Settings, Automations, Remote runs, Needs you,
+  not-found, the six phases, health, activity, gaps, outcomes, quality, a task's lineage, a
+  decision, a document, an artifact diff, an unknown initiative) at 390px and 1280px. For the diff
+  it seeds a second initiative whose PRD is revised after a person edits `OBJ-1` — the demo
+  provider writes the same PRD every time, so only that edit gives the diff added and removed
+  lines — and checks both kinds render. On each it checks exactly one `h1`; no horizontal
   overflow in either colour scheme — `scrollWidth <= innerWidth`, and, because `html` and `body`
   clip sideways overflow rather than scroll it, no visible element (collapsed `<details>` opened
   for the check) past the right edge unless a box of its own scrolls or clips it; and axe.

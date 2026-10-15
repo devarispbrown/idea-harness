@@ -705,9 +705,10 @@ func TestGapJSONShape(t *testing.T) {
 	}
 }
 
-// basis_refuted has no production writer of its edges yet (nothing records an
-// assertion supporting a decision, or an `invalidates` edge), so the edges
-// are inserted directly: what is pinned is the rule, ready for when they are.
+// The rule over hand-inserted edges: nothing in production records an
+// assertion supporting a decision, or an `invalidates` edge between two
+// decisions. (Retraction's assertion --invalidates--> edge is covered on a
+// real flow by workflow.TestRetractionWritesInvalidatesEdges.)
 func TestGapsInvalidatedDecisionBasisRefuted(t *testing.T) {
 	f := newGapFixture(t)
 	d := f.decision("DEC-1")
@@ -737,8 +738,7 @@ func TestGapsInvalidatedDecisionBasisRefuted(t *testing.T) {
 		t.Fatalf("retracted support = %+v", got)
 	}
 
-	// An `invalidates` edge -- what `idea impact` classes as obsolete -- is a
-	// refuted basis too.
+	// An `invalidates` edge from another node is a refuted basis too.
 	d2 := f.decision("DEC-2")
 	if err := f.db.ResolveDecision(f.ctx, d2.ID, "b", "human"); err != nil {
 		t.Fatal(err)

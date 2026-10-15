@@ -41,6 +41,13 @@ describe("palette commands", () => {
     const bare = paletteCommands("").map((c) => c.href);
     expect(bare.some((h) => h.startsWith("#/i/"))).toBe(false);
     expect(bare).toContain("#/queue");
+    expect(bare).toContain("#/runs");
+  });
+
+  it("finds the project-wide remote runs by name or executor", () => {
+    const all = paletteCommands("");
+    expect(filterCommands(all, "", "remote runs").map((c) => c.href)).toEqual(["#/runs"]);
+    expect(filterCommands(all, "", "openhands").map((c) => c.id)).toEqual(["remote-runs"]);
   });
 
   it("has one entry per Settings section, each naming its heading", () => {

@@ -166,7 +166,7 @@ change set "implements" a task only when it is `applied` and changed at least on
 | | `refuted` | it is `retracted` and live nodes still rest on it | high |
 | `invalidated_decision` | `dependents_stale` | the decision has active stale marks — it was resolved or reopened after requirements, tasks or change sets were built on it, and they have not been re-planned or acknowledged. The same mark `idea impact` reports as `stale` | high when a task or change set is marked, medium when only requirements are |
 | | `requirement_revised` | it is decided, and a live requirement with a `derived_from` edge to it has a `requirement.revised` event with a higher sequence number than the decision's last `decision.resolved` (or `decision.created`) | medium |
-| | `basis_refuted` | it is decided, and an assertion it derives from or that `supports` it is `retracted` or `disputed`, or any node `invalidates` or `contradicts` it (the edges `idea impact` calls obsolete) | high |
+| | `basis_refuted` | it is decided, and an assertion it derives from, `supports` it or `invalidates` it is `retracted` or `disputed`, or any other node `invalidates` or `contradicts` it. Retraction writes the `invalidates` edge beside the `derived_from` one; the assertion is listed once | high |
 | | `requirements_removed` | it is decided, requirements cited it, and every one of them has since been removed or superseded | low |
 | `orphan_task` | `no_requirement` | a live task has no `implements` or `verifies` edge to a live requirement | medium |
 | `orphan_change_set` | `task_missing` | a change set still holding work (not rejected or superseded) names a task that no longer exists | medium if applied, else low |
@@ -197,7 +197,8 @@ review — and `dependents` counts the live requirements serving the objective (
 reachable through incoming edges — what derives from, implements, verifies or depends on the node —
 plus the targets of its own `supports` edges, plus the change sets still holding work of every task
 reached, bounded like `idea impact` (depth 8, 500 nodes). Provenance edges (`produced_by`,
-`consumes`) are not dependence.
+`consumes`) are not dependence, and neither is `invalidates`: the assertion that invalidates a node
+does not rest on it.
 
 What it deliberately does not do:
 
@@ -215,11 +216,19 @@ What it deliberately does not do:
   may also name a framing assumption it `supports` or `contradicts` (`assertion --supports|contradicts-->
   assertion`). So an assertion a requirement rests on reports as unvalidated **with** dependents
   (medium), and retracting one a decided decision rests on (`idea assumption ASM-n retract`) fires
-  `basis_refuted` on the decision and `refuted` on the assertion. The PRD reviewer sees the
+  `basis_refuted` on the decision and `refuted` on the assertion. The retraction also writes
+  `assertion --invalidates--> requirement|decision` for each live node resting on it (its
+  `derived_from` or `depends_on` edge), in the same transaction as the status change, with an
+  `assertion.invalidates_set` event naming the targets. The set is reconciled, not appended: a
+  repeat retraction writes nothing, a later accept or dispute removes the edges, a PRD cycle that
+  cites an already-retracted assertion gains one, and a revision that drops the citation loses it.
+  A node that has since been superseded keeps its edge as history. `idea why` on the node lists the
+  edge; `idea impact` on the assertion classes the node `obsolete`; neither treats the assertion
+  as the node's dependent. The PRD reviewer sees the
   assertions requirements rest on, with their status, and may raise a cited **medium** `basis`
   finding on a requirement resting on an unvalidated, disputed or retracted assumption or hypothesis.
-  Nothing in the workflow writes `invalidates`, or `supports`/`contradicts` into a decision, yet; the
-  rules read them when recorded. Judging an assertion (`idea assumption <ASM-n|id>
+  Nothing in the workflow writes `supports`/`contradicts` into a decision, or `invalidates` from
+  anything but a retracted assertion, yet; the rules read them when recorded. Judging an assertion (`idea assumption <ASM-n|id>
   accept|dispute|retract`) remains the only path out of `candidate`.
 - **Guidance counts omit mapped tests.** `gap_summary` is computed without the mapped-test parse
   (it needs every check output); `idea gaps` includes it, so its verification counts can be higher.

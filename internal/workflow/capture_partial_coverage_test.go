@@ -14,7 +14,7 @@ import (
 // which Collect calls) fails -- deterministically, no timing/races needed --
 // reproducing "the agent finished, and something on the way to a change set
 // failed" without needing to catch a Stop mid-flight.
-const rmFailsAgentDocker = `#!/usr/bin/env bash
+const rmFailsAgentDocker = `#!/bin/sh
 case "$1" in
   run)
     prev=""

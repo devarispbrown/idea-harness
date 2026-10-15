@@ -70,10 +70,11 @@ func (e *ContainerExecutor) Start(ctx context.Context, req Request) (Attempt, er
 	if err := os.MkdirAll(filepath.Join(req.WorkRoot, "result"), 0o700); err != nil {
 		return Attempt{}, fmt.Errorf("executor: container: mkdir work root: %w", err)
 	}
-	uid := containerUser()
+	who := containerIdentity(req.ProjectRoot)
+	uid := who.String()
 	// Handed to the container user under a root daemon, back in Collect/Cancel
 	// (containeruser.go).
-	grant, err := grantMounts(req.WorkRoot)
+	grant, err := grantMounts(who, req.WorkRoot)
 	if err != nil {
 		return Attempt{}, err
 	}

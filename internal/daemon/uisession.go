@@ -240,6 +240,24 @@ type pairingCodeResponse struct {
 	// code is useless and the CLI says so.
 	Remote bool     `json:"remote"`
 	URLs   []string `json:"urls"`
+	burnedCodesView
+}
+
+// burnedCodesView tells the owner that someone is guessing: how many pairing
+// codes burned (loginlimit.go) in the last store.BurnedCodeRetention, and when
+// the latest did. On the pairing response, so `idea ui pair` says it as the
+// owner mints the replacement, and on the session list, for Settings.
+type burnedCodesView struct {
+	BurnedCodes  int        `json:"burned_codes"`
+	LastBurnedAt *time.Time `json:"last_burned_at,omitempty"`
+}
+
+func (s *Server) burnedCodes(ctx context.Context, now time.Time) (burnedCodesView, error) {
+	n, last, err := s.rt.global.BurnedPairingCodes(ctx, now.Add(-store.BurnedCodeRetention))
+	if err != nil || n == 0 {
+		return burnedCodesView{}, err
+	}
+	return burnedCodesView{BurnedCodes: n, LastBurnedAt: &last}, nil
 }
 
 func (s *Server) handleCreatePairingCode(w http.ResponseWriter, r *http.Request) {
@@ -263,8 +281,13 @@ func (s *Server) handleCreatePairingCode(w http.ResponseWriter, r *http.Request)
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	burned, err := s.burnedCodes(r.Context(), now)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	urls := s.rt.remoteURLs()
-	writeJSON(w, http.StatusCreated, pairingCodeResponse{Code: code, ExpiresAt: exp.UTC(), Remote: len(urls) > 0, URLs: urls})
+	writeJSON(w, http.StatusCreated, pairingCodeResponse{Code: code, ExpiresAt: exp.UTC(), Remote: len(urls) > 0, URLs: urls, burnedCodesView: burned})
 }
 
 type sessionView struct {
@@ -283,19 +306,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ua := s.rt.uiAuth()
 	now := ua.now()
+	// A browser on this machine already holds the token (it can mint codes),
+	// so it is never charged or refused -- whatever any remote guesser does.
+	local := isLocalRequest(r)
 	client := loginClientKey(r, s.rt.hosts)
-	ua.mu.Lock()
-	lock, wait := ua.logins.check(client, now)
-	ua.mu.Unlock()
-	if lock != loginOpen {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Round(time.Second)/time.Second)))
-		mins := int((wait + time.Minute - 1) / time.Minute)
-		if lock == loginLockedGlobal {
-			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed sign-ins from too many places: sign-in is paused for everyone and every pairing code has been cancelled. Wait %d minute(s), then run `idea ui pair` for a new one", mins))
-		} else {
-			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed sign-ins from this device: wait %d minute(s) before trying again (your pairing code still works until it expires)", mins))
+	if !local {
+		ua.mu.Lock()
+		open, wait := ua.logins.check(client, now)
+		ua.mu.Unlock()
+		if !open {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Round(time.Second)/time.Second)))
+			mins := int((wait + time.Minute - 1) / time.Minute)
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed sign-ins from this device: wait %d minute(s) before trying again, or sign in from another device", mins))
+			return
 		}
-		return
 	}
 	var body struct {
 		Code  string `json:"code"`
@@ -324,15 +348,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ID: id.New(), Label: label, UserAgent: truncateBytes(r.UserAgent(), 200), RemoteAddr: s.clientAddr(r),
 		CreatedAt: now.UTC(), LastSeenAt: now.UTC(), ExpiresAt: now.Add(ttl).UTC(),
 	}
-	sess, err := s.rt.global.RedeemPairingCode(r.Context(), hashSecret(normalizePairingCode(body.Code)), sess, hashSecret(secret), now)
+	sess, burned, err := s.rt.global.RedeemPairingCode(r.Context(), hashSecret(normalizePairingCode(body.Code)), sess, hashSecret(secret), now, pairingCodeFailureBudget)
 	if errors.Is(err, store.ErrPairingCodeInvalid) {
-		ua.mu.Lock()
-		spent := ua.logins.fail(client, now)
-		ua.mu.Unlock()
-		if spent {
-			n, _ := s.rt.global.InvalidatePairingCodes(r.Context(), now)
-			s.rt.log.Warn("ui: global sign-in failure ceiling reached; sign-in paused and outstanding pairing codes cancelled", "cancelled", n, "remote", s.clientAddr(r))
+		if !local {
+			ua.mu.Lock()
+			ua.logins.fail(client, now)
+			ua.mu.Unlock()
 		}
+		if burned > 0 {
+			s.rt.log.Warn("ui: pairing code burned after too many wrong sign-in codes; someone may be guessing. `idea ui pair` mints a fresh one",
+				"burned", burned, "failures_per_code", pairingCodeFailureBudget, "remote", s.clientAddr(r))
+		}
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if errors.Is(err, store.ErrPairingCodeBurned) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -391,13 +421,24 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type uiSessionList struct {
+	Sessions []store.UISession `json:"sessions"`
+	Current  string            `json:"current"`
+	burnedCodesView
+}
+
 func (s *Server) handleListUISessions(w http.ResponseWriter, r *http.Request) {
 	list, err := s.rt.global.ListUISessions(r.Context())
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": list, "current": authFrom(r).sessionID})
+	burned, err := s.burnedCodes(r.Context(), s.rt.uiAuth().now())
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, uiSessionList{Sessions: list, Current: authFrom(r).sessionID, burnedCodesView: burned})
 }
 
 func (s *Server) handleRevokeUISession(w http.ResponseWriter, r *http.Request) {

@@ -125,7 +125,10 @@ type acpLaunch struct {
 	AttemptID string
 	WorkRoot  string
 	AgentHome string
-	Argv      []string
+	// User is the container's --user (containerUser); "" means no project:
+	// the daemon's own uid:gid, or 65532 under a root daemon.
+	User string
+	Argv []string
 	// Secrets are env values the agent needs: its provider key and any
 	// value_env an MCP server names. Never put in argv.
 	Secrets map[string]string
@@ -318,9 +321,10 @@ func (e *ACPExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 	if err != nil {
 		return Attempt{}, err
 	}
-	// A root daemon runs the agent as ContainerUID: hand it what it writes,
-	// and take it back in finish (containeruser.go).
-	grant, err := grantMounts(req.WorkRoot, home)
+	// A root daemon runs the agent as the project's owner (or 65532): hand
+	// it what it writes, and take it back in finish (containeruser.go).
+	who := containerIdentity(req.ProjectRoot)
+	grant, err := grantMounts(who, req.WorkRoot, home)
 	if err != nil {
 		removeAgentHome(home)
 		return Attempt{}, err
@@ -344,7 +348,7 @@ func (e *ACPExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 		}
 	}
 
-	proc, err := e.launch(ctx, acpLaunch{AttemptID: attemptID, WorkRoot: req.WorkRoot, AgentHome: home,
+	proc, err := e.launch(ctx, acpLaunch{AttemptID: attemptID, WorkRoot: req.WorkRoot, AgentHome: home, User: who.String(),
 		Argv: e.agentArgv(), Secrets: secrets, Stderr: &lineWriter{ring: &a.out}})
 	if err != nil {
 		_ = grant.Restore()
@@ -632,9 +636,9 @@ func (e *ACPExecutor) handle(a *acpAttempt, workRoot, method string, params json
 			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
 		}
 		// Written by the daemon on the agent's behalf; under a root daemon
-		// the agent (ContainerUID) must still be able to edit it from inside
+		// the agent (not root) must still be able to edit it from inside
 		// its container (containeruser.go).
-		if err := handOver(workRoot, host); err != nil {
+		if err := a.grant.handOver(workRoot, host); err != nil {
 			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
 		}
 		a.out.addLine("wrote " + p.Path)
@@ -947,7 +951,10 @@ type PermissionLogger interface {
 // that an attached `docker run` might not have read yet when it would be
 // deleted.
 func (e *ACPExecutor) containerArgs(l acpLaunch) []string {
-	uid := containerUser()
+	uid := l.User
+	if uid == "" {
+		uid = containerUser("")
+	}
 	args := []string{
 		"run", "-i", "--rm",
 		"--name", agentContainerName(l.AttemptID),
@@ -1237,7 +1244,7 @@ func ProbeACP(ctx context.Context, image string, command []string) (string, erro
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", containerUser(),
+		"--user", containerUser(""), // a probe: no project
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",

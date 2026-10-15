@@ -32,8 +32,14 @@ type ImpactItem struct {
 // Why returns the provenance chain for a node: it follows outgoing edges
 // (implements / derived_from / produced_by / depends_on) from the node to its
 // sources, bounded.
+//
+// invalidates is the exception both ways. An assertion's outgoing invalidates
+// edge is not provenance and is not followed; a node's incoming one is listed
+// (A --invalidates--> node, not walked further), so the chain for a
+// requirement resting on a retracted assertion says the basis was refuted.
 func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string) ([]TraceItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
+	inv := e.invalidations(ctx, initiativeID)
 	// Non-nil so an empty chain marshals as [] rather than null: a node with no
 	// provenance is a normal answer, and a client should not have to null-check it.
 	out := []TraceItem{}
@@ -52,7 +58,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 				return nil, err
 			}
 			for _, ed := range edges {
-				if !cache.isLive(ed.ToType, ed.ToID) {
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.ToType, ed.ToID) {
 					continue
 				}
 				out = append(out, TraceItem{
@@ -60,6 +66,15 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 					FromLabel: cache.label(n[0], n[1]), ToType: ed.ToType, ToID: ed.ToID, ToLabel: cache.label(ed.ToType, ed.ToID),
 				})
 				next = append(next, [2]string{ed.ToType, ed.ToID})
+			}
+			for _, ed := range inv.by[key] {
+				if !cache.isLive(ed.FromType, ed.FromID) {
+					continue
+				}
+				out = append(out, TraceItem{
+					EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
+					FromLabel: cache.label(ed.FromType, ed.FromID), ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
+				})
 			}
 		}
 		queue = next
@@ -73,6 +88,12 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 // Impact returns the dependents of a node: it follows incoming edges (from
 // nodes that point to this node) with a staleness classification.
 //
+// An incoming invalidates edge is not followed: the assertion that
+// invalidates a node undercuts it, it does not depend on it. A dependent that
+// something invalidates is classed "obsolete" instead -- so `impact assertion
+// ASM-3` on a retracted assertion reads the requirements and decisions
+// resting on it as obsolete, not merely to revalidate.
+//
 // A task's change sets are not wired as graph edges (review A4 #4: a change
 // set is linked to its task via ChangeSet.TaskID, not an edge), so when the
 // frontier reaches a task node, its change sets are pulled in by query and
@@ -82,6 +103,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID string) ([]ImpactItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
 	stale := e.staleTargetSet(ctx, initiativeID)
+	inv := e.invalidations(ctx, initiativeID)
 	out := []ImpactItem{} // non-nil: see Why
 	visited := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
@@ -98,15 +120,19 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 				return nil, err
 			}
 			for _, ed := range edges {
-				if !cache.isLive(ed.FromType, ed.FromID) {
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.FromType, ed.FromID) {
 					continue
+				}
+				staleness := stalenessForNode(stale, ed.FromType, ed.FromID, ed.EdgeType)
+				if staleness != "stale" && inv.invalidated(ed.FromType, ed.FromID, cache) {
+					staleness = "obsolete"
 				}
 				out = append(out, ImpactItem{
 					TraceItem: TraceItem{
 						EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
 						FromLabel: cache.label(ed.FromType, ed.FromID), ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
 					},
-					Staleness: stalenessForNode(stale, ed.FromType, ed.FromID, ed.EdgeType),
+					Staleness: staleness,
 				})
 				next = append(next, [2]string{ed.FromType, ed.FromID})
 			}
@@ -197,8 +223,8 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 				return 0, err
 			}
 			for _, ed := range edges {
-				if !cache.isLive(ed.FromType, ed.FromID) {
-					continue
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.FromType, ed.FromID) {
+					continue // see Impact
 				}
 				dk := ed.FromType + ":" + ed.FromID
 				if !dependents[dk] {
@@ -257,9 +283,11 @@ func stalenessForNode(stale map[string]bool, targetType, targetID string, edgeTy
 }
 
 // stalenessFor classifies a dependent based on the edge type (§26). Deterministic.
+// invalidates is not here: Impact never follows it, and classes an
+// invalidated dependent obsolete itself.
 func stalenessFor(edgeType domain.EdgeType) string {
 	switch edgeType {
-	case domain.EdgeSupersedes, domain.EdgeInvalidates:
+	case domain.EdgeSupersedes:
 		return "obsolete"
 	default:
 		return "revalidate"
@@ -464,4 +492,35 @@ func (c labelCache) label(typ, id string) string {
 		}
 	}
 	return typ + " " + id
+}
+
+// invalidationIndex is the initiative's invalidates edges keyed by target
+// ("type:id"), loaded once per Why/Impact call.
+type invalidationIndex struct {
+	by map[string][]domain.GraphEdge
+}
+
+func (e *Engine) invalidations(ctx context.Context, initiativeID string) invalidationIndex {
+	idx := invalidationIndex{by: map[string][]domain.GraphEdge{}}
+	edges, err := e.db.ListGraphEdges(ctx, initiativeID)
+	if err != nil {
+		return idx
+	}
+	for _, ed := range edges {
+		if ed.EdgeType == domain.EdgeInvalidates {
+			k := ed.ToType + ":" + ed.ToID
+			idx.by[k] = append(idx.by[k], ed)
+		}
+	}
+	return idx
+}
+
+// invalidated reports whether a live node invalidates typ:id.
+func (x invalidationIndex) invalidated(typ, id string, cache labelCache) bool {
+	for _, ed := range x.by[typ+":"+id] {
+		if cache.isLive(ed.FromType, ed.FromID) {
+			return true
+		}
+	}
+	return false
 }

@@ -101,6 +101,11 @@ describe("remote sign-in helpers", () => {
   });
   it("explains each sign-in failure with what to do", () => {
     expect(loginErrorMessage(401, "")).toMatch(/idea ui pair/);
+    expect(loginErrorMessage(401, "pairing code is invalid, expired or already used")).toMatch(/mistyped/);
+    // A burned code says so, and that a new one works.
+    expect(loginErrorMessage(401, "this pairing code was cancelled because too many wrong codes were tried")).toMatch(
+      /someone may be guessing.*new code works/,
+    );
     expect(loginErrorMessage(429, "")).toMatch(/15 minutes/);
     // The daemon's own 429 says whether only this device is paused.
     expect(loginErrorMessage(429, "too many failed sign-ins from this device: wait 3 minute(s)")).toMatch(/this device/);
