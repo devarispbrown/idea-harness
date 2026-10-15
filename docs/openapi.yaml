@@ -4864,7 +4864,8 @@ paths:
       summary: The project's openhands remote runs
       description: |
         The same rows across every initiative, newest first, at most 200. `?active=true` keeps
-        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`.
+        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`;
+        the UI's Remote runs (`#/runs`).
       parameters:
         - name: active
           in: query

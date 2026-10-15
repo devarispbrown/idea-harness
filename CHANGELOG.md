@@ -95,6 +95,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Every initiative's remote runs in the UI.** `#/runs` (the sidebar's **Remote runs**, or ⌘K)
+  lists the project's OpenHands remote runs across initiatives, newest first, each linking to its
+  initiative's Build, with **Only runs not yet over** for `?active=true` — the UI side of
+  `idea runs remote --all`, which makes `runs remote` `ui` in the parity ledger. It reads the
+  existing `GET /projects/{projectId}/remote-runs`; no API change.
+- **The artifact diff is in the viewport sweep.** `web/e2e/views.e2e.ts` used to add the diff
+  route only when the first artifact kind had two versions, which it never did, so the route was
+  never checked. The sweep now seeds a second initiative with a revised PRD whose diff has added
+  and removed lines, checks both render, and runs the usual one-h1, overflow and axe checks on it
+  at 390px and 1280px.
 - **Edit every field of a metric from the Define page.** The metric edit form adds guardrail
   (blank clears it), cadence, definition, source — recorded by hand, a command, or a URL with a JSON
   pointer — and, with more than one objective, which objective it measures; `metric edit` is now
