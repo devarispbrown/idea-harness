@@ -194,10 +194,21 @@ func TestSteerRunHoldsTheNoteForTheNextRunWhenUnsupported(t *testing.T) {
 	if info, _ := eng.LiveRun(iniID); info.Steerable {
 		t.Fatal("hermes reported steerable")
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 1 || got[0] != "prefer small commits" {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 1 || got[0] != "prefer small commits" {
 		t.Fatalf("pending = %v", got)
 	}
 	eng.clearLive(iniID)
+
+	// A daemon restart between the note and the next run: a new engine over
+	// the same database still has it (held notes used to live in memory).
+	restarted := New(db, eng.blobs, eng.registry, eng.cfg, nil)
+	restarted.SetRawBlobs(eng.blobs)
+	restarted.SetWorkRoot(eng.workRoot)
+	restarted.SetWorkspaceRoot(eng.workspaceRoot)
+	eng = restarted
+	if got := eng.PendingNotes(ctx, iniID); len(got) != 1 || got[0] != "prefer small commits" {
+		t.Fatalf("pending after restart = %v", got)
+	}
 
 	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
@@ -213,7 +224,7 @@ func TestSteerRunHoldsTheNoteForTheNextRunWhenUnsupported(t *testing.T) {
 	if !strings.Contains(note, "prefer small commits") {
 		t.Fatalf("next run's note = %q, want the held steering note", note)
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 0 {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 0 {
 		t.Fatalf("the held note was not consumed: %v", got)
 	}
 }
@@ -226,7 +237,7 @@ func TestSteerRunFallsBackWhenTheSessionIsEnding(t *testing.T) {
 	if err != nil || res.Delivery != domain.SteeringNextRun {
 		t.Fatalf("result = %+v, %v", res, err)
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 1 {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 1 {
 		t.Fatalf("pending = %v", got)
 	}
 }

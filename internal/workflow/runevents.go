@@ -213,15 +213,37 @@ func (e *Engine) registerLiveRun(initiativeID, runID string, exec executor.Execu
 	a.run = &liveRun{runID: runID, exec: exec, rec: rec}
 }
 
-// takePendingNotes returns and clears the steering notes held for the
-// initiative's next run (sent to a run that could not take them): this run's
-// brief carries them.
-func (e *Engine) takePendingNotes(initiativeID string) []string {
-	e.liveMu.Lock()
-	defer e.liveMu.Unlock()
-	notes := e.pendingNotes[initiativeID]
-	delete(e.pendingNotes, initiativeID)
-	return notes
+// takePendingNotes returns, and marks consumed by taskID's run, the steering
+// notes held for the initiative's next run (sent to a run that could not take
+// them): this run's brief carries them. Stored, not in memory, so a daemon
+// restart between the note and this run does not drop them; the store's
+// take is one statement, so each note rides exactly one run. A failure to
+// read them is logged, not fatal: the run goes ahead without them, and they
+// stay held for the one after.
+func (e *Engine) takePendingNotes(ctx context.Context, initiativeID, taskID string) []string {
+	held, err := e.db.TakeSteeringNotes(ctx, initiativeID, taskID)
+	if err != nil {
+		if e.log != nil {
+			e.log.Warn("could not read held steering notes", "initiative", initiativeID, "error", err)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(held))
+	for _, n := range held {
+		out = append(out, n.Note)
+	}
+	return out
+}
+
+// holdNote stores a steering note for the initiative's next run.
+func (e *Engine) holdNote(ctx context.Context, initiativeID string, lr *liveRun, note string) error {
+	n := store.HeldSteeringNote{InitiativeID: initiativeID, RunID: lr.runID, Note: e.redact(note)}
+	if lr.rec != nil {
+		n.TaskID = lr.rec.base.TaskID
+	}
+	// Detached from the request: the caller is told the note is held, so a
+	// client hanging up mid-call must not lose it.
+	return e.db.HoldSteeringNote(context.WithoutCancel(ctx), n)
 }
 
 // setLiveAttempt records the executor's attempt id once Start returned.
@@ -286,17 +308,17 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 		if lr.exec != nil {
 			res.Executor = lr.exec.Name()
 		}
-		if e.pendingNotes == nil {
-			e.pendingNotes = map[string][]string{}
-		}
-		e.pendingNotes[initiativeID] = append(e.pendingNotes[initiativeID], note)
 		res.Delivery = domain.SteeringNextRun
 		res.Message = fmt.Sprintf("steering not supported by %s; your note will be added to this task's next run", firstNonEmptyStr(res.Executor, "this executor"))
 	}
 	attemptID := lr.attemptID
 	e.liveMu.Unlock()
 
-	if steerer != nil {
+	if steerer == nil {
+		if err := e.holdNote(ctx, initiativeID, lr, note); err != nil {
+			return SteerResult{}, err
+		}
+	} else {
 		// Between the run's creation and the agent's start there is no
 		// session to reach yet: held for the next run, like a finished one.
 		d, err := "", executor.ErrSteeringUnsupported
@@ -307,12 +329,9 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 		case errors.Is(err, executor.ErrSteeringUnsupported):
 			// The agent's session is ending (or already over): hold the note
 			// for the next run rather than lose it.
-			e.liveMu.Lock()
-			if e.pendingNotes == nil {
-				e.pendingNotes = map[string][]string{}
+			if err := e.holdNote(ctx, initiativeID, lr, note); err != nil {
+				return SteerResult{}, err
 			}
-			e.pendingNotes[initiativeID] = append(e.pendingNotes[initiativeID], note)
-			e.liveMu.Unlock()
 			res.Delivery = domain.SteeringNextRun
 			res.Message = "The agent is finishing and can no longer take a note; it will be added to this task's next run."
 		case err != nil:
@@ -336,11 +355,18 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 	return res, nil
 }
 
-// PendingNotes returns steering notes held for the initiative's next run.
-func (e *Engine) PendingNotes(initiativeID string) []string {
-	e.liveMu.Lock()
-	defer e.liveMu.Unlock()
-	return append([]string(nil), e.pendingNotes[initiativeID]...)
+// PendingNotes returns steering notes held for the initiative's next run,
+// oldest first (nil when none, or when they cannot be read).
+func (e *Engine) PendingNotes(ctx context.Context, initiativeID string) []string {
+	held, err := e.db.PendingSteeringNotes(ctx, initiativeID)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, n := range held {
+		out = append(out, n.Note)
+	}
+	return out
 }
 
 func firstNonEmptyStr(s ...string) string {

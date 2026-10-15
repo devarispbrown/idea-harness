@@ -171,7 +171,9 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **Steering.** `POST …/runs/{runId}/steer` sends a note to a running agent: ACP as its next prompt
   turn (or at once, ending the current turn, with `interrupt`), OpenHands as a message into the
   conversation; other executors answer `steering not supported by <kind>` and the note rides on the
-  task's next run. Notes are recorded on the run's events and manifest. See
+  task's next run. A held note is stored (migration 45, `held_steering_notes`, redacted), so a
+  daemon restart before that run no longer drops it, and the run takes each one exactly once.
+  Notes are recorded on the run's events and manifest. See
   [docs/agents.md](docs/agents.md#steering-a-running-agent).
 - **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
   conversation in that UI.
