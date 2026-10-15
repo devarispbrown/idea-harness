@@ -588,12 +588,62 @@ const (
 	SandboxContainer       SandboxMode = "container"
 	SandboxLocalRestricted SandboxMode = "local_restricted"
 	SandboxHostApproved    SandboxMode = "host_approved"
+	// SandboxRemote: the agent runs on another machine (the openhands kind's
+	// Agent Server), inside whatever sandbox that server provides. The
+	// harness cannot inspect or enforce it, so it does not claim "container"
+	// for it -- what it does enforce is on the way back: the returned files
+	// go through the same snapshot, diff, secret sweep and review as any
+	// local agent's (docs/security-model.md).
+	SandboxRemote SandboxMode = "remote"
 )
 
 func (m SandboxMode) Valid() bool {
 	switch m {
-	case SandboxContainer, SandboxLocalRestricted, SandboxHostApproved:
+	case SandboxContainer, SandboxLocalRestricted, SandboxHostApproved, SandboxRemote:
 		return true
 	}
 	return false
+}
+
+// RemoteRunStatus is where a run delegated to a remote execution plane (the
+// openhands executor's Agent Server) stands, as the harness last recorded it.
+// The harness stays authoritative: the remote server's own status is an input
+// to this, never a substitute for it.
+type RemoteRunStatus string
+
+const (
+	// RemoteRunDispatching: the record exists, the remote conversation may or
+	// may not. A crash here is resolved by re-dispatching under the same
+	// idempotency key, which finds the conversation if it was created.
+	RemoteRunDispatching RemoteRunStatus = "dispatching"
+	// RemoteRunRunning: the remote conversation exists and has not finished.
+	RemoteRunRunning RemoteRunStatus = "running"
+	// RemoteRunFinished: the remote agent finished successfully, and its
+	// files have not been brought back yet (the daemon restarted, or
+	// reconciliation saw it finish). The next execute of the same task
+	// collects it instead of starting again.
+	RemoteRunFinished RemoteRunStatus = "finished"
+	// RemoteRunCollected: the files were brought back into the local work
+	// root and the change-set pipeline took over. Terminal.
+	RemoteRunCollected RemoteRunStatus = "collected"
+	// RemoteRunFailed: the remote agent errored, the conversation vanished,
+	// or the result could not be used. Terminal; Error says why.
+	RemoteRunFailed RemoteRunStatus = "failed"
+	// RemoteRunCancelled: stopped by the operator (idea cancel / Stop).
+	// Terminal.
+	RemoteRunCancelled RemoteRunStatus = "cancelled"
+)
+
+func (s RemoteRunStatus) Valid() bool {
+	switch s {
+	case RemoteRunDispatching, RemoteRunRunning, RemoteRunFinished, RemoteRunCollected, RemoteRunFailed, RemoteRunCancelled:
+		return true
+	}
+	return false
+}
+
+// Terminal reports whether nothing further will happen to the run: a new
+// attempt of the same task starts a new remote run rather than re-attaching.
+func (s RemoteRunStatus) Terminal() bool {
+	return s == RemoteRunCollected || s == RemoteRunFailed || s == RemoteRunCancelled
 }

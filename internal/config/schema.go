@@ -91,7 +91,7 @@ var harnessSchema = `{
     "executor": {
       "type": "object",
       "properties": {
-        "kind":  { "enum": ["auto", "internal", "container", "omp", "hermes", "acp"] },
+        "kind":  { "enum": ["auto", "internal", "container", "omp", "hermes", "acp", "openhands"] },
         "image": { "type": "string" },
         "model": { "type": "string" },
         "acp": {
@@ -100,6 +100,20 @@ var harnessSchema = `{
             "command":         { "type": "array", "items": { "type": "string" } },
             "key_env":         { "type": "string" },
             "timeout_seconds": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "openhands": {
+          "type": "object",
+          "properties": {
+            "url":                   { "type": "string" },
+            "api_key_env":           { "type": "string" },
+            "agent":                 { "enum": ["openhands", "acp"] },
+            "acp_command":           { "type": "array", "items": { "type": "string" } },
+            "workspace_dir":         { "type": "string" },
+            "withhold_provider_key": { "type": "boolean" },
+            "max_iterations":        { "type": "integer", "minimum": 0 },
+            "timeout_seconds":       { "type": "integer", "minimum": 0 }
           },
           "additionalProperties": false
         },
