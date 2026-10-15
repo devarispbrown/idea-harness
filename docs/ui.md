@@ -696,7 +696,12 @@ intercept those requests: no product data is ever stored on the device.
 - **Component tests** — `web/src/components.test.tsx` renders the components in jsdom (opted in per
   file with `// @vitest-environment jsdom`) against a stubbed daemon (`web/src/testing/fakeDaemon.ts`)
   and asserts what they send and show: the note inputs, the change-set chip, NotFound, Settings'
-  executor display. `pnpm test` runs them with the rest of the unit suite.
+  executor display. `web/src/settings/settingsComponents.test.tsx` does the same for Settings'
+  editors (Executor, Budget, the Slack and Linear editors and the Integrations panel), the budget
+  meter and Automations: what each renders from the daemon, what it refuses before a round trip
+  (a pasted token or secret-looking literal, a cap of $0, an eval cost cap that is not > 0), what
+  it sends, and the daemon's refusal shown (`fail(status, error)` in `fakeDaemon`). `pnpm test`
+  runs them with the rest of the unit suite.
 - **Browser suite** — `make e2e` (`web/e2e`, Playwright, Chromium) builds the binary, starts a
   hermetic demo daemon (port 19590 or `IDEA_E2E_PORT`, state under `web/e2e/.work`, every provider
   key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op revision → run
