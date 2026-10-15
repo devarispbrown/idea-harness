@@ -477,11 +477,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   dot were literal white in dark mode.
 - **A stray merge marker in `styles.css`** (`=======`) made the browser drop the rule after it —
   the run panel's own container style.
-- **A run that ended mid-tool-call left that call "in progress" in the run panel.** Calls still open
-  when the run is over now read **cancelled** (⊘), counted as done in "n/m actions" and shown as
-  "· n cancelled"; the engine records the cancelled result itself, and the panel also closes any it
-  never got a result for.
-
+- **A stopped run's tool calls no longer stay "in progress".** When a run ends — Stop, a failure, a
+  timeout, or an agent that never reported a call's end — every tool call still pending or in
+  progress gets a harness `tool_result` with `status: cancelled` on the same `tool_call_id`, so the
+  run panel and the run report show it as ended. The run panel reads such a call **cancelled** (⊘),
+  counts it as done in "n/m actions" with "· n cancelled", and closes any open call itself once the
+  run is over (a run recorded before this, or a result that was dropped).
 - **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
   `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
   findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer

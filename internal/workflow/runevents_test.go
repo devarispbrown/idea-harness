@@ -371,6 +371,47 @@ func TestRunRecorderCountsDroppedEvents(t *testing.T) {
 	}
 }
 
+// A run that ends with tool calls still pending or in progress (Stop, a
+// failure, an agent that never reported the end) closes each with a
+// cancelled tool_result on the same call id; finished calls, and calls with
+// no id, are left alone, and closing twice adds nothing.
+func TestRunRecorderClosesOpenToolCallsAsCancelled(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+	rec := eng.newRunRecorder("run-stop", "", iniID, "t", "acp")
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "done", Status: "in_progress", Title: "read a"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolResult, ToolCallID: "done", Status: "completed"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "running", ToolKind: "execute", Status: "in_progress", Title: "npm test"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "pending", Title: "edit b"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "failed", Status: "failed"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, Status: "in_progress", Title: "no id"})
+	rec.Close()
+	rec.Close()
+	evs, err := db.ListAllRunEvents(ctx, "run-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := map[string]domain.RunEvent{}
+	for _, ev := range evs {
+		if ev.Status == ToolCallCancelled {
+			if _, dup := cancelled[ev.ToolCallID]; dup {
+				t.Fatalf("call %q closed twice", ev.ToolCallID)
+			}
+			cancelled[ev.ToolCallID] = ev
+		}
+	}
+	if len(cancelled) != 2 {
+		t.Fatalf("cancelled = %v, want exactly the running and pending calls", cancelled)
+	}
+	r, ok := cancelled["running"]
+	if !ok || r.Kind != domain.RunEventToolResult || r.ToolKind != "execute" || r.Source != domain.RunEventSourceHarness || r.RunID != "run-stop" {
+		t.Fatalf("closing event for the running call = %+v", r)
+	}
+	if _, ok := cancelled["pending"]; !ok {
+		t.Fatal("the pending call was not closed")
+	}
+}
+
 // A run's cost is the sum of its cost events (deltas) when its manifest has
 // no figure; an agent's text cannot inject Markdown structure into the
 // report.

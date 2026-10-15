@@ -5963,7 +5963,8 @@ components:
         status:
           type: string
           description: |
-            A tool call's state (pending, in_progress, completed, failed); a permission's decision
+            A tool call's state (pending, in_progress, completed, failed, or cancelled when the run
+            ended first); a permission's decision
             (allow_once, ...); a note's delivery (delivered, queued, next_run); a status event's
             state (starting, running, agent_finished, finished, stopped, ...); on a `harness`
             file_change, the change type of the orchestrator's own diff (add, modify, delete) -
