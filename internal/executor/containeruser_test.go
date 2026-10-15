@@ -48,15 +48,116 @@ func fakeRootDaemon(t *testing.T) *chownLog {
 
 const unprivileged = "65532:65532"
 
+// fakeOwners makes ownerOf report these owners; any other path is missing.
+func fakeOwners(t *testing.T, owners map[string][2]int) {
+	t.Helper()
+	prev := ownerOf
+	ownerOf = func(path string) (int, int, error) {
+		if o, ok := owners[path]; ok {
+			return o[0], o[1], nil
+		}
+		return 0, 0, os.ErrNotExist
+	}
+	t.Cleanup(func() { ownerOf = prev })
+}
+
 func TestContainerUser(t *testing.T) {
+	fakeOwners(t, map[string][2]int{
+		"/home/ann/proj": {1000, 1000},
+		"/srv/rootproj":  {0, 0},
+		"/srv/wheel":     {1001, 0},
+		"/srv/rootuser":  {0, 1002},
+	})
 	if os.Geteuid() != 0 {
-		if got, want := containerUser(), fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()); got != want {
-			t.Fatalf("a non-root daemon: --user %s, want its own %s (unchanged)", got, want)
+		own := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+		for _, root := range []string{"", "/home/ann/proj", "/srv/rootproj"} {
+			if got := containerUser(root); got != own {
+				t.Fatalf("a non-root daemon, project %q: --user %s, want its own %s (unchanged)", root, got, own)
+			}
 		}
 	}
 	fakeRootDaemon(t)
-	if got := containerUser(); got != unprivileged {
-		t.Fatalf("a root daemon: --user %s, want %s", got, unprivileged)
+	for root, want := range map[string]string{
+		"":               unprivileged, // a probe: no project
+		"/home/ann/proj": "1000:1000",  // the project's owner
+		"/srv/rootproj":  unprivileged, // owned by root: never root
+		"/srv/rootuser":  unprivileged,
+		"/srv/wheel":     "1001:65532", // never the root group
+		"/missing":       unprivileged, // owner unknown
+	} {
+		if got := containerUser(root); got != want {
+			t.Errorf("a root daemon, project %q: --user %s, want %s", root, got, want)
+		}
+	}
+}
+
+// TestRootDaemonContainersRunAsProjectOwner: every site that works for a
+// project passes the project owner's uid:gid under a root daemon, and hands
+// the writable mounts to that owner rather than to 65532.
+func TestRootDaemonContainersRunAsProjectOwner(t *testing.T) {
+	const owner = "1000:1000"
+	proj := t.TempDir()
+	fakeOwners(t, map[string][2]int{proj: {1000, 1000}})
+	log := fakeRootDaemon(t)
+
+	e := &SandboxedAgentExecutor{name: "hermes", image: "img", dockerPath: "docker"}
+	if args := e.containerArgs(Request{WorkRoot: "/tmp/work", ProjectRoot: proj}, "a", "", "/tmp/home"); !hasFlagValue(args, "--user", owner) {
+		t.Fatalf("hermes argv: %v", args)
+	}
+	acp := NewACPExecutor(ACPOptions{Image: "img", Command: []string{"agent"}}, AgentProvider{Name: "ollama"})
+	if args := acp.containerArgs(acpLaunch{AttemptID: "a", WorkRoot: "/tmp/work", User: owner, Argv: []string{"agent"}}); !hasFlagValue(args, "--user", owner) {
+		t.Fatalf("acp argv: %v", args)
+	}
+	sb := NewContainerSandbox("img")
+	if args := sb.isolatedArgs(RunOptions{WorkRoot: "/tmp/work", RepoRoot: proj}); !hasFlagValue(args, "--user", owner) {
+		t.Fatalf("check argv (RepoRoot): %v", args)
+	}
+	if args := sb.isolatedArgs(RunOptions{WorkRoot: "/tmp/work", ProjectRoot: proj}); !hasFlagValue(args, "--user", owner) {
+		t.Fatalf("check argv (ProjectRoot, no /repo): %v", args)
+	}
+
+	record := filepath.Join(t.TempDir(), "record")
+	t.Setenv("FAKE_DOCKER_RECORD", record)
+	bin := writeExecutable(t, "docker", `#!/bin/sh
+echo "$*" >> "$FAKE_DOCKER_RECORD"
+case "$1" in
+  run) echo cid-1 ;;
+  wait) echo 0 ;;
+esac
+exit 0
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	work := t.TempDir()
+	sb.dockerPath = bin
+	if _, _, _, err := sb.Run(ctx, RunOptions{WorkRoot: work, RepoRoot: proj, Cmd: []string{"true"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Granted to the owner for the run (then restored to the daemon).
+	granted := false
+	log.mu.Lock()
+	for _, p := range log.order {
+		if p == work {
+			granted = true
+		}
+	}
+	log.mu.Unlock()
+	if !granted {
+		t.Fatal("the sandbox did not hand its work root over")
+	}
+	ce := NewContainerExecutor(nil, "img")
+	ce.dockerPath = bin
+	cwork := t.TempDir()
+	if _, err := ce.Start(ctx, Request{WorkRoot: cwork, ProjectRoot: proj, TaskTitle: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if o, _ := log.owner(cwork); o != [2]int{1000, 1000} {
+		t.Fatalf("container executor handed its work root to %v, want the project owner", o)
+	}
+	for _, c := range dockerCalls(t, record) {
+		if strings.HasPrefix(c, "run ") && !strings.Contains(c, "--user "+owner) {
+			t.Errorf("a docker run for a project owned by 1000 without --user %s:\n%s", owner, c)
+		}
 	}
 }
 
@@ -143,7 +244,7 @@ func TestGrantMountsAndRestore(t *testing.T) {
 	os.Symlink(outside, filepath.Join(work, "link"))
 
 	log := fakeRootDaemon(t)
-	g, err := grantMounts(work, "", filepath.Join(t.TempDir(), "missing"))
+	g, err := grantMounts(unprivilegedIdentity, work, "", filepath.Join(t.TempDir(), "missing"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,12 +292,21 @@ func TestNonRootDaemonChownsNothing(t *testing.T) {
 	prev := lchown
 	lchown = func(string, int, int) error { called = true; return nil }
 	t.Cleanup(func() { lchown = prev })
-	g, err := grantMounts(t.TempDir())
+	g, err := grantMounts(unprivilegedIdentity, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = g.Restore()
-	_ = handOver("/w", "/w/a/b")
+	_ = g.handOver("/w", "/w/a/b")
+	state := t.TempDir()
+	os.MkdirAll(filepath.Join(state, "projects", "p", "work", "ini"), 0o755)
+	os.MkdirAll(filepath.Join(state, "projects", "p", "quality-1"), 0o755)
+	if n, err := RecoverWorkRoots(state); n != 0 || err != nil {
+		t.Fatalf("RecoverWorkRoots on a non-root daemon: %d %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "projects", "p", "quality-1")); err != nil {
+		t.Fatal("a non-root daemon removed a quality copy")
+	}
 	if called {
 		t.Fatal("a non-root daemon chowned something")
 	}
@@ -204,8 +314,18 @@ func TestNonRootDaemonChownsNothing(t *testing.T) {
 
 func TestHandOverStaysInsideTheRoot(t *testing.T) {
 	log := fakeRootDaemon(t)
-	if err := handOver("/w", "/w/a/b/c.txt"); err != nil {
+	g := &mountGrant{to: identity{1000, 1000}}
+	if err := g.handOver("/w", "/w/a/b/c.txt"); err != nil {
 		t.Fatal(err)
+	}
+	for p, o := range log.calls {
+		if o != [2]int{1000, 1000} {
+			t.Errorf("%s handed to %v, want the grant's user", p, o)
+		}
+	}
+	var nilGrant *mountGrant
+	if err := nilGrant.handOver("/w", "/w/x"); err != nil || log.calls["/w/x"] != [2]int{} {
+		t.Fatal("a nil grant handed something over")
 	}
 	var got []string
 	for p := range log.calls {
@@ -217,7 +337,111 @@ func TestHandOverStaysInsideTheRoot(t *testing.T) {
 	}
 }
 
+// TestRecoverWorkRoots: a root daemon starting after one was killed mid-run
+// hands every foreign-owned path in a work root back to itself, removes the
+// disposable quality copies, and touches nothing else: not agent homes, not a
+// symlinked root, never a symlink's target.
+func TestRecoverWorkRoots(t *testing.T) {
+	state := t.TempDir()
+	proj := filepath.Join(state, "projects", "p")
+	work := filepath.Join(proj, "work", "ini")
+	os.MkdirAll(filepath.Join(work, "src"), 0o755)
+	os.WriteFile(filepath.Join(work, "src", "a.go"), []byte("x"), 0o644)
+	outside := filepath.Join(t.TempDir(), "host-file")
+	os.WriteFile(outside, []byte("x"), 0o600)
+	os.Symlink(outside, filepath.Join(work, "link"))
+	home := filepath.Join(proj, "work", agentHomePrefix+"A1")
+	os.MkdirAll(home, 0o700)
+	elsewhere := t.TempDir()
+	os.Symlink(elsewhere, filepath.Join(proj, "work", "linked-root"))
+	quality := filepath.Join(proj, "quality-123")
+	os.MkdirAll(filepath.Join(quality, "d"), 0o755)
+	os.WriteFile(filepath.Join(quality, "d", "f"), []byte("x"), 0o644)
+	notOurs := filepath.Join(state, "elsewhere", "work", "ini")
+	os.MkdirAll(notOurs, 0o755)
+
+	log := fakeRootDaemon(t)
+	// Every file here belongs to the test user; a daemon that is someone
+	// else sees all of them as left behind by a container.
+	prevIDs := daemonIDs
+	daemonIDs = func() (int, int) { return 4242, 4242 }
+	t.Cleanup(func() { daemonIDs = prevIDs })
+
+	n, err := RecoverWorkRoots(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("recovered %d roots, want 2 (the work root and the quality copy)", n)
+	}
+	for _, p := range []string{work, filepath.Join(work, "src"), filepath.Join(work, "src", "a.go"), filepath.Join(work, "link")} {
+		if o, ok := log.owner(p); !ok || o != [2]int{4242, 4242} {
+			t.Errorf("%s not handed back to the daemon: %v %v", p, o, ok)
+		}
+	}
+	for _, p := range []string{outside, home, elsewhere, filepath.Join(proj, "work", "linked-root"), notOurs, proj, filepath.Join(proj, "work")} {
+		if _, ok := log.owner(p); ok {
+			t.Errorf("%s was chowned; only work roots are", p)
+		}
+	}
+	if _, err := os.Stat(quality); !os.IsNotExist(err) {
+		t.Errorf("the quality copy was not removed: %v", err)
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Errorf("an agent home was removed (that is the sweep's job): %v", err)
+	}
+
+	// Already the daemon's: nothing to do.
+	daemonIDs = prevIDs
+	log.mu.Lock()
+	log.calls = map[string][2]int{}
+	log.mu.Unlock()
+	if n, err := RecoverWorkRoots(state); n != 0 || err != nil || len(log.calls) != 0 {
+		t.Fatalf("a clean state root: %d %v, chowned %v", n, err, log.calls)
+	}
+}
+
 // ---------- as real root ----------
+
+// TestRootOwnerIdentityForReal: as real root, a project owned by an ordinary
+// user gives that user's uid:gid, and a root-owned one gives 65532.
+func TestRootOwnerIdentityForReal(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs a root daemon (run as root, e.g. in a Linux container)")
+	}
+	proj := t.TempDir()
+	if got := containerUser(proj); got != unprivileged {
+		t.Fatalf("a root-owned project: --user %s, want %s", got, unprivileged)
+	}
+	if err := os.Chown(proj, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if got := containerUser(proj); got != "1000:1000" {
+		t.Fatalf("a project owned by 1000: --user %s, want 1000:1000", got)
+	}
+}
+
+// TestRootRecoverWorkRootsForReal: files a container left owned by 65532
+// (the daemon was killed before Restore) are the daemon's again after
+// RecoverWorkRoots, even inside a directory the container locked with chmod 0.
+func TestRootRecoverWorkRootsForReal(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs a root daemon (run as root, e.g. in a Linux container)")
+	}
+	state := t.TempDir()
+	work := filepath.Join(state, "projects", "p", "work", "ini")
+	os.MkdirAll(filepath.Join(work, "locked"), 0o755)
+	os.WriteFile(filepath.Join(work, "f"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(work, "locked", "g"), []byte("x"), 0o600)
+	_ = filepath.Walk(work, func(p string, _ os.FileInfo, _ error) error {
+		return os.Lchown(p, ContainerUID, ContainerGID)
+	})
+	os.Chmod(filepath.Join(work, "locked"), 0)
+	if _, err := RecoverWorkRoots(state); err != nil {
+		t.Fatal(err)
+	}
+	assertOwnedByDaemon(t, work)
+}
 
 // TestRootRemapOwnershipForReal runs only as root (CI in a Linux container,
 // `sudo go test`): it hands a work root to 65532, writes into it AS 65532 --
@@ -242,7 +466,7 @@ func TestRootRemapOwnershipForReal(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(work, "seed.txt"), []byte("seed\n"), 0o644)
 	os.Mkdir(filepath.Join(work, "private"), 0o700)
-	g, err := grantMounts(work)
+	g, err := grantMounts(unprivilegedIdentity, work)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,6 +520,43 @@ func TestRootDaemonSandboxOverRealDocker(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(work, "out", "bin")); err != nil || string(b) != "built\n" {
 		t.Fatalf("out/bin = %q, %v", b, err)
 	}
+}
+
+// TestRootDaemonCheckReadsOwnerOnlyRepoFilesOverRealDocker: as a root daemon,
+// a check for a project owned by an ordinary user runs as that user, so a
+// 0600 file of theirs in the read-only /repo mount is readable, and the work
+// root is the daemon's again afterwards. Root, Docker and alpine:3.20 present,
+// or skipped.
+func TestRootDaemonCheckReadsOwnerOnlyRepoFilesOverRealDocker(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs a root daemon")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not installed")
+	}
+	if exec.Command("docker", "image", "inspect", "alpine:3.20").Run() != nil {
+		t.Skip("alpine:3.20 not present locally")
+	}
+	proj := t.TempDir()
+	secret := filepath.Join(proj, "private.env.example")
+	os.WriteFile(secret, []byte("owner-only\n"), 0o600)
+	for _, p := range []string{proj, secret} {
+		if err := os.Chown(p, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, stderr, code, err := NewContainerSandbox("alpine:3.20").Run(ctx, RunOptions{WorkRoot: work, RepoRoot: proj,
+		Cmd: []string{"sh", "-c", `id -u; cat /repo/private.env.example; echo built > /work/out`}})
+	if err != nil || code != 0 {
+		t.Fatalf("run: %d %v\n%s\n%s", code, err, out, stderr)
+	}
+	if got := strings.Fields(out); len(got) < 2 || got[0] != "1000" || got[1] != "owner-only" {
+		t.Fatalf("the check printed %q, want uid 1000 reading the 0600 file", out)
+	}
+	assertOwnedByDaemon(t, work)
 }
 
 func assertOwnedByDaemon(t *testing.T, root string) {

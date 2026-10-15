@@ -546,6 +546,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		TaskStatement: task.Statement,
 		Brief:         brief,
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
+		ProjectRoot:   e.workspaceRoot,
 	}
 
 	// Record a durable run for the implementer step (review B7). The run is

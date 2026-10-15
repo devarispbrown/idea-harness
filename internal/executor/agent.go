@@ -1,8 +1,8 @@
 package executor
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -200,7 +200,7 @@ func (e *SandboxedAgentExecutor) Capabilities(ctx context.Context) Capabilities 
 // for three releases, describing ContainerSandbox rather than this, and no check
 // in the repo could see the difference.
 func (e *SandboxedAgentExecutor) containerArgs(req Request, attemptID, keyFile, agentHome string) []string {
-	uid := containerUser()
+	uid := containerUser(req.ProjectRoot)
 	// No `--rm`. The container runs detached and Status polls it with
 	// `docker inspect`; with --rm, a fast agent (the smoke writes one file in
 	// ~6s) finished and deleted itself between polls, so inspect failed on a run
@@ -346,7 +346,7 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	// smoke failed in eight seconds.
 	// Under a root daemon the container is not root, so what it must write is
 	// handed to its user first, and back once it is gone (containeruser.go).
-	grant, err := grantMounts(req.WorkRoot, agentHome)
+	grant, err := grantMounts(containerIdentity(req.ProjectRoot), req.WorkRoot, agentHome)
 	if err != nil {
 		removeAgentHome(agentHome)
 		return Attempt{}, err
@@ -588,10 +588,15 @@ func (e *SandboxedAgentExecutor) Collect(ctx context.Context, id string) (Result
 // Call it before this daemon starts any operation, so no attempt of its own can
 // be running. It finds leftovers by their agent-home directories, and then by
 // container label as a backstop for one whose directory is gone.
-func SweepAgentLeftovers(ctx context.Context, stateRoot string) {
+//
+// It reports whether every leftover container is known to be gone: false
+// when Docker could not be asked or a removal failed, so a caller must not
+// then walk a work root a live container may still hold (RecoverWorkRoots).
+func SweepAgentLeftovers(ctx context.Context, stateRoot string) (allGone bool) {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	homes, _ := filepath.Glob(filepath.Join(stateRoot, "projects", "*", "work", agentHomePrefix+"*"))
+	homeLeft := false
 	for _, home := range homes {
 		attemptID := strings.TrimPrefix(filepath.Base(home), agentHomePrefix)
 		// The marker is the only record of a container that may still hold
@@ -601,6 +606,8 @@ func SweepAgentLeftovers(ctx context.Context, stateRoot string) {
 		// Desktop is still starting -- in which case the next start retries.
 		if exec.CommandContext(sctx, "docker", "rm", "-f", agentContainerName(attemptID)).Run() == nil {
 			_ = removeAgentHome(home)
+		} else {
+			homeLeft = true
 		}
 	}
 	// Backstop: any container labelled with a work directory under this state
@@ -609,13 +616,18 @@ func SweepAgentLeftovers(ctx context.Context, stateRoot string) {
 	out, err := exec.CommandContext(sctx, "docker", "ps", "-a", "--filter", "label="+agentLabel,
 		"--format", `{{.ID}} {{.Label "`+agentLabel+`"}}`).Output()
 	if err != nil {
-		return
+		// No docker CLI at all: nothing could have started a container.
+		return errors.Is(err, exec.ErrNotFound) && !homeLeft
 	}
+	allGone = !homeLeft
 	prefix := filepath.Join(stateRoot, "projects") + string(filepath.Separator)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		cid, workDir, ok := strings.Cut(line, " ")
 		if ok && strings.HasPrefix(workDir+string(filepath.Separator), prefix) {
-			_ = exec.CommandContext(sctx, "docker", "rm", "-f", cid).Run()
+			if exec.CommandContext(sctx, "docker", "rm", "-f", cid).Run() != nil {
+				allGone = false
+			}
 		}
 	}
+	return allGone
 }
