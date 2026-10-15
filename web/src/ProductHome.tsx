@@ -165,7 +165,20 @@ export default function ProductHome({
                     {/* C1 / JTBD 6: "Home titles were the whole 600-character
                         prompt." The full idea is still available as the
                         card's description; this is just the title shown. */}
-                    <span className="ph-card-title">{displayTitle(i)}</span>
+                    {/* The card is clickable anywhere with a mouse, but a
+                        <section onClick> is not a Tab stop: the title is the
+                        real control, so the keyboard and a screen reader
+                        reach every initiative too. */}
+                    <button
+                      type="button"
+                      className="ph-card-title ph-card-open"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpen(i.id);
+                      }}
+                    >
+                      {displayTitle(i)}
+                    </button>
                     {pill && <span className={`phase-pill pill-${pill.state}`}>{pill.label}</span>}
                   </div>
                   <div className="ph-bars">

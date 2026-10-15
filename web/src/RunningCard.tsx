@@ -11,6 +11,7 @@ import {
 import { shouldStickToBottom } from "./agentOutput";
 import RunPanel from "./RunPanel";
 import { useProjectChanges } from "./useEventStream";
+import { announce, operationAnnouncement } from "./announce";
 
 interface Operation {
   id: string;
@@ -167,6 +168,21 @@ export default function RunningCard({
     const poll = setInterval(load, streamLive ? 15000 : 2500);
     return () => clearInterval(poll);
   }, [load, streamLive]);
+
+  // Say when an operation starts and when it is over (announce.ts): the card
+  // appearing and vanishing is otherwise silent to a screen reader. One
+  // message each, on the transition -- never on a poll that changed nothing.
+  const announcedOp = useRef<Operation | null>(null);
+  useEffect(() => {
+    const msg = operationAnnouncement(
+      announcedOp.current,
+      op,
+      (t) => OP_LABEL[t] ?? "The operation",
+      !!stoppedRef.current,
+    );
+    if (msg) announce(msg);
+    announcedOp.current = op;
+  }, [op?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tick the elapsed timer only while an operation is running (and reset its
   // baseline when a new op appears), so a hidden card never re-renders.

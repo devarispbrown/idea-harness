@@ -181,7 +181,7 @@ cost_usd, change_set_id, truncated}` (`internal/domain/runevent.go`), where `kin
 | Kind | What it is |
 |---|---|
 | `action` | A coarse step: a line of a CLI agent's output, an executor phase, an ACP plan. |
-| `tool_call` / `tool_result` | A tool call and its outcome, tied by `tool_call_id`; `status` is `pending`, `in_progress`, `completed` or `failed`. |
+| `tool_call` / `tool_result` | A tool call and its outcome, tied by `tool_call_id`; `status` is `pending`, `in_progress`, `completed` or `failed`; a call still open when the run ends (Stop, a failure, an agent that never reported its end) is closed by a harness `tool_result` with `status: cancelled`. |
 | `file_change` | A file the agent wrote. Live ones come from the agent; the `harness` ones with `status` `add`/`modify`/`delete` and `added`/`removed` line counts are the orchestrator's own diff, written once the agent finishes - the authoritative list. |
 | `permission` | An ACP permission request and the answer given on the operator's behalf. |
 | `message` | The agent's words, or a steering note (`source: user`). |

@@ -6,8 +6,12 @@ import {
   driftingMetrics,
   isDrifting,
   linkableRequirements,
+  metricDraft,
+  metricEditBody,
   metricRange,
   metricsByObjective,
+  objectiveDraft,
+  objectiveEditBody,
   outcomeGapRows,
   parseNumber,
   requirementCodes,
@@ -135,5 +139,40 @@ describe("parseNumber", () => {
     expect(parseNumber("")).toBeUndefined();
     expect(parseNumber("  ")).toBeUndefined();
     expect(parseNumber("abc")).toBeUndefined();
+  });
+});
+
+describe("objective and metric edit bodies", () => {
+  const o = { statement: "Cooks share recipes", rationale: "growth", owner: "", status: "active" as const };
+
+  it("sends only what changed, nothing for an untouched form", () => {
+    expect(objectiveEditBody(o, objectiveDraft(o))).toEqual({ body: {} });
+    expect(objectiveEditBody(o, { ...objectiveDraft(o), owner: " sam ", status: "achieved" })).toEqual({
+      body: { owner: "sam", status: "achieved" },
+    });
+    // Emptying the rationale is a change (to empty), not an omission.
+    expect(objectiveEditBody(o, { ...objectiveDraft(o), rationale: "" })).toEqual({ body: { rationale: "" } });
+  });
+
+  it("refuses an empty statement", () => {
+    expect(objectiveEditBody(o, { ...objectiveDraft(o), statement: "  " })).toEqual({ error: "An objective needs a statement." });
+  });
+
+  const m = { name: "Shares", direction: "increase" as const, target: 50, baseline: 10, unit: "" };
+
+  it("clears a baseline emptied in the form, and sets a changed one", () => {
+    expect(metricEditBody(m, metricDraft(m))).toEqual({ body: {} });
+    expect(metricEditBody(m, { ...metricDraft(m), baseline: "" })).toEqual({ body: { clear_baseline: true } });
+    expect(metricEditBody(m, { ...metricDraft(m), baseline: "12", target: "60", unit: "%" })).toEqual({
+      body: { baseline: 12, target: 60, unit: "%" },
+    });
+    // No baseline to begin with: blank stays blank, nothing to clear.
+    expect(metricEditBody({ ...m, baseline: undefined }, { ...metricDraft(m), baseline: "" })).toEqual({ body: {} });
+  });
+
+  it("refuses a non-numeric target or baseline and an empty name", () => {
+    expect(metricEditBody(m, { ...metricDraft(m), target: "lots" })).toEqual({ error: "Target must be a number." });
+    expect(metricEditBody(m, { ...metricDraft(m), baseline: "x" })).toEqual({ error: "Baseline must be a number (or blank)." });
+    expect(metricEditBody(m, { ...metricDraft(m), name: "" })).toEqual({ error: "A metric needs a name." });
   });
 });

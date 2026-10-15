@@ -85,6 +85,30 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Keyboard and accessibility in the web UI** ([docs/ui.md](docs/ui.md#keyboard-and-accessibility)).
+  A **Skip to content** link is the first Tab stop; after a route change focus moves to the new
+  page's heading; the command palette, a new **`?` shortcut reference**, and inline forms (Request
+  changes, Ask for a revision, the revert confirmation, Write my own…, objective and metric edits)
+  take focus when they open, close on Escape and give focus back to the button that opened them
+  (the two modals also keep Tab inside). **⌘/Ctrl+Enter** sends the focused note — the run note,
+  Request changes, a plan revision, a retry, a note to the running agent. One polite live region
+  says when a change-set action lands ("CHG-2 applied."), when an operation or agent run starts or
+  ends, and when an objective or metric is saved — never per streamed event (the run panel's
+  action chip is no longer a live region). `prefers-reduced-motion` stops spinners, pulses and
+  transitions. The home cards' titles are buttons (the card was a mouse-only `<section onClick>`),
+  and Plan's ↑/↓ buttons say which task they move.
+- **The command palette (⌘K) reaches every page**: Gaps, Outcomes, Quality, Activity, Graph health,
+  Needs you, Settings and each Settings section (focus lands on the section), and a typed node
+  code — `REQ-3`, `TASK-2`, `OBJ-1`, `MET-1`, `DEC-1`, `CHG-1` — opens that node's lineage.
+- **Edit objectives and metrics, and unlink a requirement, on the Define page** — `idea objective
+  edit` (statement, rationale, owner, status), `idea metric edit` (name, direction, baseline —
+  blank clears it — target, unit) and `idea objective link --unlink` (the × beside each serving
+  requirement). Only changed fields are sent. In the parity ledger `objective edit` is now `ui` and
+  `metric edit` `partial` (guardrail, cadence, definition and source stay CLI-only).
+- **The browser suite checks accessibility in the dark colour scheme too.** `expectAccessible`
+  runs axe under `prefers-color-scheme: light` and `dark` on every page, and now also covers the
+  queue, Design, the document reader, the command palette and the shortcut reference.
+
 - **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
   page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full
   edge trace — what `idea why/impact/trace` print), and a lazy **Why / Impact** panel on
@@ -147,8 +171,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **Steering.** `POST …/runs/{runId}/steer` sends a note to a running agent: ACP as its next prompt
   turn (or at once, ending the current turn, with `interrupt`), OpenHands as a message into the
   conversation; other executors answer `steering not supported by <kind>` and the note rides on the
-  task's next run. Notes are recorded on the run's events and manifest. See
+  task's next run. A held note is stored (migration 45, `held_steering_notes`, redacted), so a
+  daemon restart before that run no longer drops it, and the run takes each one exactly once.
+  Notes are recorded on the run's events and manifest. See
   [docs/agents.md](docs/agents.md#steering-a-running-agent).
+- **`idea run events` and `idea steer`.** The run panel from a terminal: `idea run events
+  <run-id|current> [--follow] [--json]` prints a run's events one per line (NDJSON with `--json`),
+  and `--follow` tails the live stream, resuming after a dropped connection, until the run ends;
+  `idea steer <run-id|current> "<note>" [--interrupt]` sends a steering note and says what became
+  of it. Steering a run that is not running exits `4` (`conflict`), pointing at
+  `idea execute --note`.
 - **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
   conversation in that UI.
 - **Run report.** `GET …/runs/{runId}/report?format=json|md|zip`: events, files with line counts,
@@ -441,6 +473,27 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
+  accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
+  the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on
+  the dark surface); `DEC-n`/`OBJ-n` chips used a hard-coded `#4338ca` (1.8:1). New tokens
+  (`--accent-fill`, `--on-accent`, `--text-secondary`, `--accent-strong`) carry them in both
+  schemes. Also: the "Needs you elsewhere" count was white on amber (2.1:1, both schemes); a
+  resolved judgment card faded its text with `opacity` (4.1–4.4:1); the deny chip and the phase
+  dot were literal white in dark mode.
+- **A stray merge marker in `styles.css`** (`=======`) made the browser drop the rule after it —
+  the run panel's own container style.
+- **A stopped run's tool calls no longer stay "in progress".** When a run ends — Stop, a failure, a
+  timeout, or an agent that never reported a call's end — every tool call still pending or in
+  progress gets a harness `tool_result` with `status: cancelled` on the same `tool_call_id`, so the
+  run panel and the run report show it as ended. The run panel reads such a call **cancelled** (⊘),
+  counts it as done in "n/m actions" with "· n cancelled", and closes any open call itself once the
+  run is over (a run recorded before this, or a result that was dropped).
+- **The PRD names objectives by their codes.** A model (and the demo provider) keys a new objective
+  `O1`, and `idea prd` / the document reader printed `O1: …` and `Serves: O1` — a label nothing else
+  uses. The PRD body is now rendered after the objectives are stored, with `OBJ-n` in both places.
+  The PRD artifact is also committed after its requirements, objectives and questions, rather than
+  before them.
 - **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
   `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
   findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer

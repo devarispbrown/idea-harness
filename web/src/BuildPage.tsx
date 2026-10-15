@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
@@ -40,6 +40,22 @@ import {
 import { isHttpUrl } from "./url";
 import { changeSetChip } from "./statusChips";
 import NoteField from "./NoteField";
+import InlinePanel from "./InlinePanel";
+import { announce } from "./announce";
+
+// What a screen reader hears when a change-set action lands (announce.ts):
+// the chip changing colour is the only other sign.
+const ACTION_DONE: Record<string, string> = {
+  approve: "approved",
+  "approve-accept": "approved, accepting its findings",
+  changes: "sent back with your note",
+  reject: "rejected",
+  apply: "applied",
+  revert: "reverted",
+  "resolve-retry": "apply retried",
+  "resolve-reject": "rejected",
+  "rerun-review": "review re-run",
+};
 
 interface Task {
   id: string;
@@ -179,6 +195,7 @@ export default function BuildPage({
   const [diffText, setDiffText] = useState("");
   const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
   const [revertTarget, setRevertTarget] = useState<ChangeSet | null>(null);
+  const revertCancelRef = useRef<HTMLButtonElement>(null);
   const [executorName, setExecutorName] = useState("internal");
   const [initiative, setInitiative] = useState<Initiative | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
@@ -316,9 +333,12 @@ export default function BuildPage({
     let ok = true;
     try {
       await fn();
+      announce(`${cs.human_id} ${ACTION_DONE[action] ?? "updated"}.`);
     } catch (e) {
       ok = false;
-      setCsError((prev) => ({ ...prev, [cs.id]: formatError(errMessage(e)) }));
+      const msg = formatError(errMessage(e));
+      setCsError((prev) => ({ ...prev, [cs.id]: msg }));
+      announce(`${cs.human_id}: ${msg}`);
     } finally {
       setCsBusy((b) => {
         const next = { ...b };
@@ -650,6 +670,8 @@ export default function BuildPage({
             placeholder="e.g. what to try differently this time — appended to the implementer's brief"
             value={runNote}
             onChange={setRunNote}
+            onSubmit={runNext}
+            submitLabel="run it"
           />
         </div>
       )}
@@ -1073,14 +1095,21 @@ export default function BuildPage({
                 ))}
             </div>
             {cs.status === "review_required" && requestNote !== undefined && (
-              <div className="request-changes-form">
+              <InlinePanel
+                className="request-changes-form"
+                label={`Request changes to ${cs.human_id}`}
+                onClose={() => closeRequestChanges(cs)}
+              >
                 <NoteField
                   id={`request-changes-${cs.id}`}
                   label={`What should change in ${cs.human_id}?`}
                   placeholder="Recorded on the change set; the task's next run gets it in its brief"
                   value={requestNote}
                   onChange={(v) => setRequesting((r) => ({ ...r, [cs.id]: v }))}
-                  autoFocus
+                  onSubmit={() => {
+                    if (!busyAction && requestNote.trim()) sendRequestChanges(cs);
+                  }}
+                  submitLabel="send it back"
                 />
                 <div className="request-changes-actions">
                   <button
@@ -1094,7 +1123,7 @@ export default function BuildPage({
                     Cancel
                   </button>
                 </div>
-              </div>
+              </InlinePanel>
             )}
             {cs.review_note && (
               <p className="muted cs-review-note">
@@ -1116,8 +1145,17 @@ export default function BuildPage({
       )}
 
       {revertTarget && (
-        <section className="revert-card">
-          <div className="revert-title">Revert {revertTarget.human_id}?</div>
+        // A confirmation that opens at the foot of the page, far from the
+        // Revert button that asked for it: focus moves to its Cancel (the
+        // safe choice), Escape cancels, and focus goes back to Revert.
+        <InlinePanel
+          className="revert-card"
+          role="alertdialog"
+          labelledBy="revert-title"
+          initial={revertCancelRef}
+          onClose={() => setRevertTarget(null)}
+        >
+          <div className="revert-title" id="revert-title">Revert {revertTarget.human_id}?</div>
           <div className="revert-desc">
             Restores the files to their exact pre-apply bytes. This is a file-level restore, not a git
             revert — your git history is untouched. The requirement returns to approved and its
@@ -1132,6 +1170,7 @@ export default function BuildPage({
               {csBusy[revertTarget.id] === "revert" ? "Reverting…" : "Revert byte-for-byte"}
             </button>
             <button
+              ref={revertCancelRef}
               className="cs-secondary"
               disabled={csBusy[revertTarget.id] === "revert"}
               onClick={() => setRevertTarget(null)}
@@ -1140,7 +1179,7 @@ export default function BuildPage({
             </button>
           </div>
           {csError[revertTarget.id] && <p className="error">{csError[revertTarget.id]}</p>}
-        </section>
+        </InlinePanel>
       )}
     </div>
   );
