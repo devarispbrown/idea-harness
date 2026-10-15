@@ -13,7 +13,7 @@ import ShortcutsDialog from "./ShortcutsDialog";
 import CommandPalette from "./CommandPalette";
 import LiveAnnouncer from "./LiveAnnouncer";
 import ObjectivesSection from "./ObjectivesSection";
-import { announce } from "./announce";
+import { announce, HOLD_MS, resetAnnouncements, RUN_RANK, runTopic, SETTLE_MS } from "./announce";
 import { fakeDaemon } from "./testing/fakeDaemon";
 
 afterEach(() => {
@@ -163,6 +163,72 @@ describe("LiveAnnouncer", () => {
     // Changed text, so a screen reader announces the repeat.
     expect(region.textContent).not.toBe("CHG-1 approved.");
     expect(region.textContent!.trim()).toBe("CHG-1 approved.");
+  });
+});
+
+describe("LiveAnnouncer: one message per run completion", () => {
+  // Every message the region showed, in order.
+  const heard = () => {
+    const said: string[] = [];
+    const region = screen.getByTestId("live-announcer");
+    const obs = new MutationObserver(() => {
+      if (region.textContent) said.push(region.textContent.trim());
+    });
+    obs.observe(region, { childList: true, characterData: true, subtree: true });
+    return { said, stop: () => obs.disconnect() };
+  };
+  const run = { topic: runTopic("i1") };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetAnnouncements();
+  });
+
+  it("a run that starts and ends within one poll is said once, as the operation's end", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const h = heard();
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    act(() => announce("Executing the plan finished.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    await Promise.resolve();
+    h.stop();
+    expect(h.said).toEqual(["Executing the plan finished."]);
+  });
+
+  it("drops a less specific echo that arrives just after the end, but not a later run", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const region = screen.getByTestId("live-announcer");
+    act(() => announce("Executing the plan stopped.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Executing the plan stopped.");
+    // The stopped card's panel catching up on the same run.
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Executing the plan stopped.");
+    // A run started well after that is news again.
+    await act(async () => vi.advanceTimersByTime(SETTLE_MS));
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Agent run started.");
+  });
+
+  it("keeps other initiatives' runs and untopiced messages apart", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const region = screen.getByTestId("live-announcer");
+    act(() => announce("Executing the plan finished.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    act(() => announce("Agent run started.", { topic: runTopic("i2"), rank: RUN_RANK.runStarted }));
+    act(() => announce("CHG-1 approved."));
+    // Untopiced: said at once.
+    expect(region.textContent).toBe("CHG-1 approved.");
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    expect(region.textContent).toBe("Executing the plan finished.");
+    // Another initiative's run is not this one's echo.
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    expect(region.textContent).toBe("Agent run started.");
   });
 });
 

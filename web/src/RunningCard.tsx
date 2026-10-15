@@ -11,7 +11,7 @@ import {
 import { shouldStickToBottom } from "./agentOutput";
 import RunPanel from "./RunPanel";
 import { useProjectChanges } from "./useEventStream";
-import { announce, operationAnnouncement } from "./announce";
+import { announce, operationAnnouncement, RUN_RANK, runTopic } from "./announce";
 
 interface Operation {
   id: string;
@@ -180,7 +180,10 @@ export default function RunningCard({
       (t) => OP_LABEL[t] ?? "The operation",
       !!stoppedRef.current,
     );
-    if (msg) announce(msg);
+    // An agent run's end shares the run topic with the panel's "Agent run
+    // started.", and outranks it (announce.ts): one message per completion.
+    const runEnded = !op && announcedOp.current?.type === "execute_initiative";
+    if (msg) announce(msg, runEnded ? { topic: runTopic(initiativeId), rank: RUN_RANK.operationEnded } : {});
     announcedOp.current = op;
   }, [op?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 

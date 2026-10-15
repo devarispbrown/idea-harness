@@ -12,11 +12,65 @@ type Listener = (message: string) => void;
 
 const listeners = new Set<Listener>();
 
-export function announce(message: string) {
-  const m = message.trim();
-  if (!m) return;
+function emit(m: string) {
   for (const l of listeners) l(m);
 }
+
+// One thing ending can reach the region from two places at once: an agent
+// run's end is both the run panel's news and the running card's ("Executing
+// the plan finished."), and a short run -- the demo executor's, a run that
+// fails on its first call -- went live and ended inside one poll, so both
+// were heard back to back. A message may therefore name a topic (what it is
+// about, e.g. "run:<initiative>") and a rank (how specific it is): messages
+// on one topic are held for HOLD_MS and only the most specific is said, and
+// for SETTLE_MS after that a less specific one on the same topic is dropped
+// as a late echo of what was just said. Messages without a topic are said at
+// once, as before.
+export const HOLD_MS = 800;
+export const SETTLE_MS = 4000;
+
+export interface AnnounceOptions {
+  topic?: string;
+  rank?: number;
+}
+
+const held = new Map<string, { message: string; rank: number; timer: ReturnType<typeof setTimeout> }>();
+const said = new Map<string, { rank: number; at: number }>();
+
+export function announce(message: string, { topic, rank = 0 }: AnnounceOptions = {}) {
+  const m = message.trim();
+  if (!m) return;
+  if (!topic) {
+    emit(m);
+    return;
+  }
+  const last = said.get(topic);
+  if (last && Date.now() - last.at < SETTLE_MS && rank < last.rank) return;
+  const pending = held.get(topic);
+  if (pending) {
+    // The later of two equally specific messages is the newer news.
+    if (rank < pending.rank) return;
+    clearTimeout(pending.timer);
+  }
+  const timer = setTimeout(() => {
+    held.delete(topic);
+    said.set(topic, { rank, at: Date.now() });
+    emit(m);
+  }, HOLD_MS);
+  held.set(topic, { message: m, rank, timer });
+}
+
+// resetAnnouncements forgets held and recently said topics (tests).
+export function resetAnnouncements() {
+  for (const h of held.values()) clearTimeout(h.timer);
+  held.clear();
+  said.clear();
+}
+
+// The run topic and its ranks: the operation's end names the operation and
+// how it ended, so it is the more specific of the two.
+export const runTopic = (initiativeId: string) => `run:${initiativeId}`;
+export const RUN_RANK = { runStarted: 1, operationEnded: 2 } as const;
 
 export function onAnnounce(l: Listener): () => void {
   listeners.add(l);
