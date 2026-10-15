@@ -272,7 +272,7 @@ func TestOMPKeepsItsOwnHome(t *testing.T) {
 
 // fakeDockerLog records each call's subcommand as well as its arguments, one
 // call per line, so a test can tell `rm -f x` from `run ... x`.
-const fakeDockerLog = `#!/usr/bin/env bash
+const fakeDockerLog = `#!/bin/sh
 echo "$*" >> "$FAKE_DOCKER_RECORD"
 case "$1" in
   run) [ -n "$FAKE_DOCKER_RUN_FAIL" ] && exit 125; echo "cid-123" ;;
@@ -306,7 +306,7 @@ func hasCall(calls []string, prefix string) bool {
 // content) -- roughly a third of any raw tail is genuine signal, the shape
 // tailRawMultiplier's own doc comment describes from a real run (100 raw
 // lines in, ~70 scrubbed out is a similar ratio).
-const fakeDockerNoisyLogs = `#!/usr/bin/env bash
+const fakeDockerNoisyLogs = `#!/bin/sh
 if [ "$1" = "logs" ] && [ "$2" = "--tail" ]; then
   n="$3"
   i=0
@@ -495,7 +495,9 @@ func TestSweepRemovesLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	SweepAgentLeftovers(t.Context(), state)
+	if !SweepAgentLeftovers(t.Context(), state) {
+		t.Error("the sweep removed every leftover but did not report it")
+	}
 
 	if !hasCall(dockerCalls(t, record), "rm -f "+agentContainerName("dead")) {
 		t.Error("the leftover container was not removed by name")
@@ -523,7 +525,9 @@ func TestSweepKeepsTheMarkerWhenDockerFails(t *testing.T) {
 	if err := os.MkdirAll(marker, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	SweepAgentLeftovers(t.Context(), state)
+	if SweepAgentLeftovers(t.Context(), state) {
+		t.Error("a container could not be removed, but the sweep reported every leftover gone")
+	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("the marker was deleted although its container was not removed: %v", err)
 	}
@@ -540,8 +544,10 @@ func TestSweepFindsLabelledLeftoversUnderThisStateRoot(t *testing.T) {
 	state := t.TempDir()
 	mine := filepath.Join(state, "projects", "p1", "work")
 	t.Setenv("FAKE_DOCKER_PS", "c-mine "+mine+"\\nc-other /elsewhere/projects/p1/work\\nc-sibling "+state+"-other/projects/p/work\\n")
-	SweepAgentLeftovers(t.Context(), state)
-	calls := dockerCalls(t, record)
+	if !SweepAgentLeftovers(t.Context(), state) {
+		t.Error("the sweep removed every leftover but did not report it")
+	}
+	calls :=dockerCalls(t, record)
 	if !hasCall(calls, "rm -f c-mine") {
 		t.Errorf("a labelled leftover under this state root was not removed:\n%s", strings.Join(calls, "\n"))
 	}
