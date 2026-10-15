@@ -113,6 +113,10 @@ type Engine struct {
 	// on modelOverride/modelMu above.
 	noteMu       sync.Mutex
 	noteOverride map[string]string
+	// keepTaskCodes (also guarded by noteMu) is RevisePlan's title->code map
+	// for the initiative's tasks before it deleted them, so a regenerated
+	// task that kept its title keeps its code (advance.go).
+	keepTaskCodes map[string]map[string]string
 
 	// remoteMu guards remote, the supervisor of this project's runs on a
 	// remote execution plane (openhands). Not mu: a watcher follows a run
@@ -1114,9 +1118,12 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 
 	body := renderPRD(obj)
 	bodyDigest := e.storeBlob(body)
-	art := &domain.Artifact{InitiativeID: initiativeID, Kind: domain.ArtifactPRD}
+	// The next version of the PRD, not a new "PRD v1": a revision used to
+	// start a fresh family, which is how Define came to offer "Diff v1 → v1".
+	// Every revision cycle keeps its version even when the body repeats --
+	// the review loop counts cycles by what was produced.
 	ver := &domain.ArtifactVersion{BodyDigest: bodyDigest, ProducedByRun: runID, Status: "draft"}
-	if err := e.db.CreateArtifact(ctx, art, ver); err != nil {
+	if _, err := e.db.RecordArtifactVersion(ctx, initiativeID, domain.ArtifactPRD, ver, false); err != nil {
 		return nil, err
 	}
 

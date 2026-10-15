@@ -961,9 +961,45 @@ func narrate(eventType string, n int) string {
 		return s("1 finding dispositioned", "findings dispositioned")
 	case "run.status_changed":
 		return "Model work completed"
+	case "artifact.version_created":
+		return s("1 document revised", "documents revised")
+	case "change_set.created":
+		return s("1 change set produced", "change sets produced")
+	case "change_set.status_changed":
+		return s("1 change set moved on (review, apply, revert)", "change set status changes")
+	case "change_set.applied":
+		return s("1 change set applied", "change sets applied")
+	case "change_set.review_set":
+		return s("1 change set reviewed", "change sets reviewed")
+	case "tasks.deleted":
+		return "Plan tasks replaced"
+	case "task.created":
+		return s("1 task planned", "tasks planned")
+	case "stale.cleared", "stale.acknowledged":
+		return s("1 stale mark cleared", "stale marks cleared")
+	case "stale.marked":
+		return s("1 item marked stale", "items marked stale")
 	default:
-		return eventType
+		return humanizeEvent(eventType, n)
 	}
+}
+
+// humanizeEvent is narrate's fallback for an event type it has no phrase for.
+// It used to return the raw type, so the decision page's What changed panel
+// listed `stale.cleared` and `tasks.deleted` verbatim -- the event log's
+// vocabulary, not the reader's. "objectives.superseded" becomes "Objectives
+// superseded", with a count when there was more than one.
+func humanizeEvent(eventType string, n int) string {
+	words := strings.Fields(strings.NewReplacer(".", " ", "_", " ").Replace(eventType))
+	if len(words) == 0 {
+		return "Updated"
+	}
+	phrase := strings.Join(words, " ")
+	phrase = strings.ToUpper(phrase[:1]) + phrase[1:]
+	if n > 1 {
+		return fmt.Sprintf("%s (%d)", phrase, n)
+	}
+	return phrase
 }
 
 func categoryLabel(aggregate string) string {
@@ -982,8 +1018,18 @@ func categoryLabel(aggregate string) string {
 		return "Initiative"
 	case "question":
 		return "Open Questions"
+	case "change_set":
+		return "Change sets"
+	case "task":
+		return "Tasks"
+	case "objective":
+		return "Objectives"
+	case "metric":
+		return "Metrics"
 	default:
-		return strings.Title(aggregate)
+		// "change_set" used to come out as "Change_set". Same fallback rule
+		// as humanizeEvent: words, not identifiers.
+		return humanizeEvent(aggregate, 1)
 	}
 }
 

@@ -515,6 +515,17 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// wave 3 contract specifies, and cleared once Execute returns so it never
 	// bleeds into a later, unrelated run of this initiative.
 	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	// What the human asked for when they sent the task's previous change set
+	// back. Without it "Request changes" recorded only the verdict, and the
+	// rerun had no idea what to change. Folded into the run's note so it is
+	// also what SetRunNote records below -- the run says what steered it.
+	if prev := priorReviewNote(prior); prev != "" {
+		if note != "" {
+			note = prev + "\n\n" + note
+		} else {
+			note = prev
+		}
+	}
 	if note != "" {
 		brief += "\n\nNote from the human, for this run only:\n" + note
 	}
@@ -3274,15 +3285,27 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 // later attempt fails denyReviewOpenBlocking on them before the review even
 // runs. The keyed magic path hit this every run and had no way out.
 func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string) error {
-	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, false)
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, false, "")
 }
 
 // ReviewChangeSetAccepting is ReviewChangeSet with the human accept.
 func (e *Engine) ReviewChangeSetAccepting(ctx context.Context, initiativeID, changeSetID, verdict string) error {
-	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, true)
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, true, "")
 }
 
-func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool) error {
+// ReviewChangeSetWithNote is ReviewChangeSet carrying the human's note: what
+// they want changed. It is recorded on the change set with a changes_requested
+// or rejected verdict -- both reopen the task -- and the task's next Execute
+// appends it to the implementer's brief (priorReviewNote). Any other verdict
+// refuses a note rather than dropping it: there is no next run for it to steer.
+func (e *Engine) ReviewChangeSetWithNote(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool, note string) error {
+	if strings.TrimSpace(note) != "" && verdict != "changes_requested" && verdict != "rejected" {
+		return fmt.Errorf("workflow: a review note steers the task's next run, so it goes with changes_requested or rejected, not %q", verdict)
+	}
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, acceptFindings, note)
+}
+
+func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool, note string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -3383,7 +3406,7 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
 
 	case "changes_requested":
-		if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor); err != nil {
+		if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor, note); err != nil {
 			return err
 		}
 		// Re-open the task so a subsequent Execute re-picks it and supersedes this
@@ -3394,12 +3417,12 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		// Rejection is accepted from either checks_running or review_required.
 		switch cs.Status {
 		case domain.ChangeSetChecksRunning:
-			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor); err != nil {
+			if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor, note); err != nil {
 				return err
 			}
 			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
 		case domain.ChangeSetReviewRequired:
-			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor); err != nil {
+			if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor, note); err != nil {
 				return err
 			}
 			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
@@ -3793,4 +3816,34 @@ func renderChangeSet(cs *domain.ChangeSet, patch string) string {
 		}
 	}
 	return b.String()
+}
+
+// priorReviewNote returns the review note a human left on the task's most
+// recent change set when they requested changes on it or rejected it, labelled
+// with that change set's id; "" when the newest change set carries none. Only
+// the newest counts: once a later run produced a change set, the note has been
+// answered, and replaying it on every future run would steer them all.
+//
+// prior is read before Execute supersedes a changes_requested change set, but
+// superseded is accepted too so a caller holding a fresher list still finds it.
+func priorReviewNote(prior []domain.ChangeSet) string {
+	if len(prior) == 0 {
+		return ""
+	}
+	latest := prior[0]
+	for _, p := range prior[1:] {
+		if p.CreatedAt.After(latest.CreatedAt) {
+			latest = p
+		}
+	}
+	switch latest.Status {
+	case domain.ChangeSetChangesRequested, domain.ChangeSetSuperseded, domain.ChangeSetRejected:
+	default:
+		return ""
+	}
+	n := strings.TrimSpace(latest.ReviewNote)
+	if n == "" {
+		return ""
+	}
+	return "Changes requested on " + latest.HumanID + ": " + n
 }

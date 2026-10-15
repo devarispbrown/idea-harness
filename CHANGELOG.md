@@ -77,6 +77,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Request changes says what to change.** `idea review <CHG> changes_requested --note "..."` (and
+  `reject --note`), `POST …/change-sets/{id}/review {"note"}`, and a note field behind Build's
+  **Request changes…**: the note is stored on the change set (`review_note`, migration 43) and
+  appended to the implementer's brief on the task's next run, labelled with the change set it came
+  from — that run only. Before, the verdict was all that was recorded and the rerun had the same
+  brief that produced the rejected work. A note with `approve` or `rerun` is a 400.
+- **`idea revise-plan --note "..."`, `POST …/revise-plan {"note"}`**, and a note field behind Plan's
+  **Ask for a revision**: the note joins the planner's inputs for that revision and is recorded on
+  its run.
+
 - **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
   missing or no longer holds" — no model call, every trigger a comparison of recorded state:
   `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence
@@ -352,6 +362,15 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   MCP values reach the agent in `session/new` on its stdin.
 
 ### Fixed
+
+- **A plan revision that changed nothing minted "v2" and renumbered every task.** Every regenerated
+  document started a new artifact family at v1, so Plan offered "Diff v1 → v1" (which the diff
+  endpoint then refused: different artifacts), and revise-plan recreated every task through the
+  monotonic task counter, turning TASK-1 into TASK-2. A regenerated design document or plan is now
+  the next version of the same artifact and an identical one records nothing; a regenerated task
+  that kept its title keeps its code. A revised PRD is likewise v2 of the PRD, not a second v1.
+- **The What changed panel showed raw event names** (`stale.cleared`, `tasks.deleted`,
+  `change_set.status_changed`, category `Change_set`). Every event type now narrates as words.
 
 - **Answered questions reached the model as "(answer not found)".** The answer
   text is written to the redacted store and was read back from the raw one,
