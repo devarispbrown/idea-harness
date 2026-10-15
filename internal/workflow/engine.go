@@ -113,6 +113,10 @@ type Engine struct {
 	// on modelOverride/modelMu above.
 	noteMu       sync.Mutex
 	noteOverride map[string]string
+
+	// qualitySandbox runs verify's sandboxed quality commands (quality.go).
+	// Nil means the real Docker sandbox; tests script it.
+	qualitySandbox QualitySandbox
 }
 
 // SetNoteOverride records a human note to steer the given initiative's next

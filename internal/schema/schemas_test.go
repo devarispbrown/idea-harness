@@ -29,6 +29,7 @@ func TestSchemasAreValidJSON(t *testing.T) {
 		"ImplementationBrief": ImplementationBrief,
 		"Answers":             Answers,
 		"Convergence":         Convergence,
+		"QualityReview":       QualityReview,
 	}
 	for name, s := range all {
 		var v any
