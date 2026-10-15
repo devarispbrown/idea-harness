@@ -796,6 +796,84 @@ integrations:
     team_key: ENG
 ```
 
+## Remote access
+
+Using the web UI from your phone or another computer — answering the "Needs you" queue, reviewing a
+change set — is off until you turn it on. Unlike everything above, it is **daemon-wide**, not per
+project: there is one daemon, one listener and one token for every project it serves. It lives in
+`config.yaml` under the state root (`~/.local/share/idea-harness/config.yaml`, or
+`$IDEA_HARNESS_STATE/config.yaml`), section `daemon:`, and `idea daemon` takes the same settings as
+flags (which win over the file). What each setting changes, and what it does not protect against,
+is specified in [`security-model.md`](security-model.md#remote-access) — read it before turning
+this on.
+
+```yaml
+# What each key changes: docs/security-model.md#remote-access
+daemon:
+  # A name a TLS-terminating proxy in front of loopback answers to. With
+  # `tailscale serve` this is your machine's MagicDNS name.
+  allowed_hosts: [laptop.tail1234.ts.net]
+  # Or: a second, non-loopback listener. Plain HTTP only on a Tailscale or
+  # private address (with a warning); anything else needs tls_cert/tls_key.
+  # listen: 100.101.102.103:8787
+  # tls_cert: /path/to/cert.pem
+  # tls_key: /path/to/key.pem
+  # Browser sessions end after this long (and after a week unused). Default 720h.
+  # session_ttl: 720h
+  # The VAPID contact push services may use to reach you (mailto: or https:).
+  # push_contact: mailto:you@example.com
+```
+
+| Key | Flag | Default | |
+|---|---|---|---|
+| `allowed_hosts` | `--allowed-hosts h1,h2` | none | Extra `Host`/`Origin` names to accept — a proxy's hostname |
+| `listen` | `--listen ip:port` | none (loopback only) | A second listener on a non-loopback IP; the policy table is in [`security-model.md`](security-model.md#remote-access) |
+| `tls_cert`, `tls_key` | `--tls-cert`, `--tls-key` | none | Serve `listen` over HTTPS. Both or neither |
+| `session_ttl` | — | `720h` | A browser session's absolute lifetime |
+| `push_contact` | — | the project page | VAPID `sub` for Web Push |
+
+The daemon refuses to start on a `listen` it will not allow, and logs a warning for every one it
+allows without TLS. Loopback (`IDEA_HARNESS_ADDR`, default `127.0.0.1:8787`) is served exactly as
+before either way, and keeps handing the token to the local UI.
+
+### Recommended: Tailscale
+
+[`tailscale serve`](https://tailscale.com/kb/1312/serve) gives the daemon an HTTPS address on your
+tailnet with a real certificate, reachable from your own devices and nobody else, while the daemon
+itself keeps listening on loopback only:
+
+```bash
+tailscale serve --bg 8787                      # https://laptop.tail1234.ts.net → 127.0.0.1:8787
+idea daemon stop                               # restart with the name allowed:
+idea daemon --allowed-hosts laptop.tail1234.ts.net   # or put it in config.yaml
+idea ui pair --label phone                     # prints a one-time code
+```
+
+Open `https://laptop.tail1234.ts.net` on the phone, enter the code, and you are signed in. HTTPS
+matters beyond encryption: browsers only install the app to the home screen, and only allow push
+notifications, on a secure context (HTTPS or `localhost`). `tailscale funnel` would put the same
+page on the public internet; don't.
+
+### Signing in and out
+
+- `idea ui pair [--label <name>]` mints a one-time code (ten minutes, single use) and prints where
+  to open the UI. Only the CLI on the daemon's machine can do this — it needs the API token, which
+  never reaches a remote browser.
+- `idea ui sessions` lists every browser session; `idea ui sessions revoke <id>` signs one out, and
+  `revoke --all` signs out every one. Settings → **Remote access** in the UI does the same.
+
+### Push notifications
+
+Settings → **Notifications** turns on Web Push for the project you are viewing, per browser, with
+a toggle per event: needs your judgment, change set ready for review, verification failed, outcome
+drifting. The browser asks for permission only when you press the button. Delivery rides the same
+integration bus as Slack ([integrations.md](integrations.md)): retried with backoff when the push
+service is unreachable, dead-lettered after eight attempts, removed when the push service says the
+browser unsubscribed. It needs a secure context (HTTPS or `localhost`) and a browser that can reach
+its push service (Google's, Mozilla's or Apple's); a plain-HTTP Tailscale IP is neither. The
+daemon's VAPID key is generated on first use in `<state root>/push/vapid.json`; deleting it orphans
+every subscription.
+
 ## Objectives & outcomes
 
 The PRD stage states the objectives an initiative exists to move (`OBJ-n`), each with outcome
