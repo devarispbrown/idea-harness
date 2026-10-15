@@ -26,15 +26,20 @@ Two things to know before reading the rest:
 
 ## Routes
 
-Routing is hash-based (`web/src/router.ts`). Seven shapes are recognised; anything else falls back
-to home.
+Routing is hash-based (`web/src/router.ts`). Anything that matches none of the shapes below renders
+**Page not found** — it no longer falls back to home — and every route that names an initiative
+renders **Initiative not found** when that id is not in this project, instead of the page with
+nothing in it.
 
 | Hash | Screen |
 |---|---|
 | `#/` | Home — all initiatives |
+| `#/queue` | **Needs you** — open decisions, questions and findings across every initiative, highest impact first (`GET …/queue`); reached from the sidebar's "Needs you elsewhere" row |
 | `#/i/<initiativeId>/<phase>` | A phase page. `<phase>` is one of `explore`, `define`, `design`, `plan`, `build`, `verify` |
-| `#/i/<initiativeId>/decision/<decisionId>` | Decision discussion |
+| `#/i/<initiativeId>/changed` | **What changed** — the initiative's timeline, grouped by day (`GET …/timeline`, the same narration as `idea changed`); the sidebar's **Activity ↗** and the shell's "See full history" both land here |
+| `#/i/<initiativeId>/decision/<decisionId>` | Decision discussion (by id or `DEC-n` code; an unknown one renders **Decision not found**) |
 | `#/i/<initiativeId>/health` | Graph health |
+| `#/i/<initiativeId>/lineage/<type>/<ref>` | Lineage of one Product Graph node — what produced it and what depends on it (`idea trace <type> <ref>`); Explore's per-document **trace** links here |
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
 | `#/settings` | Settings |
@@ -56,22 +61,26 @@ The sidebar shows:
   initiatives have open decisions, questions or findings (from `GET …/attention`);
 - the **Phases** rail (below);
 - a footer with the **model chip** — the last segment of `default_model`, or `demo` when none is
-  set — and a **Settings** button showing the `⌘K` hint. Both navigate to Settings, including the
-  chip's `Activity ↗` label, which has no activity view behind it.
+  set — which opens Settings; inside an initiative, **Activity ↗** (its What changed timeline) and
+  **Health ↗** (Graph health); and a **Settings** button showing the `⌘K` hint.
+
+Above both, on every page, a **Demo mode** banner while no model is selected for the project — "every
+document, review and change you see here is synthetic" — linking to Settings. It is the only one;
+Settings no longer adds a second.
 
 The main region renders, above the routed page:
 
-- a **Run failed** banner when the initiative's status is `failed`, showing the failure reason and a
-  `provider/model` input with **Retry** (`POST …/retry`);
+- a **Run failed** banner when the initiative's status is `failed`, showing the failure reason, a
+  `provider/model` input, an optional **Note for the retry** and **Retry** (`POST …/retry` with
+  `model` and `note` — the note joins the framing prompt, as `idea retry --note` does);
 - a **running card** whenever an operation for this initiative is `running` or `pending` — the
   operation's name, a live elapsed timer, "you can leave this page", and **Stop**
   (`POST /operations/<id>/cancel`).
 
 ## Home
 
-The home screen lists every initiative. Its header carries the `ih` mark, the label `my-product`
-(a literal in `ProductHome.tsx`, not the project's name), a non-interactive "Settings" label, and a
-**+ New idea** button. Below it: the initiative count, a "*n* need you" chip, and an input —
+The home screen lists every initiative. Its header carries the `ih` mark, the project's name, a
+**Settings** button, and a **+ New idea** button. Below it: the initiative count, a "*n* need you" chip, and an input —
 "What are you thinking about building?" — where Enter or **+ New idea** creates the initiative
 (`POST …/initiatives`) and jumps to its Explore page.
 
@@ -132,8 +141,8 @@ Grounding accepts a dropped or browsed file, or pasted text. The file picker acc
 `tech`, `market`, `other`.
 
 Each uploaded doc is a row with a coloured kind chip, its title and preview, a **trace** button and
-a **Download** button. **The trace button opens the graph-health page** (`#/i/<id>/health`) — it is
-not a per-document trace view. For that, use `idea trace context_doc <title-or-id>` in the terminal.
+a **Download** button. **trace** opens that document's lineage, `#/i/<id>/lineage/context_doc/<docId>`
+— the same question as `idea trace context_doc <title-or-id>`.
 
 An image that has not been described yet shows a spinner and "Describing the image with a vision
 model — the description is what reaches the design agents." An upload rejected for containing a
@@ -163,8 +172,15 @@ card:
 - **Questions** — an answer box, plus **✨ Suggest** (`POST …/suggest-answers`) which fills in a
   suggested answer you can accept with **Use**.
 
-Resolved decisions and dispositioned findings move to a **Resolved** section; a resolved decision
-keeps an **Undo** button (`POST …/decisions/<id>/reopen`).
+**Accept all recommendations** (`POST …/decisions/accept-recommendations`, `idea
+accept-recommendations`) appears while a decision is open and resolves every open decision with its
+own recommendation, then reports how many it resolved, which it skipped and why, and how many open
+questions it did not touch — a question carries no recommendation, so it is never answered for you.
+With only questions open, the button is replaced by a line saying exactly that.
+
+Resolved decisions, dispositioned findings and **answered questions — with their answer** — move to
+a **Resolved** section; a resolved decision keeps an **Undo** button
+(`POST …/decisions/<id>/reopen`).
 
 Under **Produced** the current PRD offers **Read** and, once there is more than one version,
 **Diff v*n-1* → v*n***.
@@ -190,21 +206,39 @@ begun.
 
 The execution plan, editable before you approve it. Each task row shows its code, title, statement,
 priority and estimate, with **↑ ↓** to reorder, **Edit**, **Delete** and **Cancel**, plus
-**+ Add a task** at the end. The plan artifact appears under **Produced** with **Read** and a diff
-against the previous version.
+**+ Add a task** at the end. The plan artifact appears under **Produced** with **Read** and, once a
+revision produced a second version, **Diff v*n-1* → v*n***.
 
-The bottom bar reads "Approving unlocks Build. Tasks run one at a time, each pausing for review."
-with **Approve plan →** and **Ask for a revision**.
+The bottom bar follows the plan's state:
+
+| State | Bar |
+|---|---|
+| Awaiting approval | "Approving accepts the plan as it stands and unlocks Build…" → **Approve plan →**, with **Ask for a revision…** |
+| Parked for another reason (e.g. `plan_dependencies`) | "This plan needs regenerating before it can be approved." → **Ask for a revision…** |
+| Approved, nothing built yet | "This plan is approved. Build runs it task by task." → **Ask for a revision…** |
+| Approved, Build started | "This plan is approved and Build has started. Revising is closed once a change set exists." → **Go to Build →** |
+
+**Ask for a revision…** opens a note — "What should the revised plan change?" — that joins the
+planner's inputs (`POST …/revise-plan {"note"}`, `idea revise-plan --note`). When the revision
+settles the page says what it changed: "Plan revised: v1 → v2 (added TASK-3)", or "The revision
+produced the same plan: still v1, tasks unchanged." An identical plan keeps its version, and a task
+that kept its title keeps its code. The pill reads **approved** for an approved plan whatever the
+viewport and whether or not Build has started.
 
 ## Build
 
-The header reads `<executor> executor · placeholder code` — the name comes from `GET …/executors`;
-the second half is a fixed string, printed whichever executor is selected. Below it, one card per change set showing its
-`CHG-n` code, the task title, the first 12 characters of the patch digest, a status chip, and
+The header reads `<executor> executor`, with `· placeholder code` appended only for `internal`.
+Above the cards, the next task's **Run TASK-n: <title>** button, and under it a labelled **Note to
+the agent for TASK-n** field — appended to the implementer's brief, as `idea execute --note` does. A
+failed run's banner has its own note field for its **Retry**. Below, one card per change set showing
+its `CHG-n` code, the task title, the first 12 characters of the patch digest, a status chip, and
 **View diff**.
 
 Status chips: draft, checking, review required, rejected, changes requested, superseded, approved,
-applying, applied, reverted, conflicted.
+applying, applied, reverted, conflicted. The chip is always the status; what is also true about the
+change set rides beside it as a marker — **demo** for placeholder output (the `internal` executor
+or the demo model), **no file changes** for a no-op, **no changes** when the agent produced no
+diff. An applied demo change set reads `APPLIED` `DEMO`.
 
 The diff renders per file — an **added** / **modified** / **deleted** badge, the path, the size, and
 the file's new content — falling back to the raw patch text when the response is not structured.
@@ -213,15 +247,20 @@ Buttons follow the status:
 
 | Status | Buttons |
 |---|---|
-| `review_required` | **Approve**, **Request changes**, **Reject** |
+| `review_required` | **Approve**, **Approve, accepting *n* findings** (only while the reviewer left *n* open blocking findings), **Request changes…**, **Reject** |
 | `approved` | **Apply** |
 | `applied` | **Revert** — which opens a confirmation card explaining that this restores the exact pre-apply bytes and leaves git history untouched |
 | `conflicted` | **Retry apply**, **Reject** |
 
 These are the same gates as `idea review`, `idea apply` and `idea revert` — including the refusal:
-an adversarial reviewer's blocking finding stops **Approve**, and the UI has no equivalent of
-`idea review <CHG-n> approve --accept-findings`, so clearing one is a CLI action today. A finding
-from the credential sweep carries a deny code and is not acceptable either way.
+an adversarial reviewer's blocking finding stops **Approve**, and **Approve, accepting *n*
+findings** is `idea review <CHG-n> approve --accept-findings`. A finding from the credential sweep
+carries a deny code and is not acceptable either way.
+
+**Request changes…** opens "What should change in CHG-n?"; **Send back with this note** records the
+verdict with the note (`POST …/review {"verdict":"changes_requested","note"}`, `idea review <CHG-n>
+changes_requested --note`). The card then shows "You asked: …", and the task's next run gets the
+note in its brief, labelled with the change set it came from.
 
 A change set rejected by a deterministic boundary renders instead as a **SYSTEM DENY** card carrying
 the deny code: it cannot be approved, overridden or applied, and the task is re-planned.
@@ -233,9 +272,10 @@ when any are — over one card per requirement.
 
 Each card shows the requirement code and statement, a `verified` / `failed` / `waived` pill once it
 has one, an *n*/*n* criteria count, and the acceptance criteria as `metric target (condition)`.
-Requirements still awaiting evidence get an evidence-note field and four actions: **Pass**,
-**Fail**, **Waive**, and **Add verify task** (which generates a verification task for the
-requirement). A waived requirement offers **Un-waive (pass)**.
+Requirements still awaiting evidence get a note field and **Waive** and **Add verify task** (which
+generates a verification task for the requirement); **Pass** and **Fail** appear beside them once a
+change set has been built and applied — until then a line above the cards says so, and the buttons
+are not shown at all. A waived requirement offers **Un-waive (pass)**.
 
 **Pass** is the equivalent of `idea verify REQ-1 --pass --note "<how you checked>"`, and the note is
 recorded as evidence in the Product Graph.
@@ -248,7 +288,7 @@ signals ("Derived deterministically from the patch contents — no model, no sco
 each with its why and the command that closes it — see
 [architecture.md](architecture.md#asking-the-graph-gaps)), a
 "Traceability gaps · *n*" list from the graph audit, a **Quality** card (below), and a daemon row
-showing the address, version and state directory. This is where Explore's **trace** button lands.
+showing the address, version and state directory. The sidebar's **Health ↗** opens it.
 
 **Quality** card (on Graph health, and on Build once a change set is applied) — the quality-dimension
 scorecard (`GET .../quality`): each enabled dimension with its mode (`advisory`/`gate`) and status,
@@ -267,17 +307,26 @@ comment into an open question.
 `-` removed, everything else context.
 
 **Decision discussion** (`#/i/<id>/decision/<decisionId>`) — a thread you can add to, resolve
-buttons for the recommendation and each option, and a "What changed" panel with **Mark seen**. No
-button in the app navigates here today; reach it by typing the URL.
+buttons for the recommendation and each option, and a "What changed" panel with **Mark seen**, in
+words ("Plan tasks replaced", "1 stale mark cleared") rather than event names. Reached from a
+decision's entry in the timeline; an unknown decision renders **Decision not found** with a way back
+to Define, not an empty thread.
+
+**What changed** (`#/i/<id>/changed`) — the initiative's timeline in full, grouped by day: change sets
+applied, rejected, denied or reverted, decisions changed, stale marks, failed or stopped runs, and
+completed phases, each linking to where it happened. The compact panel above every page shows the
+newest few.
+
+**Needs you** (`#/queue`) — every open decision, question and blocking finding across the project's
+initiatives, ranked, each linking to where it is resolved.
 
 **Command palette** — `⌘K` / `Ctrl-K` opens a filter box over the six phases of the current
 initiative plus **All initiatives** and **Settings**. `↑`/`↓` move, Enter runs, Escape closes.
 
 ## Settings
 
-Settings writes the same `.idea-harness/harness.yaml` the CLI edits. A **Demo mode** banner —
-"synthetic output. Configure a model provider to run real agents" — appears at the top of *this
-page only* when the daemon reports demo mode, which means one thing and not the two this used to
+Settings writes the same `.idea-harness/harness.yaml` the CLI edits. The shell's **Demo mode**
+banner (see Layout) is the only one here. Demo mode means one thing and not the two this used to
 describe: the configured `default_model` does not resolve to a registered provider, so requests
 fall through to the built-in one (`internal/daemon/providers.go`, `isDemo`).
 
@@ -288,15 +337,19 @@ that will fail with a 401, which is why `idea doctor` reports that case separate
 ### Model
 
 Pick a **Provider** from the configured list (each labelled "key missing", "refused" or "not
-configured" when it is not ready); the model list for that provider loads live. Filter it, click a chip, or type any
-`provider/model` into **Selected model**, then **Save model** — which sets `default_model` and
-confirms "Saved — will apply to the next initiative." **Reload models** re-fetches the list. Leaving
-it blank auto-selects.
+configured" when it is not ready); the model list for that provider loads live, starting with the
+default model's provider or, with none, the first ready one. What the load found — the count, or why
+that provider cannot be called — is shown in this card, not at the bottom of the page. Filter it,
+click a chip, or type any `provider/model` into **Selected model**, then **Save model** — which sets
+`default_model` and confirms "Saved — will apply to the next initiative." **Reload models**
+re-fetches the list. Leaving it blank auto-selects.
 
 ### Providers
 
 Each provider's readiness — **ready**, **missing key**, **refused**, or **not configured** — with
-its type, base URL and the environment variable its key is read from.
+its type, base URL and the environment variable its key is read from. In demo mode a ready provider
+the default model does not use reads **ready · not selected**: a working local Ollama does not take
+the project out of demo mode until a model is selected.
 
 **refused** is its own state, not a kind of missing key. The daemon rejects an entry that would
 send a preset's `api_key_env` somewhere else — an overridden `base_url` on a built-in preset — and
@@ -320,11 +373,17 @@ GROQ_API_KEY`.
 
 ### Executor
 
-- **Kind** — `internal` (the default placeholder), `container`, `omp`, or `hermes`.
+- **Kind** — `auto` (what an unset kind means), `internal` (the placeholder), `container`, `omp`,
+  or `hermes`. The selection is what `harness.yaml` asks for; under `auto` the card also says what
+  it resolves to right now — "Requested: auto · resolves to: internal." — with the daemon's
+  `NO REAL CODE WILL BE WRITTEN` warning when it fell back to the placeholder (`GET …/executors`'
+  `resolution`).
 - **Image** — the container image carrying the agent CLI.
 - **Model** — the coding model as `provider/model`; empty falls back to the default.
 
-`internal` shows "placeholder executor — writes no real code. Select hermes/omp for real code."
+`internal`, or `auto` resolving to it, shows "placeholder executor — writes no real code. Select
+hermes/omp for real code." The image and key status lines appear only for a kind that has an image
+or a key to report.
 Selecting `omp` or `hermes` shows a warning:
 
 > Runs with network egress + auto-approve and receives its provider API key (see
@@ -350,3 +409,20 @@ dropped deliveries, delivery counts, the Socket Mode connection and the Linear p
 integration has a **Send test message** (Slack) or **Test connection** (Linear) button, the same
 check as `idea integrations test`. Configuration stays in `harness.yaml` and `.env` so tokens never
 pass through the browser; see [`integrations.md`](integrations.md).
+
+## Tests
+
+- **Component tests** — `web/src/components.test.tsx` renders the components in jsdom (opted in per
+  file with `// @vitest-environment jsdom`) against a stubbed daemon (`web/src/testing/fakeDaemon.ts`)
+  and asserts what they send and show: the note inputs, the change-set chip, NotFound, Settings'
+  executor display. `pnpm test` runs them with the rest of the unit suite.
+- **Browser suite** — `make e2e` (`web/e2e`, Playwright, Chromium) builds the binary, starts a
+  hermetic demo daemon (port 19590 or `IDEA_E2E_PORT`, state under `web/e2e/.work`, every provider
+  key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op revision → run
+  with a note → diff → request changes with a note → approve → apply → verify → activity and health,
+  plus not-found routes and Settings. Every page gets an axe (WCAG 2 A/AA) check that fails on a
+  serious or critical violation; accepted exceptions, each with its reason, live in
+  `web/e2e/a11y.ts` (none today). `IDEA_E2E_A11Y=report` logs violations instead of failing, and
+  `IDEA_E2E_SHOTS=<dir>` keeps a screenshot of each checked page.
+- **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
+  why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.

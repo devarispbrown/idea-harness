@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute } from "./router";
+import { lineageHref, parseRoute } from "./router";
 
 // K: a bogus route used to silently resolve to home, indistinguishable from
 // the user having navigated there on purpose. parseRoute now returns a
@@ -60,5 +60,25 @@ describe("parseRoute", () => {
 
   it("keeps the offending path for display", () => {
     expect(parseRoute("#/weird/path")).toEqual({ name: "not-found", path: "weird/path" });
+  });
+});
+
+describe("lineage route", () => {
+  it("parses #/i/<id>/lineage/<type>/<ref>", () => {
+    expect(parseRoute("#/i/abc/lineage/context_doc/doc-1")).toEqual({
+      name: "lineage",
+      id: "abc",
+      type: "context_doc",
+      ref: "doc-1",
+    });
+  });
+
+  it("round-trips through lineageHref, encoding what needs it", () => {
+    const href = lineageHref("abc", "requirement", "REQ 1/x");
+    expect(parseRoute(href)).toEqual({ name: "lineage", id: "abc", type: "requirement", ref: "REQ 1/x" });
+  });
+
+  it("is not-found with a missing ref", () => {
+    expect(parseRoute("#/i/abc/lineage/context_doc").name).toBe("not-found");
   });
 });

@@ -5090,6 +5090,11 @@ components:
         answer_digest:
           type: string
           description: The answer is stored content-addressed; only its digest is on the row.
+        answer:
+          type: string
+          description: |
+            The answer's text, read from the store by the questions list. Omitted while the
+            question is open.
         answered_by: { type: string }
         created_at: { type: string, format: date-time }
         resolved_at:

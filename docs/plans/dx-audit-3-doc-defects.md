@@ -54,10 +54,10 @@ reason the file survived the round.
 | U1 | Top bar with a project selector | No top bar; project is hardcoded | `absent:docs/ui.md:There is no project switcher` | fixed 0213fa3 |
 | U2 | "Blocked"/"locked" stepper states | Not in `phases.ts` | `absent:docs/ui.md:There are no blocked or locked states` | fixed 0213fa3 |
 | U3 | Counts under the stepper | `PhaseNav` renders none | `absent:docs/ui.md:no counts are rendered under the rail` | fixed 0213fa3 |
-| U4 | Trace link opens a trace view | Goes to the health page | `absent:docs/ui.md:not a per-document trace view` | fixed 0213fa3 |
+| U4 | Trace link opens a trace view | Goes to the health page (documented as such in 0213fa3; the link itself now opens the document's lineage route) | `absent:web/src/ExplorePage.tsx:lineageHref(initiativeId, "context_doc"` | fixed ui-review |
 | U5 | "✓ complete" badge / "needs manual" flag on verify | Neither exists | `absent:docs/ui.md:A coverage meter` | fixed 0213fa3 |
 | U6 | Git SHA rendered on the build page | Never rendered | `absent:docs/ui.md:commit SHA is not surfaced anywhere in the UI` | fixed 0213fa3 |
-| U7 | Demo banner is global | Settings-only | `absent:docs/ui.md:when the daemon reports demo mode` | fixed 0213fa3 |
+| U7 | Demo banner is global | Settings-only (later: both, twice on Settings; now the shell's one banner on every page) | `absent:docs/ui.md:on every page, a **Demo mode** banner` | fixed ui-review |
 | U8 | Build-done criterion | Does not match `phases.ts` | `absent:docs/ui.md:at least one change set and` | fixed 0213fa3 |
 | U9 | Context docs enter one stage | They enter every stage | `absent:docs/ui.md:not into a single stage` | fixed 0213fa3 |
 | U10 | "Live activity feed via SSE" | No SSE client in `web/src`; the UI polls on timers | `absent:docs/ui.md:There is no SSE` | fixed 0213fa3 |

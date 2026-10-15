@@ -36,6 +36,9 @@ export interface QuestionItem {
   id: string;
   question: string;
   status: string;
+  // The answer's text, served by the questions list once answered.
+  answer?: string;
+  answered_by?: string;
 }
 
 export const DISPOSITIONS: { value: string; label: string }[] = [
@@ -225,7 +228,22 @@ export function QuestionCard({
 }) {
   const [answer, setAnswer] = useState("");
   if (q.status !== "open") {
-    return null;
+    // Answered questions render here, read-only, for Define's Resolved
+    // section. This used to return null, so a question vanished the moment
+    // it was answered, along with the answer itself.
+    return (
+      <section className="judgment-card resolved">
+        <div className="jc-head">
+          <IdChip label={`Q-${q.id.slice(0, 6).toUpperCase()}`} className="chip-inactive" />
+          <span className="jc-title">{q.question}</span>
+          <span className="phase-pill pill-verified">answered</span>
+        </div>
+        <div className="jc-answer">
+          {q.answer ? <>Answer: <strong>{q.answer}</strong></> : "Answered."}
+          {q.answered_by && <span className="muted"> · by {q.answered_by}</span>}
+        </div>
+      </section>
+    );
   }
   return (
     <section className="judgment-card">
@@ -244,6 +262,7 @@ export function QuestionCard({
       <div className="jc-ask">
         <input
           className="text-input"
+          aria-label={`Answer to: ${q.question}`}
           placeholder="Your answer…"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
