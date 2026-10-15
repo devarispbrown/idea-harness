@@ -888,7 +888,10 @@ page on the public internet; don't.
 
 - `idea ui pair [--label <name>]` mints a one-time code (ten minutes, single use) and prints where
   to open the UI. Only the CLI on the daemon's machine can do this — it needs the API token, which
-  never reaches a remote browser.
+  never reaches a remote browser. `--qr` also draws that address as a QR code in the terminal, so
+  the phone's camera can open it; the code is printed beside it and is never inside it (codes
+  never go in URLs). Without colour (output not a terminal) it is drawn for a dark background, and comes out inverted on a light one, which
+  most scanners accept; the address is printed under it either way.
 - `idea ui sessions` lists every browser session; `idea ui sessions revoke <id>` signs one out, and
   `revoke --all` signs out every one. Settings → **Remote access** in the UI does the same.
 

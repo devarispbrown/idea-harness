@@ -159,6 +159,7 @@ type acpAttempt struct {
 	cancel    context.CancelFunc
 	proc      *acpProc
 	agentHome string
+	grant     *mountGrant
 	secrets   []string
 
 	// events maps session/update, fs writes and permission answers onto
@@ -317,8 +318,15 @@ func (e *ACPExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 	if err != nil {
 		return Attempt{}, err
 	}
+	// A root daemon runs the agent as ContainerUID: hand it what it writes,
+	// and take it back in finish (containeruser.go).
+	grant, err := grantMounts(req.WorkRoot, home)
+	if err != nil {
+		removeAgentHome(home)
+		return Attempt{}, err
+	}
 	a := &acpAttempt{status: "running", phase: "Planning", action: "starting the agent",
-		done: make(chan struct{}), agentHome: home, interruptCh: make(chan struct{}, 1),
+		done: make(chan struct{}), agentHome: home, grant: grant, interruptCh: make(chan struct{}, 1),
 		events: newACPEvents(req.Events)}
 	a.out.max = acpOutputLines
 	// Everything the agent was handed that is secret, for OutputTail to
@@ -339,6 +347,7 @@ func (e *ACPExecutor) Start(ctx context.Context, req Request) (Attempt, error) {
 	proc, err := e.launch(ctx, acpLaunch{AttemptID: attemptID, WorkRoot: req.WorkRoot, AgentHome: home,
 		Argv: e.agentArgv(), Secrets: secrets, Stderr: &lineWriter{ring: &a.out}})
 	if err != nil {
+		_ = grant.Restore()
 		removeAgentHome(home)
 		return Attempt{}, fmt.Errorf("executor: acp: start agent: %w", err)
 	}
@@ -622,6 +631,12 @@ func (e *ACPExecutor) handle(a *acpAttempt, workRoot, method string, params json
 		if err := os.WriteFile(host, []byte(p.Content), 0o644); err != nil {
 			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
 		}
+		// Written by the daemon on the agent's behalf; under a root daemon
+		// the agent (ContainerUID) must still be able to edit it from inside
+		// its container (containeruser.go).
+		if err := handOver(workRoot, host); err != nil {
+			return nil, &rpcError{Code: rpcInternalError, Message: err.Error()}
+		}
 		a.out.addLine("wrote " + p.Path)
 		a.events.fileWrite(p.Path, prev, p.Content)
 		return map[string]any{}, nil
@@ -872,6 +887,8 @@ func (e *ACPExecutor) finish(id string, a *acpAttempt) error {
 	e.mu.Lock()
 	delete(e.attempts, id)
 	e.mu.Unlock()
+	// After the kill, so no container races the walk.
+	_ = a.grant.Restore()
 	if a.agentHome != "" {
 		_ = removeAgentHome(a.agentHome)
 	}
@@ -930,7 +947,7 @@ type PermissionLogger interface {
 // that an attached `docker run` might not have read yet when it would be
 // deleted.
 func (e *ACPExecutor) containerArgs(l acpLaunch) []string {
-	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	uid := containerUser()
 	args := []string{
 		"run", "-i", "--rm",
 		"--name", agentContainerName(l.AttemptID),
@@ -1220,7 +1237,7 @@ func ProbeACP(ctx context.Context, image string, command []string) (string, erro
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"--user", containerUser(),
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",

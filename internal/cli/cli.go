@@ -205,10 +205,10 @@ func commands() []command {
 		{names: []string{"daemon"}, usage: "daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]", summary: "run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md \"Remote access\")", flags: flagSpec{"--listen": flagValue, "--tls-cert": flagValue, "--tls-key": flagValue, "--allowed-hosts": flagValue}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
 		{names: []string{"ui"}, usage: "ui pair|sessions", summary: "sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
-			"pair":     {"--label": flagValue, "--json": flagBool},
+			"pair":     {"--label": flagValue, "--json": flagBool, "--qr": flagBool},
 			"sessions": {"--all": flagBool, "--json": flagBool},
 		}, subsAreRequired: true, maxPositional: 2, run: cmdUI, inHelp: true},
-		{usage: "ui pair [--label <name>]", summary: "mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine", inHelp: true},
+		{usage: "ui pair [--label <name>] [--qr]", summary: "mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it)", inHelp: true},
 		{usage: "ui sessions [revoke <id>|--all]", summary: "list remote browser sessions; revoke one, or every one", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
 		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},

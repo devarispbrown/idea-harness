@@ -27,6 +27,9 @@ export interface PushSubscriptionView {
   created_at: string;
   last_delivered_at?: string;
   last_error?: string;
+  // Only in the subscribe (and renew) response; kept for the service worker
+  // (pushRenewalStore.ts), never shown.
+  renewal_token?: string;
 }
 
 export interface PushEnv {
