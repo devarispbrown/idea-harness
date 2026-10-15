@@ -259,6 +259,13 @@ func (e *OpenHandsExecutor) Start(ctx context.Context, req Request) (Attempt, er
 			e.retire(ctx, rec, client, reason)
 			continue
 		}
+		if req.RunID != "" && rec.RunID != req.RunID {
+			// The run whose event stream this remote run now feeds: this
+			// Execute's, whether it dispatched the run or re-attached to it.
+			if err := e.runs.SetRemoteRunAgentRun(ctx, rec.ID, req.RunID); err != nil {
+				return Attempt{}, err
+			}
+		}
 		unlock := e.sup.lockRun(rec.ID)
 		rec, err = e.runs.GetRemoteRun(ctx, rec.ID)
 		if err != nil {
@@ -872,6 +879,13 @@ type watcher struct {
 	log     *slog.Logger
 	// lastError is the newest error event's text, for the failure reason.
 	lastError string
+	// costLoaded/totIn/totOut/totCost are the token and cost totals already
+	// stored as cost events for this run, so a "stats" update's running
+	// totals become deltas -- loaded once from the store, so a watcher
+	// re-attaching after a restart does not count the run's spend twice.
+	costLoaded    bool
+	totIn, totOut int64
+	totCost       float64
 }
 
 // run follows one run until it is terminal (or finished), the context ends,
@@ -1008,6 +1022,7 @@ func (w *watcher) ingest(ctx context.Context) error {
 			return nil
 		}
 		lines := make([]string, 0, len(events))
+		var evs []domain.RunEvent
 		for i, raw := range events {
 			line, errText := eventLine(headers[i].Kind, headers[i].Source, raw)
 			if errText != "" {
@@ -1016,8 +1031,23 @@ func (w *watcher) ingest(ctx context.Context) error {
 			if line != "" {
 				lines = append(lines, w.spec.redact(line))
 			}
+			if rec.RunID == "" {
+				continue
+			}
+			at := ohTimestamp(headers[i].Timestamp)
+			mapped := ohRunEvents(headers[i].Kind, headers[i].Source, at, raw)
+			if c, ok := w.costDelta(ctx, rec.RunID, headers[i].Kind, raw); ok {
+				c.At = at
+				mapped = append(mapped, c)
+			}
+			for _, ev := range mapped {
+				ev.Path = ohRemoteRel(rec.RemoteDir, ev.Path)
+				ev.Title = strings.ReplaceAll(ev.Title, rec.RemoteDir+"/", "")
+				ev.InitiativeID, ev.TaskID, ev.Executor = rec.InitiativeID, rec.TaskID, openHandsName
+				evs = append(evs, ev.Redacted(w.spec.redact))
+			}
 		}
-		if _, err := db.AppendRemoteRunProgress(context.WithoutCancel(ctx), w.runID, rec.LastEventID, headers[len(headers)-1].ID, len(events), lines); err != nil {
+		if _, err := db.AppendRemoteRunProgressEvents(context.WithoutCancel(ctx), w.runID, rec.LastEventID, headers[len(headers)-1].ID, len(events), lines, evs); err != nil {
 			return err
 		}
 		if !next {
@@ -1025,6 +1055,40 @@ func (w *watcher) ingest(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// costDelta turns a "stats" state update's running totals into a cost event
+// carrying the change since the last one (ohStatsTotals).
+func (w *watcher) costDelta(ctx context.Context, agentRunID, kind string, raw json.RawMessage) (domain.RunEvent, bool) {
+	if kind != "ConversationStateUpdateEvent" {
+		return domain.RunEvent{}, false
+	}
+	var s struct {
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(raw, &s) != nil || s.Key != "stats" {
+		return domain.RunEvent{}, false
+	}
+	in, out, cost, ok := ohStatsTotals(s.Value)
+	if !ok {
+		return domain.RunEvent{}, false
+	}
+	if !w.costLoaded {
+		i, o, c, err := w.spec.runs.RunEventCostTotals(ctx, agentRunID)
+		if err != nil {
+			return domain.RunEvent{}, false
+		}
+		w.totIn, w.totOut, w.totCost, w.costLoaded = i, o, c, true
+	}
+	dIn, dOut, dCost := in-w.totIn, out-w.totOut, cost-w.totCost
+	if dIn <= 0 && dOut <= 0 && dCost <= 1e-9 {
+		return domain.RunEvent{}, false
+	}
+	w.totIn, w.totOut, w.totCost = max(in, w.totIn), max(out, w.totOut), max(cost, w.totCost)
+	return domain.RunEvent{Kind: domain.RunEventCost, Source: domain.RunEventSourceAgent,
+		Title:       fmt.Sprintf("%d in / %d out tokens, $%.4f", max(dIn, 0), max(dOut, 0), max(dCost, 0)),
+		InputTokens: max(dIn, 0), OutputTokens: max(dOut, 0), CostUSD: max(dCost, 0)}, true
 }
 
 // socket keeps the event websocket open while the run is followed, turning

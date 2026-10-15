@@ -948,3 +948,49 @@ func (m QualityMethod) Valid() bool {
 	}
 	return false
 }
+
+// RunEventKind is the vocabulary of a normalized run event (RunEvent): what
+// one step of a running coding agent was, independent of which executor
+// produced it. Clients switch on it to group tool calls, list files, show the
+// current action and surface errors.
+type RunEventKind string
+
+const (
+	// RunEventAction is a coarse step with no finer structure: a line of a
+	// CLI agent's output, an executor phase.
+	RunEventAction RunEventKind = "action"
+	// RunEventToolCall is the agent starting a tool call (ACP tool_call, an
+	// OpenHands ActionEvent). Its ToolCallID groups the later results.
+	RunEventToolCall RunEventKind = "tool_call"
+	// RunEventToolResult is a tool call's progress or outcome (ACP
+	// tool_call_update, an OpenHands ObservationEvent).
+	RunEventToolResult RunEventKind = "tool_result"
+	// RunEventFileChange is a file the agent wrote: live from an fs write, a
+	// file-editing tool or a work-root scan, and authoritative (with line
+	// counts) from the orchestrator's own diff once the agent has finished.
+	RunEventFileChange RunEventKind = "file_change"
+	// RunEventPermission is a permission request an ACP agent made and the
+	// answer the harness gave on the operator's behalf.
+	RunEventPermission RunEventKind = "permission"
+	// RunEventMessage is text: the agent's own message, or a steering note
+	// from the human (Source "user").
+	RunEventMessage RunEventKind = "message"
+	// RunEventThought marks that the agent is reasoning. The content is never
+	// kept (§50: chain-of-thought is not exposed) -- only the fact.
+	RunEventThought RunEventKind = "thought"
+	// RunEventCost is a token/cost delta the agent or server reported.
+	RunEventCost RunEventKind = "cost"
+	// RunEventStatus is a lifecycle change: started, a phase, finished.
+	RunEventStatus RunEventKind = "status"
+	// RunEventError is a failure the agent or the executor reported.
+	RunEventError RunEventKind = "error"
+)
+
+func (k RunEventKind) Valid() bool {
+	switch k {
+	case RunEventAction, RunEventToolCall, RunEventToolResult, RunEventFileChange, RunEventPermission,
+		RunEventMessage, RunEventThought, RunEventCost, RunEventStatus, RunEventError:
+		return true
+	}
+	return false
+}

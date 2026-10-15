@@ -44,6 +44,10 @@ type liveAttempt struct {
 	// while another reader's refresh is waiting on docker.
 	cacheMu sync.Mutex
 	cached  string
+
+	// run is the agent run's identity, recorder and steering notes, set once
+	// the run exists (runevents.go). Guarded by the engine's liveMu.
+	run *liveRun
 }
 
 func (a *liveAttempt) getCached() string {
