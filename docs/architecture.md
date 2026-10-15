@@ -11,8 +11,9 @@ Change Control
 Evidence & Observability
 ```
 
-Milestone 1 implements the **Idea → Reviewed PRD** vertical slice. This document describes what
-exists now; later milestones extend it without rearchitecting the foundations.
+All four milestones are implemented — idea → reviewed PRD (M1), design and execution plan (M2),
+change sets from a coding agent (M3), apply, verify and complete (M4) — and the graph continues past
+them to objectives and outcome metrics. This document describes what exists now.
 
 ## Stack
 
@@ -24,7 +25,7 @@ exists now; later milestones extend it without rearchitecting the foundations.
 | Large content | content-addressed BlobStore (`blobs/sha256/<digest>`) |
 | API | REST, described by [`openapi.yaml`](openapi.yaml), CI-checked against the routes — see [`api.md`](api.md). An SSE endpoint exists and nothing in-tree consumes it |
 | Config | YAML + JSON Schema |
-| Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (OpenRouter, Ollama, custom) + fake provider |
+| Model | native adapters (OpenAI, Anthropic, Gemini) + OpenAI-compatible (DeepSeek, OpenRouter, Ollama, custom) + demo/fake provider |
 | CLI | Charm.sh (Lip Gloss, Huh, Glamour, Bubble Tea) |
 | MCP | stdio server (`idea mcp`), a client of the same API — see [`mcp.md`](mcp.md) |
 
@@ -48,11 +49,15 @@ M2  architecture ──► product_design ──► verification_design ──�
                               needs_human_judgment
                    (idea revise-plan · idea approve-plan)
 
-M3  implementation_brief ──► change set ──► review ──► apply
-M4  verify ──► complete
+M3  implementation_brief ──► executor run ──► change set ──► review ──► apply
+M4  quality dimensions ──► verify gate ──► complete
+
+    then, at any time: metric observations ──► drift  (objectives → outcomes)
 ```
 
-The eleven stage keys are the constants in `internal/workflow/engine.go`.
+The eleven stage keys are the constants in `internal/workflow/engine.go`; M3's executor run is
+whichever kind `executor.kind` resolves to ([agents.md](agents.md)), and M4's quality dimensions are
+measured before the gate reads them ([configuration.md](configuration.md#quality-dimensions-verify)).
 `needs_human_judgment` is one status with four recorded reasons
 (`domain.JudgmentReason`), which is what lets `idea next` name a command rather
 than guess from which artifacts exist.
@@ -83,9 +88,13 @@ internal/config      .idea-harness config load/validate (JSON Schema)
 internal/security    redaction, path guard, sanitization, token, trust
 internal/roles       Role Contracts (competencies/behaviors/rubrics/checks)
 internal/context     deterministic Context Compiler (trust levels, no embeddings)
-internal/model       provider registry (OpenAI/Anthropic/Gemini/OpenRouter/Ollama) + structured-output pipeline
+internal/model       provider registry (OpenAI/Anthropic/Gemini/DeepSeek/OpenRouter/Ollama) + structured-output pipeline
 internal/review      deterministic checks + approval bar + findings
 internal/workflow    stage graph + state machine + orchestrator
+internal/executor    executor kinds (internal, container, omp, hermes, acp, openhands), `auto` resolution,
+                     the hardened container and the no-network check sandbox
+internal/quality     verify's quality-dimension analyses (setup, docs, API diffs, ops readiness, …)
+internal/eval        `idea eval`: the end-to-end suite on a private in-process daemon
 internal/daemon      token-authenticated, project-scoped REST; an SSE endpoint exists, unused by the CLI and UI
 internal/integrations  integration event bus: tails the event log (the SSE endpoint's source) into a
                      SQLite outbox; Slack (Socket Mode) and Linear (polling) subscribers; see integrations.md

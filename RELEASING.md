@@ -10,9 +10,11 @@ machine check it.
 ## What gates a tag
 
 Pushing a `v*` tag runs `.github/workflows/ci.yml`. The `release` job declares
-`needs: [compile-no-node, macos, backend, web]`, so a tag publishes nothing
-unless all four are green: the nine guards, the Go suite on Linux and both
-macOS architectures, `scripts/smoke.sh`, and the web build and unit tests.
+`needs: [compile-no-node, macos, backend, web, e2e, agent-contract]`, so a tag
+publishes nothing unless all six are green: the nine guards, the Go suite on
+Linux and both macOS architectures, `scripts/smoke.sh`, the web build and unit
+tests, the browser suite with its accessibility gate (`make e2e`), and the
+agent contract against the pinned Hermes image.
 
 It lives in `ci.yml` rather than a workflow of its own because `needs:` resolves
 job ids within one workflow file. A separate `release.yml` cannot depend on

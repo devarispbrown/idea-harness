@@ -369,8 +369,10 @@ idea metrics                                      # each metric with its drift a
 previous one (`idea trace metric MET-3` names them). `metric measure` runs a command source in the
 no-network check sandbox — never the host — and exits `9` (`run_failed`) when any measurement failed,
 after printing every result. The drift rules are in the README's
-[Objectives & outcomes](../README.md#objectives--outcomes) section; `idea status` and `idea next`
-add an outcome line whenever something drifts.
+[Objectives & outcomes](../README.md#objectives--outcomes) section. `idea status` and `idea next`
+print an `outcomes:` line whenever the initiative has a metric (how many, and how many are on track,
+off track, regressed, stale or without data), plus a "works, but fails its objective" line for each
+verified requirement whose objective is failing.
 
 ## Example
 
@@ -378,10 +380,10 @@ add an outcome line whenever something drifts.
 mkdir my-product && cd my-product
 idea init
 idea model set ollama/llama3.1      # point at a local model
-idea new                            # interactive Huh form
-idea watch                          # follow the run live
+idea new                            # interactive Huh form; then follows the run live
 idea prd                            # read the reviewed PRD in your terminal
 ```
 
-The workflow runs asynchronously (Operations); `idea new` prints the new `initiative_id` immediately, and
-`idea watch` follows it to completion.
+The workflow runs asynchronously (Operations). `idea new "<idea>"` waits for the run it starts and
+the interactive form follows it live; `idea new "<idea>" --no-wait` prints the new `initiative_id`
+straight away, and `idea watch` follows it from any terminal.
