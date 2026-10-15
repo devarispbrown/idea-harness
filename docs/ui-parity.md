@@ -67,7 +67,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `budget` | ui | `#/settings` — Budget: project default cap; `#/i/<id>/build` — spending meter with Raise cap / Clear; meter in the initiative header on every phase | |
 | `metrics` | ui | `#/i/<id>/define` — metrics under each objective; drift on `#/i/<id>/health` | |
 | `metric add` | ui | `#/i/<id>/define` — Objectives: add metric | |
-| `metric edit` | partial | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline incl. clearing it, target, unit) | guardrail, cadence, definition, source (`--command`/`--url`/`--manual`) and moving it to another objective are CLI-only |
+| `metric edit` | ui | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline and guardrail incl. clearing them, target, unit, cadence, definition, source: by hand, command, or URL + JSON pointer, and the objective it measures) | |
 | `metric record` | ui | `#/i/<id>/define` — Objectives: record a value | |
 | `metric measure` | ui | `#/i/<id>/outcomes` — Measure for command/url sources; `#/automations` — scheduled measurement and Run now | |
 | `diff` | cli-only | CLI-only: gap — the structured requirement/decision diff (`GET …/diff`) is not shown; `#/i/<id>/diff/<from>/<to>` is the text diff of two artifact versions, a different thing | |

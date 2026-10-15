@@ -214,11 +214,14 @@ Under **Produced** the current PRD offers **Read** and, once there is more than 
 | **Link a requirement…** / **Link** | `idea objective link <REQ> <OBJ>` |
 | **×** beside a serving requirement ("Unlink REQ-1 from OBJ-1") | `idea objective link <REQ> <OBJ> --unlink` |
 | **+ Metric** — name, direction, baseline, target, unit | `idea metric add` |
-| **Edit** on a metric — the same fields; a baseline left blank is cleared | `idea metric edit <MET>` (`--clear-baseline`) |
+| **Edit** on a metric — the same fields plus guardrail, cadence, definition, source (recorded by hand, a command, or a URL with a JSON pointer) and, with more than one objective, which objective it measures; a baseline or guardrail left blank is cleared | `idea metric edit <MET>` (`--clear-baseline`, `--clear-guardrail`, `--cadence`, `--definition`, `--manual`/`--command`/`--url --pointer`, `--objective`) |
 | A value and **Record** | `idea metric record` |
 
 An edit sends only the fields that changed (`PATCH …/objectives/{id}`, `PATCH …/metrics/{id}`), so
-saving an untouched form changes nothing.
+saving an untouched form changes nothing. The metric form checks what the API checks before it
+sends anything (`outcomes.metricEditBody`): numbers that are numbers, a maintain metric's guardrail
+not negative, a cadence `domain.ParseCadence` accepts, a command source with a command, a URL source
+with an http(s) URL and a pointer starting with `/`. A changed source is sent whole.
 
 The bar at the bottom is the phase's commit action:
 
