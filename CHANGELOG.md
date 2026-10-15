@@ -41,6 +41,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- **The README is shorter and shows how to use the web UI.** It now covers install, a quick
+  start, a "Using the web UI" section with a screenshot, and short summaries that link to the
+  reference docs. Detail moved, not dropped: the drift rules and the objectives walkthrough are in
+  `docs/configuration.md` (Objectives & outcomes, Drift), and the supported-platforms table is in
+  `RELEASING.md` (Platforms). `docs/ui.md` no longer says the project is not selectable.
+
 - **Every `harness.yaml` write keeps your comments and key order, and is validated like a load.**
   `idea model set`, `idea executors setup` and the Settings saves used to re-marshal the whole file
   (dropping every comment) and checked only `network`, so a write could produce a file the next
@@ -646,6 +652,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   MCP values reach the agent in `session/new` on its stdin.
 
 ### Fixed
+
+- **The sidebar's Settings button was off screen in demo mode.** The demo banner pushed a
+  full-height sidebar down by its own height, so in a short window the footer (Settings,
+  Automations, Remote runs) sat below the screen until the page scrolled. On a wide screen the
+  banner now stays at the top and the sidebar fills the window under it, at the top of the page and
+  scrolled; an e2e test checks both.
 
 - **Content cut off at the edge of the screen, and a tall phone top bar.** A sweep of every route
   at 390px and 1280px in both colour schemes (`web/e2e/views.e2e.ts`) found: Automations' "Reports

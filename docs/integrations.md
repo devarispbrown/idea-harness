@@ -30,7 +30,7 @@ translates log rows into a small set of typed events and delivers each to Slack 
 | `verify.passed` / `verify.failed` | The initiative passed verification (complete), or a requirement's evidence failed. |
 | `run.failed` | The initiative failed, with its reason. |
 | `task.status_changed` | A plan task moved (Linear only by default). |
-| `outcome.drifted` | An observation moved an outcome metric into `off_track` or `regressed` (see the README's objectives & outcomes section). Slack only; a metric going `stale` is a function of the clock and is never evented — it shows in `idea status`, `idea next` and the Health page instead. |
+| `outcome.drifted` | An observation moved an outcome metric into `off_track` or `regressed` (see [configuration.md](configuration.md#drift)). Slack only; a metric going `stale` is a function of the clock and is never evented — it shows in `idea status`, `idea next` and the Health page instead. |
 | `initiative.budget_exceeded` | The initiative reached its spending cap and stopped before the next model or agent call, with "$spent of $cap (before <call>)" ([configuration.md](configuration.md#budget)). |
 | `eval.regressed` | A scheduled `idea eval` run regressed against its baseline, with the regressions ([configuration.md](configuration.md#automations)). Project-level: no initiative. |
 

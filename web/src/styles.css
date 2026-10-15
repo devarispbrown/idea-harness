@@ -481,6 +481,16 @@ button.ghost {
   z-index: 1;
   text-align: center;
 }
+/* Where the sidebar is a column, the banner stays put above it, so the
+   sidebar can fill exactly the rest of the screen. On a narrow screen it
+   scrolls away instead of costing the page its height. */
+@media (min-width: 1000px) {
+  .banner-app {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+  }
+}
 
 /* M4/H1: a network failure overlays this banner on top of the last good
    page instead of replacing the whole app with a blank "lost connection"
@@ -1159,8 +1169,10 @@ button.ghost.small {
   flex-direction: column;
   padding: 16px 12px;
   position: sticky;
-  top: 0;
-  height: 100vh;
+  /* Under the demo banner, which sticks above it on a wide screen (App.tsx
+     measures it), so the sidebar's footer is always on screen. */
+  top: var(--app-banner-h, 0px);
+  height: calc(100vh - var(--app-banner-h, 0px));
   overflow: auto;
 }
 

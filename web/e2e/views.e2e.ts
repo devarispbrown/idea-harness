@@ -188,3 +188,31 @@ for (const vp of VIEWPORTS) {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 }
+
+// The demo banner sits above the shell; a sidebar a full screen tall used to
+// end that far below the window, leaving Settings off screen until the page
+// scrolled, and a sidebar sized only for the top of the page left a gap under
+// it once the page scrolled. The suite runs in demo mode, so the banner is up.
+test("the sidebar fills the window under the demo banner, at the top and scrolled", async () => {
+  await page.setViewportSize({ width: 1280, height: 640 });
+  const build = routes.find((r) => r.hash.endsWith("/build"));
+  expect(build, "a build route in the sweep").toBeTruthy();
+  await page.goto(`/${build!.hash}`);
+  await expect(page.locator(".banner-app")).toBeVisible();
+  const settings = page.locator(".phase-nav").getByRole("button", { name: /Settings/ }).last();
+  await expect(settings).toBeVisible();
+  for (const where of ["top", "bottom"] as const) {
+    const m = await page.evaluate((where) => {
+      window.scrollTo(0, where === "top" ? 0 : document.documentElement.scrollHeight);
+      const nav = document.querySelector(".phase-nav")!;
+      nav.scrollTop = nav.scrollHeight;
+      const btn = [...nav.querySelectorAll("button")].filter((b) => /Settings/.test(b.textContent ?? "")).pop()!;
+      const banner = document.querySelector(".banner-app")!.getBoundingClientRect();
+      const r = nav.getBoundingClientRect();
+      return { settings: btn.getBoundingClientRect().bottom, navTop: r.top, navBottom: r.bottom, bannerBottom: banner.bottom };
+    }, where);
+    expect(m.settings, `${where}: Settings on screen`).toBeLessThanOrEqual(640);
+    expect(Math.round(m.navBottom), `${where}: the sidebar reaches the bottom`).toBe(640);
+    expect(Math.round(m.navTop), `${where}: the sidebar starts under the banner`).toBe(Math.round(m.bannerBottom));
+  }
+});
