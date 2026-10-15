@@ -34,6 +34,9 @@ import (
 type prdObjective struct {
 	key, statement, rationale string
 	metrics                   []prdMetric
+	// src is the response's own entry, so recordPRDObjectives can rewrite
+	// its key to the stored code before the PRD body is rendered.
+	src map[string]any
 }
 
 type prdMetric struct {
@@ -73,6 +76,7 @@ func (e *Engine) parsePRDObjectives(obj map[string]any) []prdObjective {
 	var out []prdObjective
 	for _, o := range objSlice(obj["objectives"]) {
 		po := prdObjective{
+			src:       o,
 			key:       strings.TrimSpace(str(o["key"])),
 			statement: strings.TrimSpace(e.redact(str(o["statement"]))),
 			rationale: strings.TrimSpace(e.redact(str(o["rationale"]))),
@@ -117,6 +121,13 @@ func (e *Engine) parsePRDObjectives(obj map[string]any) []prdObjective {
 // recordPRDObjectives persists this PRD cycle's objectives and metrics and
 // links the cycle's requirements to them. objectiveRefs maps a requirement
 // id to the objective keys/codes the response listed for it.
+//
+// It also rewrites obj in place so every objective's key, and every
+// requirement's objectives[] reference, is the objective's stored code
+// (OBJ-n). A model names a new objective with a key of its own ("O1"); the
+// PRD body is rendered from obj after this, and used to print that key --
+// a label that exists nowhere else, while `idea objectives`, the Define page
+// and every gap say OBJ-1.
 func (e *Engine) recordPRDObjectives(ctx context.Context, initiativeID, runID string, obj map[string]any, reviseReason string, objectiveRefs map[string][]string) error {
 	parsed := e.parsePRDObjectives(obj)
 
@@ -138,8 +149,10 @@ func (e *Engine) recordPRDObjectives(ctx context.Context, initiativeID, runID st
 	// keyToID resolves every name a requirement may cite an objective by:
 	// this response's own keys, and every live objective's code.
 	keyToID := map[string]string{}
+	idToCode := map[string]string{}
 	for _, o := range live {
 		keyToID[strings.ToUpper(o.Code)] = o.ID
+		idToCode[o.ID] = o.Code
 	}
 	used := map[string]bool{}
 	keep := make([]string, 0, len(parsed))
@@ -182,6 +195,10 @@ func (e *Engine) recordPRDObjectives(ctx context.Context, initiativeID, runID st
 			objID = o.ID
 			used[objID] = true
 			keyToID[strings.ToUpper(o.Code)] = objID
+			idToCode[objID] = o.Code
+		}
+		if code := idToCode[objID]; code != "" && po.src != nil {
+			po.src["key"] = code
 		}
 		keep = append(keep, objID)
 		if po.key != "" {
@@ -202,6 +219,23 @@ func (e *Engine) recordPRDObjectives(ctx context.Context, initiativeID, runID st
 		}
 		if err := e.db.SupersedeModelObjectivesExcept(ctx, initiativeID, reason, keep); err != nil {
 			return err
+		}
+	}
+
+	// Requirements cite objectives by the response's keys; say the codes.
+	for _, r := range objSlice(obj["requirements"]) {
+		refs, ok := r["objectives"].([]any)
+		if !ok {
+			continue
+		}
+		for i, ref := range refs {
+			k, isStr := ref.(string)
+			if !isStr {
+				continue
+			}
+			if code := idToCode[keyToID[strings.ToUpper(strings.TrimSpace(k))]]; code != "" {
+				refs[i] = code
+			}
 		}
 	}
 

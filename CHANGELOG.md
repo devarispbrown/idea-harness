@@ -483,6 +483,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   run panel and the run report show it as ended. The run panel reads such a call **cancelled** (⊘),
   counts it as done in "n/m actions" with "· n cancelled", and closes any open call itself once the
   run is over (a run recorded before this, or a result that was dropped).
+- **The PRD names objectives by their codes.** A model (and the demo provider) keys a new objective
+  `O1`, and `idea prd` / the document reader printed `O1: …` and `Serves: O1` — a label nothing else
+  uses. The PRD body is now rendered after the objectives are stored, with `OBJ-n` in both places.
+  The PRD artifact is also committed after its requirements, objectives and questions, rather than
+  before them.
 - **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
   `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
   findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer
