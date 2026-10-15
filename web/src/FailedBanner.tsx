@@ -134,6 +134,10 @@ export default function FailedBanner({
           value={note}
           onChange={setNote}
           rows={1}
+          onSubmit={() => {
+            if (!busy) retry();
+          }}
+          submitLabel="retry"
         />
       </div>
       {error && <div className="failed-error">{error}</div>}

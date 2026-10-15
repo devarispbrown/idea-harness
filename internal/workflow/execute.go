@@ -528,7 +528,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	}
 	// Steering notes sent to an earlier run that could not take them mid-run
 	// (runevents.go) ride on this one, the same way.
-	if held := e.takePendingNotes(initiativeID); len(held) > 0 {
+	if held := e.takePendingNotes(ctx, initiativeID, task.ID); len(held) > 0 {
 		note = strings.TrimSpace(note + "\n\n" + strings.Join(held, "\n\n"))
 	}
 	if note != "" {

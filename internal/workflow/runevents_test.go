@@ -194,10 +194,21 @@ func TestSteerRunHoldsTheNoteForTheNextRunWhenUnsupported(t *testing.T) {
 	if info, _ := eng.LiveRun(iniID); info.Steerable {
 		t.Fatal("hermes reported steerable")
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 1 || got[0] != "prefer small commits" {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 1 || got[0] != "prefer small commits" {
 		t.Fatalf("pending = %v", got)
 	}
 	eng.clearLive(iniID)
+
+	// A daemon restart between the note and the next run: a new engine over
+	// the same database still has it (held notes used to live in memory).
+	restarted := New(db, eng.blobs, eng.registry, eng.cfg, nil)
+	restarted.SetRawBlobs(eng.blobs)
+	restarted.SetWorkRoot(eng.workRoot)
+	restarted.SetWorkspaceRoot(eng.workspaceRoot)
+	eng = restarted
+	if got := eng.PendingNotes(ctx, iniID); len(got) != 1 || got[0] != "prefer small commits" {
+		t.Fatalf("pending after restart = %v", got)
+	}
 
 	task := &domain.Task{InitiativeID: iniID, Title: "Implement core", Statement: "build it", Priority: domain.PriorityMust}
 	if err := db.CreateTask(ctx, task, "", nil); err != nil {
@@ -213,7 +224,7 @@ func TestSteerRunHoldsTheNoteForTheNextRunWhenUnsupported(t *testing.T) {
 	if !strings.Contains(note, "prefer small commits") {
 		t.Fatalf("next run's note = %q, want the held steering note", note)
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 0 {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 0 {
 		t.Fatalf("the held note was not consumed: %v", got)
 	}
 }
@@ -226,7 +237,7 @@ func TestSteerRunFallsBackWhenTheSessionIsEnding(t *testing.T) {
 	if err != nil || res.Delivery != domain.SteeringNextRun {
 		t.Fatalf("result = %+v, %v", res, err)
 	}
-	if got := eng.PendingNotes(iniID); len(got) != 1 {
+	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 1 {
 		t.Fatalf("pending = %v", got)
 	}
 }
@@ -357,6 +368,47 @@ func TestRunRecorderCountsDroppedEvents(t *testing.T) {
 	}
 	if total+0 > runRecorderBuffer*4 || (total < runRecorderBuffer*4 && !dropped) {
 		t.Fatalf("stored %d of %d with dropped notice %v", total, runRecorderBuffer*4, dropped)
+	}
+}
+
+// A run that ends with tool calls still pending or in progress (Stop, a
+// failure, an agent that never reported the end) closes each with a
+// cancelled tool_result on the same call id; finished calls, and calls with
+// no id, are left alone, and closing twice adds nothing.
+func TestRunRecorderClosesOpenToolCallsAsCancelled(t *testing.T) {
+	eng, db, iniID := newExecuteFixture(t)
+	ctx := context.Background()
+	rec := eng.newRunRecorder("run-stop", "", iniID, "t", "acp")
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "done", Status: "in_progress", Title: "read a"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolResult, ToolCallID: "done", Status: "completed"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "running", ToolKind: "execute", Status: "in_progress", Title: "npm test"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "pending", Title: "edit b"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, ToolCallID: "failed", Status: "failed"})
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventToolCall, Status: "in_progress", Title: "no id"})
+	rec.Close()
+	rec.Close()
+	evs, err := db.ListAllRunEvents(ctx, "run-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := map[string]domain.RunEvent{}
+	for _, ev := range evs {
+		if ev.Status == ToolCallCancelled {
+			if _, dup := cancelled[ev.ToolCallID]; dup {
+				t.Fatalf("call %q closed twice", ev.ToolCallID)
+			}
+			cancelled[ev.ToolCallID] = ev
+		}
+	}
+	if len(cancelled) != 2 {
+		t.Fatalf("cancelled = %v, want exactly the running and pending calls", cancelled)
+	}
+	r, ok := cancelled["running"]
+	if !ok || r.Kind != domain.RunEventToolResult || r.ToolKind != "execute" || r.Source != domain.RunEventSourceHarness || r.RunID != "run-stop" {
+		t.Fatalf("closing event for the running call = %+v", r)
+	}
+	if _, ok := cancelled["pending"]; !ok {
+		t.Fatal("the pending call was not closed")
 	}
 }
 

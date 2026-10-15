@@ -9,6 +9,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/model"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
 
@@ -114,10 +115,35 @@ func TestPRDStageRecordsObjectivesMetricsAndLinks(t *testing.T) {
 		t.Fatalf("impact OBJ-1: requirement %v metric %v hypothesis %v: %+v", sawReq, sawMetric, sawHypothesis, impact)
 	}
 
-	// The PRD artifact body names the objectives.
+	// The PRD artifact body names the objectives -- by their stored codes,
+	// not the response's own keys (O1, O2), which exist nowhere else.
 	body := latestPRDBody(t, eng, db, ini.ID)
-	if !strings.Contains(body, "## Objectives") || !strings.Contains(body, "billing accuracy") || !strings.Contains(body, "Serves: O1") {
-		t.Fatalf("PRD body is missing the objectives:\n%s", body)
+	if !strings.Contains(body, "## Objectives") || !strings.Contains(body, "billing accuracy") ||
+		!strings.Contains(body, "### OBJ-1: Customers are billed") || !strings.Contains(body, "### OBJ-2: Customers understand") ||
+		!strings.Contains(body, "Serves: OBJ-1\n") || !strings.Contains(body, "Serves: OBJ-1, OBJ-2") {
+		t.Fatalf("PRD body does not name the objectives by code:\n%s", body)
+	}
+	if strings.Contains(body, "O1") || strings.Contains(body, "O2") {
+		t.Fatalf("PRD body still says O1:\n%s", body)
+	}
+}
+
+// The demo provider (no model configured) keys its objective "O1", as a
+// model naming a new objective does; `idea prd` used to print that, while
+// every other surface said OBJ-1.
+func TestDemoPRDNamesObjectivesByStoredCode(t *testing.T) {
+	eng, db := newTestEngine(t, model.NewFakeProvider(), config.HarnessConfig{Network: config.NetworkDisabled})
+	ctx := context.Background()
+	ini := &domain.Initiative{Title: "recipes", Description: "a recipe sharing app"}
+	if err := db.CreateInitiative(ctx, ini); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Run(ctx, ini.ID, ini.Description); err != nil {
+		t.Fatal(err)
+	}
+	body := latestPRDBody(t, eng, db, ini.ID)
+	if !strings.Contains(body, "### OBJ-1: Synthetic demo objective") || !strings.Contains(body, "Serves: OBJ-1") || strings.Contains(body, "O1") {
+		t.Fatalf("demo PRD body:\n%s", body)
 	}
 }
 

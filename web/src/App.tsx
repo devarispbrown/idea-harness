@@ -27,6 +27,9 @@ import GapsPage from "./GapsPage";
 import OutcomesPage from "./OutcomesPage";
 import QualityPage from "./QualityPage";
 import NotFound from "./NotFound";
+import LiveAnnouncer from "./LiveAnnouncer";
+import ShortcutsDialog from "./ShortcutsDialog";
+import { focusTarget, useRouteFocus } from "./focus";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -111,6 +114,10 @@ export default function App() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
   const [daemonDown, setDaemonDown] = useState(false);
+  // Focus follows the route: after a navigation, the new page's heading has
+  // focus (focus.ts), so a keyboard user is not left on a link that has gone.
+  const mainRef = useRef<HTMLElement>(null);
+  useRouteFocus(JSON.stringify(route), mainRef);
 
   // M4: `daemonDown` used to be set independently by each of the four loaders
   // below, from just its own single request's outcome -- so whichever one
@@ -427,6 +434,21 @@ export default function App() {
 
   return (
     <div className="app-root">
+      {/* The first Tab stop on every page: past the sidebar's dozen links
+          straight to the page itself. Its click is handled here, because a
+          real "#main-content" href would be read as a route by the hash
+          router. */}
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(e) => {
+          e.preventDefault();
+          if (mainRef.current) focusTarget(mainRef.current);
+        }}
+      >
+        Skip to content
+      </a>
+      <LiveAnnouncer />
       {daemonDown && (
         <div className="daemon-down-banner" role="alert">
           {daemonLostMessage(window.location.host)} Nothing will update until it's back — run{" "}
@@ -465,7 +487,7 @@ export default function App() {
           onNavigate={navigate}
         />
 
-        <main className="phase-main">
+        <main className="phase-main" id="main-content" ref={mainRef} tabIndex={-1}>
           {/* A4 #5 / JTBD 5: visible from every phase, not only the one
               where the stale mark happened to originate. */}
           {currentInitiativeId && staleItems.length > 0 && (
@@ -615,6 +637,7 @@ export default function App() {
         </main>
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
+        <ShortcutsDialog />
       </div>
     </div>
   );

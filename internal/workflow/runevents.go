@@ -137,12 +137,73 @@ func (r *runRecorder) Close() {
 		close(r.ch)
 		r.sendMu.Unlock()
 		<-r.done
+		r.closeOpenToolCalls()
 		if n := r.dropped.Load(); n > 0 {
 			_, _ = r.db.AppendRunEvents(context.Background(), r.base.RunID, []domain.RunEvent{r.stamp(domain.RunEvent{
 				Kind: domain.RunEventStatus, Title: fmt.Sprintf("%d events were dropped: the agent produced them faster than they could be stored", n),
 			})})
 		}
 	})
+}
+
+// ToolCallCancelled is the status closeOpenToolCalls gives a tool call the
+// run ended without finishing.
+const ToolCallCancelled = "cancelled"
+
+// closeOpenToolCalls records, for every tool call of the run still pending
+// or in progress, a tool_result with status cancelled. Whatever ended the run
+// -- Stop, a failure, a timeout, or an agent that never reported the call's
+// end -- the call is not running any more, and without this it read "in
+// progress" in the run panel and the report forever. Read from the store,
+// not from what passed through Emit, so calls recorded by an executor's own
+// ingest are closed too. Grouping and "open" mirror the UI's
+// (web/src/runEvents.ts groupToolCalls): by tool_call_id, the latest
+// non-empty status wins, and no status, pending or in_progress is open.
+func (r *runRecorder) closeOpenToolCalls() {
+	evs, err := r.db.ListAllRunEvents(context.Background(), r.base.RunID)
+	if err != nil {
+		return
+	}
+	type call struct {
+		status string
+		ev     domain.RunEvent
+	}
+	calls := map[string]*call{}
+	var order []string
+	for _, ev := range evs {
+		if (ev.Kind != domain.RunEventToolCall && ev.Kind != domain.RunEventToolResult) || ev.ToolCallID == "" {
+			continue
+		}
+		c := calls[ev.ToolCallID]
+		if c == nil {
+			c = &call{status: "pending", ev: ev}
+			calls[ev.ToolCallID] = c
+			order = append(order, ev.ToolCallID)
+		}
+		if ev.Kind == domain.RunEventToolCall {
+			c.ev = ev
+		}
+		if ev.Status != "" {
+			c.status = ev.Status
+		}
+	}
+	var closing []domain.RunEvent
+	for _, id := range order {
+		c := calls[id]
+		if c.status != "pending" && c.status != "in_progress" {
+			continue
+		}
+		closing = append(closing, r.stamp(domain.RunEvent{
+			Kind: domain.RunEventToolResult, Source: domain.RunEventSourceHarness, ToolCallID: id,
+			ToolKind: c.ev.ToolKind, Status: ToolCallCancelled, Title: "Did not finish: the run ended",
+		}))
+	}
+	if len(closing) == 0 {
+		return
+	}
+	if _, err := r.db.AppendRunEvents(context.Background(), r.base.RunID, closing); err != nil && r.log != nil {
+		r.log.Warn("could not close the run's open tool calls", "run", r.base.RunID, "error", err)
+	}
 }
 
 // ---------- live run identity and steering ----------
@@ -213,15 +274,37 @@ func (e *Engine) registerLiveRun(initiativeID, runID string, exec executor.Execu
 	a.run = &liveRun{runID: runID, exec: exec, rec: rec}
 }
 
-// takePendingNotes returns and clears the steering notes held for the
-// initiative's next run (sent to a run that could not take them): this run's
-// brief carries them.
-func (e *Engine) takePendingNotes(initiativeID string) []string {
-	e.liveMu.Lock()
-	defer e.liveMu.Unlock()
-	notes := e.pendingNotes[initiativeID]
-	delete(e.pendingNotes, initiativeID)
-	return notes
+// takePendingNotes returns, and marks consumed by taskID's run, the steering
+// notes held for the initiative's next run (sent to a run that could not take
+// them): this run's brief carries them. Stored, not in memory, so a daemon
+// restart between the note and this run does not drop them; the store's
+// take is one statement, so each note rides exactly one run. A failure to
+// read them is logged, not fatal: the run goes ahead without them, and they
+// stay held for the one after.
+func (e *Engine) takePendingNotes(ctx context.Context, initiativeID, taskID string) []string {
+	held, err := e.db.TakeSteeringNotes(ctx, initiativeID, taskID)
+	if err != nil {
+		if e.log != nil {
+			e.log.Warn("could not read held steering notes", "initiative", initiativeID, "error", err)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(held))
+	for _, n := range held {
+		out = append(out, n.Note)
+	}
+	return out
+}
+
+// holdNote stores a steering note for the initiative's next run.
+func (e *Engine) holdNote(ctx context.Context, initiativeID string, lr *liveRun, note string) error {
+	n := store.HeldSteeringNote{InitiativeID: initiativeID, RunID: lr.runID, Note: e.redact(note)}
+	if lr.rec != nil {
+		n.TaskID = lr.rec.base.TaskID
+	}
+	// Detached from the request: the caller is told the note is held, so a
+	// client hanging up mid-call must not lose it.
+	return e.db.HoldSteeringNote(context.WithoutCancel(ctx), n)
 }
 
 // setLiveAttempt records the executor's attempt id once Start returned.
@@ -286,17 +369,17 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 		if lr.exec != nil {
 			res.Executor = lr.exec.Name()
 		}
-		if e.pendingNotes == nil {
-			e.pendingNotes = map[string][]string{}
-		}
-		e.pendingNotes[initiativeID] = append(e.pendingNotes[initiativeID], note)
 		res.Delivery = domain.SteeringNextRun
 		res.Message = fmt.Sprintf("steering not supported by %s; your note will be added to this task's next run", firstNonEmptyStr(res.Executor, "this executor"))
 	}
 	attemptID := lr.attemptID
 	e.liveMu.Unlock()
 
-	if steerer != nil {
+	if steerer == nil {
+		if err := e.holdNote(ctx, initiativeID, lr, note); err != nil {
+			return SteerResult{}, err
+		}
+	} else {
 		// Between the run's creation and the agent's start there is no
 		// session to reach yet: held for the next run, like a finished one.
 		d, err := "", executor.ErrSteeringUnsupported
@@ -307,12 +390,9 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 		case errors.Is(err, executor.ErrSteeringUnsupported):
 			// The agent's session is ending (or already over): hold the note
 			// for the next run rather than lose it.
-			e.liveMu.Lock()
-			if e.pendingNotes == nil {
-				e.pendingNotes = map[string][]string{}
+			if err := e.holdNote(ctx, initiativeID, lr, note); err != nil {
+				return SteerResult{}, err
 			}
-			e.pendingNotes[initiativeID] = append(e.pendingNotes[initiativeID], note)
-			e.liveMu.Unlock()
 			res.Delivery = domain.SteeringNextRun
 			res.Message = "The agent is finishing and can no longer take a note; it will be added to this task's next run."
 		case err != nil:
@@ -336,11 +416,18 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 	return res, nil
 }
 
-// PendingNotes returns steering notes held for the initiative's next run.
-func (e *Engine) PendingNotes(initiativeID string) []string {
-	e.liveMu.Lock()
-	defer e.liveMu.Unlock()
-	return append([]string(nil), e.pendingNotes[initiativeID]...)
+// PendingNotes returns steering notes held for the initiative's next run,
+// oldest first (nil when none, or when they cannot be read).
+func (e *Engine) PendingNotes(ctx context.Context, initiativeID string) []string {
+	held, err := e.db.PendingSteeringNotes(ctx, initiativeID)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, n := range held {
+		out = append(out, n.Note)
+	}
+	return out
 }
 
 func firstNonEmptyStr(s ...string) string {

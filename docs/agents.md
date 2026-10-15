@@ -563,9 +563,24 @@ What happens depends on the executor:
 | `internal`, `container`, `hermes`, `omp` | No | The reply is `steering not supported by <kind>`. The note is held and appended to the task's **next** run's brief, the same way the rerun note on execute is. |
 
 A note sent while an agent is finishing (its session already over) is held for the next run too.
-Every note is recorded as a run event and on the run manifest's executor provenance. Held notes live
-in the daemon's memory: a daemon restart drops them. **Stop** is the running card's Stop button (the
-operation's cancel), unchanged.
+Every note is recorded as a run event and on the run manifest's executor provenance. Held notes are
+stored in the project's state (redacted), so a daemon restart keeps them, and the next run of the
+task takes each one exactly once; until then the run panel lists them. **Stop** is the running
+card's Stop button (the operation's cancel), unchanged.
+
+From a terminal, the same two things:
+
+```sh
+idea run events current --follow        # the run panel's events, tailed live until the run ends
+idea steer current "also update the README" --interrupt
+```
+
+`current` is the initiative's running agent run, else its most recent one (the newest initiative,
+or name one after it); a run id works too. `idea run events` pages what is stored, then with
+`--follow` streams the rest, resuming after its last event when the connection drops; `--json`
+prints one event object per line. `idea steer` prints what became of the note (`delivered`,
+`queued` or `next_run`); a run that is not running is a conflict (exit 4) whose hint is
+`idea execute --note`, which carries a note on the task's next run.
 
 ### Open in OpenHands
 

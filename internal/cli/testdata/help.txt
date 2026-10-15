@@ -50,6 +50,8 @@ Commands:
   integrations [status] show Slack/Linear integration health: tokens present, deliveries, socket and poll state
   integrations test slack|linear post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   watch                watch a run live
+  run events <run-id|current> [<initiative>] [--follow] [--json] print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line
+  steer <run-id|current> "<note>" [<initiative>] [--interrupt] send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config
   doctor               check daemon/config/state health

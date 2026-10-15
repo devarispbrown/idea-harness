@@ -1,7 +1,16 @@
 // Pure helpers for the Objectives & Outcomes surfaces (DefinePage's
 // Objectives section, HealthPage's Outcomes panel). Dependency-free so they
 // can be unit tested without a DOM.
-import type { MetricDirection, MetricDrift, OutcomeGaps, OutcomeMetric } from "./api";
+import type {
+  MetricDirection,
+  MetricDrift,
+  MetricEdit,
+  Objective,
+  ObjectiveEdit,
+  ObjectiveStatus,
+  OutcomeGaps,
+  OutcomeMetric,
+} from "./api";
 
 // driftLabel turns the wire drift value into readable text for the badge.
 export function driftLabel(d: MetricDrift | string): string {
@@ -145,4 +154,78 @@ export function parseNumber(s: string): number | undefined {
   if (!t) return undefined;
   const n = Number(t);
   return Number.isFinite(n) ? n : undefined;
+}
+
+// ---------- edit forms (Define's Objectives section) ----------
+
+export interface ObjectiveDraft {
+  statement: string;
+  rationale: string;
+  owner: string;
+  status: ObjectiveStatus;
+}
+
+export function objectiveDraft(o: Pick<Objective, "statement" | "rationale" | "owner" | "status">): ObjectiveDraft {
+  return { statement: o.statement, rationale: o.rationale ?? "", owner: o.owner ?? "", status: o.status };
+}
+
+// objectiveEditBody is the PATCH body for what the draft changed: only the
+// changed fields, so saving an untouched form changes nothing (and an edit
+// races less with one made from the CLI). An error when the statement was
+// emptied -- an objective without one is not an objective.
+export function objectiveEditBody(
+  o: Pick<Objective, "statement" | "rationale" | "owner" | "status">,
+  d: ObjectiveDraft,
+): { body: ObjectiveEdit } | { error: string } {
+  const statement = d.statement.trim();
+  if (!statement) return { error: "An objective needs a statement." };
+  const body: ObjectiveEdit = {};
+  if (statement !== o.statement) body.statement = statement;
+  if (d.rationale.trim() !== (o.rationale ?? "")) body.rationale = d.rationale.trim();
+  if (d.owner.trim() !== (o.owner ?? "")) body.owner = d.owner.trim();
+  if (d.status !== o.status) body.status = d.status;
+  return { body };
+}
+
+export interface MetricDraft {
+  name: string;
+  direction: MetricDirection;
+  target: string;
+  baseline: string;
+  unit: string;
+}
+
+export function metricDraft(m: Pick<OutcomeMetric, "name" | "direction" | "target" | "baseline" | "unit">): MetricDraft {
+  return {
+    name: m.name,
+    direction: m.direction,
+    target: String(m.target),
+    baseline: m.baseline === undefined || m.baseline === null ? "" : String(m.baseline),
+    unit: m.unit ?? "",
+  };
+}
+
+// metricEditBody is metric edit's PATCH body: the changed fields only. A
+// baseline emptied in the form is clear_baseline (an omitted field would
+// leave it as it was); a non-numeric target or baseline is an error, not a
+// silently dropped field.
+export function metricEditBody(
+  m: Pick<OutcomeMetric, "name" | "direction" | "target" | "baseline" | "unit">,
+  d: MetricDraft,
+): { body: MetricEdit } | { error: string } {
+  const name = d.name.trim();
+  if (!name) return { error: "A metric needs a name." };
+  const target = parseNumber(d.target);
+  if (target === undefined) return { error: "Target must be a number." };
+  const hadBaseline = m.baseline !== undefined && m.baseline !== null;
+  const baseline = parseNumber(d.baseline);
+  if (d.baseline.trim() && baseline === undefined) return { error: "Baseline must be a number (or blank)." };
+  const body: MetricEdit = {};
+  if (name !== m.name) body.name = name;
+  if (d.direction !== m.direction) body.direction = d.direction;
+  if (target !== m.target) body.target = target;
+  if (baseline === undefined && hadBaseline) body.clear_baseline = true;
+  else if (baseline !== undefined && baseline !== m.baseline) body.baseline = baseline;
+  if (d.unit.trim() !== (m.unit ?? "")) body.unit = d.unit.trim();
+  return { body };
 }

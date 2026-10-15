@@ -79,7 +79,10 @@ test("design and plan: advance, then a revision that changes nothing says so", a
   await page.getByRole("button", { name: "Ask for a revision…" }).click();
   await page.getByLabel("What should the revised plan change?").fill("Keep the plan as one vertical slice");
   await page.getByRole("button", { name: "Regenerate the plan" }).click();
-  await expect(page.getByRole("status")).toContainText("same plan: still v1, tasks unchanged", { timeout: 60_000 });
+  // The page's own status line (the app-wide live region is a status too).
+  await expect(page.locator(".revision-status[role=status]")).toContainText("same plan: still v1, tasks unchanged", {
+    timeout: 60_000,
+  });
   await expect(page.getByText("TASK-1", { exact: true })).toBeVisible();
   await expect(page.getByText("TASK-2")).toHaveCount(0);
   await expect(page.getByText(/Diff v1 → v1/)).toHaveCount(0);
@@ -103,11 +106,21 @@ test("build: run with a note, view the diff, request changes with a note", async
   await expect(card.locator(".cs-files")).toBeVisible();
   await expect(card.locator(".cs-file-path").first()).toBeVisible();
 
-  await card.getByRole("button", { name: "Request changes…" }).click();
-  await card.getByLabel("What should change in CHG-1?").fill("Name the file after the feature");
+  // The note form is a disclosure: it takes focus, Escape closes it and
+  // hands focus back to the button, and Ctrl+Enter sends it.
+  const requestButton = card.getByRole("button", { name: "Request changes…" });
+  await requestButton.click();
+  const changeNote = card.getByLabel("What should change in CHG-1?");
+  await expect(changeNote).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(changeNote).toHaveCount(0);
+  await expect(requestButton).toBeFocused();
+  await requestButton.click();
+  await changeNote.fill("Name the file after the feature");
   await expectAccessible(page, "build (request changes form)");
-  await card.getByRole("button", { name: "Send back with this note" }).click();
+  await changeNote.press("Control+Enter");
   await expect(card.locator(".cs-pill")).toHaveText(/changes requested/i);
+  await expect(page.getByTestId("live-announcer")).toContainText("CHG-1 sent back with your note");
   await expect(card).toContainText("Name the file after the feature");
 });
 
@@ -180,6 +193,20 @@ test("product graph views: gaps, outcomes, quality and a task's lineage", async 
   await expectAccessible(page, "lineage (task)");
 });
 
+test("the queue, the design page and the document reader pass axe too", async () => {
+  await page.goto("/#/queue");
+  await expect(page.getByRole("heading", { level: 1, name: "Needs you" })).toBeVisible();
+  await expectAccessible(page, "queue");
+  await page.goto(at("design"));
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expectAccessible(page, "design");
+  await page.goto(at("define"));
+  await page.getByRole("button", { name: /^Read/ }).first().click();
+  await expect(page).toHaveURL(new RegExp(`#/i/${initiative}/doc/`));
+  await expect(page.getByRole("heading").first()).toBeVisible();
+  await expectAccessible(page, "document reader");
+});
+
 test("a decision id that does not exist renders not-found, with no Send box", async () => {
   await page.goto(at("decision/not-a-decision"));
   await expect(page.getByRole("heading", { name: "Decision not found" })).toBeVisible();
@@ -187,6 +214,67 @@ test("a decision id that does not exist renders not-found, with no Send box", as
   await expectAccessible(page, "decision not found");
   await page.goto("/#/i/0123456789abcdef0123456789abcdef/health");
   await expect(page.getByRole("heading", { name: "Initiative not found" })).toBeVisible();
+});
+
+test("keyboard: skip link, focus follows the route, ⌘K finds a node code, ? lists shortcuts", async () => {
+  await page.goto(at("define"));
+  // A fresh load, so nothing has focus yet: the first Tab stop is Skip to
+  // content, and it lands in the page.
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await page.keyboard.press("Tab");
+  const skip = page.getByRole("link", { name: "Skip to content" });
+  await expect(skip).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#main-content")).toBeFocused();
+
+  // ⌘K / Ctrl+K: a typed code opens that node's lineage, and focus moves to
+  // the new page's heading rather than staying on a control that is gone.
+  await page.keyboard.press("ControlOrMeta+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(palette).toBeVisible();
+  await expect(page.getByRole("combobox")).toBeFocused();
+  await expectAccessible(page, "command palette", { include: ".cmd-panel" });
+  await page.keyboard.type("task-1");
+  await expect(palette.getByRole("option").first()).toContainText("Lineage of TASK-1");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`#/i/${initiative}/lineage/task/TASK-1$`));
+  await expect(page.getByRole("heading", { level: 1, name: /TASK-1/ })).toBeFocused();
+
+  // Settings sections are palette entries too, and focus lands on the section.
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByRole("combobox")).toBeFocused();
+  await page.keyboard.type("executor");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#\/settings$/);
+  await expect(page.getByRole("heading", { level: 2, name: "Executor" })).toBeFocused();
+
+  // ? opens the reference as a modal; Escape closes it and focus comes back.
+  await page.goto(at("plan"));
+  const heading = page.getByRole("heading", { level: 1 });
+  await expect(heading).toBeFocused();
+  await page.keyboard.press("?");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help).toBeVisible();
+  await expect(help.getByRole("button", { name: "Close" })).toBeFocused();
+  await expectAccessible(page, "keyboard shortcuts", { include: ".shortcuts-panel" });
+  await page.keyboard.press("Escape");
+  await expect(help).toHaveCount(0);
+  await expect(heading).toBeFocused();
+});
+
+test("define: edit an objective from the UI", async () => {
+  await page.goto(at("define"));
+  const edit = page.getByRole("button", { name: /^Edit OBJ-\d+$/ }).first();
+  await expect(edit).toBeVisible();
+  const code = ((await edit.getAttribute("aria-label")) ?? "").replace("Edit ", "");
+  await edit.click();
+  await expect(page.getByLabel("Statement", { exact: true })).toBeFocused();
+  await page.getByLabel("Owner", { exact: true }).fill("Growth team");
+  await expectAccessible(page, "define (objective edit)");
+  await page.getByRole("button", { name: `Save ${code}` }).click();
+  await expect(page.getByText("Owner: Growth team")).toBeVisible();
+  await expect(page.getByTestId("live-announcer")).toContainText(`${code} saved`);
 });
 
 test("settings: executor shows requested and resolved, one demo banner", async () => {

@@ -218,7 +218,7 @@ code {
 }
 
 .new-idea-btn {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
   border: none;
   padding: 6px 14px;
@@ -348,7 +348,7 @@ code {
 }
 
 button {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
   border: none;
   padding: 8px 16px;
@@ -600,7 +600,7 @@ button.ghost.small {
 }
 
 .model-chip.selected {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
   border-color: var(--accent);
 }
@@ -852,7 +852,7 @@ button.ghost.small {
 }
 
 .step.active {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
   border-color: var(--accent);
   font-weight: 600;
@@ -938,7 +938,7 @@ button.ghost.small {
 }
 
 .tab.active .tab-count {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
 }
 
@@ -1178,7 +1178,7 @@ button.ghost.small {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   display: grid;
   place-items: center;
@@ -1291,7 +1291,7 @@ button.ghost.small {
   box-sizing: border-box;
   margin-top: 4px;
 }
-.pn-phase.done .pn-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pn-phase.done .pn-dot { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
 .pn-phase.current .pn-dot { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
 .pn-line {
   flex: 1;
@@ -1314,7 +1314,7 @@ button.ghost.small {
   font-size: 13px;
 }
 .pn-phase.future .pn-phase-label { font-weight: 400; color: var(--text-faint); }
-.pn-phase.done .pn-phase-label { font-weight: 400; color: #57534e; }
+.pn-phase.done .pn-phase-label { font-weight: 400; color: var(--text-secondary); }
 .pn-phase.current .pn-phase-label { font-weight: 600; color: var(--text); }
 .pn-phase.on .pn-phase-label { font-weight: 650; color: var(--accent); }
 .pn-pill {
@@ -1328,7 +1328,7 @@ button.ghost.small {
   color: var(--text-faint);
   margin-top: 1px;
 }
-.pn-note.live { color: #b45309; }
+.pn-note.live { color: var(--needs-you-fg); }
 
 .pn-footer {
   margin-top: auto;
@@ -1532,13 +1532,13 @@ button.ghost.small {
 }
 .commit-explanation {
   font-size: 12px;
-  color: #57534e;
+  color: var(--text-secondary);
   flex: 1;
   min-width: 0;
 }
 .commit-action {
   margin-left: auto;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border: none;
   border-radius: 7px;
@@ -1610,7 +1610,7 @@ button.ghost.small {
   border-bottom: 1px dashed transparent;
   flex: none;
 }
-.chip-accent { background: var(--accent-bg); color: #4338ca; border-bottom-color: #818cf8; }
+.chip-accent { background: var(--accent-bg); color: var(--accent-strong); border-bottom-color: #818cf8; }
 .chip-failing { background: var(--failing-pill); color: var(--failing-fg); }
 .chip-needs-you { background: var(--needs-you-pill); color: var(--needs-you-fg); }
 .chip-inactive { background: var(--inactive-pill); color: var(--inactive-fg); border-bottom-color: #c8c5bf; }
@@ -1708,7 +1708,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   flex-wrap: wrap;
 }
 .jc-primary {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border: none;
   border-radius: 6px;
@@ -2149,7 +2149,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   padding: 0;
 }
 .ph-new {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border: none;
   border-radius: 7px;
@@ -2347,7 +2347,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   font-size: 13px;
   color: var(--text);
 }
-.cmd-item.sel { background: var(--accent-bg); color: #4338ca; }
+.cmd-item.sel { background: var(--accent-bg); color: var(--accent-strong); }
 .cmd-label { flex: 1; }
 .cmd-hint {
   font: 600 10px ui-monospace, Menlo, monospace;
@@ -2355,7 +2355,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   letter-spacing: 0.04em;
   color: var(--text-faint);
 }
-.cmd-item.sel .cmd-hint { color: #6d63e5; }
+.cmd-item.sel .cmd-hint { color: var(--accent-strong); }
 .cmd-empty { padding: 9px 11px; font-size: 12.5px; color: var(--text-muted); }
 
 .commit-secondary {
@@ -2386,7 +2386,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .verify-statement { font-size: 13.5px; font-weight: 600; color: var(--text); flex: 1; }
 .verify-count { font-size: 11px; color: var(--text-faint); font-family: ui-monospace, Menlo, monospace; flex: none; }
 .verify-criteria { margin: 9px 0 0 23px; display: flex; flex-direction: column; gap: 6px; }
-.verify-criterion { display: flex; gap: 9px; align-items: baseline; font-size: 12.5px; color: #57534e; }
+.verify-criterion { display: flex; gap: 9px; align-items: baseline; font-size: 12.5px; color: var(--text-secondary); }
 .verify-criterion-mark { font-weight: 700; flex: none; }
 .verify-card.current .verify-criterion-mark { color: var(--text-faint); }
 .verify-card:not(.current) .verify-criterion-mark { color: #16a34a; }
@@ -2434,7 +2434,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .changed-head { display: flex; align-items: baseline; gap: 8px; }
 .changed-seen { margin-left: auto; font-size: 11px; color: var(--accent); font-weight: 600; cursor: pointer; background: none; border: none; }
 .changed-groups { display: flex; flex-direction: column; gap: 13px; margin-top: 14px; }
-.changed-group { font-size: 11.5px; font-weight: 700; color: #57534e; }
+.changed-group { font-size: 11.5px; font-weight: 700; color: var(--text-secondary); }
 .changed-items { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
 .changed-item { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 
@@ -2445,7 +2445,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .risk-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
 .risk-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 .risk-signals { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
-.risk-signal { font: 11px ui-monospace, Menlo, monospace; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; color: #57534e; }
+.risk-signal { font: 11px ui-monospace, Menlo, monospace; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; color: var(--text-secondary); }
 .health-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .health-row { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); display: flex; gap: 11px; align-items: baseline; }
 .health-sev { font: 600 9.5px ui-monospace, Menlo, monospace; border-radius: 4px; padding: 2px 6px; flex: none; text-transform: uppercase; }
@@ -2463,7 +2463,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .health-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.55; }
 .health-daemon { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px; display: flex; align-items: center; gap: 11px; }
 .health-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; flex: none; }
-.health-addr { font-size: 12.5px; color: #57534e; font-family: ui-monospace, Menlo, monospace; flex: 1; }
+.health-addr { font-size: 12.5px; color: var(--text-secondary); font-family: ui-monospace, Menlo, monospace; flex: 1; }
 
 .doc-reader-body h1 { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 10px; }
 .doc-reader-body h2 { font-size: 14px; font-weight: 650; margin: 16px 0 6px; }
@@ -3432,7 +3432,6 @@ a.code, a.idchip { text-decoration: none; }
 }
 /* The primary green button: white on #16a34a is 3.3:1. */
 .cs-green { background: #15803d; }
-=======
 /* ---------- Run panel (RunPanel.tsx) ----------
    The live view of a coding-agent run inside the running card: current-action
    chip, meter, tool calls, files, permissions, errors, steering. */
@@ -3600,3 +3599,145 @@ a.code, a.idchip { text-decoration: none; }
   padding: 4px 0;
 }
 .run-last[open] > summary { margin-bottom: 8px; }
+
+/* ---------- Accessibility and keyboard (Phase 5) ----------
+   Design tokens for text on filled accent and for the secondary text tones
+   that were hard-coded hex, so the dark scheme can re-state them; dark-mode
+   contrast fixes found by running axe in both schemes (web/e2e/a11y.ts);
+   the skip link, focus targets, the shortcut reference, and reduced motion.
+   Additive: the rules above that used the old literals now read these. */
+:root {
+  /* A filled accent (primary buttons, the logo, done phase dots) carrying
+     white text. Not --accent: in dark mode --accent is a light indigo that
+     reads well as text on the dark canvas, and white on it is 3:1. */
+  --accent-fill: #4f46e5;
+  --on-accent: #ffffff;
+  /* Text one step quieter than --text-body, on surfaces and canvas. */
+  --text-secondary: #57534e;
+  /* Accent-coloured text on --accent-bg (code chips, the selected palette
+     row). */
+  --accent-strong: #4338ca;
+  --focus-ring: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* white on #4f46e5 is 6.3:1 in either scheme */
+    --accent-fill: #4f46e5;
+    --text-secondary: #c4bfb9;
+    --accent-strong: #a5b4fc;
+  }
+}
+
+/* Dark-scheme fixes for the few rules that set a literal light colour. */
+.pn-dot { background: var(--surface); }
+.deny-chip { color: var(--canvas); }
+/* white on amber #f59e0b was 2.1:1 in both schemes */
+.pn-inbox-count { background: #b45309; color: #fff; }
+.run-steer textarea { background: var(--surface); color: var(--text); }
+/* A resolved judgment card was faded with opacity, which fades its text
+   too: the muted answer and the Q- chip fell to 4.1-4.4:1. It recedes by
+   its surface instead, and keeps full-contrast text. */
+.judgment-card.resolved { opacity: 1; background: var(--canvas); border-style: dashed; }
+
+/* Skip to content: off-screen until focused, then the first thing seen. */
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -48px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.skip-link:focus { top: 8px; }
+
+/* Headings and <main> take focus from script on a route change (focus.ts);
+   they are not controls, so no ring -- the screen reader announces them and
+   the next Tab continues from there. */
+main[tabindex="-1"]:focus,
+h1[tabindex="-1"]:focus,
+h2[tabindex="-1"]:focus { outline: none; }
+/* Every control keeps a visible ring, including the few that removed it. */
+.cmd-input:focus-visible,
+.palette-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+
+/* The initiative title on a home card is the card's keyboard control. */
+.ph-card-open {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.ph-card-open:hover { text-decoration: underline; }
+
+/* ⌘/Ctrl+Enter hint under note fields, and key caps everywhere. */
+.note-field-hint { display: block; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
+kbd {
+  font: 600 11px ui-monospace, Menlo, monospace;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--sunken);
+  color: var(--text-body);
+}
+
+/* The `?` shortcut reference (ShortcutsDialog.tsx), on the palette's overlay. */
+.shortcuts-panel { width: min(560px, calc(100vw - 32px)); }
+.shortcuts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.shortcuts-title { margin: 0; font-size: 15px; color: var(--text); }
+.shortcuts-body { padding: 8px 16px 16px; overflow: auto; }
+.shortcuts-group-title { margin: 12px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.shortcuts-list { margin: 0; }
+.shortcuts-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 5px 0; font-size: 13px; color: var(--text-body); }
+.shortcuts-row dd { margin: 0; }
+
+/* Define's Objectives: edit forms and unlink. */
+.obj-actions { margin-top: 4px; }
+.obj-edit { margin-top: 6px; gap: 8px; flex-wrap: wrap; }
+.obj-edit-grid { display: grid; grid-template-columns: max-content minmax(0, 420px); gap: 6px 10px; align-items: center; font-size: 12.5px; }
+.obj-edit-actions { grid-column: 1 / -1; gap: 8px; }
+.obj-served { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.obj-served-req { display: inline-flex; align-items: center; gap: 2px; }
+.obj-unlink {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.obj-unlink:hover { color: var(--failing-fg); border-color: var(--failing-line); }
+
+/* A tool call the run ended before it finished. */
+.run-action-cancelled .run-action-status { color: var(--text-muted); }
+
+/* Reduced motion: no spinning, pulsing or sliding for people who asked the
+   OS for less. Spinners stop where they are; content is unchanged. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
