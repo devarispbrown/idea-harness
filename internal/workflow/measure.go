@@ -26,7 +26,9 @@ import (
 // means no measurement, the same fail-closed rule as the checks. There is no
 // networked variant: a number that lives behind an API is a url source, which
 // is fetched by the daemon's SSRF-guarded fetcher (public addresses only) and
-// only once outcomes.allow_url_sources opts in. Neither runs on a timer.
+// only once outcomes.allow_url_sources opts in. Neither runs on a timer
+// unless a person enables automations.metric_measurement, and then each
+// metric only on its own cadence (daemon/automations.go).
 
 // sandboxRunner is the slice of executor.ContainerSandbox measurement needs.
 type sandboxRunner interface {
@@ -36,6 +38,21 @@ type sandboxRunner interface {
 // jsonFetcher is the slice of tools.Fetcher measurement needs.
 type jsonFetcher interface {
 	FetchJSON(ctx context.Context, url string) ([]byte, error)
+}
+
+// MetricSandboxFunc runs a command source in place of the container
+// sandbox. It exists for tests outside this package -- the daemon's
+// scheduled-measurement tests -- which have no Docker.
+type MetricSandboxFunc func(ctx context.Context, opts executor.RunOptions) (stdout, stderr string, exitCode int, err error)
+
+// Run implements the measurement sandbox.
+func (f MetricSandboxFunc) Run(ctx context.Context, opts executor.RunOptions) (string, string, int, error) {
+	return f(ctx, opts)
+}
+
+// SetMetricSandbox replaces the container sandbox command sources run in.
+func (e *Engine) SetMetricSandbox(fn MetricSandboxFunc) {
+	e.metricSandbox = func(string) sandboxRunner { return fn }
 }
 
 // MeasureResult is one metric's measurement outcome. Exactly one of

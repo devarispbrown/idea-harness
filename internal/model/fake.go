@@ -19,6 +19,9 @@ type FakeProvider struct {
 	queue     map[string][]string // schema name -> queued responses (FIFO)
 	costQueue map[string][]float64 // schema name -> queued CostUSD (FIFO)
 	errQueue  map[string][]error   // schema name -> queued errors (FIFO), consumed before any response
+	// defaultCost is the CostUSD reported when no cost is queued (0 unless
+	// SetDefaultCost was called).
+	defaultCost float64
 	caps      Capabilities
 	calls     []Request
 }
@@ -132,6 +135,15 @@ func (f *FakeProvider) EnqueueCost(schemaName string, usd float64) {
 	f.costQueue[schemaName] = append(f.costQueue[schemaName], usd)
 }
 
+// SetDefaultCost makes every call with no queued cost report usd. The demo
+// provider uses it for demo.cost_per_call_usd, so a spending cap can be
+// reached without a real provider.
+func (f *FakeProvider) SetDefaultCost(usd float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.defaultCost = usd
+}
+
 // EnqueueError appends an error to return on the NEXT Complete() call for a
 // schema name (FIFO, independent of EnqueueResponse's own queue and consumed
 // before it) -- for a test that needs to script a failed attempt, most
@@ -177,7 +189,7 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 	if raw == "" {
 		raw = f.responses[req.Model]
 	}
-	costUSD := 0.0
+	costUSD := f.defaultCost
 	if q := f.costQueue[req.JSONSchemaName]; len(q) > 0 {
 		costUSD = q[0]
 		f.costQueue[req.JSONSchemaName] = q[1:]

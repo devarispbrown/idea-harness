@@ -18,6 +18,7 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/daemon"
 	"github.com/devarispbrown/idea-harness/internal/docparse"
+	"github.com/devarispbrown/idea-harness/internal/eval"
 )
 
 // cmdArgs is what a command receives after dispatch has parsed its flags. One
@@ -140,6 +141,7 @@ func commands() []command {
 		{usage: `objective add "<statement>"`, summary: "add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision"},
 		{usage: "objective edit <OBJ>", summary: "change --statement, --rationale, --owner or --status active|achieved|abandoned"},
 		{usage: "objective link <REQ> <OBJ>", summary: "record that a requirement serves an objective (--unlink removes it)"},
+		{names: []string{"budget"}, usage: "budget [<initiative>] [--set <usd>|--clear]", summary: "show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted", flags: budgetFlags, maxPositional: 1, run: cmdBudget, inHelp: true},
 		{names: []string{"metrics"}, usage: "metrics [<initiative>]", summary: "list outcome metrics with their drift: on track, off track, regressed, stale or no data", flags: jsonFlag, maxPositional: 1, run: cmdMetrics},
 		{names: []string{"metric"}, usage: "metric add|edit|record|measure", summary: "add, edit, record or measure an outcome metric (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"add": {"--target": flagValue, "--direction": flagValue, "--baseline": flagValue, "--guardrail": flagValue, "--unit": flagValue,
@@ -197,7 +199,7 @@ func commands() []command {
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
 		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
-		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
+		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
 		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}
@@ -405,6 +407,9 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 	// Written only once this process owns the address and the state dir. A
 	// second `idea daemon` wrote it first and then failed on the port, leaving
 	// the running daemon with a pidfile naming a dead process.
+	// The scheduled eval (harness.yaml automations.eval) runs through the
+	// eval package, which the daemon cannot import: it drives a daemon.
+	daemon.SetEvalRunner(eval.RunScheduled)
 	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log, writePID)
 }
 

@@ -1026,6 +1026,40 @@ CREATE TABLE IF NOT EXISTS run_events (
 CREATE INDEX IF NOT EXISTS idx_run_events_initiative ON run_events(initiative_id, id);
 ALTER TABLE remote_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
 `,
+	// 45: spending caps and scheduled-job history.
+	//
+	// initiative_budgets holds one initiative's own cap (NULL: inherit the
+	// project's budget.default_initiative_usd) and, while the initiative is
+	// parked on needs_human_judgment:budget_exceeded, the status it was
+	// parked FROM -- raising the cap returns it there. A table of its own
+	// rather than columns on initiatives: nothing that scans initiatives
+	// needs either value.
+	//
+	// automation_runs is the history the Automations view lists: one row per
+	// scheduled or manual run of a background job (metric measurement, eval),
+	// with what it cost and what it found.
+	`
+CREATE TABLE IF NOT EXISTS initiative_budgets (
+	initiative_id TEXT PRIMARY KEY,
+	cap_usd       REAL,
+	parked_from   TEXT NOT NULL DEFAULT '',
+	updated_at    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS automation_runs (
+	id            TEXT PRIMARY KEY,
+	automation    TEXT NOT NULL,
+	target        TEXT NOT NULL DEFAULT '',
+	trigger       TEXT NOT NULL,
+	status        TEXT NOT NULL,
+	started_at    INTEGER NOT NULL,
+	finished_at   INTEGER NOT NULL DEFAULT 0,
+	cost_usd      REAL,
+	summary       TEXT NOT NULL DEFAULT '',
+	error         TEXT NOT NULL DEFAULT '',
+	report_path   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automation, started_at);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

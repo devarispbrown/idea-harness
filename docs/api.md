@@ -443,6 +443,22 @@ human-added objective is never rewritten by a later PRD revision.
 | POST | `/projects/{projectId}/executors/smoke` | Run the coding agent's smoke test with the daemon's own config and keys; one small real model call. **202** |
 | GET | `/projects/{projectId}/integrations` | Slack and Linear health: configured/running, which token env vars are set (never values), problems, outbox counts, Socket Mode and poll state. See [integrations.md](integrations.md). |
 | POST | `/projects/{projectId}/integrations/{name}/test` | `slack`: `auth.test`, a test message to the channel, and a Socket Mode token check. `linear`: key, team, state names, project and label. `200` with `ok: false` when the service answered with a failure; `400` when not configured or the token is unset. |
+| PUT | `/projects/{projectId}/integrations/{name}` | `{config: {...}\|null}`: replace (or, with `null`, remove) `integrations.slack`/`.linear` in `harness.yaml`, validated like a hand edit, comments kept, applied without a restart. Token *names* only; a value that looks like a credential is refused. Closed body. |
+| GET | `/projects/{projectId}/executors/config` | The executor block as `harness.yaml` holds it (`acp`, `openhands`, `mcp_servers` included), which referenced env vars are set, its config problems, and the executor/model compatibility advisory for `?kind=&model=`. |
+| GET | `/projects/{projectId}/budget` | The project's default per-initiative cap (`budget.default_initiative_usd`) and every initiative's meter. |
+| PUT | `/projects/{projectId}/budget` | `{default_initiative_usd}` (0 removes it): written to `harness.yaml`; initiatives stopped at their cap that the new default leaves room for are resumed (`resumed`). Closed body. |
+| GET | `/projects/{projectId}/initiatives/{id}/budget` | One initiative's cap (its own, else the project default), spend counted against it, and whether the next model/agent call would be refused. `agent_not_counted` when hermes/omp ran without reporting a cost. |
+| PUT | `/projects/{projectId}/initiatives/{id}/budget` | `{cap_usd}` or `{clear: true}`. When the initiative is stopped at its cap (`needs_human_judgment`/`budget_exceeded`) and the new cap leaves room, it returns to where it stopped (`resumed: true`). Closed body. |
+
+### Automations
+
+Scheduled background jobs, each off until enabled. See [configuration.md](configuration.md#automations).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/projects/{projectId}/automations` | `linear_inbound`, `metric_measurement`, `eval`: enabled, schedule, last and next run, history with status and cost. |
+| PUT | `/projects/{projectId}/automations/{name}` | `{enabled}` (and, for `eval`, `model`, `max_cost_usd`, `interval_hours`, `suite`, `cases`, `baseline`), written to `harness.yaml`. Enabling the eval needs a model and a cost cap. Closed body. |
+| POST | `/projects/{projectId}/automations/{name}/run` | Run now, enabled or not; `{target}` narrows metric measurement to one metric. **202** `{status, name, runs}`; the run lands in `history`. The eval spends real money up to its cap. |
 
 ### Activity and events
 
