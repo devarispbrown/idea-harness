@@ -249,7 +249,8 @@ type CheckConfig struct {
 
 // OutcomesConfig configures how outcome metrics are measured
 // (`idea metric measure`). Nothing here runs on its own: a command or url
-// source is only ever measured when a human or an MCP client asks.
+// source is measured when a human or an MCP client asks, or on its cadence
+// once a person enables automations.metric_measurement (automations.go).
 type OutcomesConfig struct {
 	// Image is the sandbox image a command source runs in. Empty falls back
 	// to check.image, then to the image derived from the project's toolchain
@@ -316,6 +317,10 @@ type HarnessConfig struct {
 	Verify VerifyConfig `json:"verify,omitempty" yaml:"verify,omitempty"`
 	// Outcomes configures outcome-metric measurement (OutcomesConfig).
 	Outcomes OutcomesConfig `json:"outcomes,omitempty" yaml:"outcomes,omitempty"`
+	// Budget is the per-initiative spending cap (automations.go).
+	Budget BudgetConfig `json:"budget,omitempty" yaml:"budget,omitempty"`
+	// Automations are the opt-in scheduled jobs (automations.go).
+	Automations AutomationsConfig `json:"automations,omitempty" yaml:"automations,omitempty"`
 }
 
 // GitConfig configures git-native behavior beyond git_commit (review C4,
@@ -382,6 +387,11 @@ type DemoConfig struct {
 	// one judgment reason whose fix is regenerating the plan and never
 	// approving it.
 	DanglePlanDependency bool `json:"dangle_plan_dependency,omitempty" yaml:"dangle_plan_dependency,omitempty"`
+	// CostPerCallUSD makes every demo model call report this cost. The demo
+	// provider is otherwise free, so a spending cap (budget) could never be
+	// reached on the only path CI and the browser suite run; this is what
+	// lets them show a cap stopping a run without a real provider.
+	CostPerCallUSD float64 `json:"cost_per_call_usd,omitempty" yaml:"cost_per_call_usd,omitempty"`
 }
 
 // Config is the fully-loaded portable configuration for one project.
@@ -446,41 +456,60 @@ func Load(dir string) (Config, error) {
 	}
 
 	cfg.applyDefaults()
-	if !cfg.Harness.Network.Valid() {
-		return cfg, fmt.Errorf("config: harness.network must be one of disabled|enabled, got %q", cfg.Harness.Network)
-	}
-	if !cfg.Harness.Executor.Kind.Valid() {
-		return cfg, fmt.Errorf("config: harness.executor.kind must be one of auto|internal|container|omp|hermes|acp, got %q", cfg.Harness.Executor.Kind)
-	}
-	if err := validateExecutorExtras(cfg.Harness.Executor); err != nil {
-		return cfg, err
-	}
-	if cfg.Harness.Review.MaxCycles < 0 {
-		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
-	}
-	if !ValidRigor(cfg.Harness.Review.Rigor) {
-		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
-	}
-	if err := validateVerify(cfg.Harness.Verify); err != nil {
-		return cfg, err
-	}
-	conv := cfg.Harness.Review.Convergence
-	if !oneOf(conv.Mode, ConvergenceModes) {
-		return cfg, fmt.Errorf("config: harness.review.convergence.mode must be one of %s, got %q", strings.Join(ConvergenceModes, "|"), conv.Mode)
-	}
-	if !oneOf(conv.GateSeverity, ConvergenceGates) {
-		return cfg, fmt.Errorf("config: harness.review.convergence.gate_severity must be one of %s, got %q", strings.Join(ConvergenceGates, "|"), conv.GateSeverity)
-	}
-	if !oneOf(conv.LaterFindings, ConvergenceLaterBars) {
-		return cfg, fmt.Errorf("config: harness.review.convergence.later_findings must be one of %s, got %q", strings.Join(ConvergenceLaterBars, "|"), conv.LaterFindings)
-	}
-	if conv.StallCycles < 0 {
-		return cfg, fmt.Errorf("config: harness.review.convergence.stall_cycles must be >= 0")
-	}
-	if err := cfg.Harness.Integrations.validate(); err != nil {
+	if err := cfg.Harness.validateStruct(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// validateStruct is every load-time check the JSON Schema cannot express, on
+// an already-defaulted harness config. Load and WriteHarness share it, so a
+// write can never produce a file the next Load refuses.
+func (h HarnessConfig) validateStruct() error {
+	if !h.Network.Valid() {
+		return fmt.Errorf("config: harness.network must be one of disabled|enabled, got %q", h.Network)
+	}
+	if !h.Executor.Kind.Valid() {
+		return fmt.Errorf("config: harness.executor.kind must be one of auto|internal|container|omp|hermes|acp|openhands, got %q", h.Executor.Kind)
+	}
+	if err := validateExecutorExtras(h.Executor); err != nil {
+		return err
+	}
+	if h.Review.MaxCycles < 0 {
+		return fmt.Errorf("config: harness.review.max_cycles must be >= 0")
+	}
+	if !ValidRigor(h.Review.Rigor) {
+		return fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), h.Review.Rigor)
+	}
+	if err := validateVerify(h.Verify); err != nil {
+		return err
+	}
+	conv := h.Review.Convergence
+	if !oneOf(conv.Mode, ConvergenceModes) {
+		return fmt.Errorf("config: harness.review.convergence.mode must be one of %s, got %q", strings.Join(ConvergenceModes, "|"), conv.Mode)
+	}
+	if !oneOf(conv.GateSeverity, ConvergenceGates) {
+		return fmt.Errorf("config: harness.review.convergence.gate_severity must be one of %s, got %q", strings.Join(ConvergenceGates, "|"), conv.GateSeverity)
+	}
+	if !oneOf(conv.LaterFindings, ConvergenceLaterBars) {
+		return fmt.Errorf("config: harness.review.convergence.later_findings must be one of %s, got %q", strings.Join(ConvergenceLaterBars, "|"), conv.LaterFindings)
+	}
+	if conv.StallCycles < 0 {
+		return fmt.Errorf("config: harness.review.convergence.stall_cycles must be >= 0")
+	}
+	if err := h.Integrations.validate(); err != nil {
+		return err
+	}
+	if err := h.Budget.validate(); err != nil {
+		return err
+	}
+	if err := h.Automations.validate(); err != nil {
+		return err
+	}
+	if h.Demo.CostPerCallUSD < 0 {
+		return fmt.Errorf("config: harness.demo.cost_per_call_usd must be >= 0")
+	}
+	return nil
 }
 
 // readDoc reads a YAML file and returns its raw bytes and its decoded document
