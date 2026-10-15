@@ -95,6 +95,24 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Requirements and decisions now say which assertions they rest on, so assumption gaps fire on
+  real runs.** Assertions get initiative-scoped codes (`ASM-n`; migration 48 numbers existing rows
+  in creation order, and `Assertion.code` is a new required field in the API). The PRD prompt lists
+  them, and the PRD schema gains a per-requirement and per-decision `based_on` (ASM codes); each
+  citation is written as `requirement|decision --derived_from--> assertion`. A requirement revised in
+  place has its basis replaced, a re-listed decision's is added to, and an unknown code is skipped.
+  Research findings may name a framing assumption they `supports` or `contradicts` (new optional
+  fields; `assertion --supports|contradicts--> assertion`). Until now nothing wrote these edges, so
+  `basis_refuted` and an assumption's dependents only ever appeared in tests: now `idea assumption
+  ASM-3 retract` on a hypothesis a decided decision rests on reports `basis_refuted` on the decision,
+  and an unvalidated assumption a requirement rests on is medium, not low. The PRD reviewer is shown
+  the assertions requirements rest on, with status, and may raise a cited medium `basis` finding on a
+  requirement resting on an unvalidated, disputed or retracted assumption or hypothesis. `idea
+  assumption` accepts the code as well as an id prefix, and gaps name assertions by code. The
+  `product_manager` and `adversarial_reviewer` contracts are at **1.3.0**, `research_analyst` at
+  **1.1.0**. The demo provider's requirement cites the two research findings and the scripted eval's
+  first requirement cites the research hypotheses, so both graphs carry basis edges; the scripted
+  baseline moved only in its nominal token counts (the prompts list the assertions).
 - **Use the UI from your phone or another computer, without the token leaving the machine.**
   Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
   `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),

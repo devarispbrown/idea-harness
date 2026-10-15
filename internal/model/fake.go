@@ -224,6 +224,12 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 		if code := firstRequirementCode(req); code != "" && code != "REQ-1" {
 			raw = strings.ReplaceAll(raw, `"REQ-1"`, strconv.Quote(code))
 		}
+		if req.JSONSchemaName == "prd" {
+			if codes := demoBasis(req); len(codes) > 0 {
+				b, _ := json.Marshal(codes)
+				raw = strings.Replace(raw, `"based_on":[]`, `"based_on":`+string(b), 1)
+			}
+		}
 	}
 	return Response{
 		RawJSON:     raw,
@@ -335,6 +341,10 @@ func demoResponse(schemaName, idea string) string {
 					"statement":  "Deliver: " + idea,
 					"priority":   "must",
 					"objectives": []string{"O1"},
+					// Filled in by Complete with the research findings'
+					// codes from the request (demoBasis), so the demo graph
+					// has requirement --derived_from--> assertion edges.
+					"based_on": []string{},
 					"acceptance_criteria": []any{
 						map[string]any{"metric": "delivered outcome", "target": "1", "condition": "matching the described idea"},
 					},
@@ -455,6 +465,34 @@ func shortTitle(idea string) string {
 }
 
 var requirementCodeRe = regexp.MustCompile(`\bREQ-\d+\b`)
+
+// assertionsSectionRe locates the "--- assertions (trust: ...) ---" block the
+// PRD prompt lists citable assertions in; listedAssertionRe is one line of it.
+var (
+	assertionsSectionRe = regexp.MustCompile(`(?s)--- assertions \(trust: [^)]*\) ---\n(.*?)(?:\n--- |\z)`)
+	listedAssertionRe   = regexp.MustCompile(`(?m)^- (ASM-\d+) \((assumption|hypothesis|fact),`)
+)
+
+// demoBasis is what the demo PRD's requirement says it rests on: the
+// research findings -- the last two assumptions/hypotheses the request lists
+// (research records after framing, so the framing stage's "this is synthetic"
+// note is not among them). Nil when the request lists none.
+func demoBasis(req Request) []string {
+	m := assertionsSectionRe.FindStringSubmatch(req.System)
+	if m == nil {
+		return nil
+	}
+	var codes []string
+	for _, l := range listedAssertionRe.FindAllStringSubmatch(m[1], -1) {
+		if l[2] != "fact" {
+			codes = append(codes, l[1])
+		}
+	}
+	if len(codes) > 2 {
+		codes = codes[len(codes)-2:]
+	}
+	return codes
+}
 
 var taskCodeRe = regexp.MustCompile(`\bTASK-\d+\b`)
 

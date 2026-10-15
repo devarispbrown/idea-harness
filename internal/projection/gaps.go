@@ -483,6 +483,9 @@ func (g *gapGraph) node(typ, id string) domain.GapNode {
 	case "assertion":
 		if a, ok := g.assertBy[id]; ok {
 			n.Label = trimLabel(a.Statement)
+			if a.Code != "" {
+				n.Code = a.Code
+			}
 		}
 	case "artifact":
 		for _, a := range g.arts {
@@ -929,7 +932,7 @@ func (g *gapGraph) invalidatedDecisions() []domain.Gap {
 				return
 			}
 			basis = append(basis, g.node("assertion", id))
-			basisWhy = append(basisWhy, fmt.Sprintf("%s %s is %s", a.Type, shortID(id), a.Status))
+			basisWhy = append(basisWhy, fmt.Sprintf("%s %s is %s", a.Type, g.node("assertion", id).Code, a.Status))
 		}
 		for _, e := range g.edgesFrom["decision:"+d.ID] {
 			if e.ToType == "assertion" && (e.EdgeType == domain.EdgeDerivedFrom || e.EdgeType == domain.EdgeDependsOn) {
