@@ -158,7 +158,9 @@ func OpsChecks(in OpsInput) []domain.QualityCheck {
 				out = append(out, domain.QualityCheck{Name: "graceful_shutdown", Status: domain.QualityPass, Method: det,
 					Detail: "SIGTERM is handled", Citations: []domain.QualityCitation{{Path: p, Line: l}}})
 			}
-		} else if p, l, ok := find([]*regexp.Regexp{pyManagedServerRe}, func(q string) bool { return strings.HasSuffix(q, ".py") || path.Base(q) == "Procfile" || path.Base(q) == "Dockerfile" }); ok {
+		} else if p, l, ok := find([]*regexp.Regexp{pyManagedServerRe}, func(q string) bool {
+			return strings.HasSuffix(q, ".py") || path.Base(q) == "Procfile" || path.Base(q) == "Dockerfile"
+		}); ok {
 			out = append(out, domain.QualityCheck{Name: "graceful_shutdown", Status: domain.QualityPass, Method: det,
 				Detail: "served by uvicorn/gunicorn, which drain on SIGTERM", Citations: []domain.QualityCitation{{Path: p, Line: l}}})
 		} else {
@@ -260,7 +262,7 @@ func migrationSafety(changed []ChangedFile) domain.QualityCheck {
 		return domain.QualityCheck{Name: "migration_safety", Status: domain.QualityNotApplicable, Method: det, Detail: "the change touched no migrations"}
 	case len(fails) > 0:
 		return domain.QualityCheck{Name: "migration_safety", Status: domain.QualityFail, Method: det,
-			Detail: "an existing numbered migration was edited (a database that already applied it will not re-run it; add a new migration instead): " + strings.Join(failNotes, "; "),
+			Detail:    "an existing numbered migration was edited (a database that already applied it will not re-run it; add a new migration instead): " + strings.Join(failNotes, "; "),
 			Citations: append(fails, warns...)}
 	case len(warns) > 0:
 		return domain.QualityCheck{Name: "migration_safety", Status: domain.QualityWarn, Method: det,

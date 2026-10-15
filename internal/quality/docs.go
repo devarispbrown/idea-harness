@@ -231,7 +231,7 @@ func DocsChecks(in DocsInput) []domain.QualityCheck {
 			cites = append(cites, domain.QualityCitation{Path: it.Path, Line: it.Line})
 		}
 		return domain.QualityCheck{Name: name, Status: missing, Method: det,
-			Detail: fmt.Sprintf("%d of %d added %s are not mentioned in any doc: %s", len(undocumented), len(items), noun, strings.Join(names, ", ")),
+			Detail:    fmt.Sprintf("%d of %d added %s are not mentioned in any doc: %s", len(undocumented), len(items), noun, strings.Join(names, ", ")),
 			Citations: cites}
 	}
 	out = append(out, mention("routes_documented", "route", domain.QualityFail, "HTTP routes"))
