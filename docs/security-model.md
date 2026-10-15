@@ -296,11 +296,28 @@ below is the actual `docker run` argv, not a summary of intent.
 | `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
 | `acp` | `ACPExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `-e NAME` (value from the docker CLI's environment) |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
+| (verify quality dimensions) | `ContainerSandbox` | `--network none`; **bridge only for `verify.setup.prepare` and scanners marked `network: true`** | `/work` (a fresh copy) | no |
 
-**`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
-the deterministic build/test check in `internal/workflow/execute.go`. Its
-`--network none` and read-only `/repo` mount are real, and they apply to
-`run_command`, not to the executors that run model-generated code.
+**`ContainerSandbox` is not the executor.** It has two non-test callers — the
+deterministic build/test check in `internal/workflow/execute.go`, and `idea
+verify`'s quality dimensions (`internal/workflow/quality_dims.go`), which run the
+documented setup/build/test commands, performance budgets and security scanners
+against a private copy of the workspace's committable files (no `.env`, no
+`.idea-harness/`). Its `--network none` and read-only `/repo` mount are real, and
+they apply to `run_command`, not to the executors that run model-generated code.
+
+**The one network exception is opt-in and human-written.** `RunOptions.Network`
+swaps `--network none` for Docker's default bridge and keeps every other
+restriction (read-only root, dropped capabilities, `no-new-privileges`, the
+daemon's UID, memory and pid limits). Only two things set it: each command a
+human lists under `verify.setup.prepare` in harness.yaml, and each
+`verify.security.scanners` entry marked `network: true`. A dependency-fetch
+command found in the README is never promoted to it -- it is skipped and
+recorded. Be clear about what the opt-in buys: a prepare command such as `npm ci`
+runs the project's install hooks, which the agent may have written, with network
+egress and the fresh copy of the workspace mounted. That is exfiltration-capable
+by construction; list a prepare command only for a project whose dependency
+manifests you would install on your own machine.
 
 **Coding agents (`omp`, `hermes`) get filesystem and process isolation only.**
 `--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,

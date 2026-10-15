@@ -65,6 +65,25 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Verification beyond unit tests: quality dimensions with evidence.** `idea verify` now measures
+  seven dimensions of the applied work — `setup_reproducibility` (the documented setup/build/test
+  commands run in a fresh copy in the no-network sandbox), `docs_completeness`,
+  `api_compatibility` (a focused OpenAPI 3 diff and a Go exported-API diff; unacknowledged breaking
+  changes fail), `api_ergonomics` (a verification_engineer model review whose findings count only
+  when they cite a diff line), `security` (credential re-scan, deny-check summary, configured
+  scanners), `performance` (declared budgets compared with the previous measurement) and
+  `operational_readiness` — each a result of cited checks marked deterministic or model-reviewed,
+  recorded in the product record and linked to requirements with `verifies` edges (`idea why
+  quality_result …`, `idea impact requirement …`). Unmeasured is reported as `not_measured`, never as
+  a pass. Policy is `verify.dimensions` in harness.yaml (`off` | `advisory` | `gate`); defaults
+  follow `review.rigor` — **`quick` measures nothing; `standard` makes setup, docs and API
+  compatibility advisory; `thorough` gates those three**, so an initiative that calibrates to
+  `thorough` (`auto` on a large project or change) now needs them to pass, or a `verify.dimensions`
+  override, to complete. New `GET`/`POST /api/v1/projects/{projectId}/initiatives/{id}/quality`
+  (read; 202 measure), `quality` on the verify response, `idea verify --no-measure`, a scorecard on
+  the Health and Build pages, and the opt-in `verify.setup.prepare` / scanner `network: true` —
+  the only sandboxed commands ever given network ([security model](docs/security-model.md#execution-gateway)).
+  See [configuration](docs/configuration.md#quality-dimensions-verify).
 - **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
   K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's
   GitHub OIDC identity), records a GitHub build-provenance attestation for every archive, ships an

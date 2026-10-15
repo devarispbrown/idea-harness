@@ -1026,6 +1026,12 @@ paths:
                         requirement: { type: string }
                         reason: { type: string }
                       required: [requirement, reason]
+                  quality:
+                    $ref: "#/components/schemas/QualityScorecard"
+                    description: >-
+                      The quality-dimension scorecard the gate read (a read -- `POST .../quality`
+                      measures). Only `gate_unmet` held the gate; advisory dimensions never do.
+                      Absent only when the scorecard could not be read.
                 required: [status, coverage]
         "400":
           description: "`invalid body`, or the domain error from recording evidence or running the gate."
@@ -1036,6 +1042,49 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/quality:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [initiatives]
+      operationId: getQualityScorecard
+      summary: Read the quality-dimension scorecard
+      description: |
+        Every quality dimension (`verify.dimensions` in harness.yaml) with its mode under the current
+        policy, its latest recorded result, and whether that result is stale -- measured against
+        different applied change sets or a different policy than the initiative has now. Nothing is
+        measured. `gate_unmet` names each GATED dimension that failed, was not measured, or is stale;
+        the verification gate does not complete the initiative while it is non-empty.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The scorecard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QualityScorecard" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [initiatives]
+      operationId: measureQuality
+      summary: Measure the enabled quality dimensions
+      description: |
+        Starts a `measure_quality` operation that measures every dimension whose mode is not `off`
+        against the initiative's applied work and records one result per dimension, each linked to
+        the requirements it bears on with a `verifies` graph edge. Asynchronous because the setup
+        reproducibility run executes the documented commands in the sandbox. It does not claim the
+        initiative. Read the outcome back from `GET .../quality`. No request body.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers:
@@ -3796,7 +3845,7 @@ components:
       name: type
       in: query
       required: true
-      description: Graph node type, e.g. `requirement`, `task`, `decision`, `assertion`, `change_set`.
+      description: Graph node type, e.g. `requirement`, `task`, `decision`, `assertion`, `change_set`, `quality_result`.
       schema: { type: string }
     GraphNodeId:
       name: id
@@ -3963,7 +4012,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 99 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 101 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -5172,6 +5221,109 @@ components:
         question: { type: string }
         resolution: { type: string }
       required: [code, question]
+
+    QualityDimension:
+      type: string
+      title: QualityDimension
+      description: One quality dimension `idea verify` measures beyond the acceptance tests.
+      enum: [setup_reproducibility, docs_completeness, api_compatibility, api_ergonomics, security, performance, operational_readiness]
+    QualityStatus:
+      type: string
+      title: QualityStatus
+      description: |
+        A dimension's or check's outcome. `not_measured` means the harness could not look (no Docker,
+        no image, no scanner, a demo model) and never counts as a pass; `not_applicable` means it
+        looked and there was nothing to judge.
+      enum: [pass, warn, fail, not_measured, not_applicable]
+    QualityMode:
+      type: string
+      title: QualityMode
+      description: "`off` (not measured), `advisory` (reported, never blocks), `gate` (a fail, not_measured or stale result holds the verification gate)."
+      enum: [off, advisory, gate]
+    QualityMethod:
+      type: string
+      title: QualityMethod
+      description: How a check reached its result.
+      enum: [deterministic, model]
+    QualityCitation:
+      type: object
+      title: QualityCitation
+      properties:
+        path: { type: string }
+        line: { type: integer }
+        requirement: { type: string, description: A requirement code. }
+    QualityCheck:
+      type: object
+      title: QualityCheck
+      properties:
+        name: { type: string }
+        status: { $ref: "#/components/schemas/QualityStatus" }
+        method: { $ref: "#/components/schemas/QualityMethod" }
+        detail: { type: string }
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/QualityCitation" }
+      required: [name, status, method]
+    QualityResult:
+      type: object
+      title: QualityResult
+      description: One dimension's recorded measurement. Append-only; the latest per dimension is the scorecard.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        measurement_id: { type: string }
+        dimension: { $ref: "#/components/schemas/QualityDimension" }
+        mode: { $ref: "#/components/schemas/QualityMode" }
+        status: { $ref: "#/components/schemas/QualityStatus" }
+        summary: { type: string }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/QualityCheck" }
+        metrics:
+          type: object
+          additionalProperties: { type: number }
+          description: Named measurements (performance budgets); the next measurement's baseline.
+        input_digest: { type: string }
+        requirements:
+          type: array
+          items: { type: string }
+          description: Codes of the requirements this result is linked to by a `verifies` edge.
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, measurement_id, dimension, mode, status, summary, checks, input_digest, requirements, created_at]
+    QualityScorecard:
+      type: object
+      title: QualityScorecard
+      properties:
+        rigor:
+          type: string
+          description: The effective review rigor the default modes came from (`quick`, `standard`, `thorough`).
+        overridden:
+          type: array
+          items: { $ref: "#/components/schemas/QualityDimension" }
+          description: Dimensions whose mode `verify.dimensions` set explicitly.
+        dimensions:
+          type: array
+          items:
+            type: object
+            properties:
+              dimension: { $ref: "#/components/schemas/QualityDimension" }
+              mode: { $ref: "#/components/schemas/QualityMode" }
+              result:
+                description: The latest result, or null when never measured.
+                oneOf:
+                  - { $ref: "#/components/schemas/QualityResult" }
+                  - { type: "null" }
+              stale: { type: boolean }
+            required: [dimension, mode, result, stale]
+        input_digest: { type: string }
+        needs_measurement:
+          type: boolean
+          description: An enabled dimension has no result for the current input digest.
+        gate_unmet:
+          type: array
+          items: { type: string }
+          description: Each gated dimension that failed, was not measured, or is stale.
+      required: [rigor, overridden, dimensions, input_digest, needs_measurement, gate_unmet]
 
     Coverage:
       type: object
