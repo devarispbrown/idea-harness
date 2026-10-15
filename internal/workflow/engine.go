@@ -113,6 +113,13 @@ type Engine struct {
 	// on modelOverride/modelMu above.
 	noteMu       sync.Mutex
 	noteOverride map[string]string
+
+	// metricSandbox and metricFetcher are how `idea metric measure` runs a
+	// command source and fetches a url source (measure.go). nil means the
+	// real no-network container sandbox and the SSRF-guarded fetcher; tests
+	// substitute both.
+	metricSandbox func(image string) sandboxRunner
+	metricFetcher jsonFetcher
 }
 
 // SetNoteOverride records a human note to steer the given initiative's next

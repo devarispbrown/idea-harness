@@ -136,6 +136,33 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) (string, error) {
 	return truncate(stripHTML(string(body)), int(f.maxBytes)), nil
 }
 
+// FetchJSON retrieves url as a JSON document (raw bytes, size-capped) through
+// the same SSRF-guarded client as Fetch: public http(s) addresses only, at
+// most 5 redirects, none to a non-http scheme. Unlike Fetch it does not strip
+// markup -- an outcome metric's url source reads a number out of the body
+// with a JSON pointer, and HTML-stripping would corrupt a string value that
+// happened to contain a '<'.
+func (f *Fetcher) FetchJSON(ctx context.Context, url string) ([]byte, error) {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return nil, fmt.Errorf("tools: only http(s) URLs are supported")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "idea-harness-metrics/0.1")
+	req.Header.Set("Accept", "application/json")
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tools: status %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, f.maxBytes))
+}
+
 // isPublic reports whether an IP is routable public space. Rejects loopback,
 // private (RFC1918), link-local unicast/multicast, multicast, unspecified, and
 // cloud metadata (169.254.169.254).
