@@ -102,6 +102,13 @@ git:
   # used to silently do nothing without it, though its own name never
   # suggested a second flag was required).
   branch_per_initiative: false
+
+# Outcome-metric measurement (`idea metric measure`). Nothing here runs on its
+# own; see "Objectives & outcomes" below.
+outcomes:
+  image: ""                     # sandbox image for command sources (default: check.image, then derived)
+  measure_timeout_seconds: 120  # bound on one command source
+  allow_url_sources: false      # opt in to fetching url sources (public addresses only)
 ```
 
 Top-level fields:
@@ -138,6 +145,9 @@ Top-level fields:
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. The change-set review runs exactly once, when the change set is created (right after checks pass) — not again on `approve` — so this only ever drains at most one entry off the queue; a surplus is harmless. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: a plain `approve` only evaluates the findings the one review already persisted (it never calls the model again), and the deny gate refuses outright until a human dispositions them | `0` |
+| `outcomes.image` | sandbox image a metric's `command` source runs in | `check.image`, then the image derived from the project's toolchain markers, then the sandbox's minimal `alpine:3.20` |
+| `outcomes.measure_timeout_seconds` | bound on one `command` source; past it the measurement fails and nothing is recorded | `120` |
+| `outcomes.allow_url_sources` | fetch metrics' `url` sources at all. Off by default: it is the one measurement path that reaches the network, and `network: enabled` (which is about research) does not imply it | `false` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
 
 ### Check auto-detection
@@ -631,6 +641,30 @@ integrations:
   linear:
     team_key: ENG
 ```
+
+## Objectives & outcomes
+
+The PRD stage states the objectives an initiative exists to move (`OBJ-n`), each with outcome
+metrics (`MET-n`), and links every requirement to the objectives it serves; humans add, edit and
+link more with `idea objective …` / `idea metric …` (see [cli.md](cli.md)) or the Define page. A
+metric's **source** says how its value is read:
+
+| Source | Measured by | Where it runs |
+|---|---|---|
+| `manual` (default) | `idea metric record MET-n <value>` (or the MCP `record_metric` tool) | nowhere — a person types it |
+| `command` | `idea metric measure [MET-n]` | `sh -c "cd /repo && <command>"` in the build/test check sandbox ([isolation properties](security-model.md#execution-gateway)), with the workspace mounted **read-only** at `/repo`. The last number printed is the value. Never the host — no Docker, no measurement |
+| `url` | `idea metric measure [MET-n]`, with `outcomes.allow_url_sources: true` | the daemon's SSRF-guarded fetcher (public http(s) addresses only, at most 5 redirects); the JSON response is read at the metric's RFC 6901 `pointer` |
+
+There is deliberately no networked `command` source: a number that lives behind an API is a `url`
+source, where the request is the daemon's own and goes through the address guard; a command with
+egress would be project code with the network, which the check sandbox exists to prevent. Nothing
+measures on a timer — a metric with a `cadence` that goes unmeasured becomes `stale`, which `idea
+status`, `idea next` and the Health page report.
+
+Drift (`off_track`, `regressed`, `stale`, `no_data`, `on_track`) is computed deterministically on
+every read; the exact rules are in the README's "Objectives & outcomes" section. An observation that
+moves a metric into `off_track` or `regressed` publishes `outcome.drifted` to the integrations
+([integrations.md](integrations.md)).
 
 ## Role Contracts
 

@@ -296,11 +296,17 @@ below is the actual `docker run` argv, not a summary of intent.
 | `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
 | `acp` | `ACPExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `-e NAME` (value from the docker CLI's environment) |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
+| (outcome metric `command` sources) | `ContainerSandbox` | `--network none` | empty `/work` + `/repo:ro` | no |
 
-**`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
-the deterministic build/test check in `internal/workflow/execute.go`. Its
-`--network none` and read-only `/repo` mount are real, and they apply to
-`run_command`, not to the executors that run model-generated code.
+**`ContainerSandbox` is not the executor.** It has two non-test callers — the
+deterministic build/test check in `internal/workflow/execute.go`, and a metric's
+`command` source in `internal/workflow/measure.go` (`idea metric measure`,
+never automatic). Its `--network none` and read-only `/repo` mount are real,
+and they apply to those commands, not to the executors that run model-generated
+code. A metric command never falls back to the host: no Docker, no measurement.
+A metric's `url` source is not a command at all — the daemon fetches it through
+the research fetcher's public-address guard, and only once
+`outcomes.allow_url_sources` is set.
 
 **Coding agents (`omp`, `hermes`) get filesystem and process isolation only.**
 `--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,
