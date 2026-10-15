@@ -95,6 +95,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **`idea ui pair --qr`** draws the sign-in address as a QR code in the terminal (UTF-8 half
+  blocks, black on white whatever the theme), so a phone's camera opens the page. The pairing code
+  is printed beside it and is never in it: codes never go in URLs. Encoded with `rsc.io/qr`
+  (BSD-3-Clause, pure Go); the tests decode what was drawn with an independent decoder, Reed-Solomon
+  check included.
 - **Push notifications survive the push service replacing a subscription.** The service worker
   now handles `pushsubscriptionchange` (`web/public/sw-push.js`): it re-subscribes with the
   daemon's VAPID key when the browser does not hand it a new subscription, and posts the new one

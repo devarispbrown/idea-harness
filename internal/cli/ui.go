@@ -41,6 +41,9 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 		if a.arg(0) != "" {
 			return errorf(kindUsage, "ui pair takes no arguments (use --label <name> to name the device)")
 		}
+		if a.flags.has("--qr") && a.flags.has("--json") {
+			return errorf(kindUsage, "--qr draws for a person; --json is for a program. Pick one")
+		}
 		var out struct {
 			Code      string    `json:"code"`
 			ExpiresAt time.Time `json:"expires_at"`
@@ -56,6 +59,9 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 		}
 		if a.flags.has("--json") {
 			return dumpJSON(stdout, out)
+		}
+		if a.flags.has("--qr") {
+			return renderPairingQR(stdout, out.Code, out.ExpiresAt, out.Remote, out.URLs, colorEnabled)
 		}
 		renderPairingCode(stdout, out.Code, out.ExpiresAt, out.Remote, out.URLs)
 		return nil
@@ -119,6 +125,33 @@ func renderPairingCode(w io.Writer, code string, expires time.Time, remote bool,
 		fmt.Fprintln(w, "  "+u)
 	}
 	fmt.Fprintln(w, muted("and enter the code. Never share it; anyone with it before it is used can sign in."))
+}
+
+// renderPairingQR is `idea ui pair --qr`: the first remote URL as a QR code
+// (qr.go), and the pairing code printed separately -- never inside the QR,
+// because codes never go in URLs. Without a remote URL there is nothing a
+// phone could open, so it says so instead of drawing a loopback address.
+func renderPairingQR(w io.Writer, code string, expires time.Time, remote bool, urls []string, color bool) error {
+	if !remote || len(urls) == 0 {
+		renderPairingCode(w, code, expires, remote, urls)
+		return nil
+	}
+	fmt.Fprintln(w, "Scan to open the sign-in page on your other device:")
+	fmt.Fprintln(w)
+	if err := renderQR(w, urls[0], color); err != nil {
+		return fmt.Errorf("drawing the QR code: %w", err)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  "+urls[0])
+	for _, u := range urls[1:] {
+		fmt.Fprintln(w, muted("  also: "+u))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Then type this code there (it is not in the QR code):")
+	fmt.Fprintln(w, "  "+bold(code))
+	fmt.Fprintln(w, muted(fmt.Sprintf("Good for one sign-in, until %s (%s). Never share it; anyone with it before it is used can sign in.",
+		expires.Local().Format("15:04"), time.Until(expires).Round(time.Minute))))
+	return nil
 }
 
 func renderUISessions(w io.Writer, list []uiSession, now time.Time) {
