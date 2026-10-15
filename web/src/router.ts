@@ -88,3 +88,9 @@ export function navigate(to: string): void {
     window.location.hash = to;
   }
 }
+
+// lineageHref is the one way to link to a node's lineage, so every caller
+// encodes the type and ref the same way parseRoute decodes them. Defined in
+// lineage.ts next to the view's own helpers; re-exported here for callers
+// that already import their navigation from the router.
+export { lineageHref } from "./lineage";

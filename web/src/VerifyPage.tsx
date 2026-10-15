@@ -46,6 +46,9 @@ export default function VerifyPage({
   const [note, setNote] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [confirmBusy, setConfirmBusy] = useState(false);
+  // Nothing about "built" is known before the first load; without this the
+  // gate note flashed on a page whose change set had long been applied.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     const [r, c] = await Promise.all([
@@ -54,6 +57,7 @@ export default function VerifyPage({
     ]);
     setReqs(r ?? []);
     setChangeSets(c ?? []);
+    setLoaded(true);
   }, [projectId, initiativeId]);
 
   useEffect(() => {
@@ -163,10 +167,10 @@ export default function VerifyPage({
         </span>
       </div>
 
-      {!built && verifiableReqs.length > 0 && (
+      {loaded && !built && verifiableReqs.length > 0 && (
         <p className="muted verify-gate-note">
-          Pass/Fail unlocks once a task has been built and its change set applied — there's
-          nothing to check against yet.
+          Pass and Fail appear once a task has been built and its change set applied — there's
+          nothing to check against yet. Waive is available now.
         </p>
       )}
 
@@ -223,25 +227,22 @@ export default function VerifyPage({
                 <div className="verify-pass">
                   <input
                     className="text-input"
-                    placeholder="Evidence note — what you checked, and how"
+                    aria-label={`Evidence note for ${r.code}`}
+                    placeholder={built ? "Evidence note — what you checked, and how" : "Note (optional) — e.g. why it is waived"}
                     value={note[r.code] ?? ""}
                     onChange={(e) => setNote((p) => ({ ...p, [r.code]: e.target.value }))}
                   />
-                  <button
-                    className="cs-green"
-                    disabled={!built}
-                    title={!built ? "Build and apply a change set before recording pass/fail" : undefined}
-                    onClick={() => record(r.code, "pass")}
-                  >
-                    Pass
-                  </button>
-                  {!failed && (
-                    <button
-                      className="cs-danger"
-                      disabled={!built}
-                      title={!built ? "Build and apply a change set before recording pass/fail" : undefined}
-                      onClick={() => record(r.code, "fail")}
-                    >
+                  {/* Pass/Fail only exist once there is something to check: the
+                      page used to render them (disabled) right under a note
+                      saying they were locked, which read as a contradiction --
+                      and a disabled button explains nothing on its own. */}
+                  {built && (
+                    <button className="cs-green" onClick={() => record(r.code, "pass")}>
+                      Pass
+                    </button>
+                  )}
+                  {built && !failed && (
+                    <button className="cs-danger" onClick={() => record(r.code, "fail")}>
                       Fail
                     </button>
                   )}

@@ -287,6 +287,71 @@ jobs:
         working-directory: web
         run: pnpm test
 
+  # The browser suite (web/e2e). Unit and component tests check pieces; this
+  # drives the built binary's real UI through the whole loop -- idea to verify
+  # -- and runs axe on every page, failing on serious/critical violations. A UI
+  # review found defects every other job here passed, all of them visible only
+  # in a browser against a running daemon. Hermetic: the demo provider, an
+  # isolated state dir and port, no provider secrets.
+  e2e:
+    name: Web (browser e2e + accessibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      # Keyed on the lockfile, which pins the Playwright version and so the
+      # browser build it downloads.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      # The cache holds the browser, not the system libraries it links.
+      - name: Install Chromium's system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Browser suite
+        run: make e2e
+
+      - name: Keep the report and traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            web/e2e/.report
+            web/e2e/.results
+            web/e2e/.work/state/daemon.log
+          retention-days: 7
+
   # The release. It lives HERE, and not in a workflow of its own, because
   # `needs:` resolves job ids within a single workflow file and cannot reference
   # a job in another one. DX audit 7 found .github/workflows/release.yml gating a
@@ -305,7 +370,7 @@ jobs:
   # make that choice rather than have it made by omission.
   release:
     name: Publish release binaries
-    needs: [compile-no-node, macos, backend, web, agent-contract]
+    needs: [compile-no-node, macos, backend, web, e2e, agent-contract]
     # `github.event_name == 'push'` is load-bearing, not decoration: this
     # workflow accepts workflow_dispatch, a dispatch can select a tag ref, and a
     # ref test alone would open a publishing path release.yml never had.

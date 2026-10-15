@@ -27,24 +27,24 @@ describe("executorStatusLines", () => {
   // command to pull it now comes from the daemon's note.
   it("says the first run downloads an image that is not pulled", () => {
     const lines = executorStatusLines({ ...ready, image_present: false, note: "To pull it now: idea executors setup" });
-    expect(lines.imageLine.ok).toBe(false);
-    expect(lines.imageLine.text).toContain("first run downloads it");
+    expect(lines.imageLine?.ok).toBe(false);
+    expect(lines.imageLine?.text).toContain("first run downloads it");
     expect(lines.noteLine).toContain("idea executors setup");
   });
 
   it("does not claim the image is missing when the check was inconclusive", () => {
     const lines = executorStatusLines({ ...ready, image_present: false, image_state: "unknown" });
-    expect(lines.imageLine.text).not.toContain("not pulled");
+    expect(lines.imageLine?.text).not.toContain("not pulled");
   });
 
   it("does not claim the image is missing when Docker cannot be asked", () => {
     const lines = executorStatusLines({ ...ready, image_present: false, problem: "Docker is not running or not installed; ..." });
-    expect(lines.imageLine.text).not.toContain("not pulled");
+    expect(lines.imageLine?.text).not.toContain("not pulled");
   });
 
   it("falls back to naming the default image when none is configured", () => {
     const lines = executorStatusLines({ ...ready, image: "", image_present: false });
-    expect(lines.imageLine.text).toContain("the pinned default image");
+    expect(lines.imageLine?.text).toContain("the pinned default image");
   });
 
   it("reports a missing key against the daemon's environment and .env", () => {

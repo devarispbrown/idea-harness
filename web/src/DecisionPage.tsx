@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import { navigate } from "./router";
 import LineagePanel from "./LineagePanel";
+import NotFound from "./NotFound";
 
 interface Decision {
   id: string;
@@ -34,6 +35,9 @@ export default function DecisionPage({
   const [thread, setThread] = useState<DiscussionMessage[]>([]);
   const [message, setMessage] = useState("");
   const [changed, setChanged] = useState<Changed | null>(null);
+  // Whether the decisions list has loaded at least once, so "no such
+  // decision" is only said after the page has actually looked.
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     const [ds, th, ch] = await Promise.all([
@@ -41,9 +45,11 @@ export default function DecisionPage({
       get<DiscussionMessage[]>(`/projects/${projectId}/decisions/${decisionId}/discussion`).catch(() => []),
       get<Changed>(`/projects/${projectId}/initiatives/${initiativeId}/changed`).catch(() => null),
     ]);
-    setDecision((ds ?? []).find((d) => d.id === decisionId) ?? null);
+    // By id or by code: a link that says DEC-1 should land on DEC-1.
+    setDecision((ds ?? []).find((d) => d.id === decisionId || d.code === decisionId) ?? null);
     setThread(th ?? []);
     setChanged(ch);
+    setLoaded(true);
   }, [projectId, initiativeId, decisionId]);
 
   useEffect(() => {
@@ -70,6 +76,18 @@ export default function DecisionPage({
       await load();
     }
   };
+
+  // A bad or stale id used to render an empty discussion with a working Send
+  // box, which posted into a decision that does not exist.
+  if (loaded && !decision) {
+    return (
+      <NotFound
+        title="Decision not found"
+        detail={`There's no decision "${decisionId}" in this initiative.`}
+        back={{ label: "← Back to Define", href: `#/i/${initiativeId}/define` }}
+      />
+    );
+  }
 
   return (
     <div className="phase-page discussion-page">
@@ -107,6 +125,7 @@ export default function DecisionPage({
           <div className="discussion-input">
             <input
               className="text-input"
+              aria-label="Message about this decision"
               placeholder="Ask the team something about this decision…"
               value={message}
               onChange={(e) => setMessage(e.target.value)}

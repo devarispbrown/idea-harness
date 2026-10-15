@@ -347,6 +347,15 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 		body["accept_findings"] = true
 	}
+	// --note says what to change: recorded on the change set and carried into
+	// the task's next run. Only the two verdicts that reopen the task have a
+	// next run for it to steer.
+	if note := strings.TrimSpace(a.value("--note")); note != "" {
+		if verdict != "changes_requested" && verdict != "rejected" {
+			return usageErrorf("--note goes with changes_requested or reject: it steers the task's next run")
+		}
+		body["note"] = note
+	}
 	var out map[string]string
 	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
 		return err
@@ -371,6 +380,9 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	line := ok("✓ review recorded") + " " + code(positional[0]) + " → " + verdict
 	if accepting {
 		line += " " + muted("(findings accepted)")
+	}
+	if _, noted := body["note"]; noted {
+		line += " " + muted("(note recorded; the task's next run carries it: idea execute)")
 	}
 	fmt.Fprintln(stdout, line)
 	return nil

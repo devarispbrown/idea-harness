@@ -124,20 +124,22 @@ export default function PhaseNav({
             />
             <span className="pn-model-name">{modelChip}</span>
           </button>
-          {/* "Activity" used to sit inside the model button and navigate to
-              Settings regardless -- a label with no destination of its own.
-              It now goes to this initiative's health/activity trace, and
-              only appears when there is one. */}
+          {/* Activity is the initiative's timeline -- what changed, newest
+              first (C1). It used to open Graph health, which is not activity,
+              while a second "What changed" link beside it did what its label
+              promised; health keeps its own link instead. */}
           {initiative && (
-            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/health`)}>
+            <button
+              className="pn-model-more"
+              title="What changed in this initiative"
+              onClick={() => onNavigate(`#/i/${initiative.id}/changed`)}
+            >
               Activity ↗
             </button>
           )}
-          {/* C1: "no useful 'what changed'" -- one click from anywhere in
-              the initiative to the full timeline. */}
           {initiative && (
-            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/changed`)}>
-              What changed ↗
+            <button className="pn-model-more" onClick={() => onNavigate(`#/i/${initiative.id}/health`)}>
+              Health ↗
             </button>
           )}
         </div>

@@ -80,7 +80,17 @@ func cmdApprovePlan(a cmdArgs, stdout, stderr io.Writer) error {
 
 // cmdRevisePlan regenerates the execution plan.
 func cmdRevisePlan(a cmdArgs, stdout, stderr io.Writer) error {
-	return judgmentOperation(a, stdout, "revise-plan", "regenerating the plan")
+	c, projectID, iniID, err := judgmentTarget(a)
+	if err != nil {
+		return err
+	}
+	// --note says what to change; without it the planner regenerates from the
+	// same inputs that produced the plan being revised.
+	var body map[string]any
+	if note := strings.TrimSpace(a.value("--note")); note != "" {
+		body = map[string]any{"note": note}
+	}
+	return judgmentPostBody(c, projectID, iniID, stdout, "revise-plan", "regenerating the plan", body)
 }
 
 // judgmentTarget resolves the client and the initiative these commands act on.
@@ -109,8 +119,18 @@ func judgmentOperation(a cmdArgs, stdout io.Writer, path, gerund string) error {
 
 // judgmentPost is the half after the target is resolved.
 func judgmentPost(c *client, projectID, iniID string, stdout io.Writer, path, gerund string) error {
+	return judgmentPostBody(c, projectID, iniID, stdout, path, gerund, nil)
+}
+
+// judgmentPostBody is judgmentPost with a request body. A nil map is sent as
+// no body at all, exactly what judgmentPost always sent.
+func judgmentPostBody(c *client, projectID, iniID string, stdout io.Writer, path, gerund string, body map[string]any) error {
+	var payload any
+	if body != nil {
+		payload = body
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, path), nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, path), payload, &out); err != nil {
 		return err
 	}
 	opID := out["operation_id"]

@@ -39,7 +39,7 @@ if this file has drifted.
 | `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
 | `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
 | `idea approve-plan` | accept the execution plan as it stands | none | takes no flags |
-| `idea revise-plan` | regenerate the execution plan | none | takes no flags |
+| `idea revise-plan [--note <text>]` | regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes | `--note` | no |
 | `idea plan` | render the execution plan | `--json` | rejected — use `idea tasks --json` |
 | `idea tasks` | list the ordered plan tasks | `--json` | yes |
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
@@ -68,7 +68,7 @@ if this file has drifted.
 | `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
-| `idea review <id> <verdict> [--no-wait]` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait` | no |
+| `idea review <id> <verdict> [--note <text>] [--no-wait]` | approve\|reject\|changes_requested\|rerun; --note with changes_requested\|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait`, `--note` | no |
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard | `--confirm-passing-tests`, `--fail`, `--json`, `--no-measure`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |

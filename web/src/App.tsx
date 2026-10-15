@@ -26,6 +26,7 @@ import LineageView from "./LineageView";
 import GapsPage from "./GapsPage";
 import OutcomesPage from "./OutcomesPage";
 import QualityPage from "./QualityPage";
+import NotFound from "./NotFound";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -264,6 +265,11 @@ export default function App() {
     ? initiatives.find((i) => i.id === initiativeId) ?? null
     : null;
   const currentInitiativeId = currentInitiative?.id ?? "";
+  // Every route that names an initiative renders NotFound, and nothing else,
+  // when the id resolves to none in this project. Only phase routes used to
+  // check: a decision, health, doc, diff or changed link with a stale id
+  // rendered its page against an initiative that does not exist.
+  const missingInitiative = initiativeId !== "" && initiativesLoaded && !currentInitiative;
 
   useEffect(() => {
     if (projectId && currentInitiativeId) {
@@ -422,8 +428,8 @@ export default function App() {
       )}
       {demo && (
         <div className="banner banner-app">
-          Demo mode — this project has no model provider configured, so every
-          document, review and change you see here is synthetic.{" "}
+          Demo mode — no model is selected for this project, so every document,
+          review and change you see here is synthetic.{" "}
           <a
             href="#/settings"
             onClick={(e) => {
@@ -492,10 +498,10 @@ export default function App() {
 
         {route.name === "settings" && <Settings projectId={projectId} />}
 
-        {route.name === "phase" && !currentInitiative && initiativesLoaded && (
+        {missingInitiative && (
           <NotFound
             title="Initiative not found"
-            detail={`There's no initiative "${route.id}" in this project.`}
+            detail={`There's no initiative "${initiativeId}" in this project.`}
           />
         )}
 
@@ -576,19 +582,19 @@ export default function App() {
             );
           })()}
 
-        {route.name === "decision" && (
+        {route.name === "decision" && currentInitiative && (
           <DecisionPage projectId={projectId} initiativeId={route.id} decisionId={route.decisionId} />
         )}
-        {route.name === "health" && (
+        {route.name === "health" && currentInitiative && (
           <HealthPage projectId={projectId} initiativeId={route.id} />
         )}
-        {route.name === "doc" && (
+        {route.name === "doc" && currentInitiative && (
           <DocReader projectId={projectId} initiativeId={route.id} artifactId={route.artifact} />
         )}
-        {route.name === "diff" && (
+        {route.name === "diff" && currentInitiative && (
           <ArtifactDiffPage projectId={projectId} from={route.from} to={route.to} />
         )}
-        {route.name === "changed" && (
+        {route.name === "changed" && currentInitiative && (
           <ChangedPage projectId={projectId} initiativeId={route.id} />
         )}
         {route.name === "queue" && <QueuePage projectId={projectId} />}
@@ -603,21 +609,6 @@ export default function App() {
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
       </div>
-    </div>
-  );
-}
-
-// NotFound covers both a bogus route (K: a mistyped or stale hash used to
-// silently resolve to home) and a phase link to an initiative that doesn't
-// exist in this project -- previously a blank main area in both cases.
-function NotFound({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="empty">
-      <h1>{title}</h1>
-      <p className="muted">{detail}</p>
-      <button className="jc-primary" onClick={() => navigate("#/")}>
-        Back to initiatives
-      </button>
     </div>
   );
 }
