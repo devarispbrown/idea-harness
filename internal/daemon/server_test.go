@@ -124,9 +124,19 @@ func TestEventsStreamSurvivesPastReadHeaderTimeout(t *testing.T) {
 
 	line := make(chan string, 1)
 	go func() {
+		// Read until a data line: the stream opens with its `retry:` hint
+		// (and may send a heartbeat comment), which arrive as their own
+		// chunks.
+		var got strings.Builder
 		buf := make([]byte, 4096)
-		n, _ := resp.Body.Read(buf)
-		line <- string(buf[:n])
+		for !strings.Contains(got.String(), "data:") {
+			n, err := resp.Body.Read(buf)
+			got.Write(buf[:n])
+			if err != nil {
+				break
+			}
+		}
+		line <- got.String()
 	}()
 	select {
 	case got := <-line:
