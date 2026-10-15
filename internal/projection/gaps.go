@@ -436,6 +436,9 @@ func (g *gapGraph) dependents(nodeType, nodeID string) []domain.GapNode {
 				if e.EdgeType == domain.EdgeProducedBy || e.EdgeType == domain.EdgeConsumes {
 					continue // provenance, not dependence
 				}
+				if e.EdgeType == domain.EdgeInvalidates {
+					continue // the invalidator undercuts the node; it does not rest on it
+				}
 				if add(e.FromType, e.FromID) {
 					next = append(next, [2]string{e.FromType, e.FromID})
 				}
@@ -837,9 +840,11 @@ func (g *gapGraph) unvalidatedAssumptions() []domain.Gap {
 //   - requirement_revised (decided only): a live requirement that derives from
 //     it was revised (a requirement.revised event) after the decision's last
 //     resolution, so it was decided against text that no longer exists.
-//   - basis_refuted (decided only): an assertion it derives from or that
-//     supports it was retracted or disputed, or a node `invalidates` or
-//     `contradicts` it -- the edge `idea impact` calls "obsolete".
+//   - basis_refuted (decided only): an assertion it derives from, that
+//     supports it or that invalidates it was retracted or disputed, or another
+//     node `invalidates` or `contradicts` it. Retracting an assertion writes
+//     assertion --invalidates--> each live node resting on it, so the edge
+//     and the derived_from status read agree and are reported once.
 //   - requirements_removed (decided only): requirements cited it, and every
 //     one of them has since been removed or superseded, so it serves nothing
 //     live.
@@ -926,11 +931,13 @@ func (g *gapGraph) invalidatedDecisions() []domain.Gap {
 
 		var basis []domain.GapNode
 		var basisWhy []string
+		inBasis := map[string]bool{}
 		considerAssertion := func(id string) {
 			a, ok := g.assertBy[id]
-			if !ok || (a.Status != domain.AssertionRetracted && a.Status != domain.AssertionDisputed) {
+			if !ok || inBasis[id] || (a.Status != domain.AssertionRetracted && a.Status != domain.AssertionDisputed) {
 				return
 			}
+			inBasis[id] = true
 			basis = append(basis, g.node("assertion", id))
 			basisWhy = append(basisWhy, fmt.Sprintf("%s %s is %s", a.Type, g.node("assertion", id).Code, a.Status))
 		}
@@ -941,7 +948,10 @@ func (g *gapGraph) invalidatedDecisions() []domain.Gap {
 		}
 		for _, e := range g.edgesTo["decision:"+d.ID] {
 			switch {
-			case e.FromType == "assertion" && e.EdgeType == domain.EdgeSupports:
+			case e.FromType == "assertion" && (e.EdgeType == domain.EdgeSupports || e.EdgeType == domain.EdgeInvalidates):
+				// A retraction writes assertion --invalidates--> decision
+				// alongside the derived_from it already reads: one entry,
+				// and only while the assertion is still refuted.
 				considerAssertion(e.FromID)
 			case e.EdgeType == domain.EdgeInvalidates || e.EdgeType == domain.EdgeContradicts:
 				n := g.node(e.FromType, e.FromID)

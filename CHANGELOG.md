@@ -126,6 +126,17 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   first requirement cites the research hypotheses, so both graphs carry basis edges; the scripted
   baseline moved only in its nominal token counts (the prompts list the assertions).
 
+- **Retracting an assertion writes `invalidates` edges.** The edge type was declared and read by
+  `basis_refuted`, but nothing wrote it. Now `idea assumption ASM-n retract` (or `POST
+  …/assertions/{id}/status`) writes `assertion --invalidates--> requirement|decision` for each live
+  node resting on it, with an `assertion.invalidates_set` event. The set is reconciled: repeating
+  the retraction writes nothing, accepting or disputing the assertion later removes the edges, a
+  PRD cycle citing an already-retracted assertion gains one, and a revision dropping the citation
+  loses it. `idea why` (and the lineage page's Why) lists the edge on the invalidated node; `idea
+  impact` on the assertion classes those nodes `obsolete` instead of `revalidate`. Impact and gap
+  `dependents` no longer follow an incoming `invalidates` edge, so the invalidator is not counted
+  as the node's dependent; `basis_refuted` lists the assertion once. No migration.
+
 - **`idea ui pair --qr`** draws the sign-in address as a QR code in the terminal (UTF-8 half
   blocks, black on white whatever the theme), so a phone's camera opens the page. The pairing code
   is printed beside it and is never in it: codes never go in URLs. Encoded with `rsc.io/qr`

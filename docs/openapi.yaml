@@ -7673,10 +7673,12 @@ components:
     ImpactItem:
       title: ImpactItem
       description: |
-        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"`
-        (supersedes/invalidates edges), `"revalidate"` (every other edge type), or `"stale"` (review
-        A4 #5: an active stale mark on this exact node, which always wins over the edge-type
-        classification).
+        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"` (reached
+        by a `supersedes` edge, or the node is the target of an `invalidates` edge -- a retracted
+        assertion it rests on), `"revalidate"` (every other edge type), or `"stale"` (review A4 #5:
+        an active stale mark on this exact node, which always wins over the edge-type
+        classification). Impact never follows an incoming `invalidates` edge: the invalidator is not
+        a dependent.
       allOf:
         - $ref: "#/components/schemas/TraceItem"
         - type: object
