@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/id"
@@ -67,4 +69,26 @@ func (db *DB) GetProject(ctx context.Context, projectID string) (ProjectRecord, 
 	p.CreatedAt = time.UnixMilli(created)
 	p.UpdatedAt = time.UnixMilli(updated)
 	return p, nil
+}
+
+// SetDaemonMeta stores a daemon-wide key/value in global.db; an empty value
+// deletes the key.
+func (db *DB) SetDaemonMeta(ctx context.Context, key, value string) error {
+	if value == "" {
+		_, err := db.SQL().ExecContext(ctx, `DELETE FROM daemon_meta WHERE key = ?`, key)
+		return err
+	}
+	_, err := db.SQL().ExecContext(ctx, `INSERT INTO daemon_meta (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// DaemonMeta returns a daemon-wide value ("" when unset).
+func (db *DB) DaemonMeta(ctx context.Context, key string) (string, error) {
+	var v string
+	err := db.SQL().QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, NetworkError, post, resource } from "./api";
+import { get, NetworkError, post, resource, UNAUTHORIZED_EVENT } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import { providerDotState, type ProviderDotState, type ProviderStatusInput } from "./providerStatus";
@@ -44,7 +44,21 @@ import {
   type PhaseSource,
   type PhaseState,
 } from "./phases";
-import { PHASES, currentRoute, navigate, phaseHref, type Route, type PhaseName } from "./router";
+import {
+  PHASES,
+  currentProjectFromHash,
+  currentRoute,
+  navigate,
+  phaseHref,
+  setActiveProject,
+  withProject,
+  type Route,
+  type PhaseName,
+} from "./router";
+import { hasToken, resolveAuth, type AuthState } from "./remote";
+import LoginPage from "./LoginPage";
+import ProjectSwitcher from "./ProjectSwitcher";
+import { pickProject, rememberProject, rememberedProject } from "./projectSwitch";
 import { daemonDownAfterPoll, daemonLostMessage } from "./daemonStatus";
 import { verifiedRequirementCount } from "./verify";
 import type { StaleItemRef } from "./staleItems";
@@ -92,8 +106,32 @@ interface ChangeSet {
 }
 
 export default function App() {
+  // Remote sign-in (remote.ts): a page with the token is authenticated
+  // already; one without asks the daemon whether its cookie is a session, and
+  // shows the sign-in page if not. Nothing loads until that is settled.
+  const [auth, setAuth] = useState<AuthState | "checking">(() => (hasToken() ? "token" : "checking"));
+  const [signedOut, setSignedOut] = useState(false);
+  const authed = auth === "token" || auth === "session";
+  useEffect(() => {
+    if (auth !== "checking") return;
+    resolveAuth().then(setAuth);
+  }, [auth]);
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSignedOut(true);
+      setAuth("signed-out");
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  // The project the address named but the daemon does not serve (a stale
+  // deep link): shown as not-found rather than silently swapped for another.
+  const [unknownProject, setUnknownProject] = useState("");
+  // The selected project, readable from callbacks without re-creating them.
+  const projectIdRef = useRef("");
   const [initiatives, setInitiatives] = useState<Initiative[]>([]);
   const [route, setRoute] = useState<Route>(() => currentRoute());
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -155,7 +193,12 @@ export default function App() {
     try {
       const ps = (await get<Project[]>("/projects")) ?? [];
       setProjects(ps);
-      if (ps.length > 0) setProjectId((prev) => prev || ps[0].project_id);
+      if (ps.length > 0 && !projectIdRef.current) {
+        const choice = pickProject(ps, currentProjectFromHash(), rememberedProject());
+        projectIdRef.current = choice.projectId;
+        setUnknownProject(choice.unknown ?? "");
+        setProjectId(choice.projectId);
+      }
       reportOutcome("projects", false);
     } catch (e) {
       reportOutcome("projects", e instanceof NetworkError);
@@ -233,9 +276,30 @@ export default function App() {
   }, [reportOutcome]);
 
   useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+    if (authed) loadProjects();
+  }, [loadProjects, authed]);
 
+  // switchProject is the switcher's action, and what a link naming another
+  // project does: everything initiative-scoped belongs to the old project, so
+  // it is cleared rather than shown against the new one until it reloads.
+  const switchProject = useCallback((pid: string, href?: string) => {
+    rememberProject(pid);
+    setUnknownProject("");
+    if (projectIdRef.current !== pid) {
+      setInitiatives([]);
+      setInitiativesLoaded(false);
+      setAttention([]);
+    }
+    projectIdRef.current = pid;
+    setProjectId(pid);
+    setActiveProject(pid);
+    if (href !== undefined) navigate(withProject(href, pid));
+  }, []);
+
+  // navigate() names the current project in every link it follows.
+  useEffect(() => {
+    setActiveProject(projectId);
+  }, [projectId]);
   useEffect(() => {
     if (!projectId) return;
     loadInitiatives(projectId);
@@ -255,12 +319,31 @@ export default function App() {
       .catch(() => {});
   }, [projectId, loadInitiatives, loadAttention]);
 
-  // Hash routing.
+  // Hash routing. A hash naming another project (a pasted deep link, a push
+  // notification opening an existing tab) switches to it.
   useEffect(() => {
-    const onHash = () => setRoute(currentRoute());
+    const onHash = () => {
+      setRoute(currentRoute());
+      const named = currentProjectFromHash();
+      if (named && projects.some((p) => p.project_id === named)) {
+        if (named !== projectId) switchProject(named);
+      } else if (named && projects.length > 0) {
+        setUnknownProject(named);
+      }
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+  }, [projects, projectId, switchProject]);
+
+  // Canonical address: a bare `#/…` gets the current project's prefix
+  // (replaceState, so Back is unaffected), so what a person copies out of the
+  // address bar opens the same project for whoever follows it.
+  useEffect(() => {
+    if (!projectId || unknownProject) return;
+    const hash = window.location.hash || "#/";
+    const canonical = withProject(hash, projectId);
+    if (canonical !== hash) window.history.replaceState(null, "", canonical);
+  }, [projectId, route, unknownProject]);
 
   const initiativeId =
     route.name !== "home" &&
@@ -384,6 +467,36 @@ export default function App() {
 
   // ---------- render ----------
 
+  if (auth === "checking") {
+    return (
+      <div className="empty">
+        <p className="muted">Connecting…</p>
+      </div>
+    );
+  }
+  if (auth === "signed-out") {
+    return (
+      <LoginPage
+        expired={signedOut}
+        onSignedIn={() => {
+          setSignedOut(false);
+          setAuth("session");
+        }}
+      />
+    );
+  }
+  if (auth === "unreachable") {
+    return (
+      <div className="empty">
+        <h1>idea-harness</h1>
+        <p className="error">{daemonLostMessage(window.location.host)}</p>
+        <button className="cs-secondary" onClick={() => setAuth("checking")}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   // M4/H1: with no projects loaded yet there is no "last good page" to keep
   // showing underneath a banner, so this is the one place daemonDown still
   // replaces the whole screen -- and even then, only to say WHY there's
@@ -431,6 +544,9 @@ export default function App() {
         }))
         .filter((i) => i.count > 0)
     : [];
+  // Everything waiting on the person across the project: the way into the
+  // queue from Home and Settings, and from the top bar on a phone.
+  const needsYou = attention.reduce((n, r) => n + attentionCount(r), 0);
 
   return (
     <div className="app-root">
@@ -485,6 +601,14 @@ export default function App() {
           costs={costs}
           graphView={route.name === "gaps" || route.name === "outcomes" || route.name === "quality" ? route.name : undefined}
           onNavigate={navigate}
+          needsYou={needsYou}
+          switcher={
+            <ProjectSwitcher
+              projects={projects}
+              projectId={projectId}
+              onSwitch={(pid) => switchProject(pid, "#/")}
+            />
+          }
         />
 
         <main className="phase-main" id="main-content" ref={mainRef} tabIndex={-1}>
@@ -527,7 +651,14 @@ export default function App() {
 
         {route.name === "settings" && <Settings projectId={projectId} />}
 
-        {missingInitiative && (
+        {unknownProject && (
+          <NotFound
+            title="Project not found"
+            detail={`This daemon serves no project "${unknownProject}". Pick one from the project switcher.`}
+          />
+        )}
+
+        {missingInitiative && !unknownProject && (
           <NotFound
             title="Initiative not found"
             detail={`There's no initiative "${initiativeId}" in this project.`}

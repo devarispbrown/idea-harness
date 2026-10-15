@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { get, post, resource, token, unwrapError } from "./api";
+import { authHeaders, get, post, resource, unwrapError } from "./api";
 import PhasePage from "./PhasePage";
 import { ARTIFACT_TITLES } from "./phases";
 import { navigate } from "./router";
@@ -174,7 +174,7 @@ export default function PlanPage({
     setError("");
     const res = await fetch(`/api/v1/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Idea-Token": token },
+      headers: { "Content-Type": "application/json", ...authHeaders("PATCH") },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -194,7 +194,7 @@ export default function PlanPage({
     setError("");
     const res = await fetch(`/api/v1/projects/${projectId}/initiatives/${initiativeId}/tasks/${id}`, {
       method: "DELETE",
-      headers: { "X-Idea-Token": token },
+      headers: authHeaders("DELETE"),
     });
     if (!res.ok) {
       const t = await res.text();

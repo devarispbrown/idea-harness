@@ -85,6 +85,20 @@ type Runtime struct {
 	// first use by integrations().
 	integOnce sync.Once
 	integ     *integrationHub
+
+	// remote is the daemon-wide config (config.yaml `daemon:`) and hosts the
+	// Host/Origin allowlist derived from it (remote.go). Zero values: loopback
+	// only, exactly as before remote use existed. remoteBase is the URL a
+	// remote browser uses, when there is one.
+	remote     DaemonConfig
+	hosts      hostPolicy
+	remoteBase []string
+	// uiAuthState is the sign-in rate limiter and last-seen throttle
+	// (uisession.go), created on first use.
+	uiAuthOnce  sync.Once
+	uiAuthState *uiAuth
+	// push holds the Web Push sender and its VAPID keys (push.go).
+	push pushState
 }
 
 type projectRuntime struct {

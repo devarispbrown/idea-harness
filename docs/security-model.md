@@ -458,6 +458,89 @@ keeps the conversation and its workspace (idea-harness does not delete either
 after a run, so they are there for inspection) — those are the server
 operator's. `executor.kind: auto` never resolves to `openhands`.
 
+## Remote access
+
+<!-- claim:remote-access -->
+The daemon is a loopback service that can, opt-in, be used from another device — a phone
+answering the "Needs you" queue, say. This section is the one statement of what that changes.
+Setup is in [`configuration.md`](configuration.md#remote-access).
+
+**Loopback is unchanged.** The main listener (`IDEA_HARNESS_ADDR`) must be loopback or the daemon
+refuses to start, and a page served to a browser on this machine carries the API token exactly as
+before. "On this machine" is decided per request (`isLocalRequest`, `internal/daemon/remote.go`):
+the connection arrived on a loopback socket, the `Host` is a loopback name, and no proxy header
+(`X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`, `X-Real-IP`,
+`Tailscale-User-Login`) is present. Anything else gets the same page with an empty token.
+
+**Two ways in, both opt-in** (`<state root>/config.yaml`, section `daemon:`, or `idea daemon`
+flags):
+
+- `allowed_hosts` names hostnames the Host/Origin guard accepts besides loopback — the name a
+  TLS-terminating proxy in front of loopback answers to. **`tailscale serve` is the recommended
+  path**: HTTPS with a real certificate, reachable only from your tailnet, nothing listening
+  beyond loopback.
+- `listen` adds a second listener on a non-loopback IP. The policy (`planRemoteListen`) is checked
+  before anything binds, and a refused address stops the daemon rather than leaving it quietly
+  loopback-only:
+
+  | `daemon.listen` | without `tls_cert`/`tls_key` | with them |
+  |---|---|---|
+  | a hostname, or no port | refused | refused |
+  | loopback | refused (already served) | refused |
+  | a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) | allowed, warning logged | allowed |
+  | a private address (RFC 1918, `fc00::/7`) | allowed, **loud** warning logged | allowed |
+  | public, link-local, or every interface (`0.0.0.0`, `::`) | refused | allowed (every interface: warning) |
+
+**A remote browser never sees the token.** It signs in with a **pairing code** that
+`idea ui pair` mints — which needs the token, so only someone already holding it on the daemon's
+machine can let a device in. A code is 10 characters from a 32-letter alphabet (50 bits), good for
+one sign-in within ten minutes, stored as a SHA-256 only, and typed into the page rather than put
+in a URL. Ten failed sign-ins within fifteen minutes lock sign-in for the rest of the window and
+cancel every outstanding code. The master token was considered and rejected as the thing to type
+in: it cannot be rotated without re-configuring every CLI and MCP client, and a browser that has
+seen it once has it for good.
+
+**The session.** A successful sign-in sets one cookie holding a 256-bit random secret:
+`HttpOnly`, `SameSite=Strict`, `Path=/`, and — whenever the browser is on HTTPS, directly or
+through a TLS-terminating proxy — `Secure` with the `__Host-` prefix. The database keeps the
+secret's SHA-256 only. A session ends at `daemon.session_ttl` (default 30 days), after a week
+unused, on sign-out, or when revoked (`idea ui sessions revoke <id>|--all`, or Settings → Remote
+access). A session can do everything the UI can, except mint pairing codes: a stolen session must
+not be able to outlive its own revocation.
+
+**CSRF.** A request that presents the token is judged by the token alone — a header no cross-site
+page can attach — and a wrong token is refused even alongside a valid cookie. A request
+authenticated by the cookie that changes state (anything but `GET`/`HEAD`/`OPTIONS`) must also
+carry `X-Idea-CSRF`, an HMAC of the session secret that page script obtains from the sign-in
+response or `GET /api/v1/ui/session` and a cross-site page cannot read (no CORS is ever sent), **and**
+an `Origin` header — which the Host/Origin guard has already required to be loopback, an
+`allowed_hosts` name, or the remote listener's own address. `SameSite=Strict` means a cross-site
+request should not carry the cookie at all; the token and the Origin check are the locks for when
+that does not hold. The unauthenticated `POST /api/v1/ui/login` requires a JSON body and an allowed
+`Origin`, which an HTML form on another site cannot produce.
+
+**Push.** Web Push payloads are encrypted end to end to the subscribing browser (RFC 8291) and
+signed with the daemon's VAPID key (RFC 8292), which lives in `<state root>/push/vapid.json`
+(0600) and never in a repository. A notification's text — initiative title, change-set id, a
+short reason — passes through the redactor, but it is shown on a lock screen. A subscription's
+endpoint must be `https`, and the daemon's push client refuses non-public addresses and redirects.
+The endpoint path and keys are never returned by the API.
+
+What this does **not** cover:
+
+- **Plain HTTP on a private network is readable by that network.** The cookie and every diff
+  cross it in clear; the startup warning says so. Use TLS or Tailscale.
+- **A proxy that rewrites `Host` to loopback and strips every proxy header** is
+  indistinguishable from a local browser, and is handed the token. `tailscale serve`, Caddy and
+  nginx's defaults all add `X-Forwarded-For`; a hand-rolled proxy must too.
+- **Anyone who can reach the sign-in page can try codes.** The failure budget bounds guessing; it
+  also means someone on your network can lock sign-in for fifteen minutes.
+- **A pairing code read off your screen** before you use it signs its reader in. It is single use
+  and short-lived, and `idea ui sessions` shows every session that exists.
+- **A signed-in phone is as powerful as the local UI.** It can approve and apply change sets.
+  Revoke it if it is lost.
+<!-- /claim -->
+
 ## What this does not protect against
 
 Kept as a section so the negative space has somewhere to live. The failure this

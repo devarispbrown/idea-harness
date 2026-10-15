@@ -122,7 +122,15 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	if l := cfg.Linear; l != nil {
 		linearKey = lookupEnv(l.APIKeyEnvName(), pr.dotEnv)
 	}
-	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey)
+	// Browsers subscribed to push notifications are bus subscribers too
+	// (push.go): a project with any needs a dispatcher even when it
+	// configures no Slack or Linear.
+	pushSubs, err := pr.db.ListPushSubscriptions(r.lifetimeContext())
+	if err != nil {
+		r.log.Warn("push: listing subscriptions", "project", projectID, "err", err)
+		pushSubs = nil
+	}
+	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, pushFingerprint(pushSubs))
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -137,7 +145,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	if hub.sockets != nil {
 		hub.sockets.Unregister(projectID)
 	}
-	if !cfg.Configured() {
+	if !cfg.Configured() && len(pushSubs) == 0 {
 		return
 	}
 
@@ -210,6 +218,8 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		}
 	}
 
+	subs = append(subs, r.pushNotifiers(projectID, pr, pushSubs)...)
+
 	pi.dispatcher = integrations.NewDispatcher(pr.db, projectID, subs, r.log, hub.dispatchOpts)
 	ctx, cancel := context.WithCancel(r.lifetimeContext())
 	pi.cancel = cancel
@@ -239,7 +249,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		close(pi.ready)
 		wg.Wait()
 	}()
-	r.log.Info("integrations configured", "project", projectID, "slack", cfg.Slack != nil, "linear", cfg.Linear != nil)
+	r.log.Info("integrations configured", "project", projectID, "slack", cfg.Slack != nil, "linear", cfg.Linear != nil, "push_subscriptions", len(pushSubs))
 }
 
 func orLabel(label, typ string) string {
@@ -283,8 +293,15 @@ func (r *Runtime) startConfiguredIntegrations(ctx context.Context) {
 	}
 	for _, p := range projects {
 		cfg, err := config.Load(filepath.Join(p.RootPath, config.Dir))
-		if err != nil || !cfg.Harness.Integrations.Configured() {
+		if err != nil {
 			continue
+		}
+		if !cfg.Harness.Integrations.Configured() {
+			// A project with push subscriptions is marked in global.db, so it
+			// can be found without opening every project's database.
+			if v, _ := r.global.DaemonMeta(ctx, pushMetaKey(p.ID)); v == "" {
+				continue
+			}
 		}
 		if _, err := r.EnsureProject(ctx, p.ID); err != nil {
 			r.log.Warn("integrations: opening project", "project", p.ID, "err", err)
