@@ -3997,3 +3997,12 @@ body { overflow-x: clip; }
 .automation-table caption { text-align: left; padding: 4px 0; }
 .automation-history > summary { cursor: pointer; color: var(--text-muted); margin-top: 8px; }
 .eval-settings { margin: 8px 0; }
+
+/* ===== One h1 per page, and the 390px / 1280px sweep =====
+   Settings' page heading; the document reader's title h1, with the
+   document's own headings one level down (sized as they were before). */
+.settings-head { display: flex; flex-direction: column; gap: 4px; }
+.doc-reader-body .doc-reader-title { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 10px; }
+.doc-reader-body h2 { font-size: 16px; font-weight: 650; margin: 16px 0 6px; }
+.doc-reader-body h3 { font-size: 14px; font-weight: 650; margin: 16px 0 6px; }
+.doc-reader-body h4 { font-size: 12.5px; font-weight: 650; margin: 12px 0 4px; }

@@ -541,6 +541,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Every route has exactly one `h1`.** Settings had none, so a route change focused its first
+  section ("Model") as if that were the page; it now opens with a "Settings" h1. The document
+  reader had none of its own and turned every `#` line of a document into another h1: the
+  document's title is now the page's h1 and its headings render one level down. A decision's
+  "Discussion" label is its h1. Gaps, Outcomes, Quality and lineage under an unknown initiative
+  rendered their own page beside "Initiative not found"; they render only the not-found page now.
 - **The page behind a modal was still reachable.** The command palette and the `?` reference set
   `aria-modal` and trapped Tab, but a screen reader's virtual cursor (and a pointer) could still
   reach the page under them. They now render into `<body>` and make the app root `inert` while

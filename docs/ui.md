@@ -489,7 +489,10 @@ Each note field with a shortcut says so under it ("⌘ Enter to send it back"), 
 - **Skip to content** is the first Tab stop on every page and moves focus to the main region.
 - **After a route change** focus moves to the new page's `h1` (its first `h2` when it has none,
   else the main region), once the page has rendered it — never on the first load, so the skip link
-  stays first. The palette's Settings sections land on that section's heading instead.
+  stays first. The palette's Settings sections land on that section's heading instead. Every
+  route has exactly one `h1` (Settings' is "Settings"; the document reader's is the document's
+  title, its own headings one level down; a decision's is "Discussion"), which the browser suite
+  checks route by route.
 - **Dialogs** — the command palette and the shortcut reference are modal: focus moves in, Tab
   cycles inside, Escape or a click outside closes, and focus returns to what had it. They render
   into `<body>`, outside the app root, and while one is open the app root is `inert` (removed from
