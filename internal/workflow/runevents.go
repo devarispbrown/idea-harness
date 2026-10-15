@@ -137,12 +137,73 @@ func (r *runRecorder) Close() {
 		close(r.ch)
 		r.sendMu.Unlock()
 		<-r.done
+		r.closeOpenToolCalls()
 		if n := r.dropped.Load(); n > 0 {
 			_, _ = r.db.AppendRunEvents(context.Background(), r.base.RunID, []domain.RunEvent{r.stamp(domain.RunEvent{
 				Kind: domain.RunEventStatus, Title: fmt.Sprintf("%d events were dropped: the agent produced them faster than they could be stored", n),
 			})})
 		}
 	})
+}
+
+// ToolCallCancelled is the status closeOpenToolCalls gives a tool call the
+// run ended without finishing.
+const ToolCallCancelled = "cancelled"
+
+// closeOpenToolCalls records, for every tool call of the run still pending
+// or in progress, a tool_result with status cancelled. Whatever ended the run
+// -- Stop, a failure, a timeout, or an agent that never reported the call's
+// end -- the call is not running any more, and without this it read "in
+// progress" in the run panel and the report forever. Read from the store,
+// not from what passed through Emit, so calls recorded by an executor's own
+// ingest are closed too. Grouping and "open" mirror the UI's
+// (web/src/runEvents.ts groupToolCalls): by tool_call_id, the latest
+// non-empty status wins, and no status, pending or in_progress is open.
+func (r *runRecorder) closeOpenToolCalls() {
+	evs, err := r.db.ListAllRunEvents(context.Background(), r.base.RunID)
+	if err != nil {
+		return
+	}
+	type call struct {
+		status string
+		ev     domain.RunEvent
+	}
+	calls := map[string]*call{}
+	var order []string
+	for _, ev := range evs {
+		if (ev.Kind != domain.RunEventToolCall && ev.Kind != domain.RunEventToolResult) || ev.ToolCallID == "" {
+			continue
+		}
+		c := calls[ev.ToolCallID]
+		if c == nil {
+			c = &call{status: "pending", ev: ev}
+			calls[ev.ToolCallID] = c
+			order = append(order, ev.ToolCallID)
+		}
+		if ev.Kind == domain.RunEventToolCall {
+			c.ev = ev
+		}
+		if ev.Status != "" {
+			c.status = ev.Status
+		}
+	}
+	var closing []domain.RunEvent
+	for _, id := range order {
+		c := calls[id]
+		if c.status != "pending" && c.status != "in_progress" {
+			continue
+		}
+		closing = append(closing, r.stamp(domain.RunEvent{
+			Kind: domain.RunEventToolResult, Source: domain.RunEventSourceHarness, ToolCallID: id,
+			ToolKind: c.ev.ToolKind, Status: ToolCallCancelled, Title: "Did not finish: the run ended",
+		}))
+	}
+	if len(closing) == 0 {
+		return
+	}
+	if _, err := r.db.AppendRunEvents(context.Background(), r.base.RunID, closing); err != nil && r.log != nil {
+		r.log.Warn("could not close the run's open tool calls", "run", r.base.RunID, "error", err)
+	}
 }
 
 // ---------- live run identity and steering ----------
