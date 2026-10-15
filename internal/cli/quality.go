@@ -121,7 +121,7 @@ func renderScorecard(w io.Writer, sc *cliScorecard) {
 				}
 			}
 			first, _, _ := strings.Cut(c.Detail, "\n")
-			fmt.Fprintf(w, "      %s %s%s %s\n", muted(strings.ReplaceAll(c.Status, "_", " ")+":"), c.Name, code(where), muted("[" + c.Method + "] "+first))
+			fmt.Fprintf(w, "      %s %s%s %s\n", muted(strings.ReplaceAll(c.Status, "_", " ")+":"), c.Name, code(where), muted("["+c.Method+"] "+first))
 		}
 	}
 	if len(off) > 0 && shown {
