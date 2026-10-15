@@ -17,7 +17,7 @@ import (
 // scriptedAgentDocker is a fake docker whose agent writes $FAKE_WRITE (with
 // $FAKE_CONTENT) into the work root, prints a couple of lines, and keeps
 // "running" until the file $FAKE_HOLD exists.
-const scriptedAgentDocker = `#!/usr/bin/env bash
+const scriptedAgentDocker = `#!/bin/sh
 case "$1" in
   run)
     [ -n "$FAKE_RUN_FAIL" ] && exit 125

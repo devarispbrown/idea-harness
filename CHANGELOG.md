@@ -540,6 +540,18 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   user for the run (symlinks never followed) and back afterwards, so the engine sees ordinary
   daemon-owned files. Non-root daemons are unchanged. Closes the audit 3 / S6 deferred item;
   details and what is left in `docs/security-model.md` (Execution gateway).
+- **A root daemon runs containers as the project's owner.** Under a root daemon, agents, the
+  `container` executor, checks, quality dimensions and metric commands now run as the uid:gid that
+  owns the project root, so a check can read the owner's `0600` files in `/repo` and nothing left
+  behind is owned by root. `65532:65532` remains the fallback when the project root is owned by
+  root, and for the setup probes; gid `0` is never passed. Non-root daemons are unchanged.
+- **A killed root daemon's work roots are handed back at the next start.** Once the startup sweep
+  has removed every leftover container, a root daemon chowns foreign-owned files in
+  `<state>/projects/*/work/` back to itself and deletes leftover quality-dimension copies and
+  metric-command scratch roots. Nothing outside those directories is touched. Metric commands
+  now use a scratch root under the project's state directory (`metric-*`) instead of the system
+  temp directory, and wait for the startup sweep before they run. Check containers now carry the agent label, so the sweep
+  also removes a check a killed daemon left running.
 - **Nobody can lock the owner out of remote sign-in.** Wrong pairing codes were counted
   daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and cancelled every
   outstanding code. A later version kept a global ceiling of 100 as a backstop, which anyone with

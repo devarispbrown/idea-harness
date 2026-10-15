@@ -148,7 +148,11 @@ func (e *Engine) measureOne(ctx context.Context, m domain.OutcomeMetric) (float6
 		}
 		runCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		work, err := os.MkdirTemp("", "idea-metric-")
+		// Under the engine's work root (the project's state directory), like
+		// the quality copies: Docker can see it, and a root daemon killed
+		// mid-command has its leftover removed at the next start
+		// (executor.RecoverWorkRoots). No work root (tests): system temp.
+		work, err := e.metricWorkDir()
 		if err != nil {
 			return 0, domain.ProvenanceRef{}, err
 		}
@@ -204,6 +208,18 @@ func (e *Engine) measureOne(ctx context.Context, m domain.OutcomeMetric) (float6
 }
 
 // lastNumber returns the last number in s.
+// metricWorkDir creates a metric command's scratch work root,
+// <work root>/metric-*, or in the system temp directory when the engine has
+// no work root.
+func (e *Engine) metricWorkDir() (string, error) {
+	if e.workRoot != "" {
+		if err := os.MkdirAll(e.workRoot, 0o755); err != nil {
+			return "", err
+		}
+	}
+	return os.MkdirTemp(e.workRoot, "metric-*")
+}
+
 func lastNumber(s string) (float64, error) {
 	all := numberRe.FindAllString(s, -1)
 	if len(all) == 0 {

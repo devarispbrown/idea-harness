@@ -346,14 +346,29 @@ daemon (`internal/executor/containeruser.go`):
 
 - **A non-root daemon** passes its own `uid:gid`, so what a container writes into `/work` is the
   daemon's to read, diff and delete.
-- **A root daemon** passes a fixed unprivileged `65532:65532` (the `nonroot` user of distroless
-  images). The writable mounts — the work root and the agent home — are handed to it before the
-  run (`chown`, symlinks chowned as links and never followed) and handed back once the container
-  has been removed: every path to the owner it had, anything the container created to the daemon,
-  so the engine's diff, apply and cleanup see ordinary daemon-owned files. A file the ACP client
-  writes for the agent is handed to `65532` as it is written, so the agent can still edit it. The
-  read-only `/repo` mount is your real workspace and is never chowned: as `65532`, a check reads
-  it only where its "other" permission bits allow.
+- **A root daemon** passes the `uid:gid` that owns the project root (it `stat`s it), so a
+  container runs as the user whose files these are. A check reads a `0600` file in the read-only
+  `/repo` mount as that user would, and nothing a container leaves behind is owned by root. When
+  the project root is owned by root, cannot be read, or the container has no project (the setup
+  probes), it passes a fixed unprivileged `65532:65532` (the `nonroot` user of distroless images)
+  instead. A root group is never passed on: an owner whose gid is `0` runs with gid `65532`.
+
+  The writable mounts — the work root and the agent home — are handed to that user before the run
+  (`chown`, symlinks chowned as links and never followed) and handed back once the container has
+  been removed: every path to the owner it had, anything the container created to the daemon, so
+  the engine's diff, apply and cleanup see ordinary daemon-owned files. A file the ACP client
+  writes for the agent is handed over as it is written, so the agent can still edit it. `/repo` is
+  never chowned.
+
+  A root daemon killed mid-run cannot hand the mounts back. The next one does, at startup, once
+  its sweep has removed every leftover container (`RecoverWorkRoots`): each work root under
+  `<state>/projects/*/work/` is chowned back to the daemon wherever a path is owned by someone
+  else, and leftover quality-dimension copies (`<state>/projects/*/quality-*`) and metric-command
+  scratch roots (`<state>/projects/*/metric-*`) are deleted. Nothing outside those directories is
+  touched, and no symlink is followed. If Docker cannot be reached, recovery waits for the next
+  start. Metric commands wait for the startup sweep before they run, so recovery never deletes a
+  live one's scratch root. Check containers carry the same label as agent containers, so the sweep
+  finds one a killed daemon left running.
 
 Refusing to run as root was considered and rejected: root-only CI and Docker-in-Docker setups
 would have had no way forward.
@@ -677,11 +692,13 @@ page had was an unscoped generalisation, not a typo.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
-- **A root daemon's containers share one uid.** Every container a root daemon
-  starts runs as `65532`, whatever the project. They share no writable mount, so
-  this matters only to something that judges by uid outside the containers. A
-  daemon that is killed mid-run leaves its work root owned by `65532` until that
-  work root is next re-seeded; a root daemon can still read and remove it.
+- **A root daemon's containers run as the project's owner.** That uid is
+  unprivileged, but it owns your files, so a container escape lands as you, as it
+  does under a daemon you run yourself. Only projects owned by root, and the
+  setup probes, run as the shared `65532`; those share no writable mount, so the
+  shared uid matters only to something that judges by uid outside the
+  containers. Between a root daemon being killed mid-run and its next start, its
+  work roots stay owned by the container user.
 - **A daemon run as an ordinary user passes that user's uid.** That is
   unprivileged on the host, but it is the same uid that owns your files, so a
   container escape lands as you. Run the daemon as a dedicated user if that

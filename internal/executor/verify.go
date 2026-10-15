@@ -149,7 +149,7 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", containerUser(),
+		"--user", containerUser(""), // a probe: no project, so 65532 under a root daemon
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
