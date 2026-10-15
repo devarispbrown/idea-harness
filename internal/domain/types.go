@@ -909,3 +909,49 @@ func TrimToWordBoundary(s string, n int) string {
 	}
 	return strings.TrimSpace(string(r[:cut]))
 }
+
+// QualityCitation points a quality check at the evidence behind it: a file
+// and line in the workspace, and/or the requirement it bears on.
+type QualityCitation struct {
+	Path        string `json:"path,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Requirement string `json:"requirement,omitempty"`
+}
+
+// QualityCheck is one check inside a quality dimension: what was checked, how
+// (deterministic or model-reviewed), the outcome, and where the evidence is.
+type QualityCheck struct {
+	Name      string            `json:"name"`
+	Status    QualityStatus     `json:"status"`
+	Method    QualityMethod     `json:"method"`
+	Detail    string            `json:"detail,omitempty"`
+	Citations []QualityCitation `json:"citations,omitempty"`
+}
+
+// QualityResult is one dimension's measured outcome for an initiative's
+// applied work (verify.dimensions). Results are append-only: every
+// measurement writes a new row per dimension, the scorecard is the latest of
+// each, and the previous one is the performance baseline. Each result is
+// linked to the requirements it bears on with a `verifies` edge, so
+// `idea why quality_result <id>` and `idea impact requirement REQ-n` show it.
+type QualityResult struct {
+	ID            string           `json:"id"`
+	InitiativeID  string           `json:"initiative_id"`
+	MeasurementID string           `json:"measurement_id"`
+	Dimension     QualityDimension `json:"dimension"`
+	Mode          QualityMode      `json:"mode"`
+	Status        QualityStatus    `json:"status"`
+	Summary       string           `json:"summary"`
+	Checks        []QualityCheck   `json:"checks"`
+	// Metrics are named numeric measurements (performance budgets record
+	// theirs here; they are the next measurement's baseline).
+	Metrics map[string]float64 `json:"metrics,omitempty"`
+	// InputDigest names what was measured: the applied change sets and the
+	// verify policy. A result whose digest no longer matches the initiative's
+	// current one is stale and counts as not measured at the gate.
+	InputDigest string `json:"input_digest"`
+	// Requirements are the codes of the requirements this result is linked
+	// to in the Product Graph.
+	Requirements []string  `json:"requirements"`
+	CreatedAt    time.Time `json:"created_at"`
+}

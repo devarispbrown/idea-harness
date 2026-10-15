@@ -247,8 +247,16 @@ signals ("Derived deterministically from the patch contents — no model, no sco
 "Product gaps · *n*" list from `GET …/gaps` (the same report as `idea gaps`: the eight most severe,
 each with its why and the command that closes it — see
 [architecture.md](architecture.md#asking-the-graph-gaps)), a
-"Traceability gaps · *n*" list from the graph audit, and a daemon row showing the address, version
-and state directory. This is where Explore's **trace** button lands.
+"Traceability gaps · *n*" list from the graph audit, a **Quality** card (below), and a daemon row
+showing the address, version and state directory. This is where Explore's **trace** button lands.
+
+**Quality** card (on Graph health, and on Build once a change set is applied) — the quality-dimension
+scorecard (`GET .../quality`): each enabled dimension with its mode (`advisory`/`gate`) and status,
+the checks needing attention with their `[deterministic]`/`[model]` method and file:line citation,
+which requirements the result is evidence for, whether the gated dimensions meet the gate, and a
+**Measure** button (`POST .../quality`). A dimension never measured, or measured against older work,
+reads "not measured" / "(stale)" in the warning tone — never green. Hidden when every dimension is
+off. See [configuration](configuration.md#quality-dimensions-verify).
 
 **Document reader** (`#/i/<id>/doc/<artifactId>/<version>`) — the artifact body rendered with a
 deliberately minimal Markdown renderer (headings, bold, lists, paragraphs; React nodes, never raw

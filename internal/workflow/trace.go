@@ -268,6 +268,7 @@ type labelCache struct {
 	question    map[string]string
 	artifact    map[string]string
 	contextDoc  map[string]string
+	quality     map[string]string
 }
 
 func (c labelCache) isActiveRequirement(id string) bool {
@@ -283,6 +284,7 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 		question:    map[string]string{},
 		artifact:    map[string]string{},
 		contextDoc:  map[string]string{},
+		quality:     map[string]string{},
 	}
 	if tasks, err := e.db.ListTasks(ctx, initiativeID); err == nil {
 		for _, t := range tasks {
@@ -312,6 +314,11 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 			c.artifact[a.ArtifactID] = string(a.Kind)
 		}
 	}
+	if results, err := e.db.ListQualityResults(ctx, initiativeID); err == nil {
+		for _, r := range results {
+			c.quality[r.ID] = "quality " + string(r.Dimension) + ": " + string(r.Status)
+		}
+	}
 	if docs, err := e.db.ListContextDocs(ctx, initiativeID); err == nil {
 		for _, d := range docs {
 			if d.Title != "" {
@@ -328,7 +335,7 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 // Exported so the daemon can reject an unknown one at the edge rather than
 // answering an empty traversal.
 var GraphNodeTypes = []string{
-	"task", "requirement", "decision", "question", "artifact", "context_doc", "run",
+	"task", "requirement", "decision", "question", "artifact", "context_doc", "run", "quality_result",
 }
 
 // ValidNodeType reports whether typ names a node the graph can hold.
@@ -375,6 +382,10 @@ func (c labelCache) label(typ, id string) string {
 	case "run":
 		if len(id) >= 8 {
 			return "run " + id[:8]
+		}
+	case "quality_result":
+		if s, ok := c.quality[id]; ok {
+			return s
 		}
 	}
 	return typ + " " + id

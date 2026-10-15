@@ -153,6 +153,22 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		endpoint = initiativeResource(projectID, iniID, "artifacts")
 	case "context_doc":
 		endpoint = initiativeResource(projectID, iniID, "docs")
+	case "quality_result":
+		// A dimension name ("docs_completeness") resolves to its latest
+		// result; anything else is taken as a result id.
+		var sc cliScorecard
+		if err := c.do("GET", initiativeResource(projectID, iniID, "quality"), nil, &sc); err != nil {
+			return "", err
+		}
+		for _, d := range sc.Dimensions {
+			if d.Dimension == ref {
+				if d.Result == nil {
+					return "", errorf(kindNotFound, "%s has never been measured (`idea verify` measures it)", ref)
+				}
+				return d.Result.ID, nil
+			}
+		}
+		return ref, nil
 	default:
 		return ref, nil // run/assertion/etc: treat ref as the id
 	}
@@ -192,7 +208,7 @@ func cmdImpact(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdTrace(a cmdArgs, stdout, stderr io.Writer) error {
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return usageErrorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>")
+		return usageErrorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc|quality_result> <code-or-id>")
 	}
 	// trace is two queries. Rendered for a human they are two sections; as JSON
 	// they have to be one document — printing why's array and then impact's
@@ -308,7 +324,7 @@ func runTraceCmd(mode string, a cmdArgs, stdout io.Writer) error {
 	// sliced by position.
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return usageErrorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>", mode)
+		return usageErrorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc|quality_result> <code-or-id>", mode)
 	}
 	typ, ref := positional[0], positional[1]
 	c, projectID, err := connect()

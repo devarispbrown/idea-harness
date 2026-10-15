@@ -120,6 +120,10 @@ type Engine struct {
 	// Execute holds (remote.go).
 	remoteMu sync.Mutex
 	remote   *executor.RemoteSupervisor
+
+	// qualitySandbox runs verify's sandboxed quality commands (quality.go).
+	// Nil means the real Docker sandbox; tests script it.
+	qualitySandbox QualitySandbox
 }
 
 // SetNoteOverride records a human note to steer the given initiative's next

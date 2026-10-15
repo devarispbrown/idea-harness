@@ -84,6 +84,8 @@ func (s *Server) routes() {
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", s.handleExecute)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", s.handleVerify)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/quality", s.handleGetQuality)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/quality", s.handleMeasureQuality)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/operations", s.handleListOperations)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/next", s.handleNext)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/change-sets/{id}", s.handleGetChangeSet)

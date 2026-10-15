@@ -860,7 +860,7 @@ CREATE TABLE IF NOT EXISTS integration_links (
 );
 CREATE INDEX IF NOT EXISTS idx_integration_links_remote ON integration_links(integration, kind, remote_id);
 `,
-	// remote_runs: one row per agent run delegated to a remote execution
+	// 40: remote_runs: one row per agent run delegated to a remote execution
 	// plane (executor kind openhands -- an OpenHands Agent Server). The run
 	// outlives the Execute operation that started it: a daemon restart fails
 	// that operation, but the conversation keeps going on the server, and
@@ -894,6 +894,30 @@ CREATE TABLE IF NOT EXISTS remote_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_remote_runs_task ON remote_runs(task_id, attempt);
 CREATE INDEX IF NOT EXISTS idx_remote_runs_status ON remote_runs(status);
+`,
+	// 41: quality_results: verify's quality dimensions (internal/quality). One row
+	// per dimension per measurement, append-only: the latest per dimension is
+	// the scorecard and the one before it is the performance baseline.
+	// checks_json is the []domain.QualityCheck with citations; metrics_json the
+	// named numbers a budget measured; input_digest names the applied change
+	// sets and verify policy measured, so a stale result reads as not
+	// measured at the gate. Each row's `verifies` edges to requirements are
+	// ordinary graph_edges rows (from_type 'quality_result').
+	`
+CREATE TABLE IF NOT EXISTS quality_results (
+	id             TEXT PRIMARY KEY,
+	initiative_id  TEXT NOT NULL,
+	measurement_id TEXT NOT NULL,
+	dimension      TEXT NOT NULL,
+	mode           TEXT NOT NULL,
+	status         TEXT NOT NULL,
+	summary        TEXT NOT NULL DEFAULT '',
+	checks_json    TEXT NOT NULL DEFAULT '[]',
+	metrics_json   TEXT NOT NULL DEFAULT '{}',
+	input_digest   TEXT NOT NULL DEFAULT '',
+	created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_results_dim ON quality_results(initiative_id, dimension, created_at);
 `,
 }
 
