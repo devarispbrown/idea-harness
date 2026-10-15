@@ -88,6 +88,8 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `integrations` | ui | `#/settings` — Integrations panel | |
 | `integrations test` | ui | `#/settings` — Integrations panel Test buttons | |
 | `watch` | ui | `#/i/<id>/build` — the run panel streams the running agent's events live and resumes after a reload | |
+| `run events` | ui | `#/i/<id>/build` — the run panel shows the current run's events live (`--follow`) and resumes after a reload; the last run stays under Last agent run | |
+| `steer` | ui | `#/i/<id>/build` — Send a note on the run panel, with Interrupt the current step (`--interrupt`) | |
 | `cancel` | ui | `#/i/<id>/<phase>` — Cancel on the running card | |
 | `config` | partial | `#/settings` — providers and executor settings are written to harness.yaml | no view of the whole config file |
 | `config validate` | cli-only | CLI-only: validates harness.yaml on disk with a non-zero exit, for scripts and CI | |

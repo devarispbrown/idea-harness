@@ -184,6 +184,10 @@ func commands() []command {
 		}, maxPositional: 1, run: cmdIntegrations, inHelp: true},
 		{usage: "integrations test slack|linear", summary: "post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label", inHelp: true},
 		{names: []string{"watch"}, usage: "watch", summary: "watch a run live", flags: flagSpec{}, maxPositional: 1, run: cmdWatch, inHelp: true},
+		{names: []string{"run"}, usage: "run events <run-id|current> [<initiative>] [--follow] [--json]", summary: "print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line", flags: flagSpec{}, subs: map[string]flagSpec{
+			"events": {"--follow": flagBool, "--json": flagBool},
+		}, subsAreRequired: true, maxPositional: 2, run: cmdRun, inHelp: true},
+		{names: []string{"steer"}, usage: `steer <run-id|current> "<note>" [<initiative>] [--interrupt]`, summary: "send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run", flags: flagSpec{"--interrupt": flagBool, "--json": flagBool}, maxPositional: 3, run: cmdSteer, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
 		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)"},

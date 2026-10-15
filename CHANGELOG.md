@@ -175,6 +175,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   daemon restart before that run no longer drops it, and the run takes each one exactly once.
   Notes are recorded on the run's events and manifest. See
   [docs/agents.md](docs/agents.md#steering-a-running-agent).
+- **`idea run events` and `idea steer`.** The run panel from a terminal: `idea run events
+  <run-id|current> [--follow] [--json]` prints a run's events one per line (NDJSON with `--json`),
+  and `--follow` tails the live stream, resuming after a dropped connection, until the run ends;
+  `idea steer <run-id|current> "<note>" [--interrupt]` sends a steering note and says what became
+  of it. Steering a run that is not running exits `4` (`conflict`), pointing at
+  `idea execute --note`.
 - **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
   conversation in that UI.
 - **Run report.** `GET …/runs/{runId}/report?format=json|md|zip`: events, files with line counts,
