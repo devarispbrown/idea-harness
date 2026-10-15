@@ -149,7 +149,7 @@ func VerifyAgentCLI(ctx context.Context, image, cli string) error {
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"--user", containerUser(),
 		"--memory", "2g",
 		"--pids-limit", "256",
 		"--tmpfs", "/tmp",
