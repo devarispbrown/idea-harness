@@ -483,6 +483,8 @@ Scheduled background jobs, each off until enabled. See [configuration.md](config
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/projects/{projectId}/initiatives/{id}/remote-runs` | The initiative's OpenHands remote runs (`executor.kind: openhands`), newest first: `status`, `attempt`, `server_url`, `conversation_id`, `task_code`, `last_event` (the progress log's last line), `event_count` and `error`. `idea runs remote`; the run panel's Remote runs. |
+| GET | `/projects/{projectId}/remote-runs` | The same across every initiative, at most 200; `?active=true` keeps the ones not yet over. `idea runs remote --all`. |
 | GET | `/projects/{projectId}/initiatives/{id}/current-run` | The run the run view shows: the live agent run, else the last one with events. `live`, `executor`, `steerable`, `ui_url` ("Open in OpenHands", only when `executor.openhands.ui_url` is set) and `pending_notes`. |
 | GET | `/projects/{projectId}/runs/{runId}/events` | A run's events, paged: `?after=<seq>&limit=` (at most 500). `{events, first_seq, last_seq, more, run_status}`. |
 | GET | `/projects/{projectId}/runs/{runId}/events/stream` | **Not JSON.** SSE stream of the run's events (`event: run_event`, id = seq); resumes from `Last-Event-ID`/`?after=`; `event: end` when the run is over; accepts `?token=`. |
@@ -498,7 +500,7 @@ Sign-in for browsers on another device, and Web Push. See
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls}`. |
-| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used or expired code; ten failures in fifteen minutes lock sign-in (`429`) and cancel every outstanding code. |
+| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used or expired code. `429` with `Retry-After` once a client has failed 10 times in 15 minutes (that client only), or once 100 failures from anyone have (everyone, and every outstanding code is cancelled) — see [security-model.md](security-model.md#remote-access). |
 | POST | `/ui/logout` | Revoke the calling session and clear its cookie. `204`. |
 | GET | `/ui/session` | `{auth: token\|session, csrf_token?, session?}` — how this request is authenticated; how a reloaded page gets its CSRF token back. |
 | GET | `/ui/sessions` | Every browser session (newest first, revoked ones included) and `current`. Never a secret. |
@@ -506,10 +508,11 @@ Sign-in for browsers on another device, and Web Push. See
 | DELETE | `/ui/sessions/{id}` | Revoke one browser session. `204`. |
 | GET | `/push/vapid-public-key` | The daemon's VAPID public key (the `applicationServerKey` for `PushManager.subscribe`) and the subscribable `event_kinds`. |
 | GET | `/projects/{projectId}/push/subscriptions` | This project's push subscriptions: id, label, the endpoint's **host only**, events, last delivery and error. |
-| POST | `/projects/{projectId}/push/subscriptions` | Subscribe a browser: its `PushSubscription` JSON (`endpoint` must be https) plus `events?` (default all four) and `label?`. Keyed by endpoint: `201` new, `200` updated. Each becomes its own integration-bus subscriber with Slack's delivery semantics. |
+| POST | `/projects/{projectId}/push/subscriptions` | Subscribe a browser: its `PushSubscription` JSON (`endpoint` must be https) plus `events?` (default all four) and `label?`. Keyed by endpoint: `201` new, `200` updated. The response alone carries `renewal_token`, for the service worker's `…/renew`. Each becomes its own integration-bus subscriber with Slack's delivery semantics. |
 | PATCH | `/projects/{projectId}/push/subscriptions/{id}` | `{events}`: which kinds notify this browser; `[]` pauses it. |
 | DELETE | `/projects/{projectId}/push/subscriptions/{id}` | Unsubscribe, with its bus cursor and pending deliveries. `204`. |
 | POST | `/projects/{projectId}/push/subscriptions/{id}/test` | Send one notification now. `{ok, error?, gone?}`; `gone` means the push service reported it dead and it was removed. |
+| POST | `/projects/{projectId}/push/subscriptions/{id}/renew` | **Unauthenticated; the service worker's.** `{renewal_token, endpoint, keys}` re-points this subscription after the push service replaced it (`pushsubscriptionchange`) and returns it with the next `renewal_token`. The token comes from the subscribe response and is spent by each renewal; every refusal is the same `401`. See [security-model.md](security-model.md#remote-access). |
 
 ## Related
 

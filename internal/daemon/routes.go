@@ -88,6 +88,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/runs/{runId}/steer", s.handleSteerRun)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/runs/{runId}/report", s.handleRunReport)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/current-run", s.handleCurrentRun)
+	// The openhands executor's dispatch records (remoteruns.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/remote-runs", s.handleListRemoteRuns)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/remote-runs", s.handleListProjectRemoteRuns)
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", s.handleExecute)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", s.handleVerify)
@@ -176,6 +179,9 @@ func (s *Server) routes() {
 	m.HandleFunc("PATCH /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleUpdatePushSubscription)
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleDeletePushSubscription)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/test", s.handleTestPushSubscription)
+	// Unauthenticated: the service worker renews with the subscription's own
+	// renewal token (push.go, handleRenewPushSubscription).
+	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew", s.handleRenewPushSubscription)
 
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make

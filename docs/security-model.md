@@ -325,7 +325,7 @@ public-address guard, and only once `outcomes.allow_url_sources` is set.
 **The one network exception is opt-in and human-written.** `RunOptions.Network`
 swaps `--network none` for Docker's default bridge and keeps every other
 restriction (read-only root, dropped capabilities, `no-new-privileges`, the
-daemon's UID, memory and pid limits). Only two things set it: each command a
+container user, memory and pid limits). Only two things set it: each command a
 human lists under `verify.setup.prepare` in harness.yaml, and each
 `verify.security.scanners` entry marked `network: true`. A dependency-fetch
 command found in the README is never promoted to it -- it is skipped and
@@ -339,6 +339,24 @@ manifests you would install on your own machine.
 `--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,
 `--user`, `--memory 2g`, `--pids-limit 256`, a `/tmp` tmpfs. A timeout or cancel
 genuinely kills the container. The agent never runs code on the host.
+
+**No container runs as root.** Every `docker run` here (agents of every kind, the `container`
+executor, `ContainerSandbox`, and the setup probes) passes `--user`, and which user depends on the
+daemon (`internal/executor/containeruser.go`):
+
+- **A non-root daemon** passes its own `uid:gid`, so what a container writes into `/work` is the
+  daemon's to read, diff and delete.
+- **A root daemon** passes a fixed unprivileged `65532:65532` (the `nonroot` user of distroless
+  images). The writable mounts — the work root and the agent home — are handed to it before the
+  run (`chown`, symlinks chowned as links and never followed) and handed back once the container
+  has been removed: every path to the owner it had, anything the container created to the daemon,
+  so the engine's diff, apply and cleanup see ordinary daemon-owned files. A file the ACP client
+  writes for the agent is handed to `65532` as it is written, so the agent can still edit it. The
+  read-only `/repo` mount is your real workspace and is never chowned: as `65532`, a check reads
+  it only where its "other" permission bits allow.
+
+Refusing to run as root was considered and rejected: root-only CI and Docker-in-Docker setups
+would have had no way forward.
 
 But `internal/executor/agent.go` says the rest plainly, and this page previously
 did not:
@@ -495,10 +513,31 @@ flags):
 `idea ui pair` mints — which needs the token, so only someone already holding it on the daemon's
 machine can let a device in. A code is 10 characters from a 32-letter alphabet (50 bits), good for
 one sign-in within ten minutes, stored as a SHA-256 only, and typed into the page rather than put
-in a URL. Ten failed sign-ins within fifteen minutes lock sign-in for the rest of the window and
-cancel every outstanding code. The master token was considered and rejected as the thing to type
+in a URL. The master token was considered and rejected as the thing to type
 in: it cannot be rotated without re-configuring every CLI and MCP client, and a browser that has
 seen it once has it for good.
+
+**Guessing codes.** Wrong codes are counted twice (`internal/daemon/loginlimit.go`):
+
+- **Per client: 10 failures in 15 minutes** refuse *that client* (`429`, with `Retry-After`) for
+  the rest of the window. Nobody else is affected and no code is cancelled, so a guesser cannot
+  lock the owner out. A success clears the client's count.
+- **Globally: 100 failures in 15 minutes**, from any mix of clients, is the backstop: sign-in is
+  refused for everyone for the rest of the window and every outstanding code is cancelled.
+
+Why 100 is still safe: a code is 50 bits and lives ten minutes. With *k* codes outstanding each
+guess hits one with probability *k*/2⁵⁰; the ceiling caps guessing at 100 per window — about 3.5
+million a year — so a year of guessing at the ceiling succeeds with probability about *k* × 3×10⁻⁹.
+`TestPairingCodeSpaceArithmetic` keeps these numbers true.
+
+A *client* is the connection's peer address — an IPv6 address counted by its /64, which one host
+can otherwise walk through. Proxy headers are believed only for a request that arrived on a
+loopback connection **and** whose `Host` is an `allowed_hosts` name, i.e. through the proxy you
+configured; then the client is the `Tailscale-User-Login` identity if present (`tailscale serve`
+sets it and drops any copy the browser sent), otherwise the **rightmost** `X-Forwarded-For` entry —
+the address the proxy itself saw, not one the browser wrote. Everywhere else (the remote
+listener, a loopback `Host`) those headers are ignored, so they cannot buy a fresh budget. The
+same rule decides the address shown in the session list and a session's default label.
 
 **The session.** A successful sign-in sets one cookie holding a 256-bit random secret:
 `HttpOnly`, `SameSite=Strict`, `Path=/`, and — whenever the browser is on HTTPS, directly or
@@ -526,6 +565,20 @@ short reason — passes through the redactor, but it is shown on a lock screen. 
 endpoint must be `https`, and the daemon's push client refuses non-public addresses and redirects.
 The endpoint path and keys are never returned by the API.
 
+**Push renewal.** A push service can replace a browser's subscription at any time and tells only the
+service worker (`pushsubscriptionchange`), which holds no API token and may have no live session —
+so the cookie-and-CSRF route is not available to it. Instead, subscribing returns a
+**per-subscription renewal token** (256 bits; the daemon keeps its SHA-256), which the page stores
+in IndexedDB for the worker. `POST …/push/subscriptions/{id}/renew` is outside the token/cookie
+check and authorised by that token alone, in the JSON body (never the URL), with an allowed
+`Origin` required as for sign-in. It can do exactly one thing: point that one subscription at a new
+endpoint and keys, which must pass the subscribe validation (https, public address). It cannot read
+anything, change which events are sent, or touch another subscription; each use rotates it, and
+every refusal is the same `401`. What a stolen token buys: redirecting that subscription's
+notifications — the redacted lines above — to a browser of the thief's choosing, until the owner
+notices them stop or removes the subscription in Settings. Taking it needs this browser's own
+storage, which also holds the session cookie.
+
 What this does **not** cover:
 
 - **Plain HTTP on a private network is readable by that network.** The cookie and every diff
@@ -533,8 +586,14 @@ What this does **not** cover:
 - **A proxy that rewrites `Host` to loopback and strips every proxy header** is
   indistinguishable from a local browser, and is handed the token. `tailscale serve`, Caddy and
   nginx's defaults all add `X-Forwarded-For`; a hand-rolled proxy must too.
-- **Anyone who can reach the sign-in page can try codes.** The failure budget bounds guessing; it
-  also means someone on your network can lock sign-in for fifteen minutes.
+- **Anyone who can reach the sign-in page can try codes.** The budgets bound guessing. One
+  guesser locks out only itself, but someone with ten or more addresses — or ten tailnet
+  identities, behind `tailscale serve` — can spend the global ceiling and pause sign-in for
+  everyone for fifteen minutes, cancelling your outstanding code. That is the trade the backstop
+  makes: availability for a bound on guessing that holds against any number of addresses.
+- **Clients behind one shared address share a budget.** Everyone behind the same NAT, and every
+  request through a proxy the daemon does not trust (a proxy that rewrites `Host` to loopback,
+  or a chain of proxies — only the last hop is read), counts as one client.
 - **A pairing code read off your screen** before you use it signs its reader in. It is single use
   and short-lived, and `idea ui sessions` shows every session that exists.
 - **A signed-in phone is as powerful as the local UI.** It can approve and apply change sets.
@@ -602,9 +661,15 @@ page had was an unscoped generalisation, not a typo.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
-- **`--user` passes the daemon's own UID/GID.** If the daemon runs as root, the
-  container runs as root inside its capability-dropped, read-only namespace.
-  Nothing refuses to start or warns.
+- **A root daemon's containers share one uid.** Every container a root daemon
+  starts runs as `65532`, whatever the project. They share no writable mount, so
+  this matters only to something that judges by uid outside the containers. A
+  daemon that is killed mid-run leaves its work root owned by `65532` until that
+  work root is next re-seeded; a root daemon can still read and remove it.
+- **A daemon run as an ordinary user passes that user's uid.** That is
+  unprivileged on the host, but it is the same uid that owns your files, so a
+  container escape lands as you. Run the daemon as a dedicated user if that
+  matters.
 - **No agent image signature is verified.** The default Hermes image is pinned
   by digest, so a re-pushed tag no longer changes what is pulled — but an
   operator-supplied tag-only `--image` is used as given, and `omp` and `acp`

@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/integrations"
 	"github.com/devarispbrown/idea-harness/internal/integrations/push"
 	"github.com/devarispbrown/idea-harness/internal/store"
@@ -160,6 +163,9 @@ type pushSubscriptionView struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	LastDeliveredAt *time.Time `json:"last_delivered_at,omitempty"`
 	LastError       string     `json:"last_error,omitempty"`
+	// RenewalToken is set only in the responses that mint one -- subscribe
+	// and renew -- and is never listed (handleRenewPushSubscription).
+	RenewalToken string `json:"renewal_token,omitempty"`
 }
 
 func viewPush(s store.PushSubscription) pushSubscriptionView {
@@ -269,8 +275,14 @@ func (s *Server) handleCreatePushSubscription(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "webpush: "))
 		return
 	}
+	renewal, err := newRenewalToken()
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	saved, created, err := pr.db.UpsertPushSubscription(r.Context(), store.PushSubscription{
 		Endpoint: sub.Endpoint, P256dh: sub.P256dh, Auth: sub.Auth, Events: events, Label: truncateBytes(body.Label, 80),
+		RenewalTokenHash: hashSecret(renewal),
 	})
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
@@ -281,7 +293,142 @@ func (s *Server) handleCreatePushSubscription(w http.ResponseWriter, r *http.Req
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, viewPush(saved))
+	v := viewPush(saved)
+	v.RenewalToken = renewal
+	writeJSON(w, status, v)
+}
+
+// newRenewalToken is a subscription's renewal secret: 256 random bits,
+// base64url. The daemon keeps only its SHA-256.
+func newRenewalToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// handleRenewPushSubscription is the service worker's half of a push
+// subscription change (web/public/sw-push.js).
+//
+// A push service may replace a browser's subscription at any time -- key
+// rotation, expiry, a browser reset -- and tells only the service worker,
+// in a `pushsubscriptionchange` event that may arrive with no page open. The
+// worker cannot authenticate the usual ways: it never sees the API token
+// (on loopback the page holds it; the worker shares no memory with the
+// page), and the session cookie may have expired or never existed. A CSRF
+// token would not help either -- it is derived from the cookie's session.
+//
+// So each subscription carries its own capability: a renewal token handed
+// to the page when it subscribed (POST .../push/subscriptions) and kept in
+// IndexedDB, where the worker can read it. It authorises exactly one act --
+// re-pointing this subscription at a new endpoint and keys -- and is rotated
+// by every use. It cannot read anything, change which events are sent, or
+// touch another subscription; the endpoint it sets must pass the same
+// validation as a subscribe (https, public address).
+//
+// What a stolen token buys, and why that is acceptable: someone who has it
+// can redirect THIS subscription's notifications -- short, redacted lines --
+// to a browser of their own until the owner notices them stop. Reading it
+// needs the browser's own storage, where the session cookie also lives.
+// docs/security-model.md says this in its Remote access section.
+//
+// The route is outside auth (server.go) and carries its own checks: a JSON
+// body and an Origin, as login does, plus the token. Every refusal --
+// unknown project, unknown subscription, wrong or spent token -- is the
+// same 401, so the route reveals nothing about which ids exist.
+func (s *Server) handleRenewPushSubscription(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || r.Header.Get("Origin") == "" {
+		writeError(w, http.StatusForbidden, "renew from the idea-harness service worker")
+		return
+	}
+	var body struct {
+		RenewalToken string `json:"renewal_token"`
+		Endpoint     string `json:"endpoint"`
+		Keys         struct {
+			P256dh string `json:"p256dh"`
+			Auth   string `json:"auth"`
+		} `json:"keys"`
+	}
+	if !decodePushBody(w, r, &body) {
+		return
+	}
+	const denied = "push subscription renewal refused: turn notifications on again from Settings"
+	if body.RenewalToken == "" {
+		writeError(w, http.StatusUnauthorized, denied)
+		return
+	}
+	projectID, subID := r.PathValue("projectId"), r.PathValue("id")
+	// Only a project the daemon already knows: an unauthenticated caller must
+	// not make it open anything new.
+	if _, err := s.rt.global.GetProject(r.Context(), projectID); err != nil {
+		writeError(w, http.StatusUnauthorized, denied)
+		return
+	}
+	pr, err := s.rt.EnsureProject(r.Context(), projectID)
+	if err != nil {
+		// A known project that will not open (a malformed harness.yaml) is
+		// not a refusal: the worker must keep its token and try again, which
+		// it does for anything but 401. The detail stays in the daemon log.
+		var cfgErr *config.ParseError
+		s.rt.log.Warn("push: renewal could not open the project", "project", projectID, "err", err)
+		if errors.As(err, &cfgErr) {
+			writeError(w, http.StatusUnprocessableEntity, "the project's harness.yaml does not parse; renewal will be retried")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	sender, err := s.rt.pushSender()
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	sub := webpush.Subscription{Endpoint: body.Endpoint, P256dh: body.Keys.P256dh, Auth: body.Keys.Auth}
+	if err := sender.ValidateSubscription(sub); err != nil {
+		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "webpush: "))
+		return
+	}
+	next, err := newRenewalToken()
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	saved, err := pr.db.RenewPushSubscription(r.Context(), subID, hashSecret(body.RenewalToken),
+		store.PushSubscription{Endpoint: sub.Endpoint, P256dh: sub.P256dh, Auth: sub.Auth}, hashSecret(next))
+	if errors.Is(err, store.ErrPushRenewalDenied) {
+		writeError(w, http.StatusUnauthorized, denied)
+		return
+	}
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.rt.log.Info("push: subscription renewed by the browser", "project", projectID, "subscription", saved.ID, "endpoint_host", webpush.EndpointHost(saved.Endpoint))
+	s.rt.afterPushChange(r.Context(), projectID, pr)
+	v := viewPush(saved)
+	v.RenewalToken = next
+	writeJSON(w, http.StatusOK, v)
+}
+
+// isPushRenewPath reports whether path is the renewal route,
+// /api/v1/projects/{p}/push/subscriptions/{id}/renew -- matched by exact
+// shape, as isSSEEventsPath is, because it is let through without auth.
+func isPushRenewPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/v1/projects/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 5 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	return parts[1] == "push" && parts[2] == "subscriptions" && parts[4] == "renew"
 }
 
 func (s *Server) handleUpdatePushSubscription(w http.ResponseWriter, r *http.Request) {

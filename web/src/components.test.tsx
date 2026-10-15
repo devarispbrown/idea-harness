@@ -12,6 +12,7 @@ import FailedBanner from "./FailedBanner";
 import Settings from "./Settings";
 import DecisionPage from "./DecisionPage";
 import BuildPage from "./BuildPage";
+import DocReader from "./DocReader";
 import { changeSetChip } from "./statusChips";
 import { fakeDaemon } from "./testing/fakeDaemon";
 
@@ -140,6 +141,54 @@ describe("Settings executor", () => {
     // No banner of its own (the shell has one), and no unprompted key error.
     expect(screen.queryByText(/Demo mode/)).toBeNull();
     expect(screen.queryByText(/OPENAI_API_KEY is not set/)).toBeNull();
+  });
+  it("has one h1, Settings, ahead of its sections", async () => {
+    fakeDaemon({
+      [`GET ${P}/providers`]: providers,
+      [`GET ${P}/executors`]: [internalRow],
+      [`GET ${P}/secret-allowlist`]: [],
+      [`GET ${P}/integrations`]: { integrations: [] },
+    });
+    const { container } = render(<Settings projectId="p1" />);
+    await screen.findByText("Requested: auto · resolves to: internal.");
+    const h1s = container.querySelectorAll("h1");
+    expect(Array.from(h1s).map((h) => h.textContent)).toEqual(["Settings"]);
+    // Before every section heading in document order, so a route change
+    // focuses it (focus.ts pageHeading) rather than "Model".
+    expect(h1s[0].compareDocumentPosition(container.querySelector("h2")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("one h1 per page", () => {
+  it("the document reader: the title is the h1, the document's own headings are h2 down", async () => {
+    fakeDaemon({
+      [`GET ${P}/artifacts/a1/body`]: { kind: "prd", body: "# Recipe app PRD\n\nIntro.\n\n# Appendix\n\n## Goals\n\n- one" },
+      [`GET ${P}/artifacts/a1/comments`]: [],
+    });
+    const { container } = render(<DocReader projectId="p1" initiativeId="i1" artifactId="a1" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Recipe app PRD" })).toBeTruthy();
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 2, name: "Appendix" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Goals" })).toBeTruthy();
+  });
+
+  it("the document reader: a document without a title is titled by its kind", async () => {
+    fakeDaemon({
+      [`GET ${P}/artifacts/a1/body`]: { kind: "research", body: "Just notes." },
+      [`GET ${P}/artifacts/a1/comments`]: [],
+    });
+    const { container } = render(<DocReader projectId="p1" initiativeId="i1" artifactId="a1" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "research" })).toBeTruthy();
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
+  });
+
+  it("the decision discussion", async () => {
+    fakeDaemon({
+      [`GET ${P}/initiatives/i1/decisions`]: [{ id: "d1", code: "DEC-1", question: "Which DB?", status: "open" }],
+    });
+    const { container } = render(<DecisionPage projectId="p1" initiativeId="i1" decisionId="d1" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Discussion" })).toBeTruthy();
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
   });
 });
 

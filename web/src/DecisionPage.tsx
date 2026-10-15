@@ -96,7 +96,8 @@ export default function DecisionPage({
           ← Define
         </button>
         {decision && <span className="idchip chip-accent">{decision.code}</span>}
-        <span className="phase-title" style={{ fontSize: 13 }}>Discussion</span>
+        {/* The page's h1 (focused on arrival), styled as the small label it was. */}
+        <h1 className="phase-title" style={{ fontSize: 13 }}>Discussion</h1>
       </div>
 
       <div className="discussion-main">

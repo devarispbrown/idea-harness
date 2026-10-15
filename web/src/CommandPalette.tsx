@@ -1,6 +1,7 @@
+import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { filterCommands, paletteCommands, type PaletteCommand } from "./paletteCommands";
-import { focusWhenReady, sectionHeading, setPendingFocus, useDialog } from "./focus";
+import { dialogRoot, focusWhenReady, sectionHeading, setPendingFocus, useDialog } from "./focus";
 
 // CommandPalette is the ⌘K / Ctrl-K quick navigation overlay. It uses the WAI
 // combobox pattern (single input with aria-activedescendant over a listbox of
@@ -66,7 +67,9 @@ export default function CommandPalette({
     onNavigate(c.href);
   };
 
-  return (
+  // Portaled into <body>, outside the app root, so useDialog can make the
+  // app root inert while this is open (focus.ts, inertOutside).
+  return createPortal(
     <div
       className="cmd-overlay"
       onMouseDown={(e) => {
@@ -125,6 +128,7 @@ export default function CommandPalette({
           </ul>
         )}
       </div>
-    </div>
+    </div>,
+    dialogRoot(),
   );
 }

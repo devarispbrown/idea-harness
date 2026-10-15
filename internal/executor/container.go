@@ -34,6 +34,7 @@ type ContainerExecutor struct {
 type containerAttempt struct {
 	req         Request
 	containerID string
+	grant       *mountGrant
 }
 
 // NewContainerExecutor returns a ContainerExecutor that persists produced patch
@@ -69,7 +70,13 @@ func (e *ContainerExecutor) Start(ctx context.Context, req Request) (Attempt, er
 	if err := os.MkdirAll(filepath.Join(req.WorkRoot, "result"), 0o700); err != nil {
 		return Attempt{}, fmt.Errorf("executor: container: mkdir work root: %w", err)
 	}
-	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	uid := containerUser()
+	// Handed to the container user under a root daemon, back in Collect/Cancel
+	// (containeruser.go).
+	grant, err := grantMounts(req.WorkRoot)
+	if err != nil {
+		return Attempt{}, err
+	}
 	args := []string{
 		"run", "-d",
 		"--rm",
@@ -88,16 +95,18 @@ func (e *ContainerExecutor) Start(ctx context.Context, req Request) (Attempt, er
 	}
 	out, err := exec.CommandContext(ctx, e.dockerPath, args...).Output()
 	if err != nil {
+		_ = grant.Restore()
 		return Attempt{}, fmt.Errorf("executor: container: docker run: %w", err)
 	}
 	containerID := strings.TrimSpace(string(out))
 	if containerID == "" {
+		_ = grant.Restore()
 		return Attempt{}, fmt.Errorf("executor: container: docker run returned no container id")
 	}
 
 	attemptID := id.New()
 	e.mu.Lock()
-	e.attempts[attemptID] = &containerAttempt{req: req, containerID: containerID}
+	e.attempts[attemptID] = &containerAttempt{req: req, containerID: containerID, grant: grant}
 	e.mu.Unlock()
 
 	return Attempt{ID: attemptID, Executor: "container", Status: "running", Phase: "Planning"}, nil
@@ -144,6 +153,7 @@ func (e *ContainerExecutor) Cancel(ctx context.Context, id string) error {
 	if err := exec.CommandContext(ctx, e.dockerPath, "rm", "-f", a.containerID).Run(); err != nil {
 		return fmt.Errorf("executor: container: docker rm: %w", err)
 	}
+	_ = a.grant.Restore()
 	return nil
 }
 
@@ -164,6 +174,7 @@ func (e *ContainerExecutor) Collect(ctx context.Context, id string) (Result, err
 
 	// Best-effort cleanup; a failure here must not fail the collect.
 	_ = exec.CommandContext(ctx, e.dockerPath, "rm", "-f", a.containerID).Run()
+	_ = a.grant.Restore()
 
 	patchDigest := blob.Digest(content)
 	if e.store != nil {

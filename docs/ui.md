@@ -214,11 +214,14 @@ Under **Produced** the current PRD offers **Read** and, once there is more than 
 | **Link a requirement…** / **Link** | `idea objective link <REQ> <OBJ>` |
 | **×** beside a serving requirement ("Unlink REQ-1 from OBJ-1") | `idea objective link <REQ> <OBJ> --unlink` |
 | **+ Metric** — name, direction, baseline, target, unit | `idea metric add` |
-| **Edit** on a metric — the same fields; a baseline left blank is cleared | `idea metric edit <MET>` (`--clear-baseline`) |
+| **Edit** on a metric — the same fields plus guardrail, cadence, definition, source (recorded by hand, a command, or a URL with a JSON pointer) and, with more than one objective, which objective it measures; a baseline or guardrail left blank is cleared | `idea metric edit <MET>` (`--clear-baseline`, `--clear-guardrail`, `--cadence`, `--definition`, `--manual`/`--command`/`--url --pointer`, `--objective`) |
 | A value and **Record** | `idea metric record` |
 
 An edit sends only the fields that changed (`PATCH …/objectives/{id}`, `PATCH …/metrics/{id}`), so
-saving an untouched form changes nothing.
+saving an untouched form changes nothing. The metric form checks what the API checks before it
+sends anything (`outcomes.metricEditBody`): numbers that are numbers, a maintain metric's guardrail
+not negative, a cadence `domain.ParseCadence` accepts, a command source with a command, a URL source
+with an http(s) URL and a pointer starting with `/`. A changed source is sent whole.
 
 The bar at the bottom is the phase's commit action:
 
@@ -327,6 +330,9 @@ actions, notes and report. The panel shows:
   For an executor that cannot be steered the box says the note will apply to the next run, and
   notes held for the next run are listed. ⌘/Ctrl+Enter sends it.
 - **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
+- **Remote runs** (when the run's executor is `openhands`): every dispatch of this initiative's
+  tasks to the Agent Server - status, attempt, server, conversation id, last event, error - read
+  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`).
 
 It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
 far, then follows the run's SSE stream (`web/src/useEventStream.ts`). A dropped connection
@@ -489,9 +495,15 @@ Each note field with a shortcut says so under it ("⌘ Enter to send it back"), 
 - **Skip to content** is the first Tab stop on every page and moves focus to the main region.
 - **After a route change** focus moves to the new page's `h1` (its first `h2` when it has none,
   else the main region), once the page has rendered it — never on the first load, so the skip link
-  stays first. The palette's Settings sections land on that section's heading instead.
+  stays first. The palette's Settings sections land on that section's heading instead. Every
+  route has exactly one `h1` (Settings' is "Settings"; the document reader's is the document's
+  title, its own headings one level down; a decision's is "Discussion"), which the browser suite
+  checks route by route.
 - **Dialogs** — the command palette and the shortcut reference are modal: focus moves in, Tab
-  cycles inside, Escape or a click outside closes, and focus returns to what had it.
+  cycles inside, Escape or a click outside closes, and focus returns to what had it. They render
+  into `<body>`, outside the app root, and while one is open the app root is `inert` (removed from
+  the accessibility tree, the Tab order and pointer hit testing — a screen reader's virtual cursor
+  cannot wander behind it); the live region stays outside it, so announcements are still heard.
 - **Inline forms** — Request changes, Ask for a revision…, the revert confirmation (an
   `alertdialog`, focus on **Cancel**), Write my own…, and the objective/metric edit and add forms:
   focus moves to the first field, Escape (while focus is inside) closes, and focus returns to the
@@ -504,7 +516,10 @@ did when the only other sign is a chip changing colour: a change-set action land
 applied.", or its error), the plan approved, an objective or metric saved or (un)linked, an
 operation starting and finishing or stopping, an agent run starting. It is deliberately quiet — one
 message per completed action or state change, never per streamed run event; the run panel's
-current-action chip is not a live region. Errors that block (a failed run's banner, the run's own
+current-action chip is not a live region. An agent run's start and its operation's end share a
+topic: messages on one topic are held for 0.8s and only the most specific is said, and a less
+specific one arriving within 4s of it is dropped — so a run that starts and ends inside one poll,
+or a stopped run's panel catching up, is heard once, as "Executing the plan finished/stopped." Errors that block (a failed run's banner, the run's own
 errors) are `role="alert"`.
 
 ### Reduced motion
@@ -648,7 +663,10 @@ push service it uses (host only), a checkbox per event — *needs your judgment*
 for review*, *verification failed*, *outcome drifting* — **Send a test**, and **Turn off** (this
 project only; other projects keep theirs). A notification opens the page it is about. Delivery,
 retries and what the payload carries: [`configuration.md`](configuration.md#push-notifications).
-Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
+If the push service replaces this browser's subscription, the service worker re-registers it on its
+own, page open or not, using a renewal token kept for it at subscribe time
+([`security-model.md`](security-model.md#remote-access)); a browser it cannot renew drops out of the
+list once the push service reports the old one gone, and Settings offers **Turn on** again. Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
 browser without push — on an iPhone, add the app to the Home Screen first.
 
 ### Remote access
@@ -687,7 +705,12 @@ intercept those requests: no product data is ever stored on the device.
 - **Component tests** — `web/src/components.test.tsx` renders the components in jsdom (opted in per
   file with `// @vitest-environment jsdom`) against a stubbed daemon (`web/src/testing/fakeDaemon.ts`)
   and asserts what they send and show: the note inputs, the change-set chip, NotFound, Settings'
-  executor display. `pnpm test` runs them with the rest of the unit suite.
+  executor display. `web/src/settings/settingsComponents.test.tsx` does the same for Settings'
+  editors (Executor, Budget, the Slack and Linear editors and the Integrations panel), the budget
+  meter and Automations: what each renders from the daemon, what it refuses before a round trip
+  (a pasted token or secret-looking literal, a cap of $0, an eval cost cap that is not > 0), what
+  it sends, and the daemon's refusal shown (`fail(status, error)` in `fakeDaemon`). `pnpm test`
+  runs them with the rest of the unit suite.
 - **Browser suite** — `make e2e` (`web/e2e`, Playwright, Chromium) builds the binary, starts a
   hermetic demo daemon (port 19590 or `IDEA_E2E_PORT`, state under `web/e2e/.work`, every provider
   key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op revision → run
@@ -696,8 +719,8 @@ intercept those requests: no product data is ever stored on the device.
   focus on route change, ⌘K to a node code and a Settings section, `?`, Escape and ⌘/Ctrl+Enter in
   a note form) and Settings. Every page gets an axe (WCAG 2 A/AA) check in **both colour schemes**
   (`prefers-color-scheme: light` and `dark`) that fails on a serious or critical violation; a
-  modal is checked on its own (`{ include }`), since the page under its overlay is dimmed on
-  purpose. Accepted exceptions, each with its reason, live in `web/e2e/a11y.ts` (none today).
+  modal is checked with the whole page, which is valid because the page under it is `inert`.
+  Accepted exceptions, each with its reason, live in `web/e2e/a11y.ts` (none today).
   `IDEA_E2E_A11Y=report` logs violations instead of failing, and `IDEA_E2E_SHOTS=<dir>` keeps a
   screenshot of each checked page in each scheme.
 - **Keyboard tests** — `web/src/keyboard.test.tsx` (jsdom) covers ⌘/Ctrl+Enter, Escape and focus
@@ -713,5 +736,12 @@ intercept those requests: no product data is ever stored on the device.
   switches the executor profile to internal and back, watches a spending cap stop a demo run
   (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
   it now and reads its history.
+- **Every route, two widths, two schemes** — `web/e2e/views.e2e.ts` runs last, on the state the
+  others left, and visits every route (Home, Settings, Automations, Needs you, not-found, the six
+  phases, health, activity, gaps, outcomes, quality, a task's lineage, a decision, a document, an
+  unknown initiative) at 390px and 1280px. On each it checks exactly one `h1`; no horizontal
+  overflow in either colour scheme — `scrollWidth <= innerWidth`, and, because `html` and `body`
+  clip sideways overflow rather than scroll it, no visible element (collapsed `<details>` opened
+  for the check) past the right edge unless a box of its own scrolls or clips it; and axe.
 - **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
   why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.

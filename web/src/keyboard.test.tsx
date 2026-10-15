@@ -13,7 +13,7 @@ import ShortcutsDialog from "./ShortcutsDialog";
 import CommandPalette from "./CommandPalette";
 import LiveAnnouncer from "./LiveAnnouncer";
 import ObjectivesSection from "./ObjectivesSection";
-import { announce } from "./announce";
+import { announce, HOLD_MS, resetAnnouncements, RUN_RANK, runTopic, SETTLE_MS } from "./announce";
 import { fakeDaemon } from "./testing/fakeDaemon";
 
 afterEach(() => {
@@ -102,6 +102,36 @@ describe("ShortcutsDialog", () => {
     expect(document.activeElement).toBe(before);
   });
 
+  it("makes the app root inert while open, but not the live region, and restores it on close", async () => {
+    const { container } = render(
+      <>
+        <button>before</button>
+        <LiveAnnouncer />
+        <ShortcutsDialog />
+      </>,
+    );
+    // Already inert for its own reason: must stay inert after the dialog.
+    const other = document.createElement("div");
+    other.setAttribute("inert", "");
+    document.body.appendChild(other);
+    const before = screen.getByRole("button", { name: "before" });
+    before.focus();
+    fireEvent.keyDown(window, { key: "?", shiftKey: true });
+    const dialog = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+    await nextFrame();
+    // The dialog is outside the app root (a portal into <body>), so it is
+    // the one thing left reachable.
+    expect(container.contains(dialog)).toBe(false);
+    expect(container.hasAttribute("inert")).toBe(true);
+    expect(dialog.closest("[inert]")).toBeNull();
+    expect(screen.getByTestId("live-announcer").closest("[inert]")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(other.hasAttribute("inert")).toBe(true);
+    expect(document.activeElement).toBe(before);
+    other.remove();
+  });
+
   it("does not open while typing a question mark into a field", () => {
     render(
       <>
@@ -144,6 +174,16 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("makes the app root inert while open, and lifts it when a command runs", async () => {
+    const { container } = render(<CommandPalette initiativeId="i1" onNavigate={() => {}} />);
+    const input = await open();
+    expect(container.hasAttribute("inert")).toBe(true);
+    expect(input.closest("[inert]")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.hasAttribute("inert")).toBe(false);
+  });
+
   it("matches keywords: 'timeline' finds Activity", async () => {
     render(<CommandPalette initiativeId="i1" onNavigate={() => {}} />);
     const input = await open();
@@ -163,6 +203,72 @@ describe("LiveAnnouncer", () => {
     // Changed text, so a screen reader announces the repeat.
     expect(region.textContent).not.toBe("CHG-1 approved.");
     expect(region.textContent!.trim()).toBe("CHG-1 approved.");
+  });
+});
+
+describe("LiveAnnouncer: one message per run completion", () => {
+  // Every message the region showed, in order.
+  const heard = () => {
+    const said: string[] = [];
+    const region = screen.getByTestId("live-announcer");
+    const obs = new MutationObserver(() => {
+      if (region.textContent) said.push(region.textContent.trim());
+    });
+    obs.observe(region, { childList: true, characterData: true, subtree: true });
+    return { said, stop: () => obs.disconnect() };
+  };
+  const run = { topic: runTopic("i1") };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetAnnouncements();
+  });
+
+  it("a run that starts and ends within one poll is said once, as the operation's end", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const h = heard();
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    act(() => announce("Executing the plan finished.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    await Promise.resolve();
+    h.stop();
+    expect(h.said).toEqual(["Executing the plan finished."]);
+  });
+
+  it("drops a less specific echo that arrives just after the end, but not a later run", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const region = screen.getByTestId("live-announcer");
+    act(() => announce("Executing the plan stopped.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Executing the plan stopped.");
+    // The stopped card's panel catching up on the same run.
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Executing the plan stopped.");
+    // A run started well after that is news again.
+    await act(async () => vi.advanceTimersByTime(SETTLE_MS));
+    act(() => announce("Agent run started.", { ...run, rank: RUN_RANK.runStarted }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS));
+    expect(region.textContent).toBe("Agent run started.");
+  });
+
+  it("keeps other initiatives' runs and untopiced messages apart", async () => {
+    vi.useFakeTimers();
+    render(<LiveAnnouncer />);
+    const region = screen.getByTestId("live-announcer");
+    act(() => announce("Executing the plan finished.", { ...run, rank: RUN_RANK.operationEnded }));
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    act(() => announce("Agent run started.", { topic: runTopic("i2"), rank: RUN_RANK.runStarted }));
+    act(() => announce("CHG-1 approved."));
+    // Untopiced: said at once.
+    expect(region.textContent).toBe("CHG-1 approved.");
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    expect(region.textContent).toBe("Executing the plan finished.");
+    // Another initiative's run is not this one's echo.
+    await act(async () => vi.advanceTimersByTime(HOLD_MS / 2));
+    expect(region.textContent).toBe("Agent run started.");
   });
 });
 
