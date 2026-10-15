@@ -131,6 +131,27 @@ func (db *DB) ListQualityResults(ctx context.Context, initiativeID string) ([]do
 	return scanQualityResults(rows)
 }
 
+// QualityHistory returns every result for an initiative, oldest first, with
+// each result's linked requirement codes filled in -- the measurement history
+// the web UI's quality page charts (GET .../quality/history). Kept apart from
+// ListQualityResults because the trace label cache calls that on every
+// why/impact and has no use for the per-result edge lookups this does.
+func (db *DB) QualityHistory(ctx context.Context, initiativeID string) ([]domain.QualityResult, error) {
+	list, err := db.ListQualityResults(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if list[i].Requirements, err = db.qualityRequirementCodes(ctx, initiativeID, list[i].ID); err != nil {
+			return nil, err
+		}
+		if list[i].Checks == nil {
+			list[i].Checks = []domain.QualityCheck{}
+		}
+	}
+	return list, nil
+}
+
 // GetQualityResult returns one result by id.
 func (db *DB) GetQualityResult(ctx context.Context, resultID string) (*domain.QualityResult, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
