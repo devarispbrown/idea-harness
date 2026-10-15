@@ -325,7 +325,7 @@ public-address guard, and only once `outcomes.allow_url_sources` is set.
 **The one network exception is opt-in and human-written.** `RunOptions.Network`
 swaps `--network none` for Docker's default bridge and keeps every other
 restriction (read-only root, dropped capabilities, `no-new-privileges`, the
-daemon's UID, memory and pid limits). Only two things set it: each command a
+container user, memory and pid limits). Only two things set it: each command a
 human lists under `verify.setup.prepare` in harness.yaml, and each
 `verify.security.scanners` entry marked `network: true`. A dependency-fetch
 command found in the README is never promoted to it -- it is skipped and
@@ -339,6 +339,24 @@ manifests you would install on your own machine.
 `--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,
 `--user`, `--memory 2g`, `--pids-limit 256`, a `/tmp` tmpfs. A timeout or cancel
 genuinely kills the container. The agent never runs code on the host.
+
+**No container runs as root.** Every `docker run` here (agents of every kind, the `container`
+executor, `ContainerSandbox`, and the setup probes) passes `--user`, and which user depends on the
+daemon (`internal/executor/containeruser.go`):
+
+- **A non-root daemon** passes its own `uid:gid`, so what a container writes into `/work` is the
+  daemon's to read, diff and delete.
+- **A root daemon** passes a fixed unprivileged `65532:65532` (the `nonroot` user of distroless
+  images). The writable mounts — the work root and the agent home — are handed to it before the
+  run (`chown`, symlinks chowned as links and never followed) and handed back once the container
+  has been removed: every path to the owner it had, anything the container created to the daemon,
+  so the engine's diff, apply and cleanup see ordinary daemon-owned files. A file the ACP client
+  writes for the agent is handed to `65532` as it is written, so the agent can still edit it. The
+  read-only `/repo` mount is your real workspace and is never chowned: as `65532`, a check reads
+  it only where its "other" permission bits allow.
+
+Refusing to run as root was considered and rejected: root-only CI and Docker-in-Docker setups
+would have had no way forward.
 
 But `internal/executor/agent.go` says the rest plainly, and this page previously
 did not:
@@ -643,9 +661,15 @@ page had was an unscoped generalisation, not a typo.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
-- **`--user` passes the daemon's own UID/GID.** If the daemon runs as root, the
-  container runs as root inside its capability-dropped, read-only namespace.
-  Nothing refuses to start or warns.
+- **A root daemon's containers share one uid.** Every container a root daemon
+  starts runs as `65532`, whatever the project. They share no writable mount, so
+  this matters only to something that judges by uid outside the containers. A
+  daemon that is killed mid-run leaves its work root owned by `65532` until that
+  work root is next re-seeded; a root daemon can still read and remove it.
+- **A daemon run as an ordinary user passes that user's uid.** That is
+  unprivileged on the host, but it is the same uid that owns your files, so a
+  container escape lands as you. Run the daemon as a dedicated user if that
+  matters.
 - **No agent image signature is verified.** The default Hermes image is pinned
   by digest, so a re-pushed tag no longer changes what is pulled — but an
   operator-supplied tag-only `--image` is used as given, and `omp` and `acp`

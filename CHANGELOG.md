@@ -481,6 +481,13 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Security
 
+- **A root daemon no longer runs root containers.** When the daemon runs as uid 0, every
+  container it starts — coding agents of every kind, the `container` executor, deterministic
+  checks, verify's quality dimensions, metric commands and the setup probes — runs as a fixed
+  unprivileged `65532:65532` instead of root. The work root and agent home are chowned to that
+  user for the run (symlinks never followed) and back afterwards, so the engine sees ordinary
+  daemon-owned files. Non-root daemons are unchanged. Closes the audit 3 / S6 deferred item;
+  details and what is left in `docs/security-model.md` (Execution gateway).
 - **One guesser can no longer lock the owner out of remote sign-in.** Wrong pairing codes were
   counted daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and
   cancelled every outstanding code. Now each client has its own budget (10 per 15 minutes; only
