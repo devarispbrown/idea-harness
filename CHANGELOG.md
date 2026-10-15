@@ -85,6 +85,30 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Keyboard and accessibility in the web UI** ([docs/ui.md](docs/ui.md#keyboard-and-accessibility)).
+  A **Skip to content** link is the first Tab stop; after a route change focus moves to the new
+  page's heading; the command palette, a new **`?` shortcut reference**, and inline forms (Request
+  changes, Ask for a revision, the revert confirmation, Write my own…, objective and metric edits)
+  take focus when they open, close on Escape and give focus back to the button that opened them
+  (the two modals also keep Tab inside). **⌘/Ctrl+Enter** sends the focused note — the run note,
+  Request changes, a plan revision, a retry, a note to the running agent. One polite live region
+  says when a change-set action lands ("CHG-2 applied."), when an operation or agent run starts or
+  ends, and when an objective or metric is saved — never per streamed event (the run panel's
+  action chip is no longer a live region). `prefers-reduced-motion` stops spinners, pulses and
+  transitions. The home cards' titles are buttons (the card was a mouse-only `<section onClick>`),
+  and Plan's ↑/↓ buttons say which task they move.
+- **The command palette (⌘K) reaches every page**: Gaps, Outcomes, Quality, Activity, Graph health,
+  Needs you, Settings and each Settings section (focus lands on the section), and a typed node
+  code — `REQ-3`, `TASK-2`, `OBJ-1`, `MET-1`, `DEC-1`, `CHG-1` — opens that node's lineage.
+- **Edit objectives and metrics, and unlink a requirement, on the Define page** — `idea objective
+  edit` (statement, rationale, owner, status), `idea metric edit` (name, direction, baseline —
+  blank clears it — target, unit) and `idea objective link --unlink` (the × beside each serving
+  requirement). Only changed fields are sent. In the parity ledger `objective edit` is now `ui` and
+  `metric edit` `partial` (guardrail, cadence, definition and source stay CLI-only).
+- **The browser suite checks accessibility in the dark colour scheme too.** `expectAccessible`
+  runs axe under `prefers-color-scheme: light` and `dark` on every page, and now also covers the
+  queue, Design, the document reader, the command palette and the shortcut reference.
+
 - **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
   page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full
   edge trace — what `idea why/impact/trace` print), and a lazy **Why / Impact** panel on
@@ -440,6 +464,21 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   MCP values reach the agent in `session/new` on its stdin.
 
 ### Fixed
+
+- **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
+  accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
+  the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on
+  the dark surface); `DEC-n`/`OBJ-n` chips used a hard-coded `#4338ca` (1.8:1). New tokens
+  (`--accent-fill`, `--on-accent`, `--text-secondary`, `--accent-strong`) carry them in both
+  schemes. Also: the "Needs you elsewhere" count was white on amber (2.1:1, both schemes); a
+  resolved judgment card faded its text with `opacity` (4.1–4.4:1); the deny chip and the phase
+  dot were literal white in dark mode.
+- **A stray merge marker in `styles.css`** (`=======`) made the browser drop the rule after it —
+  the run panel's own container style.
+- **A run that ended mid-tool-call left that call "in progress" in the run panel.** Calls still open
+  when the run is over now read **cancelled** (⊘), counted as done in "n/m actions" and shown as
+  "· n cancelled"; the engine records the cancelled result itself, and the panel also closes any it
+  never got a result for.
 
 - **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
   `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
