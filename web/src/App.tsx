@@ -22,6 +22,10 @@ import ChangedPage from "./ChangedPage";
 import QueuePage from "./QueuePage";
 import StaleBanner from "./StaleBanner";
 import TimelinePanel from "./TimelinePanel";
+import LineageView from "./LineageView";
+import GapsPage from "./GapsPage";
+import OutcomesPage from "./OutcomesPage";
+import QualityPage from "./QualityPage";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -444,6 +448,7 @@ export default function App() {
           modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
           modelDot={modelDot}
           costs={costs}
+          graphView={route.name === "gaps" || route.name === "outcomes" || route.name === "quality" ? route.name : undefined}
           onNavigate={navigate}
         />
 
@@ -587,6 +592,13 @@ export default function App() {
           <ChangedPage projectId={projectId} initiativeId={route.id} />
         )}
         {route.name === "queue" && <QueuePage projectId={projectId} />}
+        {/* The Product Graph views (lineage, gaps, outcomes, quality). */}
+        {route.name === "lineage" && (
+          <LineageView projectId={projectId} initiativeId={route.id} nodeType={route.nodeType} nodeRefParam={route.ref} />
+        )}
+        {route.name === "gaps" && <GapsPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "outcomes" && <OutcomesPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "quality" && <QualityPage projectId={projectId} initiativeId={route.id} />}
         </main>
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />

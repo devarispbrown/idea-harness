@@ -137,6 +137,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations", s.handleRecordObservation)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/outcomes", s.handleOutcomes)
 
+	// Review convergence and quality history for the web UI (graph_views.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/review-telemetry", s.handleReviewTelemetry)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/quality/history", s.handleQualityHistory)
+
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make
 	// the docs page fetch a 401 into a blank screen.
