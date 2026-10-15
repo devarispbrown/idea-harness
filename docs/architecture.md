@@ -78,6 +78,15 @@ than guess from which artifacts exist.
 - Recommended Next Move is generated from deterministic candidates; the orchestrator only ranks
   and explains within workflow policy (§6).
 
+### Remote browsers and notifications
+
+The daemon serves loopback, and the token goes only into a page served to a browser on this
+machine. Remote use is opt-in — a second listener or a proxy hostname — and a remote browser signs
+in with a one-time code for a session cookie (`internal/daemon/remote.go`, `uisession.go`; the model
+is in [security-model.md](security-model.md#remote-access)). Web Push rides the integration bus:
+each browser subscription is a subscriber of its own (`internal/integrations/push`), delivered with
+RFC 8291 encryption and VAPID by `internal/webpush`.
+
 ## Packages
 
 ```text
