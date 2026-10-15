@@ -143,6 +143,41 @@ func TestContainerSandboxTmpfsKeepsNodev(t *testing.T) {
 	}
 }
 
+// TestContainerSandboxNetworkIsOptIn: the default stays --network none, and
+// only an explicit RunOptions.Network gets the bridge -- with every other
+// restriction intact. No Docker needed: it asserts against the argv.
+func TestContainerSandboxNetworkIsOptIn(t *testing.T) {
+	s := NewContainerSandbox("alpine:3.20")
+	if args := s.isolatedArgs(RunOptions{WorkRoot: "/tmp/work"}); !hasFlagValue(args, "--network", "none") {
+		t.Fatalf("the default must be --network none: %v", args)
+	}
+	args := s.isolatedArgs(RunOptions{WorkRoot: "/tmp/work", Network: true, Env: []string{"GOMODCACHE=/work/.cache"}})
+	if !hasFlagValue(args, "--network", "bridge") {
+		t.Fatalf("Network: true must use the bridge: %v", args)
+	}
+	for _, want := range []string{"--read-only", "--security-opt"} {
+		if !hasFlag(args, want) {
+			t.Errorf("Network: true dropped %s", want)
+		}
+	}
+	if !hasFlagValue(args, "--cap-drop", "ALL") {
+		t.Error("Network: true dropped --cap-drop ALL")
+	}
+	// The override comes after the default, which docker resolves last-wins.
+	def, over := -1, -1
+	for i, a := range args {
+		switch a {
+		case "GOMODCACHE=/tmp/cache/gomod":
+			def = i
+		case "GOMODCACHE=/work/.cache":
+			over = i
+		}
+	}
+	if over < 0 || def < 0 || over < def {
+		t.Errorf("an Env override must be passed after the default it overrides (default at %d, override at %d)", def, over)
+	}
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
