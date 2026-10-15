@@ -176,6 +176,9 @@ func (s *Server) routes() {
 	m.HandleFunc("PATCH /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleUpdatePushSubscription)
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleDeletePushSubscription)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/test", s.handleTestPushSubscription)
+	// Unauthenticated: the service worker renews with the subscription's own
+	// renewal token (push.go, handleRenewPushSubscription).
+	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew", s.handleRenewPushSubscription)
 
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make

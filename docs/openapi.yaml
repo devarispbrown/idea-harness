@@ -5054,7 +5054,7 @@ paths:
       operationId: uiLogin
       summary: Exchange a pairing code for a browser session
       description: |
-        The one unauthenticated write under `/api/`, so it carries its own checks: the body must be
+        One of the two unauthenticated writes under `/api/` (the other is push renewal), so it carries its own checks: the body must be
         `application/json` and the request must carry an `Origin` the host guard accepts (`403`
         otherwise) — an HTML form on another site can send neither. A code is single use and expires
         after ten minutes.
@@ -5399,6 +5399,75 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    post:
+      tags: [remote]
+      operationId: renewPushSubscription
+      summary: Re-point a subscription the push service replaced (service worker)
+      description: |
+        Called by the service worker on `pushsubscriptionchange`, which has neither the API token nor,
+        necessarily, a live session. Authenticated instead by the subscription's own `renewal_token`
+        — returned once by `POST …/push/subscriptions` and rotated by every renewal — in the body,
+        never the URL. It moves this one subscription to the new endpoint and keys (validated as on
+        subscribe), keeping its events and label, and returns the next token. If the new endpoint
+        already has a row in this project, that row survives (with a new token) and this one is
+        removed. Like sign-in, it must be JSON with an allowed `Origin` (`403` otherwise). Every
+        refusal — unknown project or subscription, wrong or spent token — is the same `401`. What a
+        stolen token buys: docs/security-model.md, "Remote access".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                renewal_token: { type: string }
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+                  required: [p256dh, auth]
+              required: [renewal_token, endpoint, keys]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Renewed. `renewal_token` is the next token; the one sent no longer works.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`push subscription renewal refused …` — one message for every refusal."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not JSON, or no `Origin` header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Not sent by this route — an unknown project or subscription answers `401`, so it cannot be told apart from a wrong token. Declared because every id-taking route declares it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: The project's harness.yaml does not parse. The service worker keeps its token and renews on a later change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
 components:
@@ -5861,7 +5930,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 144 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 145 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -8012,6 +8081,11 @@ components:
         created_at: { type: string, format: date-time }
         last_delivered_at: { type: string, format: date-time }
         last_error: { type: string }
+        renewal_token:
+          type: string
+          description: |
+            Only in the responses to subscribe and renew, never in a list: the secret the service
+            worker spends on `POST …/push/subscriptions/{id}/renew`. The daemon keeps its SHA-256.
       required: [id, endpoint_host, events, created_at]
 
     IntegrationTestResult:

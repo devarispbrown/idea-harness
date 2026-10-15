@@ -12,6 +12,7 @@ import {
   type PushEventKind,
   type PushSubscriptionView,
 } from "./push";
+import { forgetRenewal, loadRenewal, saveRenewal } from "./pushRenewalStore";
 
 // NotificationsPanel is Settings → Notifications: Web Push for the project
 // being viewed, per browser, with a toggle per event kind.
@@ -37,9 +38,19 @@ export default function NotificationsPanel({ projectId }: { projectId: string })
       setKinds(v.event_kinds ?? []);
       // The daemon removes a subscription its push service reported gone;
       // forget the id so this browser offers to turn notifications on again.
-      const stored = storedPushId(projectId);
-      if (stored && !(v.subscriptions ?? []).some((s) => s.id === stored)) {
+      const list = v.subscriptions ?? [];
+      let stored = storedPushId(projectId);
+      // The service worker may have renewed this browser's row onto another
+      // id (a renewal folded into an existing row); it records that in the
+      // renewal store, which the page then adopts.
+      const renewal = await loadRenewal(projectId);
+      if (renewal && renewal.subscriptionId !== stored && list.some((s) => s.id === renewal.subscriptionId)) {
+        stored = renewal.subscriptionId;
+        storePushId(projectId, stored);
+      }
+      if (stored && !list.some((s) => s.id === stored)) {
         storePushId(projectId, "");
+        await forgetRenewal(projectId);
         setMine("");
       } else {
         setMine(stored);
@@ -83,6 +94,9 @@ export default function NotificationsPanel({ projectId }: { projectId: string })
         label: deviceName(navigator.userAgent),
       });
       storePushId(projectId, saved.id);
+      // For the service worker, should the push service replace this
+      // subscription while no page is open (web/public/sw-push.js).
+      await saveRenewal({ projectId, subscriptionId: saved.id, renewalToken: saved.renewal_token ?? "", vapidKey: public_key });
       setMine(saved.id);
       setMessage("Notifications are on for this browser.");
       await load();
@@ -102,6 +116,7 @@ export default function NotificationsPanel({ projectId }: { projectId: string })
       // it. Only this project's row goes.
       if (id === mine) {
         storePushId(projectId, "");
+        await forgetRenewal(projectId);
         setMine("");
       }
       await load();
