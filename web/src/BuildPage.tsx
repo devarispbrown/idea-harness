@@ -5,6 +5,7 @@ import FailedBanner from "./FailedBanner";
 import QualityScorecard from "./QualityScorecard";
 import LineagePanel from "./LineagePanel";
 import RunPanel from "./RunPanel";
+import BudgetMeter from "./BudgetMeter";
 import {
   acceptableFindingCount,
   advisoryBacklogLabel,
@@ -562,6 +563,7 @@ export default function BuildPage({
         meta={buildHeaderMeta(executorName)}
       />
       <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
+      <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
 
       {/* task 3: the initiative's dedicated branch and its PR, once
           git.branch_per_initiative has created one. Absent (not just

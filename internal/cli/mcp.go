@@ -572,6 +572,8 @@ func mcpNextHint(action, failure string, tier mcpTier) string {
 			return "the plan review raised blocking findings: list_findings lists them; `idea revise-plan` regenerates the plan, `idea approve-plan` accepts it as it stands."
 		case "verification":
 			return "a requirement was failed after completion: a human records the evidence with `idea verify REQ-n --pass|--fail --note \"...\"`."
+		case "budget":
+			return "the initiative reached its spending cap and stopped: a human raises it with `idea budget <initiative> --set <usd>`, which returns it to where it stopped."
 		}
 		return "waiting on human judgment: list_decisions, list_questions and list_findings show what is open."
 	case action == "advance" || action == "execute":

@@ -9,34 +9,6 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
-### Added — remote use, phones and notifications
-
-- **Use the UI from your phone or another computer, without the token leaving the machine.**
-  Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
-  `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),
-  or `listen` for a second listener — refused unless it is a Tailscale or private address or TLS
-  is configured (`tls_cert`/`tls_key`). Loopback behaves exactly as before. A remote browser signs
-  in with a one-time code from **`idea ui pair`** for an expiring, revocable session cookie;
-  **`idea ui sessions [revoke <id>|--all]`** and Settings → Remote access list and revoke them. The
-  model and its limits: [docs/security-model.md](docs/security-model.md#remote-access); setup:
-  [docs/configuration.md](docs/configuration.md#remote-access).
-- **Web Push notifications** for *needs your judgment*, *change set ready for review*,
-  *verification failed* and *outcome drifting*, chosen per browser in Settings → Notifications.
-  Each subscription is a subscriber on the integration bus, with Slack's outbox, retries and dead
-  letters; payloads are encrypted (RFC 8291) and VAPID-signed (RFC 8292) by a new stdlib-only
-  `internal/webpush`, tested against the RFC's own vector. VAPID keys live under the state root.
-- **Project switcher**, and **`#/p/<projectId>/…`** deep links: the address names its project,
-  and the last choice is remembered.
-- **Phone-first review**: wrapped, collapsible per-file diffs with `+/−` counts, a sticky
-  Approve / Request changes / Reject bar with **Reject with this note**, a **Needs you** entry in
-  the top bar.
-- **Installable app**: web manifest, icons, and a service worker that serves an offline page and
-  caches hashed assets only — never the HTML (which can carry the token) or `/api/`.
-- API: `POST /ui/pairing-codes`, `POST /ui/login`, `POST /ui/logout`, `GET /ui/session`,
-  `GET|DELETE /ui/sessions`, `DELETE /ui/sessions/{id}`, `GET /push/vapid-public-key`, and
-  `GET|POST /projects/{projectId}/push/subscriptions`, `PATCH|DELETE …/{id}`, `POST …/{id}/test`.
-  Migrations: global.db 2 (sessions, pairing codes), state.db 46 (push subscriptions).
-
 ### Changed — BREAKING
 
 | Was | Now |
@@ -69,6 +41,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Changed
 
+- **Every `harness.yaml` write keeps your comments and key order, and is validated like a load.**
+  `idea model set`, `idea executors setup` and the Settings saves used to re-marshal the whole file
+  (dropping every comment) and checked only `network`, so a write could produce a file the next
+  load refused. The write path now runs the schema, the inline-secret sweep and the structural
+  checks before writing, and merges onto the existing document's comments. The written file is
+  indented with two spaces (it was four).
+- Strict (closed) request bodies on the five new write endpoints from their first release:
+  `PUT …/integrations/{name}`, `PUT …/budget`, `PUT …/initiatives/{id}/budget`,
+  `PUT …/automations/{name}` and `POST …/automations/{name}/run`. Not a breaking change: none
+  existed before.
 - The project event stream's SSE id is now `<event seq>.<run event id>`. A client that stored a bare
   `<event seq>` still resumes correctly (run events start at now); one that parsed the id as an
   integer must split on `.`.
@@ -113,6 +95,32 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Use the UI from your phone or another computer, without the token leaving the machine.**
+  Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
+  `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),
+  or `listen` for a second listener — refused unless it is a Tailscale or private address or TLS
+  is configured (`tls_cert`/`tls_key`). Loopback behaves exactly as before. A remote browser signs
+  in with a one-time code from **`idea ui pair`** for an expiring, revocable session cookie;
+  **`idea ui sessions [revoke <id>|--all]`** and Settings → Remote access list and revoke them. The
+  model and its limits: [docs/security-model.md](docs/security-model.md#remote-access); setup:
+  [docs/configuration.md](docs/configuration.md#remote-access).
+- **Web Push notifications** for *needs your judgment*, *change set ready for review*,
+  *verification failed* and *outcome drifting*, chosen per browser in Settings → Notifications.
+  Each subscription is a subscriber on the integration bus, with Slack's outbox, retries and dead
+  letters; payloads are encrypted (RFC 8291) and VAPID-signed (RFC 8292) by a new stdlib-only
+  `internal/webpush`, tested against the RFC's own vector. VAPID keys live under the state root.
+- **Project switcher**, and **`#/p/<projectId>/…`** deep links: the address names its project,
+  and the last choice is remembered.
+- **Phone-first review**: wrapped, collapsible per-file diffs with `+/−` counts, a sticky
+  Approve / Request changes / Reject bar with **Reject with this note**, a **Needs you** entry in
+  the top bar.
+- **Installable app**: web manifest, icons, and a service worker that serves an offline page and
+  caches hashed assets only — never the HTML (which can carry the token) or `/api/`.
+- API: `POST /ui/pairing-codes`, `POST /ui/login`, `POST /ui/logout`, `GET /ui/session`,
+  `GET|DELETE /ui/sessions`, `DELETE /ui/sessions/{id}`, `GET /push/vapid-public-key`, and
+  `GET|POST /projects/{projectId}/push/subscriptions`, `PATCH|DELETE …/{id}`, `POST …/{id}/test`.
+  Migrations: global.db 2 (sessions, pairing codes), state.db 46 (push subscriptions).
+
 - **Keyboard and accessibility in the web UI** ([docs/ui.md](docs/ui.md#keyboard-and-accessibility)).
   A **Skip to content** link is the first Tab stop; after a route change focus moves to the new
   page's heading; the command palette, a new **`?` shortcut reference**, and inline forms (Request
@@ -136,6 +144,38 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **The browser suite checks accessibility in the dark colour scheme too.** `expectAccessible`
   runs axe under `prefers-color-scheme: light` and `dark` on every page, and now also covers the
   queue, Design, the document reader, the command palette and the shortcut reference.
+
+- **Spending caps per initiative** ([docs/configuration.md](docs/configuration.md#budget)).
+  `budget.default_initiative_usd` caps every initiative; `idea budget <initiative> --set <usd>` (or
+  the Build page's meter, or `PUT …/initiatives/{id}/budget`) sets one initiative's own. The cap is
+  checked before every model call and before the coding agent starts, for every executor kind
+  (`acp` and `openhands` included); reaching it parks the initiative on `needs_human_judgment` with
+  the new reason `budget_exceeded` (`idea next`: `resolve budget`) and publishes
+  `initiative.budget_exceeded` on the integration bus. Raising the cap returns the initiative to
+  where it stopped. Spend is the initiative's recorded spend (`GET …/costs`); a coding agent that
+  reports no cost (hermes, omp) is stated as not counted. The meter shows in the initiative header
+  and on Build; `idea budget` with no initiative lists every meter and `--set` there sets the
+  project default. `idea eval --max-cost <usd>` caps a whole eval run the same way.
+- **Automations** (`#/automations`, [docs/configuration.md](docs/configuration.md#automations)):
+  every background job in one place, each off until enabled, with its schedule, last and next run,
+  history (status, cost) and Run now. Linear inbound polling (existing; its switch is still
+  `integrations.linear.inbound`), **scheduled metric measurement** (new:
+  `automations.metric_measurement` measures command/url metrics on each one's cadence, at most every
+  15 minutes, still honouring `outcomes.allow_url_sources`) and a **scheduled eval** (new:
+  `automations.eval` runs `idea eval` against a configured model every `interval_hours`, capped at
+  `max_cost_usd` per run, writes reports to the project's state directory and publishes
+  `eval.regressed` when it regresses against its baseline). Run history is kept in the project
+  database (migration 47, with the spending caps). API: `GET/PUT …/automations[/{name}]`, `POST …/automations/{name}/run`.
+- **Integrations and executor profiles are editable in Settings.** Slack (channel, events, who is
+  mentioned, who may act) and Linear (team, project, inbound label, poll interval, state mapping)
+  through `PUT …/integrations/{name}`, showing whether each token variable is set and never a
+  value; the executor profile — kind, image, model, the ACP command/key variable/timeout, the
+  OpenHands server/agent/key withholding/UI link, and `executor.mcp_servers` (stdio, http, sse;
+  each env var or header a literal or a variable name, secret-looking literals refused) — through
+  `PUT …/executors` and the new `GET …/executors/config`, with each kind's trust trade-off and the
+  executor/model compatibility advisory beside it.
+- `demo.cost_per_call_usd`: the demo provider reports a cost per call, so a spending cap can be
+  reached in CI and the browser suite without a real provider.
 
 - **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
   page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full

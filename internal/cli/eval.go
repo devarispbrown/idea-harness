@@ -26,6 +26,7 @@ var evalFlags = flagSpec{
 	"--baseline": flagValue,
 	"--timeout":  flagValue,
 	"--keep":     flagBool,
+	"--max-cost": flagValue,
 }
 
 // cmdEval runs an eval suite end to end on an in-process daemon of its own
@@ -73,6 +74,13 @@ func cmdEval(a cmdArgs, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--timeout must be a duration such as 20m, got %q", t)
 		}
 		opts.CaseTimeout = d
+	}
+	if m := a.flags.value("--max-cost"); m != "" {
+		v, err := parseUSD(m)
+		if err != nil || v <= 0 {
+			return usageErrorf("--max-cost takes a dollar amount > 0, e.g. --max-cost 2 (got %q)", m)
+		}
+		opts.MaxCostUSD = v
 	}
 	if opts.Keep {
 		dir, err := os.MkdirTemp("", "idea-eval-")

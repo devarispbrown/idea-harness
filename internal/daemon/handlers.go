@@ -3838,6 +3838,17 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		OpenHandsAPIKeyEnv  *string   `json:"openhands_api_key_env"`
 		OpenHandsAgent      *string   `json:"openhands_agent"`
 		OpenHandsACPCommand *[]string `json:"openhands_acp_command"`
+		// The rest of the executor block, for the Settings editor: acp's
+		// turn timeout, openhands' key withholding, UI link, workspace,
+		// step and time bounds, and the MCP servers handed to an acp agent
+		// (a full replacement list; [] removes them all).
+		ACPTimeoutSeconds            *int                      `json:"acp_timeout_seconds"`
+		OpenHandsWithholdProviderKey *bool                     `json:"openhands_withhold_provider_key"`
+		OpenHandsUIURL               *string                   `json:"openhands_ui_url"`
+		OpenHandsWorkspaceDir        *string                   `json:"openhands_workspace_dir"`
+		OpenHandsMaxIterations       *int                      `json:"openhands_max_iterations"`
+		OpenHandsTimeoutSeconds      *int                      `json:"openhands_timeout_seconds"`
+		MCPServers                   *[]config.MCPServerConfig `json:"mcp_servers"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -3885,6 +3896,27 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.OpenHandsACPCommand != nil {
 		cfg.Harness.Executor.OpenHands.ACPCommand = *body.OpenHandsACPCommand
+	}
+	if body.ACPTimeoutSeconds != nil {
+		cfg.Harness.Executor.ACP.TimeoutSeconds = *body.ACPTimeoutSeconds
+	}
+	if body.OpenHandsWithholdProviderKey != nil {
+		cfg.Harness.Executor.OpenHands.WithholdProviderKey = *body.OpenHandsWithholdProviderKey
+	}
+	if body.OpenHandsUIURL != nil {
+		cfg.Harness.Executor.OpenHands.UIURL = strings.TrimSpace(*body.OpenHandsUIURL)
+	}
+	if body.OpenHandsWorkspaceDir != nil {
+		cfg.Harness.Executor.OpenHands.WorkspaceDir = strings.TrimSpace(*body.OpenHandsWorkspaceDir)
+	}
+	if body.OpenHandsMaxIterations != nil {
+		cfg.Harness.Executor.OpenHands.MaxIterations = *body.OpenHandsMaxIterations
+	}
+	if body.OpenHandsTimeoutSeconds != nil {
+		cfg.Harness.Executor.OpenHands.TimeoutSeconds = *body.OpenHandsTimeoutSeconds
+	}
+	if body.MCPServers != nil {
+		cfg.Harness.Executor.MCPServers = *body.MCPServers // [] removes them all
 	}
 	// openhands without a server would save a configuration every run then
 	// refuses, and an unsafe URL (plain http off-machine) is refused before

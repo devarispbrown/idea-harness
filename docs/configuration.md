@@ -112,6 +112,21 @@ outcomes:
   image: ""                     # sandbox image for command sources (default: check.image, then derived)
   measure_timeout_seconds: 120  # bound on one command source
   allow_url_sources: false      # opt in to fetching url sources (public addresses only)
+
+# Spending cap per initiative, in USD (0 = none). An initiative can set its own
+# with `idea budget <initiative> --set <usd>`. See "Budget" below.
+budget:
+  default_initiative_usd: 0
+
+# Scheduled background jobs, every one off until enabled. See "Automations".
+automations:
+  metric_measurement:
+    enabled: false              # measure command/url metrics on their own cadence
+  eval:
+    enabled: false              # run `idea eval` on a schedule (needs model + max_cost_usd)
+    model: ""                   # provider/model
+    interval_hours: 24
+    max_cost_usd: 0             # per-run cap; required to enable
 ```
 
 Top-level fields:
@@ -160,6 +175,10 @@ Top-level fields:
 | `outcomes.image` | sandbox image a metric's `command` source runs in | `check.image`, then the image derived from the project's toolchain markers, then the sandbox's minimal `alpine:3.20` |
 | `outcomes.measure_timeout_seconds` | bound on one `command` source; past it the measurement fails and nothing is recorded | `120` |
 | `outcomes.allow_url_sources` | fetch metrics' `url` sources at all. Off by default: it is the one measurement path that reaches the network, and `network: enabled` (which is about research) does not imply it | `false` |
+| `budget.default_initiative_usd` | spending cap for every initiative without its own (`idea budget`), checked before every model call and before the coding agent starts; reaching it parks the initiative on `needs_human_judgment` (`budget_exceeded`). See "Budget" below | `0` (no cap) |
+| `automations.metric_measurement.enabled` | measure each command/url metric on its own `cadence` (at most every 15 minutes). See "Automations" below | `false` |
+| `automations.eval.*` | `enabled`, `model`, `interval_hours`, `max_cost_usd`, `suite`, `cases`, `baseline` — the scheduled `idea eval`. See "Automations" below | off |
+| `demo.cost_per_call_usd` | makes every demo-provider call report this cost, so a spending cap can be reached without a real provider (CI, the browser suite) | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
 | `verify.dimensions.<dimension>` | `off` \| `advisory` \| `gate` for one of `setup_reproducibility`, `docs_completeness`, `api_compatibility`, `api_ergonomics`, `security`, `performance`, `operational_readiness`. See "Quality dimensions" below | per effective rigor (below) |
 | `verify.setup.commands` | the exact commands setup_reproducibility runs, replacing README/Makefile detection | detected |
@@ -168,6 +187,17 @@ Top-level fields:
 | `verify.performance.budgets` | `{name, command, metric, unit, max, max_regression_pct}` budgets | none — performance `not_measured` |
 | `verify.model_review` | add a model-reviewed check to `docs_completeness` and/or `operational_readiness` | none |
 | `verify.timeout_seconds` | per-command bound for sandboxed quality commands | `check_timeout_seconds`, else `600` |
+
+### Writes from Settings, Automations and the CLI
+
+`idea model set`, `idea executors setup`, `idea budget --set` and every save in the web UI's
+Settings and Automations pages write `harness.yaml` through one path. It re-reads the file from
+disk (so a hand edit is never clobbered), changes only the fields the request names, refuses
+anything `idea config validate` would refuse — the schema, an inline secret, a token pasted into an
+`*_env` field — before writing a byte, **keeps your comments** and your key order, and reloads the
+project so the change applies without restarting the daemon. A reload is refused while an operation
+is running; the file is then written but not applied (`409 config written but not applied`), and
+the next request after the operation finishes picks it up.
 
 ### Check auto-detection
 
@@ -874,6 +904,46 @@ its push service (Google's, Mozilla's or Apple's); a plain-HTTP Tailscale IP is 
 daemon's VAPID key is generated on first use in `<state root>/push/vapid.json`; deleting it orphans
 every subscription.
 
+## Budget
+
+A spending cap in US dollars per initiative: `budget.default_initiative_usd` for every initiative
+in the project, or one initiative's own cap (stored in the project's state database, since a cap is
+a decision about one piece of work) — `idea budget <initiative> --set <usd>`, the Build page's
+meter, or `PUT …/initiatives/{id}/budget`. Its own cap wins; `--clear` returns it to the default.
+
+- **What counts.** The initiative's own recorded spend, the number `GET …/costs` reports: every
+  model call's billed cost (retries included), plus the coding agent's where the agent reported one.
+  **Hermes and OMP usually print no cost, so their spend is not counted** — the meter says so
+  (`agent_not_counted`) rather than presenting a partial number as the whole.
+- **Where it is enforced.** Before every model call (the design pipeline, reviews, the planner,
+  image descriptions) and before the coding agent starts, for every executor kind — the local
+  container kinds, `acp` and `openhands` alike. A call already in flight finishes and is recorded,
+  so an initiative can end at most one call over its cap.
+- **What happens.** The run stops with `budget exceeded: …` and the initiative is parked on
+  `needs_human_judgment` with reason `budget_exceeded` (`idea next` answers `resolve budget`),
+  remembering the status it was in. An `initiative.budget_exceeded` event goes to the integration
+  bus (Slack posts it by default). Raising the cap past the spend returns the initiative to where it
+  stopped — `plan_approved` (or its earlier judgment) for a build-phase stop, `failed` naming
+  `idea retry` for a stop in a new initiative's design pipeline — and the step is run again.
+- **Not the same as `review.max_cost_usd`**, which is a process-lifetime ceiling on model calls
+  reset by every daemon restart or config reload. The budget survives both.
+
+## Automations
+
+Background jobs the daemon runs on a schedule. **Every one is off until a person enables it** (the
+Automations page, `PUT …/automations/{name}`, or the YAML below); a section that merely exists does
+not run. "Run now" runs one job once, enabled or not.
+
+| Job | Switch | Schedule | What it does |
+|---|---|---|---|
+| Linear inbound polling | `integrations.linear.inbound` (default `true` once Linear is configured) | every `poll_interval_seconds` | imports issues carrying the inbound label as initiatives ([integrations.md](integrations.md)) |
+| Scheduled metric measurement | `automations.metric_measurement.enabled` | each metric's own `cadence`, at most every 15 minutes | `idea metric measure` for every live metric with a `command` or `url` source. Manual metrics and metrics without a cadence are never scheduled; `url` sources still need `outcomes.allow_url_sources` — enabling the schedule implies no network |
+| Scheduled eval | `automations.eval.enabled` | every `interval_hours` (default 24); the first run is one interval after enabling | `idea eval` against `model`, capped at `max_cost_usd` per run (required: each case's initiative is held to what is left, and no case starts once it is spent). Reports are written to the project's state directory (`eval-reports/<stamp>.json` and `.md`) and compared with `baseline` (a saved report, relative to the project root) or, when unset, with the previous run; a regression is an `eval.regressed` event on the integration bus |
+
+Each run is recorded with its trigger (`schedule` or `manual`), status, cost and a summary, and the
+Automations page lists the history. For Linear, only polls that imported an issue, failed, or were
+run by hand are kept — a quiet poll every minute would bury those.
+
 ## Objectives & outcomes
 
 The PRD stage states the objectives an initiative exists to move (`OBJ-n`), each with outcome
@@ -890,8 +960,9 @@ metric's **source** says how its value is read:
 There is deliberately no networked `command` source: a number that lives behind an API is a `url`
 source, where the request is the daemon's own and goes through the address guard; a command with
 egress would be project code with the network, which the check sandbox exists to prevent. Nothing
-measures on a timer — a metric with a `cadence` that goes unmeasured becomes `stale`, which `idea
-status`, `idea next` and the Health page report.
+measures on a timer unless you enable [`automations.metric_measurement`](#automations) — a metric
+with a `cadence` that goes unmeasured becomes `stale`, which `idea status`, `idea next` and the
+Health page report.
 
 Drift (`off_track`, `regressed`, `stale`, `no_data`, `on_track`) is computed deterministically on
 every read; the exact rules are in the README's "Objectives & outcomes" section. An observation that

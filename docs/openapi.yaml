@@ -128,6 +128,8 @@ tags:
     description: Objectives, outcome metrics, observations and drift — the outcome end of the Product Graph.
   - name: remote
     description: Remote browser sign-in (pairing codes, sessions) and Web Push notification subscriptions.
+  - name: automations
+    description: Scheduled background jobs - Linear inbound polling, metric measurement, eval - each off until enabled.
 
 paths:
   /api/v1/health:
@@ -883,8 +885,9 @@ paths:
         `resolve plan-dependencies` (the plan has unsatisfied task dependencies - **only**
         regenerate; approving locks in an incomplete graph and leaves a blocking finding that
         wedges completion), `resolve plan` (the plan review raised blocking findings - approve or
-        regenerate) and `resolve verification` (a requirement was failed after completion -
-        re-verify). A bare `resolve`, with no reason, is what an initiative parked before the reason was
+        regenerate), `resolve verification` (a requirement was failed after completion -
+        re-verify) and `resolve budget` (the initiative reached its spending cap - raise it with
+        `PUT .../budget`, which returns the initiative to where it stopped). A bare `resolve`, with no reason, is what an initiative parked before the reason was
         recorded reports - every initiative parked in 0.3.0 or earlier included; clients should
         render it as "see `idea status`" rather than guessing.
 
@@ -4115,8 +4118,8 @@ paths:
         **`GET /executors` is not the read side of this.** It returns a catalog of all six
         concrete executor kinds with their capabilities, not a projection of the config, so there is no
         round trip to perform: its per-item key is `name`, this takes `kind`, and echoing an entry
-        back answers `400 json: unknown field "capabilities"`. The writable set is the three
-        properties below.
+        back answers `400 json: unknown field "capabilities"`. `GET /executors/config` is the read
+        side: the executor block exactly as harness.yaml holds it.
 
         Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
         config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
@@ -4173,6 +4176,35 @@ paths:
                   type: array
                   items: { type: string }
                   description: "`executor.openhands.acp_command`, the ACP agent's argv on the server, for `openhands_agent: acp`."
+                acp_timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.acp.timeout_seconds`: one prompt turn's bound (0: the default, 840)."
+                openhands_withhold_provider_key:
+                  type: boolean
+                  description: "`executor.openhands.withhold_provider_key`: keep the coding model's key on this machine; the server supplies its own."
+                openhands_ui_url:
+                  type: string
+                  description: "`executor.openhands.ui_url`: an OpenHands web UI for \"Open in OpenHands\" links; absolute http(s), no credentials."
+                openhands_workspace_dir:
+                  type: string
+                  description: "`executor.openhands.workspace_dir` on the server."
+                openhands_max_iterations:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.openhands.max_iterations` (0: the default, 100)."
+                openhands_timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.openhands.timeout_seconds` (0: the default, 840)."
+                mcp_servers:
+                  type: array
+                  description: |
+                    `executor.mcp_servers`, replaced whole (`[]` removes them all): stdio servers
+                    (`command`, `args`, `env`) or `http`/`sse` servers (`url`, `headers`). Each `env`
+                    or `headers` entry gives exactly one of `value` (a literal, refused when its name or
+                    content looks like a credential) or `value_env` (the NAME of a variable).
+                  items: { type: object }
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -4302,6 +4334,380 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/integrations/{name}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: name
+        in: path
+        required: true
+        description: The integration.
+        schema:
+          type: string
+          enum: [slack, linear]
+    put:
+      tags: [config]
+      operationId: updateIntegration
+      summary: Write one integration's harness.yaml section
+      description: |
+        Replaces `integrations.<name>` in `harness.yaml` with `config` (the section exactly as
+        `IntegrationStatus.config` returns it), or removes it with `config: null`, which turns the
+        integration off. The section is validated as a hand edit would be -- the JSON Schema,
+        Slack user ids, `poll_interval_seconds` >= 15, environment-variable names -- before
+        anything is written; the file's comments are kept; and the project is reloaded, so the
+        change takes effect without restarting the daemon.
+
+        Tokens never pass through here: the section names the environment variables that hold them
+        (`bot_token_env`, `app_token_env`, `api_key_env`). A value anywhere in the section that
+        looks like a credential is refused with `400`. The body is closed from this endpoint's
+        first release: an undeclared field, at the top or inside `config`, is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                config:
+                  description: The section (SlackConfig or LinearConfig shape), or null to remove it.
+                  oneOf:
+                    - type: object
+                    - type: "null"
+              required: [config]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                  name: { type: string, enum: [slack, linear] }
+                  removed: { type: boolean }
+                required: [status, name, removed]
+        "400":
+          description: "`invalid body`, an unknown field, a value that looks like a credential, or a section the config validation refuses."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/budget:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: getProjectBudget
+      summary: The project's default spending cap and every initiative's meter
+      description: |
+        `default_initiative_usd` is `budget.default_initiative_usd` in `harness.yaml` (0: no
+        project-wide cap), and `initiatives` carries each initiative's `BudgetStatus`.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The budget overview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectBudget" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [config]
+      operationId: setProjectBudget
+      summary: Set the project's default per-initiative spending cap
+      description: |
+        Writes `budget.default_initiative_usd` (0 removes the project-wide cap) and reloads the
+        project. Every initiative stopped at its cap that has no cap of its own and that the new
+        default leaves room for is returned to where it stopped; their ids are in `resumed`. The
+        body is closed from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                default_initiative_usd: { type: number, minimum: 0 }
+              required: [default_initiative_usd]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                  default_initiative_usd: { type: number }
+                  resumed:
+                    type: array
+                    items: { type: string }
+                required: [status, default_initiative_usd, resumed]
+        "400":
+          description: "`invalid body`, an unknown field, or a missing or negative amount."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/budget:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [initiatives]
+      operationId: getBudget
+      summary: An initiative's spending cap and what it has spent
+      description: |
+        The effective cap (the initiative's own, else the project default, else none), the spend
+        that counts against it (every model call, plus the coding agent's where the agent reported
+        one), and whether the next model or agent call would be refused. `agent_not_counted` is
+        true when the agent ran but reported no cost -- hermes and omp usually do not -- so the
+        meter understates the real spend.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The meter.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BudgetStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [initiatives]
+      operationId: setBudget
+      summary: Set or clear an initiative's own spending cap
+      description: |
+        `{"cap_usd": <number > 0>}` sets the initiative's own cap; `{"clear": true}` returns it to
+        the project default. When the initiative is stopped at its cap (`needs_human_judgment`,
+        `budget_exceeded`) and the new cap leaves room, it is returned to the status it was stopped
+        from and `resumed` is true -- `plan_approved` or the earlier judgment for a build-phase
+        stop, `failed` (naming `idea retry`) for a stop in the design pipeline of a new initiative.
+        The body is closed from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cap_usd: { type: number, exclusiveMinimum: 0 }
+                clear: { type: boolean }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The new meter, and whether the initiative was resumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/BudgetStatus" }
+                  resumed: { type: boolean }
+                required: [budget, resumed]
+        "400":
+          description: "`invalid body`, an unknown field, both or neither of `cap_usd` and `clear`, or a cap <= 0."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [automations]
+      operationId: listAutomations
+      summary: The scheduled background jobs, with their last and next run and history
+      description: |
+        `linear_inbound` (the Linear label poll), `metric_measurement` (outcome metrics with a
+        command or url source, each on its own cadence) and `eval` (`idea eval` against a real
+        model, capped per run). Each is off until enabled. `history` is the most recent runs,
+        newest first, with status and cost. For `linear_inbound` only the polls that imported an
+        issue, failed, or were run by hand are kept.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  automations:
+                    type: array
+                    items: { $ref: "#/components/schemas/AutomationView" }
+                required: [automations]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations/{name}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/AutomationName"
+    put:
+      tags: [automations]
+      operationId: updateAutomation
+      summary: Turn a scheduled job on or off, and set the eval's fields
+      description: |
+        A `harness.yaml` write, validated like a hand edit and applied without a restart.
+        `linear_inbound` and `metric_measurement` take only `enabled` (`linear_inbound` writes
+        `integrations.linear.inbound`, and needs Linear configured -- `409` otherwise); `eval`
+        also takes `model`, `max_cost_usd`, `interval_hours`, `suite`, `cases` and `baseline`.
+        Enabling the eval without a model and a cost cap is refused (`400`). The body is closed
+        from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                model: { type: string, description: "eval: provider/model." }
+                suite: { type: string, description: "eval: a suite file relative to the project root; empty is the built-in suite." }
+                cases:
+                  type: array
+                  items: { type: string }
+                  description: "eval: case names to run; empty runs every case."
+                interval_hours: { type: integer, minimum: 0, description: "eval: default 24." }
+                max_cost_usd: { type: number, minimum: 0, description: "eval: the per-run cap; required to enable." }
+                baseline: { type: string, description: "eval: a saved report relative to the project root; empty compares with the previous run." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The job, as written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationView" }
+        "400":
+          description: "`invalid body`, an unknown field, a field the job does not take, or a configuration the validation refuses."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "Linear is not configured (`linear_inbound`), or `config written but not applied (reload failed): ...`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations/{name}/run:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/AutomationName"
+    post:
+      tags: [automations]
+      operationId: runAutomation
+      summary: Run a job now
+      description: |
+        Starts one run at once, enabled or not -- a person asking for this one run is the
+        enablement -- and answers `202`; the run appears in the job's `history`. `linear_inbound`
+        polls immediately (the poller must be running). `metric_measurement` measures every command
+        or url metric, or only `target` (a metric code or id). `eval` needs its model and cost cap
+        set, and **spends real money** up to that cap. The body is optional and closed: an
+        undeclared field is a `400`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target: { type: string, description: "metric_measurement: one metric's code (MET-n) or id." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "202":
+          description: Started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: started }
+                  name: { type: string }
+                  runs: { type: integer, description: How many runs were started. }
+                required: [status, name, runs]
+        "400":
+          description: "`invalid body` or an unknown field."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The job cannot run now -- the Linear poller is not running, no metric can be measured, the eval has no model or cap, or an eval run is already in progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/executors/config:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: getExecutorConfig
+      summary: The executor block as harness.yaml holds it
+      description: |
+        The read side of `PUT /executors`, for an editor: `config` is `executor` from
+        `harness.yaml` (kind, image, model, `acp`, `openhands`, `mcp_servers`); `env` maps every
+        variable the block names (the OpenHands session key, each MCP `value_env`) to whether it is
+        set, never a value; `problems` are the configuration findings about the block; `compat` is
+        the executor/model compatibility advisory for `?kind=&model=` (defaulting to the saved
+        ones) -- `blocked` when the combination is known to fail every run, otherwise untested.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/ExecutorKind" }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The executor block.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecutorConfigView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -5061,6 +5467,14 @@ components:
       required: true
       description: Initiative id. Every initiative-scoped route names this path parameter `id`.
       schema: { type: string }
+    AutomationName:
+      name: name
+      in: path
+      required: true
+      description: The scheduled job.
+      schema:
+        type: string
+        enum: [linear_inbound, metric_measurement, eval]
     GapKindFilter:
       name: kind
       in: query
@@ -5224,6 +5638,160 @@ components:
           schema: { $ref: "#/components/schemas/OperationAccepted" }
 
   schemas:
+    BudgetStatus:
+      type: object
+      title: BudgetStatus
+      description: |
+        One initiative's spending cap and spend. The cap is checked before every model call and
+        before the coding agent starts; a call already in flight finishes, so spend can end at most
+        one call over the cap.
+      properties:
+        cap_usd: { type: [number, "null"], description: The effective cap; null when there is none. }
+        source: { type: string, enum: [initiative, project, none] }
+        initiative_cap_usd: { type: [number, "null"], description: The initiative's own cap, when it set one. }
+        project_default_usd: { type: number, description: "budget.default_initiative_usd (0: none)." }
+        spent_usd: { type: number, description: What counts against the cap. }
+        model_usd: { type: number }
+        agent_usd: { type: [number, "null"], description: The coding agent's reported spend; null when not measured. }
+        agent_runs: { type: integer }
+        agent_not_counted:
+          type: boolean
+          description: The agent ran but reported no cost (hermes and omp usually do not), so its spend is not in `spent_usd`.
+        remaining_usd: { type: [number, "null"] }
+        exceeded: { type: boolean, description: The next model or agent call would be refused. }
+        parked: { type: boolean, description: "The initiative is stopped on `needs_human_judgment`/`budget_exceeded`." }
+        note: { type: string }
+      required: [cap_usd, source, initiative_cap_usd, project_default_usd, spent_usd, model_usd, agent_usd, agent_runs, agent_not_counted, remaining_usd, exceeded, parked, note]
+
+    ProjectBudget:
+      type: object
+      title: ProjectBudget
+      properties:
+        default_initiative_usd: { type: number }
+        initiatives:
+          type: array
+          items:
+            type: object
+            properties:
+              initiative_id: { type: string }
+              title: { type: string }
+              status: { $ref: "#/components/schemas/InitiativeStatus" }
+              budget: { $ref: "#/components/schemas/BudgetStatus" }
+            required: [initiative_id, title, status, budget]
+      required: [default_initiative_usd, initiatives]
+
+    AutomationRun:
+      type: object
+      title: AutomationRun
+      description: One run of a scheduled job.
+      properties:
+        id: { type: string }
+        automation: { type: string, enum: [linear_inbound, metric_measurement, eval] }
+        target: { type: string, description: "metric_measurement: the metric id." }
+        trigger: { type: string, enum: [schedule, manual] }
+        status: { type: string, enum: [running, succeeded, failed, skipped] }
+        started_at_ms: { type: integer }
+        finished_at_ms: { type: integer }
+        cost_usd: { type: number }
+        summary: { type: string }
+        error: { type: string }
+        report_path: { type: string, description: "eval: the JSON report in the project's state directory." }
+      required: [id, automation, trigger, status, started_at_ms]
+
+    AutomationView:
+      type: object
+      title: AutomationView
+      properties:
+        name: { type: string, enum: [linear_inbound, metric_measurement, eval] }
+        label: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        available: { type: boolean, description: False when the job cannot run at all right now. }
+        unavailable: { type: string, description: Why not, when `available` is false. }
+        schedule: { type: string, description: The cadence in words. }
+        running: { type: boolean }
+        last_run:
+          oneOf:
+            - $ref: "#/components/schemas/AutomationRun"
+            - type: "null"
+        next_run_at: { type: [string, "null"], format: date-time }
+        settings:
+          type: object
+          description: "eval only: its harness.yaml fields."
+          properties:
+            enabled: { type: boolean }
+            model: { type: string }
+            suite: { type: string }
+            cases:
+              type: array
+              items: { type: string }
+            interval_hours: { type: integer }
+            max_cost_usd: { type: number }
+            baseline: { type: string }
+        targets:
+          type: array
+          description: "metric_measurement only: each command or url metric, when it was last measured, when it is next due, and why the schedule skips it, if it does."
+          items:
+            type: object
+            properties:
+              metric_id: { type: string }
+              initiative_id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              source: { type: string, enum: [command, url] }
+              cadence: { type: string }
+              last_at: { type: string, format: date-time }
+              next_at: { type: string, format: date-time }
+              skipped: { type: string }
+            required: [metric_id, initiative_id, code, name, source, cadence]
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/AutomationRun" }
+        note: { type: string }
+      required: [name, label, description, enabled, available, schedule, running, last_run, next_run_at, history]
+
+    ExecutorConfigView:
+      type: object
+      title: ExecutorConfigView
+      properties:
+        config:
+          type: object
+          description: "`executor` in harness.yaml: kind, image, model, acp, openhands, mcp_servers (see docs/configuration.md)."
+          properties:
+            kind: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            model: { type: string }
+            acp: { type: object }
+            openhands: { type: object }
+            mcp_servers:
+              type: array
+              items: { type: object }
+          required: [kind]
+        compat:
+          description: The executor/model compatibility advisory; null when verified or nothing to say.
+          oneOf:
+            - type: object
+              properties:
+                kind: { type: string }
+                model: { type: string }
+                blocked: { type: boolean }
+                message: { type: string }
+              required: [kind, model, blocked, message]
+            - type: "null"
+        env:
+          type: object
+          additionalProperties: { type: boolean }
+        problems:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string, enum: [error, warn] }
+              field: { type: string }
+              message: { type: string }
+            required: [severity, field, message]
+      required: [config, compat, env, problems]
+
     DocComment:
       type: object
       description: |
@@ -5291,7 +5859,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 135 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 144 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -5403,7 +5971,10 @@ components:
         `plan_dependencies` **only** by regenerating - approving there locks in a dependency
         graph already known to be incomplete and leaves a blocking finding that wedges
         completion - and `verification` by recording evidence, not by touching the plan.
-      enum: [prd_review, plan_dependencies, plan_review, verification]
+        `budget_exceeded` means the initiative reached its spending cap and the engine stopped
+        before the next model or agent call; raising the cap (`PUT .../budget`) returns it to the
+        status it was stopped from.
+      enum: [prd_review, plan_dependencies, plan_review, verification, budget_exceeded]
 
     TrustLevel:
       type: string
@@ -7308,7 +7879,15 @@ components:
         integrations:
           type: array
           items: { $ref: "#/components/schemas/IntegrationStatus" }
-      required: [integrations]
+        event_kinds:
+          type: array
+          items: { type: string }
+          description: Every event kind `integrations.slack.events` accepts.
+        default_slack_events:
+          type: array
+          items: { type: string }
+          description: What Slack posts when `events` is unset.
+      required: [integrations, event_kinds, default_slack_events]
 
     IntegrationStatus:
       type: object
@@ -7362,7 +7941,18 @@ components:
         linked_issues:
           type: integer
           description: Linear issues linked to initiatives and tasks.
-      required: [name, configured, active, problems]
+        config:
+          description: |
+            The integration's harness.yaml section as written (null when not configured): what
+            `PUT /integrations/{name}` takes. Environment-variable names only, never a token.
+          oneOf:
+            - type: object
+            - type: "null"
+        token_envs:
+          type: array
+          items: { type: string }
+          description: The environment variables the integration reads, defaults applied.
+      required: [name, configured, active, problems, config, token_envs]
 
     PairingCode:
       type: object

@@ -201,6 +201,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 			engine := pr.engine
 			pi.syncer = &linear.Syncer{
 				ProjectID: projectID, Cfg: *l, DB: pr.db, Actions: actions, Redact: redact, Log: r.log,
+				OnPoll: func(rec linear.PollRecord) { r.recordLinearPoll(pr.db, rec) },
 				Client: &linear.Client{Endpoint: hub.linearEndpoint, APIKey: linearKey, HTTP: hub.httpClient},
 				Why: func(ctx context.Context, initiativeID, taskID string) ([]linear.WhyStep, error) {
 					items, err := engine.Why(ctx, initiativeID, "task", taskID)
@@ -441,6 +442,14 @@ type IntegrationStatus struct {
 	Poll        *linear.PollState  `json:"poll,omitempty"`
 	// LinkedIssues counts Linear issues linked to initiatives and tasks.
 	LinkedIssues int `json:"linked_issues,omitempty"`
+	// Config is the integration's harness.yaml section as written (null when
+	// not configured), for the Settings editor. It holds environment
+	// variable NAMES only; Tokens says whether each is set.
+	Config any `json:"config"`
+	// TokenEnvs names the variables the integration reads (defaults
+	// applied), so an unconfigured integration's editor can say which ones
+	// it will need.
+	TokenEnvs []string `json:"token_envs"`
 }
 
 var integrationNames = []string{"slack", "linear"}
@@ -457,7 +466,13 @@ func (s *Server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"integrations": out,
+		// The event vocabulary and Slack's default selection, so the editor
+		// lists what harness.yaml accepts rather than a copy of its own.
+		"event_kinds":          config.IntegrationEventKinds,
+		"default_slack_events": config.DefaultSlackEvents,
+	})
 }
 
 func (r *Runtime) integrationStatus(ctx context.Context, projectID string, pr *projectRuntime) ([]IntegrationStatus, error) {
@@ -472,6 +487,26 @@ func (r *Runtime) integrationStatus(ctx context.Context, projectID string, pr *p
 	for _, name := range integrationNames {
 		st := IntegrationStatus{Name: name, Problems: []string{}}
 		st.Configured = (name == "slack" && cfg.Slack != nil) || (name == "linear" && cfg.Linear != nil)
+		switch {
+		case name == "slack" && cfg.Slack != nil:
+			st.Config = cfg.Slack
+			st.TokenEnvs = []string{cfg.Slack.BotTokenEnvName(), cfg.Slack.AppTokenEnvName()}
+		case name == "slack":
+			st.TokenEnvs = []string{config.SlackConfig{}.BotTokenEnvName(), config.SlackConfig{}.AppTokenEnvName()}
+		case name == "linear" && cfg.Linear != nil:
+			st.Config = cfg.Linear
+			st.TokenEnvs = []string{cfg.Linear.APIKeyEnvName()}
+		default:
+			st.TokenEnvs = []string{config.LinearConfig{}.APIKeyEnvName()}
+		}
+		if st.Tokens == nil {
+			// Set-or-not for every variable, even before the integration is
+			// running (the hub only fills Tokens for a started one).
+			st.Tokens = map[string]bool{}
+			for _, env := range st.TokenEnvs {
+				st.Tokens[env] = lookupEnv(env, pr.dotEnv) != ""
+			}
+		}
 		if st.Configured && pi != nil {
 			st.Tokens = pi.tokens[name]
 			st.Problems = append(st.Problems, pi.problems[name]...)

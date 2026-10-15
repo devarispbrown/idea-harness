@@ -41,6 +41,15 @@ const (
 	// KindOutcomeDrifted: an observation moved an outcome metric into
 	// off_track or regressed (Status carries which).
 	KindOutcomeDrifted Kind = "outcome.drifted"
+	// KindBudgetExceeded: an initiative reached its spending cap and the
+	// engine stopped before the next model or agent call (Reason carries
+	// "$spent of $cap (before <call>)"). It is published instead of the
+	// needs_judgment event the same stop produces, not as well.
+	KindBudgetExceeded Kind = "initiative.budget_exceeded"
+	// KindEvalRegressed: a scheduled `idea eval` run regressed against its
+	// baseline (Reason summarizes the regressions). Project-level: no
+	// initiative.
+	KindEvalRegressed Kind = "eval.regressed"
 )
 
 // AllKinds lists every Kind, in the order config.IntegrationEventKinds does.
@@ -48,7 +57,7 @@ var AllKinds = []Kind{
 	KindInitiativeCreated, KindNeedsJudgment, KindPRDApproved, KindPlanApproved,
 	KindChangeSetCreated, KindChangeSetReady, KindChangeSetApproved, KindChangeSetRejected,
 	KindChangeSetApplied, KindChangeSetReverted, KindVerifyPassed, KindVerifyFailed,
-	KindRunFailed, KindTaskStatusChanged, KindOutcomeDrifted,
+	KindRunFailed, KindTaskStatusChanged, KindOutcomeDrifted, KindBudgetExceeded, KindEvalRegressed,
 }
 
 // Event is one typed domain event. It is a SNAPSHOT taken when the bus

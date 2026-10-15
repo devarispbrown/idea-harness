@@ -111,6 +111,17 @@ func translate(ctx context.Context, lk Lookup, ev Event, row store.EventRow) ([]
 		ev.Kind, ev.MetricCode, ev.MetricName, ev.ObjectiveCode, ev.Status = KindOutcomeDrifted, ref.Code, ref.Name, ref.ObjectiveCode, to
 		return []Event{ev}, nil
 
+	case store.BudgetExceededEvent:
+		if err := withInitiative(ctx, lk, &ev, row.AggregateID); err != nil {
+			return nil, err
+		}
+		ev.Kind, ev.Reason = KindBudgetExceeded, row.Operation
+		return []Event{ev}, nil
+
+	case store.EvalRegressedEvent:
+		ev.Kind, ev.Reason = KindEvalRegressed, row.Operation
+		return []Event{ev}, nil
+
 	case "task.status_changed":
 		t, err := lk.GetTask(ctx, row.AggregateID)
 		if err != nil {
@@ -156,6 +167,12 @@ func initiativeStatus(ctx context.Context, lk Lookup, ev Event, row store.EventR
 	}
 	prevStatus, _, _ := strings.Cut(prev, ":")
 	if prevStatus == status {
+		return nil, nil
+	}
+	// A budget stop is announced by its own event (initiative.budget_exceeded,
+	// with the amounts); a second "needs your judgment" for the same stop
+	// would only repeat it with less.
+	if kind == KindNeedsJudgment && reason == string(domain.JudgmentBudget) {
 		return nil, nil
 	}
 	ini, err := lk.GetInitiative(ctx, row.AggregateID)

@@ -49,6 +49,7 @@ nothing in it.
 | `#/i/<initiativeId>/quality` | Quality scorecard and history |
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
+| `#/automations` | **Automations** — every scheduled background job (Linear inbound polling, metric measurement, eval), each off until enabled, with its schedule, last and next run, history and Run now; reached from the sidebar's **Automations** button and the command palette |
 | `#/settings` | Settings |
 
 Every route may carry a **project prefix**, `#/p/<projectId>/…` — `#/p/<projectId>/i/<id>/build`
@@ -264,7 +265,11 @@ viewport and whether or not Build has started.
 The header reads `<executor> executor`, with `· placeholder code` appended only for `internal`.
 Above the cards, the next task's **Run TASK-n: <title>** button, and under it a labelled **Note to
 the agent for TASK-n** field — appended to the implementer's brief, as `idea execute --note` does. A
-failed run's banner has its own note field for its **Retry**. Below, one card per change set showing
+failed run's banner has its own note field for its **Retry**. A **Spending cap** card shows the initiative's meter — spent against its cap, model
+calls and the coding agent split out, and a plain statement when the agent's spend is not counted
+(hermes and omp report none) — with a field to set this initiative's own cap (**Set cap**, or
+**Raise cap** when it is stopped at one) and **Use project default**; raising a cap past the spend
+sends a stopped initiative back to where it stopped. Below, one card per change set showing
 its `CHG-n` code, the task title, the first 12 characters of the patch digest, a status chip, and
 **View diff**.
 
@@ -556,22 +561,39 @@ GROQ_API_KEY`.
 
 ### Executor
 
+The executor profile — the whole `executor` block — is edited here, with each kind's trust
+trade-off stated under the kind (nothing leaves the machine, local with network and your key, or
+another machine), the executor/model compatibility advisory as you type ("Known not to work" /
+"Untested"), the block's configuration problems, and which referenced variables are set.
+
 - **Kind** — `auto` (what an unset kind means), `internal` (the placeholder), `container`, `omp`,
-  or `hermes`. The selection is what `harness.yaml` asks for; under `auto` the card also says what
+  `hermes`, `acp` or `openhands`. The selection is what `harness.yaml` asks for; under `auto` the card also says what
   it resolves to right now — "Requested: auto · resolves to: internal." — with the daemon's
   `NO REAL CODE WILL BE WRITTEN` warning when it fell back to the placeholder (`GET …/executors`'
   `resolution`).
 - **Image** — the container image carrying the agent CLI.
 - **Model** — the coding model as `provider/model`; empty falls back to the default.
+- **ACP agent** (`acp`) — the agent's command inside the image (words, or a JSON array), the name
+  the provider key is exposed under, and the turn timeout.
+- **OpenHands Agent Server** (`openhands`) — the server URL (https unless loopback), the agent
+  (`openhands` or an ACP agent the server carries, with its command), the session key's variable
+  name, **Keep the coding model's provider key on this machine**, and the optional web UI link.
+- **MCP servers** (`acp`) — each a stdio server (command, arguments, environment) or an http/sse
+  server (URL, headers); every variable or header is **from variable** (a name) or **literal**, and
+  a literal whose name or value looks like a credential is refused at the field, as the config
+  loader refuses it.
 
-`internal`, or `auto` resolving to it, shows "placeholder executor — writes no real code. Select
-hermes/omp for real code." The image and key status lines appear only for a kind that has an image
-or a key to report.
-Selecting `omp` or `hermes` shows a warning:
+**Save executor** sends only what changed. **Run smoke test** runs the saved profile for any coding
+agent kind (hermes, omp, acp, openhands), and is disabled while the form has unsaved changes.
 
-> Runs with network egress + auto-approve and receives its provider API key (see
-> [`security-model.md`](security-model.md#what-this-does-not-protect-against)). Only use an image you
-> trust.
+The image and key status lines appear only for a kind that has an image or a key to report. The
+trade-off line under the kind is the one [`agents.md`](agents.md#security--trust-tradeoff--read-this-before-wiring-an-agent)
+states: `internal` writes a placeholder and nothing leaves the machine (and `auto` resolving to it
+carries the daemon's `NO REAL CODE WILL BE WRITTEN` warning); `omp` and `hermes` run with network
+egress, auto-approve and their provider API key, so only an image you trust; `acp` the same, widened
+by its MCP servers; `openhands` uploads the work root — and the provider key unless withheld — to
+another machine whose sandbox the harness does not enforce (see
+[`security-model.md`](security-model.md#what-this-does-not-protect-against)).
 
 That is the same tradeoff `idea executors setup` prints. Read [`docs/agents.md`](agents.md) before
 switching; the one-liner is `idea executors setup --kind hermes|omp --image <img> --model
@@ -584,14 +606,38 @@ A single **git commit on apply** checkbox — the `git_commit: true` option in
 staging only the patch's files. The resulting commit SHA is not surfaced anywhere in the UI; revert
 remains a byte-for-byte file restore, not git history.
 
+### Budget
+
+The project's default spending cap per initiative (`budget.default_initiative_usd`; empty for none),
+and every initiative's meter. One initiative's own cap is set on its Build page. When a cap is in
+force, a compact meter shows above every phase of that initiative; when the initiative is stopped at
+its cap, the meter says so and links to Build.
+
 ### Integrations
 
-Read-only health for Slack and Linear: whether each is configured and running, which token
+Health for Slack and Linear, and an editor for each: whether each is configured and running, which token
 environment variables are set (never their values), problems such as an empty Slack allowlist or
 dropped deliveries, delivery counts, the Socket Mode connection and the Linear poll. A configured
 integration has a **Send test message** (Slack) or **Test connection** (Linear) button, the same
-check as `idea integrations test`. Configuration stays in `harness.yaml` and `.env` so tokens never
-pass through the browser; see [`integrations.md`](integrations.md).
+check as `idea integrations test`. **Set up** / **Edit settings** opens the integration's section:
+Slack's channel ID, the events it posts (with **Reset to the defaults**), who is mentioned when a
+human is needed, who may act from Slack, Socket Mode, and the token variable names; Linear's team,
+project, inbound polling and label, poll interval and state mapping. Saving writes the section to
+`harness.yaml` (validated as a hand edit would be, comments kept, no restart); **Turn off** removes
+it. Tokens never pass through the browser — the editor names the variables and says whether each is
+set, and refuses a token pasted into any field; see [`integrations.md`](integrations.md).
+
+## Automations
+
+`#/automations` lists the background jobs: **Linear inbound polling**, **Scheduled metric
+measurement** and **Scheduled eval**. Each card has an On/Off switch (off by default — nothing runs
+until it is turned on), its schedule, when it last ran and runs next, **Run now** (one run, on or
+off), and its history — when, trigger (schedule or Run now), status, cost and the result or error.
+The measurement card lists the command/url metrics it covers with each one's cadence, last and next
+measurement, why the schedule skips one (no cadence, url sources off), and **Measure now**. The eval
+card sets the model, the per-run cost cap (required), the interval, and optionally the suite, cases
+and baseline; its Run now spends real money up to the cap. See
+[`configuration.md`](configuration.md#automations).
 
 ### Notifications
 
@@ -663,5 +709,9 @@ intercept those requests: no product data is ever stored on the device.
   answers a question, reviews a diff and approves and applies from the sticky bar at 390px, and signs
   out from Settings, with an axe check on each page. `remoteUse.test.ts` and
   `remoteUse.components.test.tsx` cover the same logic and components in vitest.
+- **Settings and automations** — `web/e2e/settings-automations.e2e.ts` edits an integration,
+  switches the executor profile to internal and back, watches a spending cap stop a demo run
+  (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
+  it now and reads its history.
 - **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
   why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.

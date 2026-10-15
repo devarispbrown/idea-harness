@@ -56,6 +56,13 @@ describe("derivePhases and the Define phase", () => {
     expect(defineDone({ ...base, judgmentReason: "verification" })).toBe(true);
   });
 
+  it("reads a budget stop by the artifacts, since it can happen in any phase", () => {
+    expect(defineDone({ ...base, judgmentReason: "budget_exceeded" })).toBe(true);
+    expect(
+      defineDone({ ...base, judgmentReason: "budget_exceeded", artifacts: base.artifacts.filter((a) => a.kind !== "execution_plan") }),
+    ).toBe(false);
+  });
+
   it("IS past define while an operation is running", () => {
     // The regression guard. The status is `running` for the whole of every M2
     // and M3 operation and records no reason, so dropping the artifact check
