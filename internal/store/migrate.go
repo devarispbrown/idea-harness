@@ -860,6 +860,77 @@ CREATE TABLE IF NOT EXISTS integration_links (
 );
 CREATE INDEX IF NOT EXISTS idx_integration_links_remote ON integration_links(integration, kind, remote_id);
 `,
+	// objectives & outcomes: the product outcome end of the graph. An
+	// objective (OBJ-n) is what an initiative exists to move; an outcome
+	// metric (MET-n) is how anyone would know, with a direction, an optional
+	// baseline and guardrail, a target, a measurement source and a cadence; a
+	// metric observation is one measured value with its provenance.
+	//
+	// The links are graph edges, not columns, like task -> requirement:
+	// requirement --serves--> objective is N:M, and a hypothesis assertion
+	// --predicts--> metric and metric --attributed_to--> change_set are
+	// edges so why/impact/trace reach them with no special case.
+	//
+	// baseline and guardrail are nullable REALs because "no baseline" is a
+	// real state with its own drift rule (the first observation stands in);
+	// 0 would be a baseline. change_set_ids_json on an observation is the
+	// attribution as it was computed when the value was recorded -- which
+	// change sets were applied since the previous observation -- kept even if
+	// one is reverted later, because the observation happened under it.
+	`
+CREATE TABLE IF NOT EXISTS objectives (
+	id                 TEXT PRIMARY KEY,
+	initiative_id      TEXT NOT NULL,
+	code               TEXT NOT NULL,
+	statement          TEXT NOT NULL,
+	rationale          TEXT NOT NULL DEFAULT '',
+	status             TEXT NOT NULL,
+	owner              TEXT NOT NULL DEFAULT '',
+	produced_by_run_id TEXT NOT NULL DEFAULT '',
+	superseded_by      TEXT NOT NULL DEFAULT '',
+	created_at         INTEGER NOT NULL,
+	updated_at         INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_objectives_code ON objectives(initiative_id, code);
+CREATE TABLE IF NOT EXISTS outcome_metrics (
+	id                 TEXT PRIMARY KEY,
+	initiative_id      TEXT NOT NULL,
+	objective_id       TEXT NOT NULL,
+	code               TEXT NOT NULL,
+	name               TEXT NOT NULL,
+	definition         TEXT NOT NULL DEFAULT '',
+	unit               TEXT NOT NULL DEFAULT '',
+	direction          TEXT NOT NULL,
+	baseline           REAL,
+	target             REAL NOT NULL,
+	guardrail          REAL,
+	source_kind        TEXT NOT NULL DEFAULT 'manual',
+	source_command     TEXT NOT NULL DEFAULT '',
+	source_url         TEXT NOT NULL DEFAULT '',
+	source_pointer     TEXT NOT NULL DEFAULT '',
+	cadence            TEXT NOT NULL DEFAULT '',
+	produced_by_run_id TEXT NOT NULL DEFAULT '',
+	superseded_by      TEXT NOT NULL DEFAULT '',
+	created_at         INTEGER NOT NULL,
+	updated_at         INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_metrics_code ON outcome_metrics(initiative_id, code);
+CREATE INDEX IF NOT EXISTS idx_outcome_metrics_objective ON outcome_metrics(objective_id);
+CREATE TABLE IF NOT EXISTS metric_observations (
+	id                  TEXT PRIMARY KEY,
+	initiative_id       TEXT NOT NULL,
+	metric_id           TEXT NOT NULL,
+	value               REAL NOT NULL,
+	observed_at         INTEGER NOT NULL,
+	source              TEXT NOT NULL,
+	note                TEXT NOT NULL DEFAULT '',
+	recorded_by         TEXT NOT NULL,
+	provenance_json     TEXT NOT NULL DEFAULT '[]',
+	change_set_ids_json TEXT NOT NULL DEFAULT '[]',
+	created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_metric_observations_metric ON metric_observations(metric_id, observed_at);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

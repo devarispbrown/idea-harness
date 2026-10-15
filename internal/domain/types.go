@@ -67,7 +67,13 @@ type Requirement struct {
 	// always as fresh as the last check run. Nil/empty means no test is known
 	// to cover this requirement yet, not that it failed.
 	EvidenceTests []EvidenceTest `json:"evidence_tests,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
+	// ObjectiveIDs are the live objectives this requirement serves
+	// (requirement --serves--> objective, N:M). Computed at read time from
+	// graph edges by store.ListRequirements -- never nil there, so a
+	// requirement serving nothing is `[]`, which is exactly the gap the
+	// PRD's deterministic outcome check reports.
+	ObjectiveIDs []string  `json:"objective_ids"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // EvidenceTest is one test-run result mapped to a requirement (C2, wave 3

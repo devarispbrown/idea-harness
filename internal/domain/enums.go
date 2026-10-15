@@ -375,16 +375,122 @@ const (
 	EdgeInvalidates EdgeType = "invalidates"
 	EdgeProducedBy  EdgeType = "produced_by"
 	EdgeConsumes    EdgeType = "consumes"
+	// The outcome chain (Objective -> Hypothesis -> Requirement -> ... ->
+	// Evidence -> outcome). Each points from the dependent node to the node it
+	// exists for, like implements and derived_from, so `why` walks toward the
+	// objective and `impact` walks away from it:
+	//
+	//   requirement --serves--> objective        (N:M, the PRD or a human links it)
+	//   metric      --measures--> objective      (a metric belongs to one objective)
+	//   assertion   --predicts--> metric         ("we believe X will move MET-2")
+	//   metric      --attributed_to--> change_set (CHG-n landed between two observations)
+	//
+	// attributed_to points from the metric to the change set so that `impact
+	// requirement REQ-1` -- which already reaches a task's change sets --
+	// continues on to the outcome metrics those change sets moved.
+	EdgeServes       EdgeType = "serves"
+	EdgeMeasures     EdgeType = "measures"
+	EdgePredicts     EdgeType = "predicts"
+	EdgeAttributedTo EdgeType = "attributed_to"
 )
 
 func (e EdgeType) Valid() bool {
 	switch e {
 	case EdgeSupports, EdgeContradicts, EdgeDerivedFrom, EdgeDependsOn, EdgeImplements,
 		EdgeAddresses, EdgeTests, EdgeVerifies, EdgeReviews, EdgeSupersedes,
-		EdgeInvalidates, EdgeProducedBy, EdgeConsumes:
+		EdgeInvalidates, EdgeProducedBy, EdgeConsumes,
+		EdgeServes, EdgeMeasures, EdgePredicts, EdgeAttributedTo:
 		return true
 	}
 	return false
+}
+
+// ObjectiveStatus is the lifecycle of a product Objective. Only an active
+// objective is checked for drift or required to have a metric: an achieved or
+// abandoned one is kept as a record, not as a live promise.
+type ObjectiveStatus string
+
+const (
+	ObjectiveActive    ObjectiveStatus = "active"
+	ObjectiveAchieved  ObjectiveStatus = "achieved"
+	ObjectiveAbandoned ObjectiveStatus = "abandoned"
+)
+
+func (s ObjectiveStatus) Valid() bool {
+	switch s {
+	case ObjectiveActive, ObjectiveAchieved, ObjectiveAbandoned:
+		return true
+	}
+	return false
+}
+
+// MetricDirection is which way an OutcomeMetric is supposed to move. maintain
+// means "hold it at the target": the value should not move away from it.
+type MetricDirection string
+
+const (
+	DirectionIncrease MetricDirection = "increase"
+	DirectionDecrease MetricDirection = "decrease"
+	DirectionMaintain MetricDirection = "maintain"
+)
+
+func (d MetricDirection) Valid() bool {
+	switch d {
+	case DirectionIncrease, DirectionDecrease, DirectionMaintain:
+		return true
+	}
+	return false
+}
+
+// MetricSourceKind is where an OutcomeMetric's observations come from.
+// manual is recorded by a human (`idea metric record`); command runs a shell
+// command in the no-network check sandbox and reads the number it prints;
+// url fetches a JSON document through the SSRF-guarded fetcher and reads the
+// number at a JSON pointer. Neither command nor url ever runs on its own: a
+// human (or an MCP client) asks for `idea metric measure`.
+type MetricSourceKind string
+
+const (
+	MetricSourceManual  MetricSourceKind = "manual"
+	MetricSourceCommand MetricSourceKind = "command"
+	MetricSourceURL     MetricSourceKind = "url"
+)
+
+func (k MetricSourceKind) Valid() bool {
+	switch k {
+	case MetricSourceManual, MetricSourceCommand, MetricSourceURL:
+		return true
+	}
+	return false
+}
+
+// MetricDrift is the deterministic outcome status of a metric
+// (EvaluateMetricDrift). One primary value is reported, by precedence
+// regressed > off_track > stale > no_data > on_track; the individual signals
+// are carried alongside it on MetricStatus, so a metric that is both stale and
+// off track says so.
+type MetricDrift string
+
+const (
+	DriftOnTrack   MetricDrift = "on_track"
+	DriftOffTrack  MetricDrift = "off_track"
+	DriftStale     MetricDrift = "stale"
+	DriftRegressed MetricDrift = "regressed"
+	DriftNoData    MetricDrift = "no_data"
+)
+
+func (d MetricDrift) Valid() bool {
+	switch d {
+	case DriftOnTrack, DriftOffTrack, DriftStale, DriftRegressed, DriftNoData:
+		return true
+	}
+	return false
+}
+
+// Drifting reports whether d is a status a human should hear about: the
+// metric is going the wrong way, or nobody has looked at it in time.
+func (d MetricDrift) Drifting() bool {
+	return d == DriftOffTrack || d == DriftRegressed || d == DriftStale
 }
 
 // TaskStatus is the lifecycle of an execution-plan Task.
