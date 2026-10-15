@@ -90,8 +90,8 @@ if this file has drifted.
 | `idea logs [-f] [n]` | show (or follow) the daemon log | `--follow`, `-f`, `-n` | no |
 | `idea daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]` | run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access") | `--allowed-hosts`, `--listen`, `--tls-cert`, `--tls-key`, `status`, `stop` | no |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
-| `idea ui pair\|sessions` | sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below) | `pair --json`, `pair --label`, `sessions --all`, `sessions --json` | takes no flags |
-| `idea ui pair [--label <name>]` | mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine | — | — |
+| `idea ui pair\|sessions` | sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below) | `pair --json`, `pair --label`, `pair --qr`, `sessions --all`, `sessions --json` | takes no flags |
+| `idea ui pair [--label <name>] [--qr]` | mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it) | — | — |
 | `idea ui sessions [revoke <id>\|--all]` | list remote browser sessions; revoke one, or every one | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
 | `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |

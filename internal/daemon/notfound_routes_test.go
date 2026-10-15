@@ -63,6 +63,11 @@ var wantStatus = map[string]int{
 	// this too -- a bogus id now reaches the real lookup and gets a real 404.
 	"POST /api/v1/projects/{projectId}/initiatives":                   http.StatusBadRequest,
 	"POST /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase": http.StatusBadRequest,
+	// The service worker's unauthenticated renewal checks its request shape
+	// (JSON plus an Origin, which this walk does not send) before anything
+	// else, and then answers every unknown id with the same 401 as a wrong
+	// token, so it reveals no ids. TestPushRenewalRefusals covers both.
+	"POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew": http.StatusForbidden,
 }
 
 // TestEveryIDRouteAnswers404 walks the route table rather than a hand-written

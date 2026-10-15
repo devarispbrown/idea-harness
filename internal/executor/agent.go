@@ -44,6 +44,10 @@ type agentAttempt struct {
 	// agentHome is bind-mounted into the running container, which is detached
 	// (`docker run -d`), so it must outlive Start and go away with the attempt.
 	agentHome string
+	// grant is the work root and agent home handed to the container user
+	// under a root daemon (containeruser.go), handed back once the container
+	// is removed.
+	grant *mountGrant
 }
 
 func newSandboxedAgentExecutor(store *blob.Store, name, model, image string, provider AgentProvider, buildArgs func(Request, string, string) []string) *SandboxedAgentExecutor {
@@ -196,7 +200,7 @@ func (e *SandboxedAgentExecutor) Capabilities(ctx context.Context) Capabilities 
 // for three releases, describing ContainerSandbox rather than this, and no check
 // in the repo could see the difference.
 func (e *SandboxedAgentExecutor) containerArgs(req Request, attemptID, keyFile, agentHome string) []string {
-	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	uid := containerUser()
 	// No `--rm`. The container runs detached and Status polls it with
 	// `docker inspect`; with --rm, a fast agent (the smoke writes one file in
 	// ~6s) finished and deleted itself between polls, so inspect failed on a run
@@ -340,11 +344,19 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	// Start returns while the agent is still working; deleting the home at that
 	// point pulled its config and state out from under it mid-run, and the
 	// smoke failed in eight seconds.
+	// Under a root daemon the container is not root, so what it must write is
+	// handed to its user first, and back once it is gone (containeruser.go).
+	grant, err := grantMounts(req.WorkRoot, agentHome)
+	if err != nil {
+		removeAgentHome(agentHome)
+		return Attempt{}, err
+	}
 	started := false
 	defer func() {
 		if started {
 			return
 		}
+		defer grant.Restore()
 		// `docker run -d` can create the container and then fail to start it
 		// (exit 125), or be killed by ctx while the daemon goes on to create
 		// it. Either way no attempt is recorded, so nothing else would ever
@@ -371,7 +383,7 @@ func (e *SandboxedAgentExecutor) Start(ctx context.Context, req Request) (Attemp
 	}
 
 	e.mu.Lock()
-	e.attempts[attemptID] = &agentAttempt{req: req, containerID: cid, agentHome: agentHome}
+	e.attempts[attemptID] = &agentAttempt{req: req, containerID: cid, agentHome: agentHome, grant: grant}
 	e.mu.Unlock()
 	started = true
 
@@ -438,6 +450,10 @@ func (e *SandboxedAgentExecutor) remove(ctx context.Context, id string) error {
 	e.mu.Lock()
 	delete(e.attempts, id)
 	e.mu.Unlock()
+	// The container is gone, so nothing can race the walk: hand the work root
+	// back before the engine snapshots it. Best effort, like the home below --
+	// a root daemon can read and remove whatever this misses.
+	_ = a.grant.Restore()
 	// Best effort. The container, and the key in its config, are already
 	// gone, so failing the whole run here would throw away its result for a
 	// directory; one left behind is removed by the next SweepAgentLeftovers.

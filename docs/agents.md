@@ -730,8 +730,9 @@ The coding-agent container is sandboxed for **filesystem and process** isolation
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- runs as the daemon's own UID/GID (`--user <uid>:<gid>`) — so if the daemon runs as root, the
-  container does too; nothing refuses to start or warns
+- never as root: the daemon's own UID/GID, or a fixed unprivileged `65532:65532` when the daemon
+  runs as root (the work root is handed to that user for the run and back afterwards — details in
+  [`security-model.md`](security-model.md))
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 
 But it is **not network-isolated**. The agent needs egress to reach its model API, so

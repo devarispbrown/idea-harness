@@ -663,7 +663,10 @@ push service it uses (host only), a checkbox per event — *needs your judgment*
 for review*, *verification failed*, *outcome drifting* — **Send a test**, and **Turn off** (this
 project only; other projects keep theirs). A notification opens the page it is about. Delivery,
 retries and what the payload carries: [`configuration.md`](configuration.md#push-notifications).
-Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
+If the push service replaces this browser's subscription, the service worker re-registers it on its
+own, page open or not, using a renewal token kept for it at subscribe time
+([`security-model.md`](security-model.md#remote-access)); a browser it cannot renew drops out of the
+list once the push service reports the old one gone, and Settings offers **Turn on** again. Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
 browser without push — on an iPhone, add the app to the Home Screen first.
 
 ### Remote access

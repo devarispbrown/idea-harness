@@ -70,7 +70,9 @@ export function loginErrorMessage(status: number, message: string): string {
     case 401:
       return "That code didn't work — it may be mistyped, already used, or more than ten minutes old. Run `idea ui pair` again for a new one.";
     case 429:
-      return "Too many wrong codes. Sign-in is paused for 15 minutes and every outstanding code was cancelled; then run `idea ui pair` for a new one.";
+      // The daemon says which lock it is -- this device only (the code still
+      // works later), or everyone (codes cancelled) -- and for how long.
+      return message || "Too many wrong codes. Wait up to 15 minutes before trying again; if sign-in is still refused, run `idea ui pair` for a new code.";
     case 403:
       return "This page can't sign in from here: open the idea-harness address directly rather than through another site.";
     default:
