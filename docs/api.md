@@ -32,11 +32,17 @@ Pre-1.0 the API may change in any release; breaking changes are recorded in
 http://127.0.0.1:8787/api/v1
 ```
 
-The daemon binds loopback only and **refuses to start otherwise**: `Run` rejects any non-loopback
-listener address (`internal/daemon/server.go`), because the API token is served to the web UI
-unauthenticated inside `index.html`, so a LAN-reachable daemon would hand the token to anyone who
-loaded the page. The address is overridable via `IDEA_HARNESS_ADDR` (still loopback-only); the CLI
-reads the same variable and defaults to `127.0.0.1:8787`.
+The main listener is loopback only and the daemon **refuses to start otherwise**: `Run` rejects a
+non-loopback `IDEA_HARNESS_ADDR` (`internal/daemon/server.go`), because the page served there
+carries the API token. The CLI reads the same variable and defaults to `127.0.0.1:8787`.
+
+Remote use — a phone, another laptop — is opt-in and separate: an extra listener
+(`daemon.listen`) or a TLS-terminating proxy's hostname (`daemon.allowed_hosts`, e.g. under
+`tailscale serve`). A browser that is not provably on this machine never receives the token; it
+signs in with a one-time pairing code and gets a session cookie instead. The policy, the cookie
+and its CSRF defence are specified once, in
+[`security-model.md`](security-model.md#remote-access); setup is in
+[`configuration.md`](configuration.md#remote-access).
 
 There is no content negotiation and no API versioning beyond the `/api/v1` prefix. Responses are
 JSON except for the endpoints marked **Not JSON** in the tables below
@@ -68,16 +74,22 @@ curl -H "X-Idea-Token: $(cat ~/.local/share/idea-harness/token)" \
   every other endpoint requires the header, so the token never reaches logs, shell history or a
   `Referer`.
 - A missing or wrong token is `401 {"error": "unauthorized"}`.
+- **Remote browsers** authenticate with a session cookie instead of the token, and every
+  state-changing request they make also carries `X-Idea-CSRF` and an `Origin`
+  ([`security-model.md`](security-model.md#remote-access)). A request that presents a token is
+  judged by the token alone — a wrong one is `401` even with a valid cookie.
 
 ### Host and Origin guard
 
 Before authentication, `hostOriginGuard` (same file) rejects requests that a browser on another
-origin could have caused — the DNS-rebinding and CSRF surface a loopback daemon otherwise has:
+origin could have caused — the DNS-rebinding and CSRF surface a loopback daemon otherwise has. The
+names it accepts beyond loopback are opt-in remote access
+([`security-model.md`](security-model.md#remote-access)):
 
 | Condition | Response |
 |---|---|
-| `Host` is not exactly `127.0.0.1`, `localhost` or `::1` (port ignored) | `403 {"error": "invalid host"}` |
-| `Origin` is present and is not a loopback origin, or is the literal `null` | `403 {"error": "invalid origin"}` |
+| `Host` is not exactly `127.0.0.1`, `localhost` or `::1`, a `daemon.allowed_hosts` name, or the remote listener's address (port ignored) | `403 {"error": "invalid host"}` |
+| `Origin` is present and is not in that same set, or is the literal `null` | `403 {"error": "invalid origin"}` |
 | `Origin` absent | allowed (non-browser clients: CLI, `curl`) |
 
 There is no CORS: no `Access-Control-Allow-Origin` is ever sent, so a page on any other origin
@@ -460,6 +472,28 @@ human-added objective is never rewritten by a later PRD revision.
 | GET | `/projects/{projectId}/runs/{runId}/events/stream` | **Not JSON.** SSE stream of the run's events (`event: run_event`, id = seq); resumes from `Last-Event-ID`/`?after=`; `event: end` when the run is over; accepts `?token=`. |
 | POST | `/projects/{projectId}/runs/{runId}/steer` | `{note, interrupt?}`: send a note to the running agent. `{delivery: delivered\|queued\|next_run, message}`; `409` when the run is not running. |
 | GET | `/projects/{projectId}/runs/{runId}/report` | Download the run report - events, files with line counts, findings, cost, steering. `?format=json` (default), `md`, or `zip` (both). |
+
+### Remote access and notifications
+
+Sign-in for browsers on another device, and Web Push. See
+[`security-model.md`](security-model.md#remote-access) for the session model and
+[`ui.md`](ui.md#notifications) for the notification kinds.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls}`. |
+| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used or expired code; ten failures in fifteen minutes lock sign-in (`429`) and cancel every outstanding code. |
+| POST | `/ui/logout` | Revoke the calling session and clear its cookie. `204`. |
+| GET | `/ui/session` | `{auth: token\|session, csrf_token?, session?}` — how this request is authenticated; how a reloaded page gets its CSRF token back. |
+| GET | `/ui/sessions` | Every browser session (newest first, revoked ones included) and `current`. Never a secret. |
+| DELETE | `/ui/sessions` | Revoke every browser session — `idea ui sessions revoke --all`. `{revoked}`. |
+| DELETE | `/ui/sessions/{id}` | Revoke one browser session. `204`. |
+| GET | `/push/vapid-public-key` | The daemon's VAPID public key (the `applicationServerKey` for `PushManager.subscribe`) and the subscribable `event_kinds`. |
+| GET | `/projects/{projectId}/push/subscriptions` | This project's push subscriptions: id, label, the endpoint's **host only**, events, last delivery and error. |
+| POST | `/projects/{projectId}/push/subscriptions` | Subscribe a browser: its `PushSubscription` JSON (`endpoint` must be https) plus `events?` (default all four) and `label?`. Keyed by endpoint: `201` new, `200` updated. Each becomes its own integration-bus subscriber with Slack's delivery semantics. |
+| PATCH | `/projects/{projectId}/push/subscriptions/{id}` | `{events}`: which kinds notify this browser; `[]` pauses it. |
+| DELETE | `/projects/{projectId}/push/subscriptions/{id}` | Unsubscribe, with its bus cursor and pending deliveries. `204`. |
+| POST | `/projects/{projectId}/push/subscriptions/{id}/test` | Send one notification now. `{ok, error?, gone?}`; `gone` means the push service reported it dead and it was removed. |
 
 ## Related
 

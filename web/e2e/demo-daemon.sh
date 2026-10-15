@@ -31,6 +31,11 @@ rm -rf "$WORK"
 mkdir -p "$WORK/state" "$WORK/project"
 export IDEA_HARNESS_STATE="$WORK/state"
 export IDEA_HARNESS_ADDR="127.0.0.1:$PORT"
+# remote.test is how remote.e2e.ts reaches this loopback daemon as a browser
+# on another device would: Chromium maps the name to 127.0.0.1, so the page's
+# Host is not loopback, it is served without the token, and it signs in with a
+# pairing code. Naming it here is what the Host/Origin guard requires.
+printf 'daemon:\n  allowed_hosts: [remote.test]\n' >"$WORK/state/config.yaml"
 
 "$IDEA" daemon >"$WORK/state/daemon.log" 2>&1 &
 echo $! >"$WORK/daemon.pid"

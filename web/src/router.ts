@@ -34,8 +34,50 @@ export function phaseHref(id: string, phase: PhaseName): string {
   return `#/i/${id}/${phase}`;
 }
 
+// ---------- the project prefix ----------
+//
+// The daemon serves several projects, and a link has to say which one it is
+// about or it opens in whichever project the reader happened to have selected
+// last. Every route may carry a `#/p/<projectId>` prefix:
+//
+//   #/p/<pid>/i/<id>/build   -- a change set to review, in that project
+//   #/i/<id>/build           -- the same, in the current project
+//
+// The prefix is optional so every existing `#/…` link keeps working;
+// navigate() adds it for the current project, and the shell canonicalizes a
+// bare hash to the prefixed form (replaceState), so the address bar -- what a
+// person copies, and what a push notification links to -- always names one.
+
+// splitProject separates a hash into its project prefix (null when absent)
+// and the route underneath it, still `#`-prefixed.
+export function splitProject(hash: string): { projectId: string | null; rest: string } {
+  const m = /^#?\/p\/([^/]+)(\/.*)?$/.exec(hash);
+  if (!m) return { projectId: null, rest: hash.startsWith("#") ? hash : "#" + hash };
+  return { projectId: decodeSeg(m[1]), rest: "#" + (m[2] || "/") };
+}
+
+let activeProject = "";
+
+// setActiveProject records the project navigate() prefixes links with. The
+// shell calls it whenever the selected project changes.
+export function setActiveProject(projectId: string): void {
+  activeProject = projectId;
+}
+
+// withProject prefixes an in-app hash with a project. A hash that already
+// names one, or anything that is not an in-app hash, is returned as is.
+export function withProject(href: string, projectId: string = activeProject): string {
+  if (!projectId || !href.startsWith("#/") || href.startsWith("#/p/")) return href;
+  return "#/p/" + encodeURIComponent(projectId) + href.slice(1);
+}
+
+// currentProjectFromHash is the project the address bar names, if any.
+export function currentProjectFromHash(): string | null {
+  return splitProject(window.location.hash || "#/").projectId;
+}
+
 export function parseRoute(hash: string): Route {
-  const path = hash.replace(/^#/, "");
+  const path = splitProject(hash).rest.replace(/^#/, "");
   const segs = path.split("/").filter(Boolean);
   if (segs.length === 0) return { name: "home" };
   if (segs[0] === "settings" && segs.length === 1) return { name: "settings" };
@@ -82,10 +124,12 @@ export function currentRoute(): Route {
   return parseRoute(window.location.hash || "#/");
 }
 
-// navigate changes the hash (triggers the hashchange listener).
+// navigate changes the hash (triggers the hashchange listener), naming the
+// current project unless `to` already names one.
 export function navigate(to: string): void {
-  if (window.location.hash !== to) {
-    window.location.hash = to;
+  const target = withProject(to);
+  if (window.location.hash !== target) {
+    window.location.hash = target;
   }
 }
 

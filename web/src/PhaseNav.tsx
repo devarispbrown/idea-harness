@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
 import { currentPill, type PhaseState } from "./phases";
@@ -27,6 +28,12 @@ interface Props {
   // Which Product Graph view (gaps/outcomes/quality) is open, if any.
   graphView?: string;
   onNavigate: (href: string) => void;
+  // Everything waiting on the person across the project (the "Needs you"
+  // queue), shown when no initiative is focused -- Home, Settings, the queue
+  // itself -- which on a phone is the top bar.
+  needsYou?: number;
+  // The project switcher (ProjectSwitcher); renders nothing with one project.
+  switcher?: ReactNode;
 }
 
 export default function PhaseNav({
@@ -42,6 +49,8 @@ export default function PhaseNav({
   costs,
   graphView,
   onNavigate,
+  needsYou = 0,
+  switcher,
 }: Props) {
   const cur = initiative ? currentPill(initiative.status) : { pill: "", note: "" };
 
@@ -51,6 +60,15 @@ export default function PhaseNav({
         <span className="pn-logo-mark">ih</span>
         <span className="pn-logo-text">idea-harness</span>
       </button>
+
+      {switcher}
+
+      {!initiative && needsYou > 0 && (
+        <button className="pn-needs-you" onClick={() => onNavigate("#/queue")}>
+          <span>Needs you</span>
+          <span className="pn-inbox-count">{needsYou}</span>
+        </button>
+      )}
 
       {initiative && (
         <>

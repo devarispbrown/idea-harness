@@ -51,6 +51,12 @@ nothing in it.
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
 | `#/settings` | Settings |
 
+Every route may carry a **project prefix**, `#/p/<projectId>/…` — `#/p/<projectId>/i/<id>/build`
+opens that change set in that project, whichever one the reader last chose. A bare `#/…` means the
+current project, and the shell rewrites it to the prefixed form in place (`replaceState`, so Back is
+unchanged), so a copied address — and every push notification's link — names its project. A prefix
+naming a project the daemon does not serve renders **Project not found**.
+
 The daemon additionally serves the API reference at
 [`/api-reference`](http://127.0.0.1:8787/api-reference) and the spec at `/openapi.yaml` and
 `/openapi.json`. Those are separate pages, not part of this app.
@@ -62,6 +68,11 @@ A left sidebar (`PhaseNav`) plus a main region.
 The sidebar shows:
 
 - the **`ih` logo**, which returns to home;
+- the **project switcher** — a labelled select of every project the daemon serves — when there is
+  more than one. The choice is remembered in this browser (`localStorage`) and a link naming a
+  project wins over it; switching goes to that project's home;
+- **Needs you** with a count of everything waiting across the project, when no initiative is open
+  (Home, Settings, the queue) — on a phone, that is the top bar's way into the queue;
 - the **initiative button** — its title over `<project name> · #<n> of <total>` — which also returns
   to home (there is no dropdown behind the `▾`);
 - **Needs you elsewhere** with a count, shown only while you are inside one initiative and *other*
@@ -582,6 +593,49 @@ integration has a **Send test message** (Slack) or **Test connection** (Linear) 
 check as `idea integrations test`. Configuration stays in `harness.yaml` and `.env` so tokens never
 pass through the browser; see [`integrations.md`](integrations.md).
 
+### Notifications
+
+Web Push for the project being viewed, per browser. **Turn on notifications on this device** asks
+the browser for permission — only then, never on load — subscribes with the daemon's VAPID key and
+registers the subscription (`POST …/push/subscriptions`). Each subscribed browser is listed with the
+push service it uses (host only), a checkbox per event — *needs your judgment*, *change set ready
+for review*, *verification failed*, *outcome drifting* — **Send a test**, and **Turn off** (this
+project only; other projects keep theirs). A notification opens the page it is about. Delivery,
+retries and what the payload carries: [`configuration.md`](configuration.md#push-notifications).
+Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
+browser without push — on an iPhone, add the app to the Home Screen first.
+
+### Remote access
+
+The browsers signed in from other devices, each with **Revoke** (or **Sign out** on this one), and
+**Sign out everywhere**. Signing a device in is deliberately not here: `idea ui pair` on the
+daemon's machine mints the one-time code. See [`configuration.md`](configuration.md#remote-access).
+
+## Remote use and phones
+
+The same app serves a phone. Turned on and secured as in
+[`configuration.md`](configuration.md#remote-access) (`tailscale serve` is the recommended path), a
+browser on another device gets the page **without the API token** and a **Sign in** screen asking
+for a pairing code from `idea ui pair`; after that it is the full UI, on a session that expires and
+can be revoked. If the session ends, the next request returns it to Sign in.
+
+At phone widths (≤ 760px) the sidebar is a top bar, and change-set review is built for the thumb:
+
+- **diffs** wrap long lines by default (**Wrap long lines** turns it off, and then each file scrolls
+  sideways on its own, never the page); a change set of more than three files opens with only the
+  first two expanded, each file header showing `+added −removed`, with **Expand/Collapse all
+  files**;
+- the **decision bar** — Approve, Request changes…, Reject, and the note form — sticks to the bottom
+  of the screen while the diff scrolls. The note can go back as **Send back with this note** or
+  **Reject with this note**;
+- questions and decisions are answered in place, as on the desk.
+
+**Installable.** The daemon serves a web app manifest and icons, so a browser on a secure context
+offers "Install" / "Add to Home Screen". A service worker (`web/public/sw.js`) provides an offline
+page when the daemon cannot be reached and caches the content-hashed `/assets/` files. It never
+caches the app's HTML (on loopback it carries the token) or anything under `/api/`, and does not even
+intercept those requests: no product data is ever stored on the device.
+
 ## Tests
 
 - **Component tests** — `web/src/components.test.tsx` renders the components in jsdom (opted in per
@@ -602,5 +656,12 @@ pass through the browser; see [`integrations.md`](integrations.md).
   screenshot of each checked page in each scheme.
 - **Keyboard tests** — `web/src/keyboard.test.tsx` (jsdom) covers ⌘/Ctrl+Enter, Escape and focus
   return, the `?` and ⌘K dialogs, the live region, and the objective/metric edits and unlink.
+- **Remote use** — `web/e2e/remote.e2e.ts` adds a second project and checks the switcher (canonical
+  `#/p/` addresses, remembered choice, deep links, an unknown project); then a phone on "another
+  device" — Chromium resolves `remote.test` to the loopback daemon, which `demo-daemon.sh` allows —
+  is served no token, signs in with a code from `idea ui pair`, switches project in the top bar,
+  answers a question, reviews a diff and approves and applies from the sticky bar at 390px, and signs
+  out from Settings, with an axe check on each page. `remoteUse.test.ts` and
+  `remoteUse.components.test.tsx` cover the same logic and components in vitest.
 - **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
   why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.
