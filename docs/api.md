@@ -39,8 +39,9 @@ loaded the page. The address is overridable via `IDEA_HARNESS_ADDR` (still loopb
 reads the same variable and defaults to `127.0.0.1:8787`.
 
 There is no content negotiation and no API versioning beyond the `/api/v1` prefix. Responses are
-JSON except for the three endpoints marked **Not JSON** in the tables below
-(`/artifacts/{id}/raw`, `/docs/{docId}`, `/events`). Everything outside `/api/` is the embedded web
+JSON except for the endpoints marked **Not JSON** in the tables below
+(`/artifacts/{id}/raw`, `/docs/{docId}`, `/events`, `/runs/{runId}/events/stream`, and
+`/runs/{runId}/report` unless `format=json`). Everything outside `/api/` is the embedded web
 UI, not the API.
 
 ## Authentication
@@ -60,10 +61,12 @@ curl -H "X-Idea-Token: $(cat ~/.local/share/idea-harness/token)" \
   `index.html` at serve time so the same-origin UI can authenticate its own `fetch` calls.
 - **Unauthenticated exceptions**: `GET /api/v1/health` (so `idea doctor` and CI can probe a daemon
   they have no token for), and everything outside `/api/` — the embedded UI's own assets.
-- **SSE exception**: `GET /api/v1/projects/{projectId}/events` additionally accepts `?token=`,
-  because `EventSource` cannot set headers. This is the **only** path where the token may appear in
-  a URL; every other endpoint requires the header, so the token never reaches logs, shell history or
-  a `Referer`.
+- **SSE exception**: the two SSE streams, `GET /api/v1/projects/{projectId}/events` and
+  `GET /api/v1/projects/{projectId}/runs/{runId}/events/stream`, additionally accept `?token=`,
+  because `EventSource` cannot set headers. These are the **only** paths where the token may appear
+  in a URL (matched by exact shape: the run's JSON page, `.../runs/{runId}/events`, is not one);
+  every other endpoint requires the header, so the token never reaches logs, shell history or a
+  `Referer`.
 - A missing or wrong token is `401 {"error": "unauthorized"}`.
 
 ### Host and Origin guard
@@ -154,15 +157,55 @@ operation id and returns immediately:
 ```
 
 Poll `GET /api/v1/operations/{id}` for its status, or follow
-`GET /api/v1/projects/{projectId}/events` (SSE). Both shipped clients poll: `idea watch` re-fetches
-the initiative's `understanding` once a second (`internal/cli/watch.go`) and the UI polls on a
-`setInterval` timer (`web/src/App.tsx`). Nothing in-tree consumes the SSE endpoint, so it is offered for your clients,
-not exercised by ours. The `202` endpoints are marked in the tables below. `POST /initiatives` returns `initiative_id`
-alongside `operation_id`.
+`GET /api/v1/projects/{projectId}/events` (SSE). `idea watch` polls: it re-fetches the
+initiative's `understanding` once a second (`internal/cli/watch.go`). The UI follows the SSE stream
+(`web/src/useEventStream.ts`): a product-graph event triggers its refetch, with a slow timer as a
+backstop, and it falls back to polling when the stream cannot be opened. The `202` endpoints are
+marked in the tables below. `POST /initiatives` returns `initiative_id` alongside `operation_id`.
 
-**Events.** `/events` is `text/event-stream`, one event per product-graph event, with the event
-sequence as the SSE id; `Last-Event-ID` resumes from a sequence. The stream polls the store once a
-second, so it is at-least-once catch-up rather than a push.
+**Events.** `/events` is `text/event-stream`: one unnamed message per product-graph event, and one
+`event: run_event` message per [run event](#run-events). The SSE id is
+`<event seq>.<run event id>`; `Last-Event-ID` (or `?after=`) resumes both cursors, so a reconnect
+gets only what it missed. A bare `<event seq>` resumes the product-graph events and starts run
+events at now; `?after=now` skips the backlog entirely. Product-graph events are polled once a
+second; run events are pushed as they are stored. An idle stream sends a `: ping` comment every
+15 s.
+
+## Run events
+
+A coding agent's run is narrated as a stream of normalized **run events**, whichever executor ran
+it. Each is `{seq, run_id, operation_id, initiative_id, task_id, executor, at, kind, source, title,
+detail, path, tool_call_id, tool_kind, status, added, removed, input_tokens, output_tokens,
+cost_usd, change_set_id, truncated}` (`internal/domain/runevent.go`), where `kind` is one of:
+
+| Kind | What it is |
+|---|---|
+| `action` | A coarse step: a line of a CLI agent's output, an executor phase, an ACP plan. |
+| `tool_call` / `tool_result` | A tool call and its outcome, tied by `tool_call_id`; `status` is `pending`, `in_progress`, `completed` or `failed`. |
+| `file_change` | A file the agent wrote. Live ones come from the agent; the `harness` ones with `status` `add`/`modify`/`delete` and `added`/`removed` line counts are the orchestrator's own diff, written once the agent finishes - the authoritative list. |
+| `permission` | An ACP permission request and the answer given on the operator's behalf. |
+| `message` | The agent's words, or a steering note (`source: user`). |
+| `thought` | The agent is reasoning. Never carries the text (§50). |
+| `cost` | A token/cost **delta** the agent or server reported. |
+| `status` | Lifecycle: starting, stages (checks, review), `agent_finished`, `stopped`, `finished` (with `change_set_id`). |
+| `error` | A failure the agent or executor reported. |
+
+Every event is redacted ([security-model.md](security-model.md)) before it is stored and bounded (`title` 240 characters, `detail` 4096
+bytes). `seq` is monotonic per run and is the resume cursor. Storage is capped: a run keeps its
+newest 5000 events (`seq` is never reused, so a cursor stays valid; `first_seq` above 1 says older
+ones were dropped), and only the 50 most recent runs keep any.
+
+**Reading a run.** Ask `GET .../initiatives/{id}/current-run` for the run to show (the live one, or
+the last), page `GET .../runs/{runId}/events?after=` until `more` is false, then stream
+`GET .../runs/{runId}/events/stream?after=<last seq>`. The stream resumes from `Last-Event-ID` or
+`?after=` - only the events after it, never the session again - and ends with `event: end` once the
+run is over, so `EventSource` stops reconnecting.
+
+**Steering.** `POST .../runs/{runId}/steer {"note", "interrupt"}` sends a note to the running
+agent: `acp` queues it as the next prompt turn (or, with `interrupt`, cancels the current turn and
+sends it at once), `openhands` sends it into the conversation, and every other executor answers
+`steering not supported by <kind>` and holds it for the task's next run (`delivery: next_run`). See
+[agents.md](agents.md#steering-a-running-agent). Stop is `POST /api/v1/operations/{id}/cancel`.
 
 ## Two things to know before you build on this
 
@@ -406,7 +449,17 @@ human-added objective is never rewritten by a later PRD revision.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/activity` | The raw event timeline (oldest 200 by sequence), unlike `/changed`'s narrated grouping. |
-| GET | `/projects/{projectId}/events` | **Not JSON.** SSE stream of product-graph events; `Last-Event-ID` resumes; accepts `?token=`. |
+| GET | `/projects/{projectId}/events` | **Not JSON.** SSE stream of product-graph events and `run_event`s; `Last-Event-ID`/`?after=` resumes both cursors (`<seq>.<run event id>`, or `now`); accepts `?token=`. |
+
+### Runs
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/projects/{projectId}/initiatives/{id}/current-run` | The run the run view shows: the live agent run, else the last one with events. `live`, `executor`, `steerable`, `ui_url` ("Open in OpenHands", only when `executor.openhands.ui_url` is set) and `pending_notes`. |
+| GET | `/projects/{projectId}/runs/{runId}/events` | A run's events, paged: `?after=<seq>&limit=` (at most 500). `{events, first_seq, last_seq, more, run_status}`. |
+| GET | `/projects/{projectId}/runs/{runId}/events/stream` | **Not JSON.** SSE stream of the run's events (`event: run_event`, id = seq); resumes from `Last-Event-ID`/`?after=`; `event: end` when the run is over; accepts `?token=`. |
+| POST | `/projects/{projectId}/runs/{runId}/steer` | `{note, interrupt?}`: send a note to the running agent. `{delivery: delivered\|queued\|next_run, message}`; `409` when the run is not running. |
+| GET | `/projects/{projectId}/runs/{runId}/report` | Download the run report - events, files with line counts, findings, cost, steering. `?format=json` (default), `md`, or `zip` (both). |
 
 ## Related
 
@@ -414,4 +467,3 @@ human-added objective is never rewritten by a later PRD revision.
 - [`docs/architecture.md`](architecture.md) — where the daemon sits in the system.
 - [`docs/security.md`](security.md) — the token, loopback and redaction invariants behind the auth
   model above.
-

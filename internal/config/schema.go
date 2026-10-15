@@ -113,7 +113,8 @@ var harnessSchema = `{
             "workspace_dir":         { "type": "string" },
             "withhold_provider_key": { "type": "boolean" },
             "max_iterations":        { "type": "integer", "minimum": 0 },
-            "timeout_seconds":       { "type": "integer", "minimum": 0 }
+            "timeout_seconds":       { "type": "integer", "minimum": 0 },
+            "ui_url":                { "type": "string" }
           },
           "additionalProperties": false
         },

@@ -118,6 +118,13 @@ type Engine struct {
 	// task that kept its title keeps its code (advance.go).
 	keepTaskCodes map[string]map[string]string
 
+	// pendingNotes are steering notes held for an initiative's next run
+	// (sent to a run whose executor cannot take them mid-run, or that was
+	// finishing): the next Execute appends them to its brief, like a rerun
+	// note. Guarded by liveMu; in memory only -- a daemon restart drops
+	// them, and the run's events and manifest still record them.
+	pendingNotes map[string][]string
+
 	// remoteMu guards remote, the supervisor of this project's runs on a
 	// remote execution plane (openhands). Not mu: a watcher follows a run
 	// for as long as it lasts and must never wait on, or hold, the lock
@@ -173,6 +180,9 @@ func (e *Engine) setStage(ctx context.Context, initiativeID, stage string) {
 	if err := e.db.SetOperationStage(ctx, initiativeID, stage); err != nil {
 		e.log.Warn("could not record the operation stage", "initiative", initiativeID, "stage", stage, "error", err)
 	}
+	// The running agent run's event stream narrates the stages after the
+	// agent (checks, review) too.
+	e.emitStage(initiativeID, stage)
 }
 
 // redact applies the engine's known-values redactor to a free-text string at the

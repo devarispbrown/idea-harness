@@ -27,6 +27,10 @@ type ExecutorProvenance struct {
 	// each is auto-answered (allow_once when offered) -- and logged here, so
 	// what was approved on the operator's behalf is never invisible.
 	Permissions []ACPPermission `json:"permissions,omitempty"`
+	// Steering is every note a human sent the agent while it ran, and what
+	// became of each (delivered, queued as its next turn, or held for the
+	// next run when the executor cannot be steered).
+	Steering []SteeringNote `json:"steering,omitempty"`
 }
 
 // ACPPermission is one permission request an ACP agent made and its answer.
@@ -78,4 +82,8 @@ type RemoteRun struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// RunID is the agent run (runs.id) whose event stream this run feeds.
+	// Set by the Execute that dispatches or re-attaches to it, so the
+	// watcher -- which outlives that Execute -- knows where events go.
+	RunID string `json:"run_id,omitempty"`
 }

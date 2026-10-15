@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -75,6 +76,16 @@ var wantStatus = map[string]int{
 func TestEveryIDRouteAnswers404(t *testing.T) {
 	rt, ts, token := newTestServer(t)
 	projectID, iniID, csID := appliedChangeSet(t, rt, ts, token)
+	// The agent run that produced the change set has events (the internal
+	// executor's), so it is a real {runId}.
+	prt, err := rt.EnsureProject(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := prt.db.LatestEventRunForInitiative(context.Background(), iniID)
+	if err != nil || runID == "" {
+		t.Fatalf("no run with events for the executed initiative (%v)", err)
+	}
 
 	real := map[string]string{
 		"{projectId}": projectID,
@@ -87,6 +98,7 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		// The demo PRD defines one objective with one metric.
 		"{objectiveId}": "OBJ-1",
 		"{metricId}":    "MET-1",
+		"{runId}":       runID,
 	}
 
 	routes := idRoutes(t)

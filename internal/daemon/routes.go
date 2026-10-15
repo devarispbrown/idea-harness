@@ -81,6 +81,13 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/v1/projects/{projectId}/activity", s.handleActivity)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/events", s.handleEvents)
+	// Run events (runevents.go): a run's paged events, its SSE stream, steering
+	// and its report; and the initiative's current run.
+	m.HandleFunc("GET /api/v1/projects/{projectId}/runs/{runId}/events", s.handleListRunEvents)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/runs/{runId}/events/stream", s.handleRunEventStream)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/runs/{runId}/steer", s.handleSteerRun)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/runs/{runId}/report", s.handleRunReport)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/current-run", s.handleCurrentRun)
 
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/execute", s.handleExecute)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/verify", s.handleVerify)
