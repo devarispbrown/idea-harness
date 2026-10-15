@@ -45,6 +45,8 @@ if this file has drifted.
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
+| `idea gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all]` | list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity) | `--all`, `--fail-on`, `--json`, `--kind` | yes |
+| `idea assumption <id> accept\|dispute\|retract` | judge an assumption or hypothesis (closes an unvalidated_assumption gap) | none | takes no flags |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
@@ -154,7 +156,7 @@ invocation on `2`.
 | 2 | `usage` | the command line was wrong: unknown command, subcommand or flag, a missing or extra argument, or a request the daemon rejected as malformed (HTTP 400, 405, 413) |
 | 3 | `not_found` | a reference named nothing: an initiative, change set, decision, question, artifact or project that does not exist (HTTP 404) |
 | 4 | `conflict` | the request is valid but the current state does not allow it — approving what is already approved, revising under an approved plan (HTTP 409) |
-| 5 | `gate_unmet` | a gate a script asked about is not met: `idea verify` with requirements still unverified |
+| 5 | `gate_unmet` | a gate a script asked about is not met: `idea verify` with requirements still unverified, or `idea gaps --fail-on <severity>` with a gap at or above that severity |
 | 6 | `daemon_unavailable` | the daemon could not be reached, started, or is not initialized |
 | 7 | `unauthorized` | the daemon rejected this CLI's token or origin (HTTP 401, 403) |
 | 8 | `config_invalid` | the project's configuration is invalid or incomplete: harness.yaml does not parse (HTTP 422), `idea config validate` found errors, or no model or API key is configured |
@@ -263,6 +265,32 @@ idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --ke
 ```
 
 Provider configuration is also available in the web UI under **Settings**.
+
+## Finding gaps: `idea gaps`
+
+`idea gaps [<initiative>]` lists what the Product Graph is missing or no longer holds — requirements
+with no task or no applied change set, acceptance criteria with no evidence, evidence that failed or
+predates the code it verified, unvalidated assumptions, decisions whose basis moved, orphan tasks and
+change sets, artifacts older than what they were generated from — most severe first, each with the
+command that closes it. Deterministic; no model call. Every kind and the exact trigger behind it are
+in [architecture.md](architecture.md#asking-the-graph-gaps).
+
+| Flag | Meaning |
+| --- | --- |
+| `--kind k,...` | only these kinds (`unimplemented_requirement`, `unverified_requirement`, `untested_acceptance_criterion`, `unvalidated_assumption`, `invalidated_decision`, `orphan_task`, `orphan_change_set`, `stale_artifact`); an unknown kind exits `2` and lists them |
+| `--fail-on <severity>` | exit `5` (`gate_unmet`) when any gap is at or above `critical`, `high`, `medium`, `low` or `observation`. Without it `idea gaps` exits `0` whatever it finds |
+| `--all` | every initiative of the project, not just one |
+| `--json` | the `{"initiative_id", "gaps", "summary"}` report; with `--fail-on` the report stays the one document on stdout and the error object goes to stderr |
+
+```bash
+# CI: fail the build on any high or critical gap anywhere in the project
+idea gaps --all --fail-on high
+```
+
+`idea assumption <id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
+or hypothesis — the id is the 8-character prefix `idea gaps` prints. It is what closes an
+`unvalidated_assumption` gap; a retracted one that requirements still rest on becomes a high
+`refuted` gap until they are reworked.
 
 ## Measuring the pipeline: `idea eval`
 

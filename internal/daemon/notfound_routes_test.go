@@ -36,6 +36,7 @@ var routeBodies = map[string]string{
 	"POST /api/v1/projects/{projectId}/decisions/{id}/reopen":            `{}`,
 	"POST /api/v1/projects/{projectId}/decisions/{id}/discuss":           `{"message":"hi"}`,
 	"POST /api/v1/projects/{projectId}/questions/{id}/answer":            `{"answer":"x"}`,
+	"POST /api/v1/projects/{projectId}/assertions/{id}/status":           `{"status":"accepted"}`,
 	"POST /api/v1/projects/{projectId}/findings/{id}/note":               `{"note":"n"}`,
 	"POST /api/v1/projects/{projectId}/findings/{id}/disposition":        `{"disposition":"accepted_risk"}`,
 	"POST /api/v1/projects/{projectId}/artifacts/{id}/comments":          `{"text":"t"}`,

@@ -2292,6 +2292,125 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/gaps:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/GapKindFilter"
+    get:
+      tags: [understanding]
+      operationId: listGaps
+      summary: Product Graph gaps (`idea gaps`)
+      description: |
+        A deterministic gap analysis over one initiative's Product Graph -- no model call: requirements
+        nothing implements, acceptance criteria nothing verified, verification evidence that failed or
+        predates the code it verified, unvalidated assumptions the plan rests on, decisions whose basis
+        moved, orphan tasks and change sets, and artifacts older than what they were generated from.
+        Each gap names its kind, which trigger fired (`state`), a severity, the nodes involved, a
+        one-line why, and the command that closes it. Most severe first. The exact trigger of every
+        kind and state is documented in docs/architecture.md, "Asking the graph: gaps".
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapReport" }
+        "400":
+          description: "`kind` named an unknown gap kind; the message lists the known ones."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/gaps:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/GapKindFilter"
+    get:
+      tags: [projects]
+      operationId: listProjectGaps
+      summary: Product Graph gaps across every initiative
+      description: |
+        The same analysis as `GET .../initiatives/{id}/gaps`, run over every initiative of the
+        project and merged into one report (`initiative_id` omitted at the top level; every gap
+        carries its own). What `idea gaps --all` reads, so a CI gate over a project is one request.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapReport" }
+        "400":
+          description: "`kind` named an unknown gap kind; the message lists the known ones."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/assertions/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Assertion id.
+        schema: { type: string }
+    post:
+      tags: [graph]
+      operationId: setAssertionStatus
+      summary: Record a human judgment on an assumption or hypothesis
+      description: |
+        Moves an assertion out of `candidate`: `accepted` (validated), `disputed` (contested, still
+        unvalidated) or `retracted` (refuted). The only path that does -- framing and research record
+        every assumption as a candidate -- and what closes an `unvalidated_assumption` gap
+        (`idea assumption <id> accept|dispute|retract`). A retracted assertion that live nodes still
+        rest on becomes an `unvalidated_assumption` gap in state `refuted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [accepted, disputed, retracted]
+              required: [status]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  status: { type: string }
+                required: [id, status]
+        "400":
+          description: The body is not JSON, or `status` is not one of the three judgments.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The assertion is superseded (a retry replaced it); its replacement is the live claim.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/initiatives/{id}/triage:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -3762,6 +3881,14 @@ components:
       required: true
       description: Initiative id. Every initiative-scoped route names this path parameter `id`.
       schema: { type: string }
+    GapKindFilter:
+      name: kind
+      in: query
+      required: false
+      description: |
+        Comma-separated `GapKind` values to keep (e.g. `unverified_requirement,invalidated_decision`).
+        Omitted means every kind. An unknown kind is a `400` naming the known ones.
+      schema: { type: string }
     TaskId:
       name: taskId
       in: path
@@ -3963,7 +4090,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 99 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 102 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -4357,6 +4484,92 @@ components:
           description: Digest of the vision-generated description, once it has been produced.
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, kind, title, digest, preview, format, created_at]
+
+    GapKind:
+      type: string
+      title: GapKind
+      description: |
+        The class of a Product Graph gap (`domain.GapKind`). Open-ended: new kinds are added, never
+        renamed, so a client must tolerate one it does not know.
+      enum: [unimplemented_requirement, unverified_requirement, untested_acceptance_criterion, unvalidated_assumption, invalidated_decision, orphan_task, orphan_change_set, stale_artifact]
+
+    GapState:
+      type: string
+      title: GapState
+      description: |
+        Which trigger of a gap kind fired (`domain.GapState`). unimplemented_requirement: no_task,
+        not_applied. unverified_requirement: no_criteria, evidence_failed, evidence_stale.
+        untested_acceptance_criterion: no_evidence. unvalidated_assumption: unvalidated, disputed,
+        refuted. invalidated_decision: dependents_stale, requirement_revised, requirements_removed,
+        basis_refuted. orphan_task: no_requirement. orphan_change_set: task_missing, task_orphaned.
+        stale_artifact: upstream_newer.
+      enum: [no_task, not_applied, no_criteria, no_evidence, evidence_failed, evidence_stale, unvalidated, disputed, refuted, dependents_stale, requirement_revised, requirements_removed, basis_refuted, no_requirement, task_missing, task_orphaned, upstream_newer]
+
+    GapNode:
+      type: object
+      title: GapNode
+      description: One Product Graph node a gap is about.
+      properties:
+        type:
+          type: string
+          description: "`requirement`, `acceptance_criterion`, `task`, `change_set`, `decision`, `assertion` or `artifact`."
+        id:
+          type: string
+          description: The node's id. For an acceptance criterion, its criterion key (`<requirement id>:<index>`).
+        code:
+          type: string
+          description: The human handle -- `REQ-3`, `REQ-3/AC-2`, `TASK-2`, `CHG-4`, `DEC-1`, an artifact kind, or an assertion's 8-character id prefix.
+        label: { type: string }
+      required: [type, id, code]
+
+    Gap:
+      type: object
+      title: Gap
+      description: |
+        One hole in the Product Graph (`domain.Gap`). `nodes[0]` is the node the gap is about; any
+        further nodes are its evidence. `dependents` counts the live nodes resting on `nodes[0]`, the
+        ranking key within a severity.
+      properties:
+        kind: { $ref: "#/components/schemas/GapKind" }
+        state: { $ref: "#/components/schemas/GapState" }
+        severity: { $ref: "#/components/schemas/Severity" }
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/GapNode" }
+        why: { type: string }
+        next:
+          type: string
+          description: The command (occasionally a web UI action) that closes the gap.
+        dependents: { type: integer }
+        initiative_id: { type: string }
+      required: [kind, state, severity, nodes, why, next, dependents, initiative_id]
+
+    GapSummary:
+      type: object
+      title: GapSummary
+      description: Gap counts by severity and by kind; every known severity and kind is present, zero included.
+      properties:
+        total: { type: integer }
+        by_severity:
+          type: object
+          additionalProperties: { type: integer }
+        by_kind:
+          type: object
+          additionalProperties: { type: integer }
+      required: [total, by_severity, by_kind]
+
+    GapReport:
+      type: object
+      title: GapReport
+      properties:
+        initiative_id:
+          type: string
+          description: Set on the per-initiative report, omitted on the project-wide one.
+        gaps:
+          type: array
+          items: { $ref: "#/components/schemas/Gap" }
+        summary: { $ref: "#/components/schemas/GapSummary" }
+      required: [gaps, summary]
 
     Severity:
       type: string
@@ -4932,6 +5145,12 @@ components:
             warning: { type: string }
             note: { type: string }
           required: [requested, resolved]
+        gap_summary:
+          allOf: [{ $ref: "#/components/schemas/GapSummary" }]
+          description: |
+            The initiative's Product Graph gap counts (`GET .../gaps`), omitted when there are none.
+            Computed without mapped-test evidence, which `GET .../gaps` itself includes, so the
+            verification counts here can be lower.
       required: [action, why, affected]
 
     StaleItemRef:

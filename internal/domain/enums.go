@@ -597,3 +597,85 @@ func (m SandboxMode) Valid() bool {
 	}
 	return false
 }
+
+// GapKind names one class of hole `idea gaps` finds in the Product Graph. The
+// values are a public contract (the `kind` field of every gap, the --kind
+// filter, the MCP `gaps` tool): add new ones, never rename one.
+//
+// The set is deliberately open-ended. Each kind is one analyzer in
+// projection.BuildGaps' table; a new kind (objective gaps, say) is a new
+// constant here, its spec enum entry, and one more analyzer -- nothing that
+// renders or filters gaps switches on the kind.
+type GapKind string
+
+const (
+	GapUnimplementedRequirement    GapKind = "unimplemented_requirement"
+	GapUnverifiedRequirement       GapKind = "unverified_requirement"
+	GapUntestedAcceptanceCriterion GapKind = "untested_acceptance_criterion"
+	GapUnvalidatedAssumption       GapKind = "unvalidated_assumption"
+	GapInvalidatedDecision         GapKind = "invalidated_decision"
+	GapOrphanTask                  GapKind = "orphan_task"
+	GapOrphanChangeSet             GapKind = "orphan_change_set"
+	GapStaleArtifact               GapKind = "stale_artifact"
+)
+
+// GapKinds is every kind in report order: the order human output groups
+// them in, and the order --kind's error lists them in.
+var GapKinds = []GapKind{
+	GapUnimplementedRequirement, GapUnverifiedRequirement, GapUntestedAcceptanceCriterion,
+	GapUnvalidatedAssumption, GapInvalidatedDecision,
+	GapOrphanTask, GapOrphanChangeSet, GapStaleArtifact,
+}
+
+func (k GapKind) Valid() bool {
+	for _, v := range GapKinds {
+		if v == k {
+			return true
+		}
+	}
+	return false
+}
+
+// GapState says which trigger of a kind fired, so a client can tell "no
+// evidence" from "evidence failed" from "evidence stale" without parsing the
+// sentence. Each kind uses a fixed subset; docs/architecture.md ("Asking the
+// graph: gaps") lists which and exactly what fires each.
+type GapState string
+
+const (
+	// unimplemented_requirement
+	GapStateNoTask     GapState = "no_task"
+	GapStateNotApplied GapState = "not_applied"
+	// unverified_requirement / untested_acceptance_criterion
+	GapStateNoCriteria     GapState = "no_criteria"
+	GapStateNoEvidence     GapState = "no_evidence"
+	GapStateEvidenceFailed GapState = "evidence_failed"
+	GapStateEvidenceStale  GapState = "evidence_stale"
+	// unvalidated_assumption
+	GapStateUnvalidated GapState = "unvalidated"
+	GapStateDisputed    GapState = "disputed"
+	GapStateRefuted     GapState = "refuted"
+	// invalidated_decision
+	GapStateDependentsStale     GapState = "dependents_stale"
+	GapStateRequirementRevised  GapState = "requirement_revised"
+	GapStateRequirementsRemoved GapState = "requirements_removed"
+	GapStateBasisRefuted        GapState = "basis_refuted"
+	// orphan_task / orphan_change_set
+	GapStateNoRequirement GapState = "no_requirement"
+	GapStateTaskMissing   GapState = "task_missing"
+	GapStateTaskOrphaned  GapState = "task_orphaned"
+	// stale_artifact
+	GapStateUpstreamNewer GapState = "upstream_newer"
+)
+
+func (s GapState) Valid() bool {
+	switch s {
+	case GapStateNoTask, GapStateNotApplied, GapStateNoCriteria, GapStateNoEvidence,
+		GapStateEvidenceFailed, GapStateEvidenceStale, GapStateUnvalidated, GapStateDisputed,
+		GapStateRefuted, GapStateDependentsStale, GapStateRequirementRevised,
+		GapStateRequirementsRemoved, GapStateBasisRefuted, GapStateNoRequirement,
+		GapStateTaskMissing, GapStateTaskOrphaned, GapStateUpstreamNewer:
+		return true
+	}
+	return false
+}

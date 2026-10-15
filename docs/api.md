@@ -275,6 +275,8 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff: requirements as added vs. removed, decisions as open/decided/superseded, read from the graph rather than by diffing rendered markdown. Not a source diff — that is `/change-sets/{id}/diff`. |
 | GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
 | GET | `/projects/{projectId}/initiatives/{id}/risk` | Deterministic risk profile computed from the initiative's patches. A read: it writes nothing. |
+| GET | `/projects/{projectId}/initiatives/{id}/gaps?kind=` | Product Graph gap analysis (`idea gaps`), no model call: `{"initiative_id", "gaps": [...], "summary"}`, most severe first. Each gap has `kind`, `state` (which trigger fired), `severity`, `nodes` (`nodes[0]` is the subject), `why`, `next` (the closing command) and `dependents`. `kind` (comma-separated) filters; an unknown kind is a `400` listing the known ones. Triggers: [architecture.md](architecture.md#asking-the-graph-gaps). |
+| GET | `/projects/{projectId}/gaps?kind=` | The same report over every initiative of the project (each gap carries `initiative_id`) — what `idea gaps --all` reads. |
 
 ### Plan tasks
 
@@ -320,6 +322,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/requirements` | Requirements with acceptance criteria. Each carries `evidence_tests[]` (C2): tests mapped to it by the verification plan's hooks, a code-name match, or — since a real test's name almost never contains the requirement's code — the test files touched by the applied, check-passed change set of a task that `implements` it (ICP re-run defect #3), and whether the last parsed check run had them passing. `confirm_passing_tests`'s `skipped` reason distinguishes "nothing is mapped" (names the requirement and how to map it) from "something mapped failed" ("not every mapped test passed"). |
 | GET | `/projects/{projectId}/initiatives/{id}/assertions` | Assertions with their evidence and trust level. |
+| POST | `/projects/{projectId}/assertions/{id}/status` | Record a human judgment on an assumption or hypothesis: `{"status": …}` with `accepted`, `disputed` or `retracted` (`idea assumption`). The only path out of `candidate`, and what closes an `unvalidated_assumption` gap. A superseded assertion is a `409`. |
 | GET | `/projects/{projectId}/initiatives/{id}/artifacts` | Artifact versions (PRD, design, plan, …). |
 | GET | `/projects/{projectId}/artifacts/diff` | Unified line diff between two versions of one artifact, given `?from=` and `?to=` version ids. Versions from different artifacts are a `400`; bodies over 1 MiB or 20,000 lines are a `413`. |
 | GET | `/projects/{projectId}/artifacts/{id}/comments` | Human comments on one artifact version. |
@@ -386,3 +389,4 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 - [`docs/architecture.md`](architecture.md) — where the daemon sits in the system.
 - [`docs/security.md`](security.md) — the token, loopback and redaction invariants behind the auth
   model above.
+
