@@ -541,6 +541,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **The page behind a modal was still reachable.** The command palette and the `?` reference set
+  `aria-modal` and trapped Tab, but a screen reader's virtual cursor (and a pointer) could still
+  reach the page under them. They now render into `<body>` and make the app root `inert` while
+  open, restoring it on close; the live region sits outside it so announcements are still heard.
+  The browser suite's axe check of an open dialog now covers the whole page instead of the dialog
+  alone.
 - **An agent run's end was announced twice.** A run that went live and ended inside one poll (the
   demo executor's, or one failing on its first call), and a stopped run's panel catching up, put
   "Agent run started." and "Executing the plan finished." (or "stopped.") into the live region

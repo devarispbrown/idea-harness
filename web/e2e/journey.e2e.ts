@@ -235,7 +235,10 @@ test("keyboard: skip link, focus follows the route, ⌘K finds a node code, ? li
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   await expect(page.getByRole("combobox")).toBeFocused();
-  await expectAccessible(page, "command palette", { include: ".cmd-panel" });
+  // The page under the palette is inert (out of the accessibility tree and
+  // the Tab order), so axe checks the whole page with the dialog open.
+  await expect(page.locator("#root")).toHaveAttribute("inert", "");
+  await expectAccessible(page, "command palette");
   await page.keyboard.type("task-1");
   await expect(palette.getByRole("option").first()).toContainText("Lineage of TASK-1");
   await page.keyboard.press("Enter");
@@ -258,9 +261,11 @@ test("keyboard: skip link, focus follows the route, ⌘K finds a node code, ? li
   const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   await expect(help).toBeVisible();
   await expect(help.getByRole("button", { name: "Close" })).toBeFocused();
-  await expectAccessible(page, "keyboard shortcuts", { include: ".shortcuts-panel" });
+  await expect(page.locator("#root")).toHaveAttribute("inert", "");
+  await expectAccessible(page, "keyboard shortcuts");
   await page.keyboard.press("Escape");
   await expect(help).toHaveCount(0);
+  await expect(page.locator("#root")).not.toHaveAttribute("inert");
   await expect(heading).toBeFocused();
 });
 
