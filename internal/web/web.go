@@ -90,8 +90,9 @@ func HandlerFor(tokenFor func(*http.Request) string) http.Handler {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		switch path {
-		case "sw.js":
-			// The service worker's own script must be revalidated on every
+		case "sw.js", "sw-push.js":
+			// The service worker's scripts (sw.js and the sw-push.js it
+			// imports) must be revalidated on every
 			// load, or a fixed bug in it stays installed until the browser's
 			// 24-hour update check. It is served with the page's CSP, which is
 			// what a worker script inherits.

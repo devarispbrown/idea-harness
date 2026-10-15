@@ -571,11 +571,16 @@ func (db *DB) CreateMetricHypothesis(ctx context.Context, initiativeID, metricID
 		if err := requireOwned(tx, "outcome_metrics", initiativeID, metricID, "metric"); err != nil {
 			return err
 		}
+		code, err := nextCode(tx, "assertions", "code", "ASM", initiativeID)
+		if err != nil {
+			return err
+		}
+		a.Code = code
 		if _, err := tx.Exec(`
 			INSERT INTO assertions
-				(id, initiative_id, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at)
-			VALUES (?, ?, ?, ?, ?, '', ?, ?, '[]', ?, '', ?)`,
-			a.ID, a.InitiativeID, a.Type, a.Status, a.Statement, a.Confidence, a.Source, a.ProducedByRun, a.CreatedAt.UnixMilli()); err != nil {
+				(id, initiative_id, code, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, '[]', ?, '', ?)`,
+			a.ID, a.InitiativeID, a.Code, a.Type, a.Status, a.Statement, a.Confidence, a.Source, a.ProducedByRun, a.CreatedAt.UnixMilli()); err != nil {
 			return err
 		}
 		edges := []EdgeToWrite{{FromType: "assertion", FromID: a.ID, EdgeType: domain.EdgePredicts, ToType: "metric", ToID: metricID}}

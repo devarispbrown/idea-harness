@@ -1136,6 +1136,34 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automation, started_at);
 `,
+	// 48: assertion codes (ASM-n), initiative-scoped like REQ-n and DEC-n.
+	//
+	// A PRD cites the assertions a requirement or decision rests on
+	// (`based_on`), and a model can only cite what it can name: a ULID is not
+	// something a model copies reliably, and a per-prompt label would not
+	// survive a revise cycle. Existing rows are numbered in creation order so
+	// an upgraded database reads the same as a fresh one.
+	`
+ALTER TABLE assertions ADD COLUMN code TEXT NOT NULL DEFAULT '';
+UPDATE assertions SET code = 'ASM-' || (
+	SELECT COUNT(*) FROM assertions a2
+	WHERE a2.initiative_id = assertions.initiative_id
+	  AND (a2.created_at < assertions.created_at OR (a2.created_at = assertions.created_at AND a2.rowid <= assertions.rowid))
+);
+`,
+	// 49: push subscription renewal (docs/security-model.md "Remote access").
+	//
+	// A push service may rotate a browser's subscription at any time and tells
+	// only the service worker (`pushsubscriptionchange`), which holds no API
+	// token and -- once the session has lapsed, or on loopback, where the page
+	// authenticates with the token -- no usable cookie either. Each
+	// subscription therefore gets a renewal token, returned once when it is
+	// created and again (rotated) on every renewal; this keeps its SHA-256.
+	// The token can do exactly one thing: re-point this row at a new
+	// endpoint. '' (rows created before this migration) renews nothing.
+	`
+ALTER TABLE push_subscriptions ADD COLUMN renewal_token_hash TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

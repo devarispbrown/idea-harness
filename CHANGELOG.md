@@ -95,6 +95,51 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Edit every field of a metric from the Define page.** The metric edit form adds guardrail
+  (blank clears it), cadence, definition, source — recorded by hand, a command, or a URL with a JSON
+  pointer — and, with more than one objective, which objective it measures; `metric edit` is now
+  `ui` in the parity ledger. The form refuses what the API refuses before sending (a cadence
+  `ParseCadence` rejects, a negative guardrail on a maintain metric, a command source with no
+  command, a non-http(s) URL, a pointer not starting with `/`) and sends a changed source whole.
+- **List the OpenHands executor's remote runs.** `idea runs remote [<initiative>] [--all] [--json]`,
+  `GET …/initiatives/{id}/remote-runs` and `GET …/remote-runs` (project-wide, `?active=true` for the
+  runs not yet over) list every dispatch to an Agent Server, newest first: task, status, attempt,
+  server, conversation id, the progress log's last line, and the error. The run panel shows the same
+  rows under **Remote runs** when the run's executor is `openhands`. Until now they were readable
+  only from `state.db`.
+- **Requirements and decisions now say which assertions they rest on, so assumption gaps fire on
+  real runs.** Assertions get initiative-scoped codes (`ASM-n`; migration 48 numbers existing rows
+  in creation order, and `Assertion.code` is a new required field in the API). The PRD prompt lists
+  them, and the PRD schema gains a per-requirement and per-decision `based_on` (ASM codes); each
+  citation is written as `requirement|decision --derived_from--> assertion`. A requirement revised in
+  place has its basis replaced, a re-listed decision's is added to, and an unknown code is skipped.
+  Research findings may name a framing assumption they `supports` or `contradicts` (new optional
+  fields; `assertion --supports|contradicts--> assertion`). Until now nothing wrote these edges, so
+  `basis_refuted` and an assumption's dependents only ever appeared in tests: now `idea assumption
+  ASM-3 retract` on a hypothesis a decided decision rests on reports `basis_refuted` on the decision,
+  and an unvalidated assumption a requirement rests on is medium, not low. The PRD reviewer is shown
+  the assertions requirements rest on, with status, and may raise a cited medium `basis` finding on a
+  requirement resting on an unvalidated, disputed or retracted assumption or hypothesis. `idea
+  assumption` accepts the code as well as an id prefix, and gaps name assertions by code. The
+  `product_manager` and `adversarial_reviewer` contracts are at **1.3.0**, `research_analyst` at
+  **1.1.0**. The demo provider's requirement cites the two research findings and the scripted eval's
+  first requirement cites the research hypotheses, so both graphs carry basis edges; the scripted
+  baseline moved only in its nominal token counts (the prompts list the assertions).
+
+- **`idea ui pair --qr`** draws the sign-in address as a QR code in the terminal (UTF-8 half
+  blocks, black on white whatever the theme), so a phone's camera opens the page. The pairing code
+  is printed beside it and is never in it: codes never go in URLs. Encoded with `rsc.io/qr`
+  (BSD-3-Clause, pure Go); the tests decode what was drawn with an independent decoder, Reed-Solomon
+  check included.
+- **Push notifications survive the push service replacing a subscription.** The service worker
+  now handles `pushsubscriptionchange` (`web/public/sw-push.js`): it re-subscribes with the
+  daemon's VAPID key when the browser does not hand it a new subscription, and posts the new one
+  to `POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew` for every project this
+  browser had notifications on in. The worker has no API token and maybe no session, so each
+  subscription gets a renewal token at subscribe time (`renewal_token` in the subscribe response,
+  stored hashed — migration 49), kept in IndexedDB; it can only re-point that one subscription and
+  rotates with each use. Previously a rotated subscription went silent until the push service
+  answered 410. Threat notes in `docs/security-model.md` (Remote access).
 - **Use the UI from your phone or another computer, without the token leaving the machine.**
   Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
   `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),
@@ -467,6 +512,24 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Security
 
+- **A root daemon no longer runs root containers.** When the daemon runs as uid 0, every
+  container it starts — coding agents of every kind, the `container` executor, deterministic
+  checks, verify's quality dimensions, metric commands and the setup probes — runs as a fixed
+  unprivileged `65532:65532` instead of root. The work root and agent home are chowned to that
+  user for the run (symlinks never followed) and back afterwards, so the engine sees ordinary
+  daemon-owned files. Non-root daemons are unchanged. Closes the audit 3 / S6 deferred item;
+  details and what is left in `docs/security-model.md` (Execution gateway).
+- **One guesser can no longer lock the owner out of remote sign-in.** Wrong pairing codes were
+  counted daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and
+  cancelled every outstanding code. Now each client has its own budget (10 per 15 minutes; only
+  that client is refused, codes survive), and a global ceiling of 100 is the backstop that still
+  pauses everyone and cancels codes. A client is the peer address (IPv6 by /64); proxy headers
+  (`Tailscale-User-Login`, the rightmost `X-Forwarded-For` entry) are believed only through a
+  loopback proxy answering to an `allowed_hosts` name, so a header cannot buy a fresh budget. The
+  session list's address and default label use the same rule (they used to believe
+  `X-Forwarded-For` on any loopback connection). The `429` now says which lock it is and carries
+  an accurate `Retry-After`. Design and code-space arithmetic: `docs/security-model.md` (Remote
+  access).
 - **A remote execution plane is a trust boundary, and the harness treats it as one.** For
   `openhands`, the server URL must be `https` unless loopback and carry no credentials (refused at
   config load, by `PUT /executors`, by setup and before every dispatch); the session key is read
@@ -541,6 +604,30 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Content cut off at the edge of the screen, and a tall phone top bar.** A sweep of every route
+  at 390px and 1280px in both colour schemes (`web/e2e/views.e2e.ts`) found: Automations' "Reports
+  are written to <path>" ran past a phone's edge and was clipped (`html`/`body` clip horizontal
+  overflow, so it could not even be scrolled to); lineage's Full trace table grew to ~1550px at
+  1280 because a node label inside it never wraps; and the top bar on Home, Settings, Automations
+  and Needs you stacked Automations above Settings in a column, leaving a tall empty band. Long
+  strings now wrap in those places and the top bar's links sit in a row.
+- **Every route has exactly one `h1`.** Settings had none, so a route change focused its first
+  section ("Model") as if that were the page; it now opens with a "Settings" h1. The document
+  reader had none of its own and turned every `#` line of a document into another h1: the
+  document's title is now the page's h1 and its headings render one level down. A decision's
+  "Discussion" label is its h1. Gaps, Outcomes, Quality and lineage under an unknown initiative
+  rendered their own page beside "Initiative not found"; they render only the not-found page now.
+- **The page behind a modal was still reachable.** The command palette and the `?` reference set
+  `aria-modal` and trapped Tab, but a screen reader's virtual cursor (and a pointer) could still
+  reach the page under them. They now render into `<body>` and make the app root `inert` while
+  open, restoring it on close; the live region sits outside it so announcements are still heard.
+  The browser suite's axe check of an open dialog now covers the whole page instead of the dialog
+  alone.
+- **An agent run's end was announced twice.** A run that went live and ended inside one poll (the
+  demo executor's, or one failing on its first call), and a stopped run's panel catching up, put
+  "Agent run started." and "Executing the plan finished." (or "stopped.") into the live region
+  back to back. The two now share a topic in `announce.ts`: held briefly, only the more specific
+  operation message is said, and a late less-specific echo is dropped.
 - **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
   accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
   the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on
