@@ -207,19 +207,28 @@ func TestACPRefusesPathEscapes(t *testing.T) {
 }
 
 func TestACPTimeoutSendsSessionCancel(t *testing.T) {
-	e := newTestACP(t, "hang", ACPOptions{Timeout: 300 * time.Millisecond}, AgentProvider{Name: "ollama"}, nil)
+	// The timeout covers starting the fake agent too, so it must leave room
+	// for a slow runner to reach session/prompt; otherwise the run times out
+	// before there is a session to cancel.
+	e := newTestACP(t, "hang", ACPOptions{Timeout: 2 * time.Second}, AgentProvider{Name: "ollama"}, nil)
 	work := workRootFor(t)
 	att, err := e.Start(context.Background(), Request{Brief: "hang", WorkRoot: work})
 	if err != nil {
 		t.Fatal(err)
 	}
 	st := waitACP(t, e, att.ID, 10*time.Second)
-	if st.Status != "failed" || !strings.Contains(st.Action, "timed out after 300ms") {
+	if st.Status != "failed" || !strings.Contains(st.Action, "timed out after 2s") {
 		t.Fatalf("status = %+v, want failed with a timeout", st)
 	}
-	tail := e.OutputTail(context.Background(), att.ID, 100)
 	// The fake agent prints this to stderr only when it receives
-	// session/cancel, so its presence proves the clean cancel was sent.
+	// session/cancel, so its presence proves the clean cancel was sent. Its
+	// stderr is copied asynchronously, so give the line a moment to land.
+	var tail string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if tail = e.OutputTail(context.Background(), att.ID, 100); strings.Contains(tail, "fake: got session/cancel") {
+			break
+		}
+	}
 	if !strings.Contains(tail, "fake: got session/cancel") {
 		t.Fatalf("session/cancel never reached the agent:\n%s", tail)
 	}
