@@ -6,9 +6,9 @@ package ohfake
 
 import (
 	"archive/tar"
-	"context"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -329,13 +329,16 @@ func (f *Server) bash(w http.ResponseWriter, r *http.Request) {
 	exit(0, "")
 }
 
-// archive tars the directory with "./"-prefixed names, leaving out f.excluded.
+// archive tars the directory the way the real v1.54.0 route does: entries
+// rooted under the directory's base name, and an archive_manifest.json of
+// metadata appended at the root. f.excluded is left out.
 func (f *Server) archive(w http.ResponseWriter, r *http.Request) {
 	dir := f.local(r.URL.Query().Get("path"))
 	if _, err := os.Stat(dir); err != nil {
 		f.writeJSON(w, 404, map[string]string{"detail": "not found"})
 		return
 	}
+	base := filepath.Base(dir)
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -356,19 +359,22 @@ func (f *Server) archive(w http.ResponseWriter, r *http.Request) {
 		}
 		info, _ := d.Info()
 		if d.IsDir() {
-			return tw.WriteHeader(&tar.Header{Name: "./" + rel + "/", Typeflag: tar.TypeDir, Mode: 0o755})
+			return tw.WriteHeader(&tar.Header{Name: base + "/" + rel + "/", Typeflag: tar.TypeDir, Mode: 0o755})
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			target, _ := os.Readlink(p)
-			return tw.WriteHeader(&tar.Header{Name: "./" + rel, Typeflag: tar.TypeSymlink, Linkname: target})
+			return tw.WriteHeader(&tar.Header{Name: base + "/" + rel, Typeflag: tar.TypeSymlink, Linkname: target})
 		}
 		data, _ := os.ReadFile(p)
-		if err := tw.WriteHeader(&tar.Header{Name: "./" + rel, Typeflag: tar.TypeReg, Mode: int64(info.Mode().Perm()), Size: int64(len(data))}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: base + "/" + rel, Typeflag: tar.TypeReg, Mode: int64(info.Mode().Perm()), Size: int64(len(data))}); err != nil {
 			return err
 		}
 		_, err = tw.Write(data)
 		return err
 	})
+	meta := []byte(`{"format":"tar.gz","excludes":["node_modules/"]}`)
+	_ = tw.WriteHeader(&tar.Header{Name: base + "/archive_manifest.json", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(meta))})
+	_, _ = tw.Write(meta)
 	_ = tw.Close()
 	_ = gz.Close()
 	w.Header().Set("Content-Type", "application/gzip")

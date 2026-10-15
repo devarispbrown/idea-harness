@@ -189,6 +189,10 @@ func TestOpenHandsHappyPathRoundTripsFileChanges(t *testing.T) {
 	if got, _ := h.read("keep.txt"); got != "unchanged\n" {
 		t.Errorf("keep.txt = %q", got)
 	}
+	// The archive route's own metadata file is not part of the directory.
+	if _, ok := h.read("archive_manifest.json"); ok {
+		t.Error("the server's archive_manifest.json was mirrored into the work root")
+	}
 	rec, _ := h.db.GetRemoteRun(ctx, att.ID)
 	if rec.Status != domain.RemoteRunCollected || rec.FinishedAt == nil {
 		t.Fatalf("record = %+v, want collected", rec)
@@ -721,6 +725,7 @@ func TestOpenHandsArchiveSafety(t *testing.T) {
 		}
 	}
 	add(&tar.Header{Name: "conv-1/ok.txt"}, "fine")
+	add(&tar.Header{Name: "conv-1/archive_manifest.json"}, `{"format":"tar.gz"}`)
 	add(&tar.Header{Name: "../escape.txt"}, "x")
 	add(&tar.Header{Name: "/abs.txt"}, "x")
 	add(&tar.Header{Name: ".git/hooks/pre-commit"}, "x")
@@ -752,6 +757,8 @@ func TestOpenHandsArchiveSafety(t *testing.T) {
 	h.srv.Exclude("data.log")
 	h.srv.Agent = func(c *ohfake.Conv, dir string) {
 		_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("A2\n"), 0o644)
+		// A real file that shares the metadata file's name is kept.
+		_ = os.WriteFile(filepath.Join(dir, "archive_manifest.json"), []byte("{\"mine\":true}\n"), 0o644)
 	}
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
@@ -764,6 +771,9 @@ func TestOpenHandsArchiveSafety(t *testing.T) {
 	}
 	if got, ok := h.read("data.log"); !ok || got != "kept\n" {
 		t.Fatalf("an excluded file was treated as deleted: %q %v", got, ok)
+	}
+	if got, _ := h.read("archive_manifest.json"); got != "{\"mine\":true}\n" {
+		t.Fatalf("the agent's own archive_manifest.json = %q", got)
 	}
 	if got, _ := h.read("a.txt"); got != "A2\n" {
 		t.Fatalf("a.txt = %q", got)
