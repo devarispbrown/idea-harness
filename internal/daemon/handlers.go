@@ -3725,6 +3725,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 		executor.NewACPExecutor(executor.ACPOptionsFrom(pr.cfg.Harness.Executor, pr.cfg.Harness.Executor.Model), executor.AgentProvider{}),
+		executor.NewOpenHandsExecutor(executor.OpenHandsOptionsFrom(pr.cfg.Harness.Executor, pr.cfg.Harness.Executor.Model), executor.AgentProvider{}, nil, nil),
 	}
 	list := make([]map[string]any, 0, len(execs))
 	// The row the next run would actually use carries the resolution: for an
@@ -3776,6 +3777,12 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		// ACPCommand and ACPKeyEnv set executor.acp.command/key_env.
 		ACPCommand *[]string `json:"acp_command"`
 		ACPKeyEnv  *string   `json:"acp_key_env"`
+		// The openhands_* fields set executor.openhands.*. The session key
+		// itself is never accepted here, only the NAME of its variable.
+		OpenHandsURL        *string   `json:"openhands_url"`
+		OpenHandsAPIKeyEnv  *string   `json:"openhands_api_key_env"`
+		OpenHandsAgent      *string   `json:"openhands_agent"`
+		OpenHandsACPCommand *[]string `json:"openhands_acp_command"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -3812,6 +3819,31 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	if body.ACPKeyEnv != nil {
 		cfg.Harness.Executor.ACP.KeyEnv = *body.ACPKeyEnv
 	}
+	if body.OpenHandsURL != nil {
+		cfg.Harness.Executor.OpenHands.URL = strings.TrimSpace(*body.OpenHandsURL)
+	}
+	if body.OpenHandsAPIKeyEnv != nil {
+		cfg.Harness.Executor.OpenHands.APIKeyEnv = *body.OpenHandsAPIKeyEnv
+	}
+	if body.OpenHandsAgent != nil {
+		cfg.Harness.Executor.OpenHands.Agent = *body.OpenHandsAgent
+	}
+	if body.OpenHandsACPCommand != nil {
+		cfg.Harness.Executor.OpenHands.ACPCommand = *body.OpenHandsACPCommand
+	}
+	// openhands without a server would save a configuration every run then
+	// refuses, and an unsafe URL (plain http off-machine) is refused before
+	// it is written, not at the next config load.
+	if cfg.Harness.Executor.Kind == config.ExecutorOpenHands {
+		if cfg.Harness.Executor.OpenHands.URL == "" {
+			writeError(w, http.StatusBadRequest, "executor kind openhands needs openhands_url, the Agent Server to run on")
+			return
+		}
+	}
+	if err := config.ValidateExecutor(cfg.Harness.Executor); err != nil {
+		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "config: "))
+		return
+	}
 	// acp has no canonical image or command, so selecting it without both
 	// would save a configuration every run then refuses.
 	if cfg.Harness.Executor.Kind == config.ExecutorACP {
@@ -3832,7 +3864,7 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	// near the settings page that caused it, with `selectExecutor`'s own
 	// fail-closed check as the only thing standing between the typo and a
 	// leaked credential.
-	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP || k == config.ExecutorACP {
+	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP || k == config.ExecutorACP || k == config.ExecutorOpenHands {
 		if cfg.Harness.Executor.Model != "" {
 			if _, err := executor.ResolveAgentProvider(cfg.Harness.Executor.Model, cfg.Harness.DefaultModel, cfg.Harness.Providers); err != nil {
 				writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "executor: "))

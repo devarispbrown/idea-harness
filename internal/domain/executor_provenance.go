@@ -17,6 +17,9 @@ type ExecutorProvenance struct {
 	// Image is the container image the agent ran in, as configured (a pinned
 	// repo@sha256 reference for the default Hermes image). Empty for internal.
 	Image string `json:"image,omitempty"`
+	// Server is the remote Agent Server the run executed on (kind
+	// openhands): where the work root was sent.
+	Server string `json:"server,omitempty"`
 	// Warning is non-empty when the run fell back to the placeholder executor.
 	Warning string `json:"warning,omitempty"`
 	// Permissions is every session/request_permission an ACP agent made, with

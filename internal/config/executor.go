@@ -248,6 +248,10 @@ type MCPNameValue struct {
 // server's author, not by this schema: Authorization, X-Api-Key, GITHUB_TOKEN.
 var secretNameRe = secretKeyRe
 
+// ValidateExecutor is the load-time structural check of the executor block,
+// for a writer (PUT /executors) that wants to refuse before writing.
+func ValidateExecutor(e ExecutorConfig) error { return validateExecutorExtras(e) }
+
 // validateExecutorExtras checks the structure of executor.acp and
 // executor.mcp_servers. Kind-specific requirements (acp needs an image and a
 // command) are Problems, not load errors: a config that names acp before the

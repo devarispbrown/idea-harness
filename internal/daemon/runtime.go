@@ -351,6 +351,21 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		} else if n > 0 {
 			r.log.Info("no_op backfill: fixed pre-migration change sets", "project", projectID, "count", n)
 		}
+		// Re-attach to runs a previous daemon left going on a remote Agent
+		// Server (executor kind openhands). The Execute operations that
+		// started them were failed just above, but the runs themselves kept
+		// going; this follows each to the end so the task's next execute can
+		// collect the result instead of starting over. In the background and
+		// on the daemon's lifetime: a slow or unreachable server must not hold
+		// up the request that happened to open the project.
+		go func(engine *workflow.Engine) {
+			n, err := engine.ReconcileRemoteRuns(r.lifetimeContext())
+			if err != nil {
+				r.log.Warn("remote run reconciliation failed", "project", projectID, "err", err)
+			} else if n > 0 {
+				r.log.Info("re-attached to remote runs", "project", projectID, "count", n)
+			}
+		}(pr.engine)
 	}
 	// After reconciliation, so the integration bus never observes (and
 	// announces) a half-reconciled state as news.
@@ -514,6 +529,21 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 // beginShutdown cancels every running operation and makes any launched from
 // now on start cancelled. Safe to call more than once.
 func (r *Runtime) beginShutdown() {
+	// First, let go of remote runs WITHOUT stopping them, so the operation
+	// cancellations below do not interrupt them on their server: an
+	// openhands run is meant to outlive this process and be re-attached to
+	// by the next one. (A local agent's container, by contrast, holds a key
+	// on this machine and is removed, as before.)
+	r.mu.Lock()
+	engines := make([]*workflow.Engine, 0, len(r.projects))
+	for _, pr := range r.projects {
+		engines = append(engines, pr.engine)
+	}
+	r.mu.Unlock()
+	for _, e := range engines {
+		e.DetachRemoteRuns()
+	}
+
 	r.cancelMu.Lock()
 	defer r.cancelMu.Unlock()
 	r.closing = true
