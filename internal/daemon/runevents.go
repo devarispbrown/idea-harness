@@ -226,7 +226,7 @@ func (s *Server) handleCurrentRun(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	out := currentRun{PendingNotes: pr.engine.PendingNotes(ini.ID)}
+	out := currentRun{PendingNotes: pr.engine.PendingNotes(r.Context(), ini.ID)}
 	if out.PendingNotes == nil {
 		out.PendingNotes = []string{}
 	}

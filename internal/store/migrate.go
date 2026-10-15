@@ -1026,6 +1026,27 @@ CREATE TABLE IF NOT EXISTS run_events (
 CREATE INDEX IF NOT EXISTS idx_run_events_initiative ON run_events(initiative_id, id);
 ALTER TABLE remote_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
 `,
+	// 45: held_steering_notes -- a steering note sent to a run that could not
+	// take it mid-run (an executor that cannot be steered, or an agent that was
+	// already finishing) is held for the task's next run. They lived in the
+	// engine's memory, so a daemon restart between the note and the next run
+	// dropped them silently, though the UI had said "will be added to this
+	// task's next run". consumed_at is set, in the same statement that reads
+	// them, by the Execute whose brief carries them: each note rides exactly
+	// one run. note is stored redacted.
+	`
+CREATE TABLE IF NOT EXISTS held_steering_notes (
+	id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	initiative_id    TEXT NOT NULL,
+	task_id          TEXT NOT NULL DEFAULT '',
+	run_id           TEXT NOT NULL DEFAULT '',
+	note             TEXT NOT NULL,
+	created_at       INTEGER NOT NULL,
+	consumed_at      INTEGER,
+	consumed_task_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_held_steering_notes_open ON held_steering_notes(initiative_id, consumed_at);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -4523,8 +4523,10 @@ paths:
 
         An agent that is finishing (its session over) cannot take a note either; it is held for
         the next run. Every note is recorded as a `message` run event (`source: user`) and on the
-        run manifest's executor provenance. Held notes are kept in memory: a daemon restart drops
-        them. Stop is the operation's own cancel (`POST /api/v1/operations/{id}/cancel`).
+        run manifest's executor provenance. Held notes are stored (redacted), so they survive a
+        daemon restart, and the next run takes each one exactly once; until then they are listed
+        as `pending_notes` on `GET .../current-run`. Stop is the operation's own cancel
+        (`POST /api/v1/operations/{id}/cancel`).
       requestBody:
         required: true
         content:

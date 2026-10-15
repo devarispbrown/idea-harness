@@ -563,9 +563,10 @@ What happens depends on the executor:
 | `internal`, `container`, `hermes`, `omp` | No | The reply is `steering not supported by <kind>`. The note is held and appended to the task's **next** run's brief, the same way the rerun note on execute is. |
 
 A note sent while an agent is finishing (its session already over) is held for the next run too.
-Every note is recorded as a run event and on the run manifest's executor provenance. Held notes live
-in the daemon's memory: a daemon restart drops them. **Stop** is the running card's Stop button (the
-operation's cancel), unchanged.
+Every note is recorded as a run event and on the run manifest's executor provenance. Held notes are
+stored in the project's state (redacted), so a daemon restart keeps them, and the next run of the
+task takes each one exactly once; until then the run panel lists them. **Stop** is the running
+card's Stop button (the operation's cancel), unchanged.
 
 ### Open in OpenHands
 
