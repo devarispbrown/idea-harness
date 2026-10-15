@@ -164,5 +164,14 @@ describe("Settings panels", () => {
     expect(screen.queryByText("Old")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(requests.some((r) => r.method === "DELETE")).toBe(true));
+    expect(screen.queryByText(/burned/)).toBeNull();
+  });
+
+  it("Remote access says when pairing codes were burned", async () => {
+    fakeDaemon({
+      "GET /api/v1/ui/sessions": { sessions: [], current: "", burned_codes: 2, last_burned_at: new Date().toISOString() },
+    });
+    render(<RemoteAccessPanel />);
+    expect(await screen.findByText(/2 pairing codes were burned/)).toBeTruthy();
   });
 });

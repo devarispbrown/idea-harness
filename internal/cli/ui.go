@@ -49,6 +49,7 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 			ExpiresAt time.Time `json:"expires_at"`
 			Remote    bool      `json:"remote"`
 			URLs      []string  `json:"urls"`
+			burnedCodes
 		}
 		body := map[string]string{}
 		if l := a.value("--label"); l != "" {
@@ -60,6 +61,7 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 		if a.flags.has("--json") {
 			return dumpJSON(stdout, out)
 		}
+		renderBurnedCodes(stdout, out.burnedCodes)
 		if a.flags.has("--qr") {
 			return renderPairingQR(stdout, out.Code, out.ExpiresAt, out.Remote, out.URLs, colorEnabled)
 		}
@@ -73,6 +75,7 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 			}
 			var out struct {
 				Sessions []uiSession `json:"sessions"`
+				burnedCodes
 			}
 			if err := c.do("GET", "/api/v1/ui/sessions", nil, &out); err != nil {
 				return err
@@ -81,6 +84,7 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 				return dumpJSON(stdout, out)
 			}
 			renderUISessions(stdout, out.Sessions, time.Now())
+			renderBurnedCodes(stdout, out.burnedCodes)
 			return nil
 		case "revoke":
 			id := a.arg(1)
@@ -110,6 +114,27 @@ func cmdUI(a cmdArgs, stdout, _ io.Writer) error {
 		}
 	}
 	return errorf(kindUsage, "usage: idea ui pair|sessions")
+}
+
+// burnedCodes is the daemon's report of pairing codes burned because too
+// many wrong codes were tried while they were outstanding (security-model.md
+// "Remote access"): the sign that someone who can reach the sign-in page is
+// guessing.
+type burnedCodes struct {
+	BurnedCodes  int        `json:"burned_codes,omitempty"`
+	LastBurnedAt *time.Time `json:"last_burned_at,omitempty"`
+}
+
+func renderBurnedCodes(w io.Writer, b burnedCodes) {
+	if b.BurnedCodes == 0 {
+		return
+	}
+	when := ""
+	if b.LastBurnedAt != nil {
+		when = ", last at " + b.LastBurnedAt.Local().Format("2006-01-02 15:04")
+	}
+	fmt.Fprintln(w, warn(fmt.Sprintf("! %d pairing code(s) burned in the last 7 days%s:", b.BurnedCodes, when))+
+		" too many wrong codes were tried at the sign-in page while they were outstanding. Someone who can reach it may be guessing; check who can reach this daemon. A new code is unaffected.")
 }
 
 func renderPairingCode(w io.Writer, code string, expires time.Time, remote bool, urls []string) {

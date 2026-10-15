@@ -517,18 +517,31 @@ in a URL. The master token was considered and rejected as the thing to type
 in: it cannot be rotated without re-configuring every CLI and MCP client, and a browser that has
 seen it once has it for good.
 
-**Guessing codes.** Wrong codes are counted twice (`internal/daemon/loginlimit.go`):
+**Guessing codes.** Wrong codes are counted twice (`internal/daemon/loginlimit.go`), and neither
+count refuses anyone but the guesser. Sign-in is never paused daemon-wide.
 
 - **Per client: 10 failures in 15 minutes** refuse *that client* (`429`, with `Retry-After`) for
-  the rest of the window. Nobody else is affected and no code is cancelled, so a guesser cannot
-  lock the owner out. A success clears the client's count.
-- **Globally: 100 failures in 15 minutes**, from any mix of clients, is the backstop: sign-in is
-  refused for everyone for the rest of the window and every outstanding code is cancelled.
+  the rest of the window. Nobody else is affected. A success clears the client's count. This
+  slows one guesser; it is not the bound.
+- **Per code: 100 failures.** A wrong code is a guess at every code outstanding at that moment, so
+  each of them counts it. A code that has absorbed 100 wrong guesses is **burned**: it can never be
+  redeemed, and typing it gets a `401` saying so. Nothing else changes. The owner runs
+  `idea ui pair` on the daemon's machine; the new code starts at zero and works at once. The
+  counts are in `global.db`, so a daemon restart does not reset them.
 
-Why 100 is still safe: a code is 50 bits and lives ten minutes. With *k* codes outstanding each
-guess hits one with probability *k*/2⁵⁰; the ceiling caps guessing at 100 per window — about 3.5
-million a year — so a year of guessing at the ceiling succeeds with probability about *k* × 3×10⁻⁹.
+The bound: a code is 50 bits and faces at most 100 wrong guesses in its life, so one code is
+guessed with probability at most 100/2⁵⁰ ≈ 8.9×10⁻¹⁴. Over every code ever minted it is at most
+that times the number of codes: below 10⁻⁸ for a hundred thousand codes. That is the same
+per-code exposure the old 100-per-15-minutes global ceiling gave (a code lives ten minutes), with
+no lock-out. Guessing while no code is outstanding wins nothing.
 `TestPairingCodeSpaceArithmetic` keeps these numbers true.
+
+**Burned codes are reported.** `idea ui pair`, `idea ui sessions` and Settings → Remote access say
+how many codes burned in the last 7 days and when; the daemon log has a warning for each. A burn
+means someone who can reach the sign-in page is guessing.
+
+Local requests (a browser on this machine, which is handed the token anyway) are never charged or
+refused. A signed-in session is never affected by any of this.
 
 A *client* is the connection's peer address — an IPv6 address counted by its /64, which one host
 can otherwise walk through. Proxy headers are believed only for a request that arrived on a
@@ -586,11 +599,14 @@ What this does **not** cover:
 - **A proxy that rewrites `Host` to loopback and strips every proxy header** is
   indistinguishable from a local browser, and is handed the token. `tailscale serve`, Caddy and
   nginx's defaults all add `X-Forwarded-For`; a hand-rolled proxy must too.
-- **Anyone who can reach the sign-in page can try codes.** The budgets bound guessing. One
-  guesser locks out only itself, but someone with ten or more addresses — or ten tailnet
-  identities, behind `tailscale serve` — can spend the global ceiling and pause sign-in for
-  everyone for fifteen minutes, cancelling your outstanding code. That is the trade the backstop
-  makes: availability for a bound on guessing that holds against any number of addresses.
+- **Anyone who can reach the sign-in page can try codes, and can burn yours.** The per-code
+  budget bounds guessing against any number of addresses, and no one is ever locked out of the
+  endpoint. But someone with many addresses can burn a code before you type it. They cannot see
+  when a code exists, so they must spray: each address gets 10 tries per 15 minutes, and burning
+  a code takes 100 failures while it is outstanding — about 15 addresses spraying steadily to burn
+  it within its ten minutes, about 150 to burn it within the minute you take to type it (or a
+  timed burst from 10 that happens to land in that minute). Each burn is reported. Mint a new code
+  and, if burns keep coming, restrict who can reach the daemon.
 - **Clients behind one shared address share a budget.** Everyone behind the same NAT, and every
   request through a proxy the daemon does not trust (a proxy that rewrites `Host` to loopback,
   or a chain of proxies — only the last hop is read), counts as one client.
