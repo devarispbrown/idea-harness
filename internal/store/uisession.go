@@ -26,11 +26,24 @@ type UISession struct {
 // which of them it hit is telling it something.
 var ErrPairingCodeInvalid = errors.New("pairing code is invalid, expired or already used")
 
+// ErrPairingCodeBurned is returned for a real code that was burned: enough
+// wrong codes were tried while it was outstanding that it can no longer be
+// redeemed. Saying so leaks nothing a guesser can use -- only the holder of
+// the code can see it -- and tells the owner why their code failed.
+var ErrPairingCodeBurned = errors.New("this pairing code was cancelled because too many wrong codes were tried at the sign-in page while it was outstanding (someone may be guessing). Run `idea ui pair` on the daemon's machine for a new one")
+
+// BurnedCodeRetention is how long a burned pairing code's row is kept after it
+// burns, so the owner can be told about it (BurnedPairingCodes).
+const BurnedCodeRetention = 7 * 24 * time.Hour
+
 // CreatePairingCode stores the hash of a new one-time pairing code.
 func (db *DB) CreatePairingCode(ctx context.Context, codeHash, label string, now, expires time.Time) error {
 	// Expired codes are dead weight with no audit value; drop them here
-	// rather than on a timer.
-	if _, err := db.SQL().ExecContext(ctx, `DELETE FROM ui_pairing_codes WHERE expires_at < ?`, now.UnixMilli()); err != nil {
+	// rather than on a timer. A burned one is kept for BurnedCodeRetention:
+	// it is the record that someone was guessing.
+	if _, err := db.SQL().ExecContext(ctx,
+		`DELETE FROM ui_pairing_codes WHERE expires_at < ? AND (burned_at IS NULL OR burned_at < ?)`,
+		now.UnixMilli(), now.Add(-BurnedCodeRetention).UnixMilli()); err != nil {
 		return err
 	}
 	_, err := db.SQL().ExecContext(ctx,
@@ -43,55 +56,89 @@ func (db *DB) CreatePairingCode(ctx context.Context, codeHash, label string, now
 // for, in one transaction: a code can be spent once, and a crash between
 // "spent" and "session exists" must not leave a used code with nothing to
 // show for it.
-func (db *DB) RedeemPairingCode(ctx context.Context, codeHash string, s UISession, secretHash string, now time.Time) (UISession, error) {
+//
+// A code that matches nothing is a wrong guess at every code outstanding now,
+// so -- in the same transaction, which is what makes the budget exact under
+// concurrent sign-ins -- each of them has failed_attempts raised, and any
+// that reaches failureBudget is burned. burned is how many burned on this
+// call. The error is then ErrPairingCodeInvalid.
+func (db *DB) RedeemPairingCode(ctx context.Context, codeHash string, s UISession, secretHash string, now time.Time, failureBudget int) (sess UISession, burned int64, err error) {
 	tx, err := db.SQL().BeginTx(ctx, nil)
 	if err != nil {
-		return UISession{}, err
+		return UISession{}, 0, err
 	}
 	defer tx.Rollback()
 	var label string
+	var burnedAt sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT label FROM ui_pairing_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at >= ?`,
-		codeHash, now.UnixMilli()).Scan(&label)
+		`SELECT label, burned_at FROM ui_pairing_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at >= ?`,
+		codeHash, now.UnixMilli()).Scan(&label, &burnedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return UISession{}, ErrPairingCodeInvalid
+		burned, err := recordPairingFailure(ctx, tx, now, failureBudget)
+		if err != nil {
+			return UISession{}, 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return UISession{}, 0, err
+		}
+		return UISession{}, burned, ErrPairingCodeInvalid
 	}
 	if err != nil {
-		return UISession{}, err
+		return UISession{}, 0, err
+	}
+	if burnedAt.Valid {
+		return UISession{}, 0, ErrPairingCodeBurned
 	}
 	// The conditional UPDATE is the real claim: two logins racing with the
 	// same code both pass the SELECT, only one changes a row.
-	res, err := tx.ExecContext(ctx, `UPDATE ui_pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL`, now.UnixMilli(), codeHash)
+	res, err := tx.ExecContext(ctx, `UPDATE ui_pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND burned_at IS NULL`, now.UnixMilli(), codeHash)
 	if err != nil {
-		return UISession{}, err
+		return UISession{}, 0, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return UISession{}, ErrPairingCodeInvalid
+		return UISession{}, 0, ErrPairingCodeInvalid
 	}
 	if s.Label == "" {
 		s.Label = label
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ui_sessions WHERE expires_at < ?`, now.UnixMilli()); err != nil {
-		return UISession{}, err
+		return UISession{}, 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO ui_sessions (id, secret_hash, label, user_agent, remote_addr, created_at, last_seen_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, secretHash, s.Label, s.UserAgent, s.RemoteAddr, s.CreatedAt.UnixMilli(), s.LastSeenAt.UnixMilli(), s.ExpiresAt.UnixMilli()); err != nil {
-		return UISession{}, err
+		return UISession{}, 0, err
 	}
-	return s, tx.Commit()
+	return s, 0, tx.Commit()
 }
 
-// InvalidatePairingCodes expires every unused pairing code. The login rate
-// limiter calls it when the failure budget is spent: someone is guessing, and
-// the codes they were guessing at are the thing to take away.
-func (db *DB) InvalidatePairingCodes(ctx context.Context, now time.Time) (int64, error) {
-	res, err := db.SQL().ExecContext(ctx, `UPDATE ui_pairing_codes SET expires_at = ? WHERE used_at IS NULL AND expires_at >= ?`, now.UnixMilli()-1, now.UnixMilli())
+// recordPairingFailure charges one wrong code to every live code and burns
+// the ones that have reached failureBudget.
+func recordPairingFailure(ctx context.Context, tx *sql.Tx, now time.Time, failureBudget int) (int64, error) {
+	live := `used_at IS NULL AND burned_at IS NULL AND expires_at >= ?`
+	if _, err := tx.ExecContext(ctx, `UPDATE ui_pairing_codes SET failed_attempts = failed_attempts + 1 WHERE `+live, now.UnixMilli()); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE ui_pairing_codes SET burned_at = ? WHERE `+live+` AND failed_attempts >= ?`, now.UnixMilli(), now.UnixMilli(), failureBudget)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// BurnedPairingCodes reports how many pairing codes burned at or after since,
+// and when the latest did (zero when none did).
+func (db *DB) BurnedPairingCodes(ctx context.Context, since time.Time) (int, time.Time, error) {
+	var n int
+	var last sql.NullInt64
+	err := db.SQL().QueryRowContext(ctx,
+		`SELECT COUNT(*), MAX(burned_at) FROM ui_pairing_codes WHERE burned_at IS NOT NULL AND burned_at >= ?`,
+		since.UnixMilli()).Scan(&n, &last)
+	if err != nil || !last.Valid {
+		return n, time.Time{}, err
+	}
+	return n, time.UnixMilli(last.Int64).UTC(), nil
 }
 
 // LookupUISession returns the live (unrevoked, unexpired) session whose

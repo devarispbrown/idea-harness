@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -116,29 +117,98 @@ func TestLoginClientIdentityIsNotSpoofable(t *testing.T) {
 	}
 }
 
-// TestLoginGlobalCeiling: many clients together still hit the old wall --
-// everyone is paused and every outstanding code is cancelled.
-func TestLoginGlobalCeiling(t *testing.T) {
+// sprayFrom spends the whole per-client budget of n distinct clients: n *
+// loginClientBudget wrong codes, the distributed attacker the old global
+// ceiling turned into a lock-out for everyone.
+func sprayFrom(t *testing.T, ts *httptest.Server, subnet string, n int) {
+	t.Helper()
+	for c := 0; c < n; c++ {
+		guessUntil(t, client(t, ts, fmt.Sprintf("%s.%d", subnet, c)), loginClientBudget)
+	}
+}
+
+func pairingResponse(t *testing.T, ts *httptest.Server, token string) pairingCodeResponse {
+	t.Helper()
+	resp := doReq(t, "POST", ts.URL+"/api/v1/ui/pairing-codes", token, "", `{}`)
+	defer resp.Body.Close()
+	var out pairingCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("pairing code: %d %v", resp.StatusCode, err)
+	}
+	return out
+}
+
+// TestDistributedGuessingBurnsTheCodeNotTheEndpoint is the lock-out this
+// design removes: enough clients to spend the old global ceiling now burn the
+// codes they were guessing at, and nothing else. A fresh code -- which the
+// owner mints locally -- works at once, and the owner is told codes burned.
+func TestDistributedGuessingBurnsTheCodeNotTheEndpoint(t *testing.T) {
 	rt, ts := newRemoteTestServer(t)
-	good := pairingCode(t, ts, rt.Token())
-	clients := loginGlobalCeiling / loginClientBudget
-	for c := 0; c < clients; c++ {
-		guessUntil(t, client(t, ts, fmt.Sprintf("100.64.3.%d", c)), loginClientBudget)
+	hunted := pairingCode(t, ts, rt.Token())
+	if out := pairingResponse(t, ts, rt.Token()); out.BurnedCodes != 0 || out.LastBurnedAt != nil {
+		t.Fatalf("nothing has burned yet: %+v", out.burnedCodesView)
 	}
-	fresh := client(t, ts, "100.64.0.7")
-	resp, body := fresh.login(good)
-	if resp.StatusCode != http.StatusTooManyRequests || !strings.Contains(body, "everyone") {
-		t.Fatalf("a fresh client after the ceiling: %d %s, want the global 429", resp.StatusCode, body)
+	sprayFrom(t, ts, "100.64.3", pairingCodeFailureBudget/loginClientBudget)
+
+	owner := client(t, ts, "100.64.0.7")
+	resp, body := owner.login(hunted)
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(body, "too many wrong codes") {
+		t.Fatalf("the hunted code after %d failures: %d %s, want 401 saying it was burned", pairingCodeFailureBudget, resp.StatusCode, body)
 	}
-	ua := rt.uiAuth()
-	real := ua.now
-	t.Cleanup(func() { ua.now = real })
-	ua.now = func() time.Time { return real().Add(loginFailureWindow + time.Second) }
-	if resp, _ := fresh.login(good); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("the code outstanding when the ceiling was hit must have been cancelled: %d", resp.StatusCode)
+
+	fresh := pairingResponse(t, ts, rt.Token())
+	// Both codes outstanding during the spray burned (the second was minted
+	// above, before it), so the owner is told about two.
+	if fresh.BurnedCodes != 2 || fresh.LastBurnedAt == nil {
+		t.Fatalf("idea ui pair must report the burns: %+v", fresh.burnedCodesView)
 	}
-	if resp, body := fresh.login(pairingCode(t, ts, rt.Token())); resp.StatusCode != http.StatusOK {
-		t.Fatalf("a new code after the window: %d %s", resp.StatusCode, body)
+	if resp, body := owner.login(fresh.Code); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the owner's fresh code, with no wait: %d %s", resp.StatusCode, body)
+	}
+	resp, body = owner.do("GET", "/api/v1/ui/sessions", "", nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"burned_codes":2`) {
+		t.Fatalf("the session list must report the burns: %d %s", resp.StatusCode, body)
+	}
+
+	// More attackers, from new addresses, lock nobody out either: a code
+	// minted after their failures starts at zero.
+	sprayFrom(t, ts, "100.64.4", 2*pairingCodeFailureBudget/loginClientBudget)
+	if resp, body := client(t, ts, "100.64.0.8").login(pairingCode(t, ts, rt.Token())); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a code minted after the spray: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestLoginLoopbackIsNeverRefused: a browser on this machine is neither
+// charged nor refused, however many codes it or anybody else gets wrong.
+func TestLoginLoopbackIsNeverRefused(t *testing.T) {
+	rt, ts := newRemoteTestServer(t)
+	sprayFrom(t, ts, "100.64.3", pairingCodeFailureBudget/loginClientBudget)
+	local := &browser{t: t, ts: ts, host: "127.0.0.1", headers: map[string]string{"X-Forwarded-For": ""}}
+	guessUntil(t, local, 3*loginClientBudget)
+	if resp, body := local.login(pairingCode(t, ts, rt.Token())); resp.StatusCode != http.StatusOK {
+		t.Fatalf("loopback sign-in after its own and others' failures: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestLoginSpraySparesSignedInSessions: a signed-in browser keeps working
+// through any amount of guessing, including from its own address.
+func TestLoginSpraySparesSignedInSessions(t *testing.T) {
+	rt, ts := newRemoteTestServer(t)
+	phone := client(t, ts, "100.64.0.7")
+	if resp, body := phone.login(pairingCode(t, ts, rt.Token())); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: %d %s", resp.StatusCode, body)
+	}
+	pairingCode(t, ts, rt.Token()) // an outstanding code for the spray to burn
+	sprayFrom(t, ts, "100.64.3", 2*pairingCodeFailureBudget/loginClientBudget)
+	guessUntil(t, phone, loginClientBudget)
+	if resp, _ := phone.login("AAAAA-AAAAA"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the phone's address past its budget: %d, want 429", resp.StatusCode)
+	}
+	if resp, body := phone.do("GET", "/api/v1/projects", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a signed-in session during a spray: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := phone.do("GET", "/api/v1/ui/session", "", nil); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"auth":"session"`) {
+		t.Fatalf("session view during a spray: %d %s", resp.StatusCode, body)
 	}
 }
 
@@ -186,38 +256,46 @@ func TestLoginClientKey(t *testing.T) {
 	}
 }
 
-// TestLoginLimiterUnit pins the bookkeeping: window pruning, the exact
-// ceiling crossing, and that memory is released as failures age out.
+// TestLoginLimiterUnit pins the bookkeeping: window pruning, that one
+// client's budget is its own, that memory is released as failures age out,
+// and that the map is bounded.
 func TestLoginLimiterUnit(t *testing.T) {
 	var l loginLimiter
 	t0 := time.Unix(1_000_000, 0)
-	spentAt := -1
-	for i := 0; i < loginGlobalCeiling; i++ {
-		key := fmt.Sprintf("ip:10.0.0.%d", i/loginClientBudget)
-		if lock, _ := l.check(key, t0); lock != loginOpen {
-			t.Fatalf("failure %d refused early: %v", i, lock)
+	for i := 0; i < loginClientBudget; i++ {
+		if ok, _ := l.check("ip:10.0.0.1", t0); !ok {
+			t.Fatalf("failure %d refused early", i)
 		}
-		if l.fail(key, t0) {
-			spentAt = i
-		}
+		l.fail("ip:10.0.0.1", t0)
 	}
-	if spentAt != loginGlobalCeiling-1 {
-		t.Fatalf("the ceiling reported spent at failure %d, want exactly %d", spentAt, loginGlobalCeiling-1)
+	if ok, wait := l.check("ip:10.0.0.1", t0.Add(time.Minute)); ok || wait != loginFailureWindow-time.Minute {
+		t.Fatalf("after the budget: %v %v", ok, wait)
 	}
-	if lock, wait := l.check("ip:10.9.9.9", t0.Add(time.Minute)); lock != loginLockedGlobal || wait != loginFailureWindow-time.Minute {
-		t.Fatalf("after the ceiling: %v %v", lock, wait)
+	if ok, _ := l.check("ip:10.0.0.2", t0.Add(time.Minute)); !ok {
+		t.Fatal("another client was refused")
 	}
-	if lock, _ := l.check("ip:10.9.9.9", t0.Add(loginFailureWindow)); lock != loginOpen {
-		t.Fatalf("after the window: %v", lock)
+	if ok, _ := l.check("ip:10.0.0.1", t0.Add(loginFailureWindow)); !ok {
+		t.Fatal("still refused after the window")
 	}
-	if len(l.perClient) != 0 || len(l.global) != 0 {
-		t.Fatalf("aged-out failures kept: %d clients, %d global", len(l.perClient), len(l.global))
+	if len(l.perClient) != 0 {
+		t.Fatalf("aged-out failures kept: %d clients", len(l.perClient))
+	}
+
+	for i := 0; i < loginMaxClients+50; i++ {
+		l.fail(fmt.Sprintf("ip:10.%d.%d.%d", i>>16, (i>>8)&255, i&255), t0.Add(time.Duration(i)*time.Millisecond))
+	}
+	if len(l.perClient) != loginMaxClients {
+		t.Fatalf("%d clients tracked, want the cap %d", len(l.perClient), loginMaxClients)
+	}
+	if _, kept := l.perClient["ip:10.0.0.0"]; kept {
+		t.Fatal("the stalest client should have been evicted first")
 	}
 }
 
 // TestPairingCodeSpaceArithmetic keeps the security-model numbers honest: a
-// code is 50 bits, and a year of guessing at the global ceiling against one
-// outstanding code stays below one in a hundred million.
+// code is 50 bits and absorbs at most pairingCodeFailureBudget wrong guesses,
+// so one code falls with p <= 100/2^50 (about 8.9e-14), and a hundred thousand
+// codes together stay below one in a hundred million.
 func TestPairingCodeSpaceArithmetic(t *testing.T) {
 	c, err := newPairingCode()
 	if err != nil {
@@ -233,8 +311,11 @@ func TestPairingCodeSpaceArithmetic(t *testing.T) {
 	if 256%len(pairingAlphabet) != 0 {
 		t.Fatal("pairing alphabet size no longer divides 256: codes would be biased")
 	}
-	perYear := float64(loginGlobalCeiling) * (365 * 24 * float64(time.Hour) / float64(loginFailureWindow))
-	if p := perYear / math.Pow(2, bits); p > 1e-8 {
-		t.Fatalf("a year at the ceiling succeeds with p=%g per outstanding code; the docs promise < 1e-8", p)
+	perCode := float64(pairingCodeFailureBudget) / math.Pow(2, bits)
+	if perCode > 9e-14 {
+		t.Fatalf("one code falls with p=%g; the docs say about 8.9e-14", perCode)
+	}
+	if p := 1e5 * perCode; p > 1e-8 {
+		t.Fatalf("a hundred thousand codes fall with p=%g; the docs promise < 1e-8", p)
 	}
 }

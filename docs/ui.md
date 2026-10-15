@@ -678,6 +678,9 @@ browser without push — on an iPhone, add the app to the Home Screen first.
 The browsers signed in from other devices, each with **Revoke** (or **Sign out** on this one), and
 **Sign out everywhere**. Signing a device in is deliberately not here: `idea ui pair` on the
 daemon's machine mints the one-time code. See [`configuration.md`](configuration.md#remote-access).
+If pairing codes were burned in the last 7 days — too many wrong codes tried at the sign-in page
+while they were outstanding — the panel says how many and when: someone who can reach the daemon
+may be guessing ([`security-model.md`](security-model.md#remote-access)).
 
 ## Remote use and phones
 
@@ -686,6 +689,10 @@ The same app serves a phone. Turned on and secured as in
 browser on another device gets the page **without the API token** and a **Sign in** screen asking
 for a pairing code from `idea ui pair`; after that it is the full UI, on a session that expires and
 can be revoked. If the session ends, the next request returns it to Sign in.
+
+Wrong codes never lock you out. Too many from one device refuse that device for up to 15 minutes.
+Too many from anywhere while your code is waiting burn that code, and Sign in says so; run
+`idea ui pair` again and the new code works straight away. A signed-in browser is never affected.
 
 At phone widths (≤ 760px) the sidebar is a top bar, and change-set review is built for the thumb:
 

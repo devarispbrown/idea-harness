@@ -9,61 +9,68 @@ import (
 
 // Sign-in rate limiting (docs/security-model.md "Remote access").
 //
-// The first version kept one daemon-wide failure count: ten wrong codes in
-// fifteen minutes locked sign-in for everybody and cancelled every outstanding
-// code. That bounded guessing, and it also handed a lock-out button to anyone
-// who could reach the page -- one guesser on the tailnet could keep the owner
-// out indefinitely, ten requests every fifteen minutes.
+// History. The first version kept one daemon-wide failure count: ten wrong
+// codes in fifteen minutes locked sign-in for everybody and cancelled every
+// outstanding code. The second gave each client its own budget and kept a
+// daemon-wide ceiling of 100 as the backstop -- which still handed a
+// lock-out button to anyone with ten addresses: spend the ceiling and sign-in
+// was paused for everyone, the owner included, for fifteen minutes.
 //
-// Now there are two budgets:
+// Now nothing is locked daemon-wide. There are two budgets, and neither
+// refuses anyone but the guesser:
 //
 //   - per client (loginClientBudget): a client that spends it is refused for
-//     the rest of the window. Nobody else is affected and no code is
-//     cancelled, so the owner, on another device, signs in as usual;
-//   - global (loginGlobalCeiling): a backstop against a guesser with many
-//     addresses. Spending it is the old behaviour -- everyone is locked out
-//     for the window and every outstanding code is cancelled -- but it takes
-//     ten times the failures, and on `tailscale serve` that many distinct
-//     tailnet identities or addresses.
+//     the rest of the window. Nobody else is affected. This slows one guesser
+//     down; it is not what bounds guessing.
+//   - per code (pairingCodeFailureBudget): every wrong code is a guess at
+//     every code outstanding at that moment, so each of them counts it
+//     (store.RedeemPairingCode). A code that has absorbed 100 wrong guesses is
+//     burned: it can never be redeemed. The endpoint stays open, and the owner
+//     mints a fresh code with `idea ui pair` on the daemon's machine, which
+//     starts at zero and works at once. `idea ui pair`, `idea ui sessions` and
+//     Settings say a code was burned, so the owner knows someone is probing.
 //
-// Why the global ceiling is still safe at 100: a code is 50 bits (10 symbols
-// of 5 bits each, newPairingCode) and lives ten minutes. With k codes
-// outstanding, each guess hits one with probability k/2^50 (about k * 8.9e-16).
-// The ceiling caps guesses at 100 per 15-minute window -- 9,600 a day,
-// 3.5 million a year -- so a guesser running flat out for a year against
-// k outstanding codes succeeds with probability about k * 3e-9. The
-// per-client budget only moves where the wall is; the ceiling is what bounds
-// the arithmetic.
+// The guessing bound. A code is 50 bits (10 symbols of 5 bits, newPairingCode)
+// and faces at most pairingCodeFailureBudget = 100 wrong guesses in its life,
+// so any one code is guessed with probability at most 100/2^50, about
+// 8.9e-14. Over n codes ever minted it is at most n * 8.9e-14: a hundred
+// thousand codes is below 1e-8. That is the same per-code exposure as the old
+// global ceiling (100 guesses per 15-minute window, and a code lives ten
+// minutes, so at most 100 guesses reached any one code), with no time-based
+// lock-out, and the counts live in global.db, so a restart does not reset
+// them (the old window was in memory). Guesses made while no code is
+// outstanding are worth nothing and cost the owner nothing.
+//
+// Burning as denial of service. An attacker cannot see when a code exists, so
+// to burn the owner's code they must spray continuously: 100 failures within
+// however long the owner takes to type the code. Each client gets 10 per 15
+// minutes, so a steady sprayer with M clients lands M/1.5 a minute; burning a
+// code inside its ten-minute life takes about 15 clients, and inside the
+// minute an owner usually needs, about 150. Every burn is surfaced.
 //
 // What a client IS (loginClientKey) is the part that must not be spoofable:
 // a header a guesser can set freely would give them a fresh budget per
 // request. So a proxy's headers are believed only for a request that came
-// through a proxy this daemon was told about (trustedProxyClient).
+// through a proxy this daemon was told about (trustedProxyClient). A request
+// from this machine itself (isLocalRequest) is never charged or refused: it
+// already holds the API token, and can mint codes.
 const (
-	loginClientBudget  = 10
-	loginGlobalCeiling = 100
-	loginFailureWindow = 15 * time.Minute
+	loginClientBudget        = 10
+	loginFailureWindow       = 15 * time.Minute
+	pairingCodeFailureBudget = 100
+	// loginMaxClients bounds the per-client map. With no daemon-wide ceiling
+	// nothing else bounds the number of keys, and a client's budget only
+	// slows it down -- the per-code budget is the bound -- so evicting the
+	// stalest client when full costs nothing that matters.
+	loginMaxClients = 4096
 )
 
-// loginLimiter is the failure bookkeeping. Guarded by uiAuth.mu.
-//
-// Memory is bounded without a sweep: a failure is recorded only while the
-// global ceiling is unspent, so at most loginGlobalCeiling timestamps exist
-// inside a window, spread over at most that many keys; older ones are pruned
-// on every check.
+// loginLimiter is the per-client failure bookkeeping. Guarded by uiAuth.mu.
+// In memory on purpose: it is a speed limit, not the guessing bound, which is
+// per code and in global.db.
 type loginLimiter struct {
 	perClient map[string][]time.Time
-	global    []time.Time
 }
-
-// loginLock says why a sign-in is refused before its code is even looked at.
-type loginLock int
-
-const (
-	loginOpen loginLock = iota
-	loginLockedClient
-	loginLockedGlobal
-)
 
 func pruneWindow(ts []time.Time, now time.Time) []time.Time {
 	kept := ts[:0]
@@ -90,11 +97,10 @@ func retryAfter(ts []time.Time, now time.Time) time.Duration {
 
 // check prunes the windows and reports whether key may try a code now, and
 // if not, how long until it may.
-func (l *loginLimiter) check(key string, now time.Time) (loginLock, time.Duration) {
+func (l *loginLimiter) check(key string, now time.Time) (ok bool, wait time.Duration) {
 	if l.perClient == nil {
 		l.perClient = map[string][]time.Time{}
 	}
-	l.global = pruneWindow(l.global, now)
 	for k, ts := range l.perClient {
 		if ts = pruneWindow(ts, now); len(ts) == 0 {
 			delete(l.perClient, k)
@@ -102,29 +108,31 @@ func (l *loginLimiter) check(key string, now time.Time) (loginLock, time.Duratio
 			l.perClient[k] = ts
 		}
 	}
-	if len(l.global) >= loginGlobalCeiling {
-		return loginLockedGlobal, retryAfter(l.global, now)
-	}
 	if ts := l.perClient[key]; len(ts) >= loginClientBudget {
-		return loginLockedClient, retryAfter(ts, now)
+		return false, retryAfter(ts, now)
 	}
-	return loginOpen, 0
+	return true, 0
 }
 
-// fail records a wrong code from key and reports whether that spent the
-// global ceiling -- the caller then cancels every outstanding code.
-func (l *loginLimiter) fail(key string, now time.Time) (globalSpent bool) {
+// fail records a wrong code from key.
+func (l *loginLimiter) fail(key string, now time.Time) {
 	if l.perClient == nil {
 		l.perClient = map[string][]time.Time{}
 	}
-	l.global = append(l.global, now)
+	if _, known := l.perClient[key]; !known && len(l.perClient) >= loginMaxClients {
+		stalest, at := "", now
+		for k, ts := range l.perClient {
+			if last := ts[len(ts)-1]; !last.After(at) {
+				stalest, at = k, last
+			}
+		}
+		delete(l.perClient, stalest)
+	}
 	l.perClient[key] = append(l.perClient[key], now)
-	return len(l.global) == loginGlobalCeiling
 }
 
 // succeed forgets key's failures: the owner who mistyped twice and then got
-// it right should not carry those two into the next sign-in. The global count
-// is left alone -- it is evidence about everyone, not about this client.
+// it right should not carry those two into the next sign-in.
 func (l *loginLimiter) succeed(key string) { delete(l.perClient, key) }
 
 // trustedProxyClient returns the client a trusted proxy says it is serving,
