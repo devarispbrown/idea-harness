@@ -84,8 +84,11 @@ if this file has drifted.
 | `idea docs` | list uploaded context docs | `--json`, `add --kind`, `add --title` | yes |
 | `idea docs add <path>` | upload a context doc (--kind, --title) | — | — |
 | `idea logs [-f] [n]` | show (or follow) the daemon log | `--follow`, `-f`, `-n` | no |
-| `idea daemon` | run the daemon in the foreground | `status`, `stop` | takes no flags |
+| `idea daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]` | run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access") | `--allowed-hosts`, `--listen`, `--tls-cert`, `--tls-key`, `status`, `stop` | no |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
+| `idea ui pair\|sessions` | sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below) | `pair --json`, `pair --label`, `sessions --all`, `sessions --json` | takes no flags |
+| `idea ui pair [--label <name>]` | mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine | — | — |
+| `idea ui sessions [revoke <id>\|--all]` | list remote browser sessions; revoke one, or every one | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
 | `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
 | `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |

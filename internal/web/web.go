@@ -34,6 +34,14 @@ const contentSecurityPolicy = "default-src 'self'; " +
 // Handler returns an http.Handler that serves the embedded UI. The token is
 // injected into index.html so the same-origin UI can authenticate API calls.
 func Handler(token string) http.Handler {
+	return HandlerFor(func(*http.Request) string { return token })
+}
+
+// HandlerFor is Handler with the token decided per request. The daemon hands
+// the token only to a browser provably on this machine; a remote one gets an
+// empty token and signs in with a pairing code instead (internal/daemon,
+// uisession.go), so the same page serves both.
+func HandlerFor(tokenFor func(*http.Request) string) http.Handler {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
 		panic(err)
@@ -55,7 +63,7 @@ func Handler(token string) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
-			html := strings.ReplaceAll(string(data), "__IDEA_TOKEN__", token)
+			html := strings.ReplaceAll(string(data), "__IDEA_TOKEN__", tokenFor(r))
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			// This document carries the per-install API token in a meta tag, and
 			// the daemon binds a fixed loopback port that other local dev servers
@@ -80,6 +88,18 @@ func Handler(token string) http.Handler {
 		// new build changes the URL rather than the bytes behind it.
 		if strings.HasPrefix(path, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		switch path {
+		case "sw.js":
+			// The service worker's own script must be revalidated on every
+			// load, or a fixed bug in it stays installed until the browser's
+			// 24-hour update check. It is served with the page's CSP, which is
+			// what a worker script inherits.
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		case "manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

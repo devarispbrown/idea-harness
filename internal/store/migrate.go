@@ -23,6 +23,37 @@ CREATE TABLE IF NOT EXISTS daemon_meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+`,
+	// 2: browser sessions for remote use of the web UI (docs/security-model.md
+	// "Remote access"). A browser that is not on loopback is never handed the
+	// API token; it pairs with a one-time code minted by `idea ui pair` and
+	// gets a session cookie instead. Daemon-wide rather than per project, like
+	// the token it stands in for.
+	//
+	// Only SHA-256 hashes of the session secret and of the pairing code are
+	// stored: global.db is not a credential store, and a copy of it (a backup,
+	// a bug report) must not be enough to sign in. A revoked session keeps
+	// its row (revoked_at set) so `idea ui sessions` can say what happened to
+	// it; rows past their expiry are pruned on the next session write.
+	`
+CREATE TABLE IF NOT EXISTS ui_sessions (
+	id           TEXT PRIMARY KEY,
+	secret_hash  TEXT NOT NULL UNIQUE,
+	label        TEXT NOT NULL DEFAULT '',
+	user_agent   TEXT NOT NULL DEFAULT '',
+	remote_addr  TEXT NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL,
+	last_seen_at INTEGER NOT NULL,
+	expires_at   INTEGER NOT NULL,
+	revoked_at   INTEGER
+);
+CREATE TABLE IF NOT EXISTS ui_pairing_codes (
+	code_hash  TEXT PRIMARY KEY,
+	label      TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	used_at    INTEGER
+);
 `}
 
 // migrations is the ordered state.db schema history. Append-only: never edit an
@@ -1025,6 +1056,30 @@ CREATE TABLE IF NOT EXISTS run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_initiative ON run_events(initiative_id, id);
 ALTER TABLE remote_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+`,
+	// 45: push_subscriptions -- browsers that asked for Web Push notifications
+	// about this project (docs/ui.md "Notifications"). Each one is its own
+	// integration-bus subscriber ("webpush:<id>"), so it has its own cursor,
+	// outbox rows and retries, exactly like Slack. events is the
+	// comma-separated list of integration event kinds it wants.
+	//
+	// endpoint + p256dh + auth are what a push service needs to deliver to
+	// that browser; they are capability material, never returned by the API
+	// (the list shows the endpoint's host only). This database lives under
+	// the daemon's state root, not in the repository.
+	`
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+	id                TEXT PRIMARY KEY,
+	endpoint          TEXT NOT NULL UNIQUE,
+	p256dh            TEXT NOT NULL,
+	auth              TEXT NOT NULL,
+	events            TEXT NOT NULL,
+	label             TEXT NOT NULL DEFAULT '',
+	created_at        INTEGER NOT NULL,
+	updated_at        INTEGER NOT NULL,
+	last_delivered_at INTEGER,
+	last_error        TEXT NOT NULL DEFAULT ''
+);
 `,
 }
 

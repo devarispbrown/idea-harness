@@ -52,6 +52,16 @@ var securityClaims = []securityClaim{
 		keywords:  []string{"redacted before", "redaction-free", "before any persistence", "redacted at write"},
 	},
 	{
+		// Remote use of the UI: the listen policy, the token never reaching a
+		// remote browser, the session cookie and its CSRF defence. Phrases a
+		// restatement would have to use.
+		anchor:    "remote-access",
+		canonical: "docs/security-model.md",
+		// "pairing code" is deliberately absent: the generated CLI table and
+		// the parity ledger name the verb's purpose, not the property.
+		keywords:  []string{"session cookie", "x-idea-csrf", "daemon.listen", "allowed_hosts"},
+	},
+	{
 		anchor:    "reviewer-separation",
 		canonical: "docs/security.md",
 		keywords:  []string{"distinct actor", "independent reviewer", "independently reviewed", "independent adversarial"},
