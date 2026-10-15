@@ -193,7 +193,7 @@ func renderGaps(report cliGapReport, all bool, stdout io.Writer) {
 // what closes an unvalidated_assumption gap.
 func cmdAssumption(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 2 {
-		return usageErrorf("usage: idea assumption <id> accept|dispute|retract [<initiative>]")
+		return usageErrorf("usage: idea assumption <ASM-n|id> accept|dispute|retract [<initiative>]")
 	}
 	ref, verdict := a.positional[0], a.positional[1]
 	status := map[string]string{"accept": "accepted", "dispute": "disputed", "retract": "retracted"}[verdict]
@@ -210,6 +210,7 @@ func cmdAssumption(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	var assertions []struct {
 		ID        string `json:"id"`
+		Code      string `json:"code"`
 		Type      string `json:"type"`
 		Statement string `json:"statement"`
 	}
@@ -218,7 +219,8 @@ func cmdAssumption(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	var matches []string
 	for _, as := range assertions {
-		if as.ID == ref {
+		// A code (ASM-3) is exact and case-insensitive; an id may be a prefix.
+		if as.ID == ref || (as.Code != "" && strings.EqualFold(as.Code, ref)) {
 			matches = []string{as.ID}
 			break
 		}

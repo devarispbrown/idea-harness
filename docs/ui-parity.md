@@ -67,7 +67,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `budget` | ui | `#/settings` — Budget: project default cap; `#/i/<id>/build` — spending meter with Raise cap / Clear; meter in the initiative header on every phase | |
 | `metrics` | ui | `#/i/<id>/define` — metrics under each objective; drift on `#/i/<id>/health` | |
 | `metric add` | ui | `#/i/<id>/define` — Objectives: add metric | |
-| `metric edit` | partial | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline incl. clearing it, target, unit) | guardrail, cadence, definition, source (`--command`/`--url`/`--manual`) and moving it to another objective are CLI-only |
+| `metric edit` | ui | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline and guardrail incl. clearing them, target, unit, cadence, definition, source: by hand, command, or URL + JSON pointer, and the objective it measures) | |
 | `metric record` | ui | `#/i/<id>/define` — Objectives: record a value | |
 | `metric measure` | ui | `#/i/<id>/outcomes` — Measure for command/url sources; `#/automations` — scheduled measurement and Run now | |
 | `diff` | cli-only | CLI-only: gap — the structured requirement/decision diff (`GET …/diff`) is not shown; `#/i/<id>/diff/<from>/<to>` is the text diff of two artifact versions, a different thing | |
@@ -90,6 +90,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `integrations test` | ui | `#/settings` — Integrations panel Test buttons | |
 | `watch` | ui | `#/i/<id>/build` — the run panel streams the running agent's events live and resumes after a reload | |
 | `run events` | ui | `#/i/<id>/build` — the run panel shows the current run's events live (`--follow`) and resumes after a reload; the last run stays under Last agent run | |
+| `runs remote` | partial | `#/i/<id>/build` — Remote runs on the run panel, when the run's executor is openhands: task, status, attempt, server, conversation id, last event, error | `--all` (every initiative) is CLI-only, as is the panel for an initiative whose current run used another executor |
 | `steer` | ui | `#/i/<id>/build` — Send a note on the run panel, with Interrupt the current step (`--interrupt`) | |
 | `cancel` | ui | `#/i/<id>/<phase>` — Cancel on the running card | |
 | `config` | partial | `#/settings` — providers and executor settings are written to harness.yaml | no view of the whole config file |

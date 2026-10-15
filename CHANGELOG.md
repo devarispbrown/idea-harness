@@ -95,6 +95,36 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Edit every field of a metric from the Define page.** The metric edit form adds guardrail
+  (blank clears it), cadence, definition, source — recorded by hand, a command, or a URL with a JSON
+  pointer — and, with more than one objective, which objective it measures; `metric edit` is now
+  `ui` in the parity ledger. The form refuses what the API refuses before sending (a cadence
+  `ParseCadence` rejects, a negative guardrail on a maintain metric, a command source with no
+  command, a non-http(s) URL, a pointer not starting with `/`) and sends a changed source whole.
+- **List the OpenHands executor's remote runs.** `idea runs remote [<initiative>] [--all] [--json]`,
+  `GET …/initiatives/{id}/remote-runs` and `GET …/remote-runs` (project-wide, `?active=true` for the
+  runs not yet over) list every dispatch to an Agent Server, newest first: task, status, attempt,
+  server, conversation id, the progress log's last line, and the error. The run panel shows the same
+  rows under **Remote runs** when the run's executor is `openhands`. Until now they were readable
+  only from `state.db`.
+- **Requirements and decisions now say which assertions they rest on, so assumption gaps fire on
+  real runs.** Assertions get initiative-scoped codes (`ASM-n`; migration 48 numbers existing rows
+  in creation order, and `Assertion.code` is a new required field in the API). The PRD prompt lists
+  them, and the PRD schema gains a per-requirement and per-decision `based_on` (ASM codes); each
+  citation is written as `requirement|decision --derived_from--> assertion`. A requirement revised in
+  place has its basis replaced, a re-listed decision's is added to, and an unknown code is skipped.
+  Research findings may name a framing assumption they `supports` or `contradicts` (new optional
+  fields; `assertion --supports|contradicts--> assertion`). Until now nothing wrote these edges, so
+  `basis_refuted` and an assumption's dependents only ever appeared in tests: now `idea assumption
+  ASM-3 retract` on a hypothesis a decided decision rests on reports `basis_refuted` on the decision,
+  and an unvalidated assumption a requirement rests on is medium, not low. The PRD reviewer is shown
+  the assertions requirements rest on, with status, and may raise a cited medium `basis` finding on a
+  requirement resting on an unvalidated, disputed or retracted assumption or hypothesis. `idea
+  assumption` accepts the code as well as an id prefix, and gaps name assertions by code. The
+  `product_manager` and `adversarial_reviewer` contracts are at **1.3.0**, `research_analyst` at
+  **1.1.0**. The demo provider's requirement cites the two research findings and the scripted eval's
+  first requirement cites the research hypotheses, so both graphs carry basis edges; the scripted
+  baseline moved only in its nominal token counts (the prompts list the assertions).
 - **Use the UI from your phone or another computer, without the token leaving the machine.**
   Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
   `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),

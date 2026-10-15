@@ -79,6 +79,7 @@ if this file has drifted.
 | `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea run events <run-id\|current> [<initiative>] [--follow] [--json]` | print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line | `events --follow`, `events --json` | takes no flags |
+| `idea runs remote [<initiative>] [--all] [--json]` | list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative) | `remote --all`, `remote --json` | takes no flags |
 | `idea steer <run-id\|current> "<note>" [<initiative>] [--interrupt]` | send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run | `--interrupt`, `--json` | yes |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
@@ -304,7 +305,7 @@ in [architecture.md](architecture.md#asking-the-graph-gaps).
 idea gaps --all --fail-on high
 ```
 
-`idea assumption <id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
+`idea assumption <ASM-n|id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
 or hypothesis — the id is the 8-character prefix `idea gaps` prints. It is what closes an
 `unvalidated_assumption` gap; a retracted one that requirements still rest on becomes a high
 `refuted` gap until they are reworked.

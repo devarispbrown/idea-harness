@@ -162,6 +162,7 @@ func scriptedPRD(req model.Request, n int) string {
 		Statement          string   `json:"statement"`
 		Priority           string   `json:"priority"`
 		Objectives         []string `json:"objectives"`
+		BasedOn            []string `json:"based_on"`
 		AcceptanceCriteria []ac     `json:"acceptance_criteria"`
 	}
 	// Both requirements serve the one objective, so the PRD review's
@@ -184,6 +185,11 @@ func scriptedPRD(req model.Request, n int) string {
 			"hypothesis": "We believe a documented core flow with clear input errors will raise first-run completion",
 		}},
 	}}
+	// The core flow rests on the research's hypotheses, the input check on
+	// nothing: the graph gets basis edges, and the scripted reviewer (which
+	// never flags a basis) keeps every scenario's cycle counts unchanged.
+	reqs[0].BasedOn = scriptedBasis(req.System)
+	reqs[1].BasedOn = []string{}
 	if listed := listedRequirements(req.System); n > 1 && len(listed) > 0 {
 		for i := range reqs {
 			if i < len(listed) {
@@ -207,6 +213,17 @@ func scriptedPRD(req model.Request, n int) string {
 		"review_responses": responses,
 	})
 	return string(b)
+}
+
+var listedHypothesisRe = regexp.MustCompile(`(?m)^- (ASM-\d+) \(hypothesis,`)
+
+// scriptedBasis is every hypothesis the PRD prompt lists, by code; never nil.
+func scriptedBasis(system string) []string {
+	out := []string{}
+	for _, m := range listedHypothesisRe.FindAllStringSubmatch(sectionOf(system, "assertions"), -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // scriptedReview is cycle n's reviewer for a scenario.

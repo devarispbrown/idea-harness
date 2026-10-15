@@ -140,8 +140,8 @@ unverified_requirement · 1
          → idea verify REQ-1 --pass
 
 unvalidated_assumption · 1
-  low    3f9a1c0e  assumption 3f9a1c0e was never validated
-         → idea assumption 3f9a1c0e accept|dispute|retract
+  low    ASM-1  assumption ASM-1 was never validated
+         → idea assumption ASM-1 accept|dispute|retract
 ```
 
 The same report is `GET …/initiatives/{id}/gaps` (and `GET /projects/{projectId}/gaps` for every
@@ -205,12 +205,22 @@ What it deliberately does not do:
   set touched what this decision governs" is not a trigger; only the recorded edges and events are.
 - **Ties are fresh.** Evidence and an apply in the same millisecond, or two artifacts with the same
   timestamp, are not stale.
-- **Some edges have no writer yet.** Nothing in the workflow links an assertion to a decision, writes
-  `supports`, `invalidates` or `contradicts`, or sets a requirement's source assertion, so
-  `basis_refuted` and assertion dependents are exercised only by tests today; the rules are in place
-  for when those edges are recorded. Framing and research assumptions therefore report as
-  unvalidated with no dependents (low) until judged with `idea assumption <id>
-  accept|dispute|retract` — the only path that moves an assertion out of `candidate`.
+- **The basis comes from the PRD's own citations.** Framing and research record assertions with
+  initiative-scoped codes (`ASM-n`); the PRD prompt lists them, and each requirement and decision
+  names the ones it rests on in `based_on`. The engine writes each citation as
+  `requirement|decision --derived_from--> assertion` (an unknown code is skipped, never fatal). A
+  requirement revised in place has its basis replaced (a citation the revision dropped leaves the
+  graph; its source assertion, if any, stays); a re-listed decision's basis is only added to; a
+  superseded requirement keeps its edges but, not being live, no longer counts. A research finding
+  may also name a framing assumption it `supports` or `contradicts` (`assertion --supports|contradicts-->
+  assertion`). So an assertion a requirement rests on reports as unvalidated **with** dependents
+  (medium), and retracting one a decided decision rests on (`idea assumption ASM-n retract`) fires
+  `basis_refuted` on the decision and `refuted` on the assertion. The PRD reviewer sees the
+  assertions requirements rest on, with their status, and may raise a cited **medium** `basis`
+  finding on a requirement resting on an unvalidated, disputed or retracted assumption or hypothesis.
+  Nothing in the workflow writes `invalidates`, or `supports`/`contradicts` into a decision, yet; the
+  rules read them when recorded. Judging an assertion (`idea assumption <ASM-n|id>
+  accept|dispute|retract`) remains the only path out of `candidate`.
 - **Guidance counts omit mapped tests.** `gap_summary` is computed without the mapped-test parse
   (it needs every check output); `idea gaps` includes it, so its verification counts can be higher.
 
