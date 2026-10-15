@@ -1119,21 +1119,11 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	}
 	responses := reviewResponses(obj)
 
-	body := renderPRD(obj)
-	bodyDigest := e.storeBlob(body)
-	// The next version of the PRD, not a new "PRD v1": a revision used to
-	// start a fresh family, which is how Define came to offer "Diff v1 → v1".
-	// Every revision cycle keeps its version even when the body repeats --
-	// the review loop counts cycles by what was produced.
-	ver := &domain.ArtifactVersion{BodyDigest: bodyDigest, ProducedByRun: runID, Status: "draft"}
-	if _, err := e.db.RecordArtifactVersion(ctx, initiativeID, domain.ArtifactPRD, ver, false); err != nil {
-		return nil, err
-	}
-
 	// review H6: completedPhases keys Retry's "PRD completed" off
-	// ArtifactPRD's existence alone -- committed just above -- but the
-	// requirements/decisions/questions below are what that fact actually
-	// means downstream (review/architecture/plan are all built from the
+	// ArtifactPRD's existence alone -- committed at the end of this function,
+	// after the objectives are recorded so its body names them by their
+	// stored codes -- but the requirements/decisions/questions below are
+	// what that fact actually means downstream (review/architecture/plan are all built from the
 	// requirement set, not the artifact body). Stop after 6 of 20
 	// CreateRequirement calls used to leave the artifact durable and the
 	// requirement set truncated with no error; Retry then saw "PRD done"
@@ -1297,6 +1287,21 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 		if err := e.createQuestionIfNew(dctx, initiativeID, e.redact(q)); err != nil {
 			return nil, err
 		}
+	}
+
+	// Rendered last: recordPRDObjectives has rewritten obj's objective keys
+	// to their stored codes, so the body says OBJ-1 where the response said
+	// O1. Committed last too, which only strengthens H6: the artifact now
+	// exists only once everything it stands for does.
+	body := renderPRD(obj)
+	bodyDigest := e.storeBlob(body)
+	// The next version of the PRD, not a new "PRD v1": a revision used to
+	// start a fresh family, which is how Define came to offer "Diff v1 → v1".
+	// Every revision cycle keeps its version even when the body repeats --
+	// the review loop counts cycles by what was produced.
+	ver := &domain.ArtifactVersion{BodyDigest: bodyDigest, ProducedByRun: runID, Status: "draft"}
+	if _, err := e.db.RecordArtifactVersion(dctx, initiativeID, domain.ArtifactPRD, ver, false); err != nil {
+		return nil, err
 	}
 	return responses, nil
 }
