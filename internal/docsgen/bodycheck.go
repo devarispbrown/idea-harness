@@ -96,6 +96,13 @@ var strictDecodeHandlers = map[string]bool{
 	"handleUpdateProviders": true,
 	"handleReviewChangeSet": true,
 	"handleUpdateExecutors": true,
+	// Closed from their first release (0.7 settings and automations), so
+	// none is a breaking change: each operation's 400 says so instead.
+	"handleUpdateIntegration": true,
+	"handleSetBudget":         true,
+	"handleSetProjectBudget":  true,
+	"handleUpdateAutomation":  true,
+	"handleRunAutomation":     true,
 }
 
 // callsDecodeStrict reports whether a function body calls decodeStrict.

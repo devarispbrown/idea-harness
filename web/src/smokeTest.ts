@@ -26,10 +26,14 @@ export function smokeButtonState(
   if (status?.last_smoke?.status === "running" || status?.last_smoke?.status === "pending") {
     return { enabled: false, reason: "A smoke test is running." };
   }
-  if (kind !== "hermes" && kind !== "omp") {
+  // The daemon smokes every coding-agent kind (POST .../executors/smoke):
+  // hermes, omp, acp and openhands. Offering only the first two left the
+  // ACP/OpenHands profiles the Settings editor now configures with no way to
+  // prove them from the UI.
+  if (kind !== "hermes" && kind !== "omp" && kind !== "acp" && kind !== "openhands") {
     return {
       enabled: false,
-      reason: "The smoke test runs the coding agent; select the hermes or omp executor first.",
+      reason: "The smoke test runs the coding agent; select a coding-agent executor (hermes, omp, acp or openhands) first.",
     };
   }
   if (status === undefined) {

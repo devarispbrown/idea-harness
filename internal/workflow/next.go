@@ -82,6 +82,10 @@ func (e *Engine) NextAction(ctx context.Context, initiativeID string) (string, e
 			return "resolve plan", nil
 		case domain.JudgmentVerification:
 			return "resolve verification", nil
+		case domain.JudgmentBudget:
+			// Raising the cap is the only way on; it returns the initiative
+			// to where it was, and the step is then run again from there.
+			return "resolve budget", nil
 		}
 		// Recorded before this was introduced, so the reason is empty. The bare
 		// token is what the CLI rendered for every case until now; keep it
@@ -149,6 +153,8 @@ func PlanNotReadyForExecution(ini domain.Initiative) string {
 		return "The PRD is waiting for your review; approve it and the plan first"
 	case domain.JudgmentPlanReview, domain.JudgmentPlanDependencies:
 		return "The plan is waiting for your approval; approve it on the Plan page first"
+	case domain.JudgmentBudget:
+		return "This initiative stopped at its spending cap; raise the cap (`idea budget " + ini.ID + " --set <usd>`) first"
 	}
 	return ""
 }

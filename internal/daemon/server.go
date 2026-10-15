@@ -190,6 +190,10 @@ func RunWith(addr, stateRoot string, log *slog.Logger, onReady func(), override 
 	// their first request, so notifications and the Linear poll resume after
 	// a restart without anyone touching the project.
 	go rt.startConfiguredIntegrations(ctx)
+	// Scheduled automations (automations.go): the projects that enable one
+	// are opened now, and the scheduler ticks until shutdown.
+	go rt.startConfiguredAutomations(ctx)
+	go rt.runScheduler(ctx)
 	select {
 	case err := <-served:
 		return err

@@ -556,6 +556,13 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 		})
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// The spending cap is checked before every billed attempt, retries
+		// included: a retry costs what the first try did (budget.go).
+		if err := e.checkBudget(ctx, initiativeID, "the "+stageKey+" model call"); err != nil {
+			failureManifest()
+			e.db.SetRunStatus(ctx, runID, domain.RunFailed, roleName)
+			return runID, nil, err
+		}
 		resp, err = prov.Complete(ctx, req)
 		if err != nil {
 			if attempt < maxAttempts && isTransientModelError(err) {
@@ -2118,6 +2125,10 @@ func (e *Engine) describeImage(ctx context.Context, doc domain.ContextDoc) error
 		if runErr == nil {
 			_ = e.db.SetRunStatus(ctx, runID, status, "vision")
 		}
+	}
+	if err := e.checkBudget(ctx, doc.InitiativeID, "the image-description model call"); err != nil {
+		setRunStatus(domain.RunFailed)
+		return err
 	}
 	reqStart := time.Now()
 	resp, err := prov.Complete(ctx, req)

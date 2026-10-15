@@ -3902,3 +3902,98 @@ body { overflow-x: clip; }
   .phase-header { flex-wrap: wrap; row-gap: 2px; }
   .phase-purpose { flex-basis: 100%; order: 1; }
 }
+
+/* ---------- Settings & automations (UI Phase 4): executor profile, integration
+   editors, the spending-cap meter, and the Automations page. ---------- */
+.exec-trust {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  color: var(--text-body);
+  font-size: 13px;
+}
+.exec-trust-local { border-color: var(--needs-you-line); background: var(--needs-you-bg); }
+.exec-trust-remote { border-color: var(--failing-line); background: var(--failing-bg); }
+.exec-group {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.exec-group > legend { font-weight: 600; padding: 0 4px; }
+.mcp-server {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+}
+.mcp-pairs { margin-top: 6px; }
+.mcp-pairs .row { flex-wrap: wrap; }
+.integ-editor {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.integ-events, .integ-states { border: 0; margin: 8px 0; padding: 0; }
+.integ-events .w3-toggle-row { display: flex; gap: 6px; align-items: center; margin: 2px 0; }
+.integ-state { display: inline-flex; flex-direction: column; margin: 0 10px 6px 0; font-size: 13px; }
+.budget-input { max-width: 9em; }
+.budget-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.budget-bar {
+  display: inline-block;
+  flex: 0 0 140px;
+  width: 140px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.budget-bar-fill { display: block; height: 100%; background: var(--verified-fg); }
+.budget-warn .budget-bar-fill { background: var(--needs-you-fg); }
+.budget-over .budget-bar-fill { background: var(--failing-fg); }
+.budget-shell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+}
+.budget-shell.budget-over { border-color: var(--failing-line); background: var(--failing-bg); }
+.budget-shell.budget-warn { border-color: var(--needs-you-line); background: var(--needs-you-bg); }
+.budget-shell-label { font-weight: 600; }
+.budget-shell-link { margin-left: auto; }
+.budget-controls { align-items: center; flex-wrap: wrap; }
+.budget-list li { padding: 4px 0; }
+.pn-automations { margin-bottom: 4px; }
+.automations-head h1 { margin: 0 0 4px; }
+.automation-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.automation-top h2 { margin: 0; }
+.automation-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.automation-facts dt { color: var(--text-muted); }
+.automation-facts dd { margin: 0; }
+.automation-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.automation-table th, .automation-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+.automation-table caption { text-align: left; padding: 4px 0; }
+.automation-history > summary { cursor: pointer; color: var(--text-muted); margin-top: 8px; }
+.eval-settings { margin: 8px 0; }

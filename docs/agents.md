@@ -634,6 +634,13 @@ to the total, not as a silent zero — review defect #5). A run's total cost is 
 once EVERY agent run in the initiative was priced one of these two ways; a partial sum would
 understate the real spend, which is worse than admitting it is not measured.
 
+**Spending caps count only what is measured.** A [budget](configuration.md#budget) is checked
+before the agent starts, for every kind, so a cap that is already reached stops the run before it
+is dispatched. But an agent run whose spend was not measured adds nothing to the meter: with Hermes
+or OMP the cap bounds the pipeline's own model calls, not the agent's, and the budget view says so
+(`agent_not_counted`). Any agent whose output carries a cost line or its token counts (the two
+rules above) is counted, whatever its kind.
+
 **Follow-up, not yet done:** Hermes's CLI documents a `--usage-file <path>` flag that writes a
 machine-readable JSON usage report (`estimated_cost_usd`, `input_tokens`/`output_tokens`/
 `total_tokens`, `api_calls`, …) after a run — but it is documented against `hermes -z`
