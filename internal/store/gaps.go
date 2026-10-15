@@ -81,7 +81,9 @@ func (db *DB) GraphEventSeqs(ctx context.Context, initiativeID string) (map[stri
 
 // SetAssertionStatus records a human's judgment on an assumption or
 // hypothesis: accepted (validated), disputed (contested, still unvalidated)
-// or retracted (refuted).
+// or retracted (refuted). Retraction also writes an invalidates edge from
+// the assertion to each live requirement or decision resting on it (see
+// syncInvalidatesTx); a later accept or dispute removes them.
 //
 // It is the only path that moves an assertion out of `candidate`. Framing and
 // research record every assumption as a candidate and nothing ever validated
@@ -113,6 +115,12 @@ func (db *DB) SetAssertionStatus(ctx context.Context, assertionID string, status
 			return notFoundOrState(tx, "assertions", assertionID, "assertion",
 				fmt.Errorf("assertion %s is superseded; its replacement is the live claim", assertionID))
 		}
-		return nil
+		// Retracting writes assertion --invalidates--> every live node
+		// resting on it; any other judgment removes them.
+		var initiativeID string
+		if err := tx.QueryRow(`SELECT initiative_id FROM assertions WHERE id = ?`, assertionID).Scan(&initiativeID); err != nil {
+			return err
+		}
+		return db.syncInvalidatesTx(tx, initiativeID, actor)
 	})
 }
