@@ -202,4 +202,80 @@ func TestWriteHarnessOmitsAnEmptyACPBlock(t *testing.T) {
 	if !strings.Contains(string(b), "kind: auto") {
 		t.Fatalf("harness.yaml does not record kind: auto:\n%s", b)
 	}
+	if strings.Contains(string(b), "openhands") {
+		t.Fatalf("harness.yaml gained an empty openhands block:\n%s", b)
+	}
+}
+
+// The openhands block loads; the server URL must be https unless loopback and
+// carry no credentials, and the session key is named, never inlined.
+func TestOpenHandsConfigLoadsAndRefusesUnsafeShapes(t *testing.T) {
+	cfg, err := loadHarness(t, `executor:
+  kind: openhands
+  model: anthropic/claude-sonnet-5
+  openhands:
+    url: https://agents.example.com
+    api_key_env: OH_KEY
+    agent: acp
+    acp_command: [claude-agent-acp]
+    workspace_dir: /srv/work
+    withhold_provider_key: true
+    max_iterations: 50
+    timeout_seconds: 600
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Harness.Executor.OpenHands
+	if cfg.Harness.Executor.Kind != ExecutorOpenHands || o.URL != "https://agents.example.com" || o.EffectiveAPIKeyEnv() != "OH_KEY" ||
+		o.EffectiveAgent() != "acp" || o.EffectiveWorkspaceDir() != "/srv/work" || !o.WithholdProviderKey {
+		t.Fatalf("loaded %+v", o)
+	}
+	var zero OpenHandsConfig
+	if zero.EffectiveAPIKeyEnv() != "OPENHANDS_API_KEY" || zero.EffectiveAgent() != "openhands" || zero.EffectiveWorkspaceDir() != "/workspace/idea-harness" {
+		t.Fatal("defaults changed")
+	}
+
+	for _, tc := range []struct{ name, block, want string }{
+		{"plain http to a remote host", "url: http://agents.example.com", "use https"},
+		{"credentials in the url", "url: https://user:pw@agents.example.com", "must not carry credentials"},
+		{"not http", "url: ftp://agents.example.com", "http(s) URL"},
+		{"query string", "url: https://agents.example.com/?k=v", "base URL"},
+		{"inline key", "api_key_env: sk-abc def", "NAME of an environment variable"},
+		{"unknown field", "session_api_key: abcdefgh", ""},
+		{"bad agent", "agent: hermes", ""},
+		{"acp_command without acp", "acp_command: [x]", "only applies to agent: acp"},
+		{"relative dir", "workspace_dir: work", "clean absolute directory"},
+		{"root dir", "workspace_dir: /", "clean absolute directory"},
+		{"unclean dir", "workspace_dir: /a/../b", "clean absolute directory"},
+		{"shell chars in dir", "workspace_dir: /a;rm", "clean absolute directory"},
+		{"negative timeout", "timeout_seconds: -1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadHarness(t, "executor:\n  kind: openhands\n  openhands:\n    "+tc.block+"\n")
+			if err == nil {
+				t.Fatal("loaded")
+			}
+			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+	for _, ok := range []string{"http://localhost:8000", "http://127.0.0.1:8000/", "http://[::1]:8000", "https://agents.example.com/oh"} {
+		if err := ValidateOpenHandsURL(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+}
+
+func TestOpenHandsProblems(t *testing.T) {
+	c := Config{Harness: HarnessConfig{Executor: ExecutorConfig{Kind: ExecutorOpenHands, OpenHands: OpenHandsConfig{Agent: "acp"}}}}
+	var url, cmd bool
+	for _, p := range c.Problems() {
+		url = url || (p.Field == "harness.executor.openhands.url" && p.Severity == SeverityError)
+		cmd = cmd || (p.Field == "harness.executor.openhands.acp_command" && p.Severity == SeverityError)
+	}
+	if !url || !cmd {
+		t.Fatalf("missing url / acp_command not flagged: %+v", c.Problems())
+	}
 }

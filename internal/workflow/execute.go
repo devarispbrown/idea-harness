@@ -178,10 +178,44 @@ func (e *Engine) executorFor(kind config.ExecutorKind, image string) (executor.E
 		}
 		ex.SetKeyLookup(e.lookupKey)
 		return ex, nil
+	case config.ExecutorOpenHands:
+		// Refused here, before the planner's model call, like every other
+		// kind's preflight: no server URL, an unsafe one, or a provider key
+		// that is to be sent and is set nowhere.
+		oh := e.snapshotConfig().cfg.Executor.OpenHands
+		model := e.implementerModel()
+		provider, err := e.implementerProvider()
+		if err != nil {
+			// An ACP agent on the server with the key withheld talks to its
+			// own vendor with the server's own key; nothing here needs the
+			// provider resolved.
+			if oh.EffectiveAgent() != "acp" || !oh.WithholdProviderKey {
+				return nil, err
+			}
+			provider = executor.AgentProvider{}
+		}
+		if !oh.WithholdProviderKey && provider.KeyEnv != "" && e.lookupKey(provider.KeyEnv) == "" {
+			return nil, fmt.Errorf("executor: provider %q needs %s, which is set neither in the daemon's environment nor in the project's .env; "+
+				"export it and restart the daemon (`idea daemon stop`), add it to .env, or set executor.openhands.withhold_provider_key: true "+
+				"if the Agent Server supplies its own", provider.Name, provider.KeyEnv)
+		}
+		if compat := executor.CheckModelCompat(string(kind), model); compat.Message != "" {
+			if compat.Blocked {
+				return nil, fmt.Errorf("executor: %s", compat.Message)
+			}
+			if e.log != nil {
+				e.log.Warn("untested executor/model combination", "kind", kind, "model", model, "detail", compat.Message)
+			}
+		}
+		return e.openHandsExecutor(model, provider)
 	default:
 		return executor.NewInternalExecutor(e.contentBlobs()), nil
 	}
 }
+
+// errOpenHandsURL is the refusal for kind openhands with no server.
+var errOpenHandsURL = errors.New("executor: openhands needs executor.openhands.url, the Agent Server to run on; " +
+	"set it with idea executors setup --kind openhands --url <agent-server-url> --yes")
 
 // ErrNoReadyTask is what nextReadyTask returns when the initiative has nothing
 // runnable. A sentinel rather than a bare error so callers can tell it from the
@@ -1055,6 +1089,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			Requested:   resolution.Requested,
 			Resolved:    resolution.Resolved,
 			Image:       resolution.Image,
+			Server:      resolution.Server,
 			Warning:     resolution.Warning,
 			Permissions: permissions,
 		},

@@ -17,7 +17,7 @@ import (
 // write_file gate. Every kind selectExecutor can build passes it; an unknown
 // kind (one added without a TrustTierFor case) is refused with the code.
 func TestAuthorizeExecutorWriteTrustDeny(t *testing.T) {
-	for _, kind := range []string{"internal", "container", "omp", "hermes"} {
+	for _, kind := range []string{"internal", "container", "omp", "hermes", "acp", "openhands"} {
 		if err := authorizeExecutorWrite(kind); err != nil {
 			t.Errorf("%s: %v", kind, err)
 		}

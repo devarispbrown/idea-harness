@@ -210,14 +210,16 @@ const (
 	ExecutorContainer ExecutorKind = "container"
 	ExecutorOMP       ExecutorKind = "omp"
 	ExecutorHermes    ExecutorKind = "hermes"
-	// ExecutorACP and ExecutorAuto are documented in executor.go.
-	ExecutorACP  ExecutorKind = "acp"
-	ExecutorAuto ExecutorKind = "auto"
+	// ExecutorACP, ExecutorOpenHands and ExecutorAuto are documented in
+	// executor.go.
+	ExecutorACP       ExecutorKind = "acp"
+	ExecutorOpenHands ExecutorKind = "openhands"
+	ExecutorAuto      ExecutorKind = "auto"
 )
 
 func (k ExecutorKind) Valid() bool {
 	switch k {
-	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes, ExecutorACP, ExecutorAuto:
+	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes, ExecutorACP, ExecutorOpenHands, ExecutorAuto:
 		return true
 	}
 	return false
@@ -232,6 +234,9 @@ type ExecutorConfig struct {
 	Model string       `json:"model,omitempty" yaml:"model,omitempty"`
 	// ACP configures kind: acp (executor.go). Ignored by every other kind.
 	ACP ACPConfig `json:"acp,omitempty" yaml:"acp,omitempty"`
+	// OpenHands configures kind: openhands (executor.go). Ignored by every
+	// other kind.
+	OpenHands OpenHandsConfig `json:"openhands,omitempty" yaml:"openhands,omitempty"`
 	// MCPServers are handed to an ACP agent in session/new (executor.go).
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 }

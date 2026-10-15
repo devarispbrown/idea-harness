@@ -3586,7 +3586,7 @@ paths:
       operationId: updateExecutors
       summary: Merge executor settings into harness.yaml
       description: |
-        **`GET /executors` is not the read side of this.** It returns a catalog of all five
+        **`GET /executors` is not the read side of this.** It returns a catalog of all six
         concrete executor kinds with their capabilities, not a projection of the config, so there is no
         round trip to perform: its per-item key is `name`, this takes `kind`, and echoing an entry
         back answers `400 json: unknown field "capabilities"`. The writable set is the three
@@ -3628,6 +3628,25 @@ paths:
                 acp_key_env:
                   type: string
                   description: "`executor.acp.key_env`: the name the provider key is exposed under inside an ACP agent's container."
+                openhands_url:
+                  type: string
+                  description: |
+                    `executor.openhands.url`, the OpenHands Agent Server the `openhands` kind runs on.
+                    Required when the resulting kind is `openhands`. Must be `https` unless the host is
+                    loopback, and carry no credentials; otherwise `400` before anything is written.
+                openhands_api_key_env:
+                  type: string
+                  description: |
+                    `executor.openhands.api_key_env`: the NAME of the variable holding the server's
+                    session key (default `OPENHANDS_API_KEY`). The key itself is never accepted here.
+                openhands_agent:
+                  type: string
+                  enum: [openhands, acp]
+                  description: "`executor.openhands.agent`: the server's own agent, or an ACP agent its image carries."
+                openhands_acp_command:
+                  type: array
+                  items: { type: string }
+                  description: "`executor.openhands.acp_command`, the ACP agent's argv on the server, for `openhands_agent: acp`."
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3677,11 +3696,14 @@ paths:
         The operation carries no `initiative_id`. It fails with the smoke's own error, which
         includes the agent's output (redacted). The latest result is reported as
         `status.last_smoke` on `GET /executors`. One smoke runs per project at a time.
+
+        For `openhands` the task runs on the configured Agent Server (no image); the run record
+        lives in a throwaway database, not the project's `remote_runs`.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
-          description: The executor is not a coding agent (`internal`, `container`), has no image, or its model resolves to no usable provider.
+          description: The executor is not a coding agent (`internal`, `container`), has no image (or, for `openhands`, no server URL), or its model resolves to no usable provider.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5142,6 +5164,9 @@ components:
             requested: { $ref: "#/components/schemas/ExecutorKind" }
             resolved: { $ref: "#/components/schemas/ExecutorKind" }
             image: { type: string }
+            server:
+              type: string
+              description: The Agent Server URL, for `openhands`.
             warning: { type: string }
             note: { type: string }
           required: [requested, resolved]
@@ -5547,9 +5572,10 @@ components:
       description: |
         `auto` is what an unset `executor.kind` means: resolved per run to `hermes` (Docker
         reachable and the coding model's key set) or to `internal` with a loud warning. `acp`
-        drives any Agent Client Protocol agent. `GET /executors` lists the concrete kinds only,
-        never `auto`.
-      enum: [auto, internal, container, omp, hermes, acp]
+        drives any Agent Client Protocol agent. `openhands` delegates the run to an OpenHands
+        Agent Server (opt-in only: auto never resolves to it, since the work root leaves the
+        machine). `GET /executors` lists the concrete kinds only, never `auto`.
+      enum: [auto, internal, container, omp, hermes, acp, openhands]
 
     IntegrationsView:
       type: object
@@ -5641,7 +5667,8 @@ components:
           enum: [internal, local_external, remote_external]
         sandbox_mode:
           type: string
-          enum: [container, local_restricted, host_approved]
+          enum: [container, local_restricted, host_approved, remote]
+          description: "`remote`: the agent runs on another machine (openhands), in a sandbox the harness does not enforce."
         network: { type: boolean }
         capabilities:
           type: array
@@ -5684,6 +5711,9 @@ components:
         (the coding agents run in a container against a keyed provider); `internal`/`container`
         always report ready, since neither pulls an agent image or forwards a provider key. Image
         presence is cached for about 30s so a poll never calls Docker more than once per interval.
+        For `openhands` there is no image (`image_present` is true); `key_env`/`key_set` describe
+        the Agent Server's session key, and `problem` names a missing or unsafe server URL or a
+        provider key that is to be sent and is set nowhere. The server is not contacted here.
       properties:
         image:
           type: string

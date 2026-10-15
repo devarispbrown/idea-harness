@@ -51,7 +51,13 @@ func (CapabilityBroker) GrantSuggested(suggested []string) []string {
 var trustActions = map[domain.ExecutorTrust][]string{
 	domain.ExecutorInternal:      {"read_file", "write_file", "run_command"},
 	domain.ExecutorLocalExternal: {"read_file", "write_file"},
-	// remote_external and unknown tiers are fail-closed: no actions.
+	// remote_external is an agent on another machine (openhands). It reads
+	// the uploaded copy of the work root and writes into its own copy; what
+	// it wrote reaches the local work root only through the executor's own
+	// download, and then the same snapshot, diff, secret sweep and review as
+	// any local agent's. Never run_command: the host is not its to run on.
+	domain.ExecutorRemoteExternal: {"read_file", "write_file"},
+	// No tier (TrustUnassigned, an unknown kind) is fail-closed: no actions.
 }
 
 // TrustAllows reports whether an action is permitted for an executor's
@@ -70,13 +76,25 @@ func TrustAllows(trust domain.ExecutorTrust, action string) bool {
 // engine-assigned trust tier. It is the single source of truth, never the
 // executor's self-declared Capabilities().Trust, and it fails closed for any
 // unknown kind (review: system-deny / engine-assigned trust).
+//
+// An unknown kind used to land in remote_external, which then had to allow
+// nothing. Now that a real remote kind exists (openhands) and remote_external
+// grants it read/write, an unknown kind gets no tier at all, which allows
+// nothing -- the same fail-closed backstop, no longer borrowing a real
+// tier's name.
 func TrustTierFor(name string) domain.ExecutorTrust {
 	switch name {
 	case "internal":
 		return domain.ExecutorInternal
 	case "container", "omp", "hermes", "acp":
 		return domain.ExecutorLocalExternal
+	case "openhands":
+		return domain.ExecutorRemoteExternal
 	default:
-		return domain.ExecutorRemoteExternal // fail-closed: no actions
+		return TrustUnassigned // fail-closed: no actions
 	}
 }
+
+// TrustUnassigned is the tier an unknown executor kind gets: none of the
+// domain's tiers, so no action is ever granted to it.
+const TrustUnassigned domain.ExecutorTrust = ""

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/config"
+	"github.com/devarispbrown/idea-harness/internal/executor"
 	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
@@ -64,4 +66,37 @@ func doctorExecutor(cfg config.Config, cfgErr error, dotEnv map[string]string, c
 	default:
 		fmt.Fprintln(stdout, ok("✓ executor")+" "+muted(res.Resolved))
 	}
+}
+
+// doctorOpenHands checks the configured Agent Server for kind openhands: the
+// server answers, accepts the session key, and runs the API version this
+// build targets. Like the executor line it is a warning, never a failure --
+// the server may simply be down for now. It runs from this shell, with this
+// shell's environment and the project's .env.
+func doctorOpenHands(cfg config.Config, dotEnv map[string]string, stdout io.Writer) {
+	if cfg.Harness.Executor.Kind != config.ExecutorOpenHands {
+		return
+	}
+	oh := cfg.Harness.Executor.OpenHands
+	if oh.URL == "" {
+		fmt.Fprintln(stdout, errText("⚠ openhands: executor.openhands.url is not set; run idea executors setup --kind openhands --url <agent-server-url> --yes"))
+		return
+	}
+	key := os.Getenv(oh.EffectiveAPIKeyEnv())
+	if key == "" {
+		key = dotEnv[oh.EffectiveAPIKeyEnv()]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	version, err := executor.ProbeOpenHands(ctx, oh.URL, key)
+	if err != nil {
+		fmt.Fprintln(stdout, errText("⚠ openhands: "+err.Error()))
+		return
+	}
+	line := fmt.Sprintf("%s answered (version %s), session key from %s accepted; the work root is sent there", oh.URL, version, oh.EffectiveAPIKeyEnv())
+	if version != executor.OpenHandsAPIVersion {
+		fmt.Fprintln(stdout, warn("• openhands: ")+line+fmt.Sprintf("; built against %s, run --smoke to confirm", executor.OpenHandsAPIVersion))
+		return
+	}
+	fmt.Fprintln(stdout, ok("✓ openhands")+" "+muted(line))
 }

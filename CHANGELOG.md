@@ -84,6 +84,26 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **`idea assumption <id> accept|dispute|retract`** (`POST /projects/{projectId}/assertions/{id}/status`)
   records a human judgment on an assumption or hypothesis. Nothing moved an assertion out of
   `candidate` before, so an unvalidated assumption could be reported but never closed.
+
+- **`executor.kind: openhands` delegates the agent run to an OpenHands Agent Server**
+  ([docs/agents.md](docs/agents.md#openhands-agent-server-kind-openhands)). The server is the
+  execution plane; approval, workflow state, the change set and its review stay here. The work root
+  is uploaded as one tarball and the result downloaded back into the local work root, validated in
+  a staging directory first, so the snapshot → diff → secret sweep → review → apply pipeline is
+  unchanged. Runs are durable in a new `remote_runs` table: a deterministic idempotency key per
+  (task, attempt) and a conversation id derived from it make a retry after a crash re-attach
+  instead of starting twice; events are ingested from the stored cursor exactly once into a
+  compact, redacted progress log for the live view; a daemon restart re-attaches to runs still
+  going (shutdown no longer stops them), catches up and follows them to the end; a finished run is
+  collected by the task's next `idea execute`; a vanished conversation fails with that reason;
+  `idea cancel` interrupts the run on the server and keeps what the agent wrote. Transient errors
+  retry with backoff. Configured with `idea executors setup --kind openhands --url … [--agent acp
+  --acp-command …] [--smoke] --yes` (probes the server and session key), checked by `idea doctor`,
+  listed by `GET /executors`, writable through `PUT /executors` (`openhands_url`,
+  `openhands_api_key_env`, `openhands_agent`, `openhands_acp_command`) and smoke-testable from
+  Settings. `auto` never picks it. Targets openhands-agent-server v1.54.0; tested against a fake
+  Agent Server and, for the protocol, against the real image with no LLM key — no real model has
+  edited files through it yet, so every combination is reported untested until `--smoke` passes.
 - **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
   K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's
   GitHub OIDC identity), records a GitHub build-provenance attestation for every archive, ships an
@@ -189,6 +209,20 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   (`lin_api_…`), and integration tokens are fed to it by their configured env names.
 
 ### Security
+
+- **A remote execution plane is a trust boundary, and the harness treats it as one.** For
+  `openhands`, the server URL must be `https` unless loopback and carry no credentials (refused at
+  config load, by `PUT /executors`, by setup and before every dispatch); the session key is read
+  from the variable `executor.openhands.api_key_env` names, never stored, and sent in a header or
+  the websocket's first frame, never a URL; both keys are stripped from everything stored from the
+  server's events. What leaves the machine — the seeded work root, the brief, the provider key
+  unless `withhold_provider_key` — is listed in
+  [docs/security-model.md](docs/security-model.md#the-remote-execution-plane-openhands). The
+  downloaded archive is untrusted input: escaping paths, links, devices and control-plane entries
+  are skipped and size caps apply before anything is mirrored into the work root. The trust tier
+  `remote_external` now grants `read_file`/`write_file` to that kind; an unknown executor kind no
+  longer borrows `remote_external` but gets no tier at all, so it stays fail-closed. `GET
+  /executors` reports the new `sandbox_mode: remote`.
 
 - **The daemon log is redacted.** It was the one persisted surface the redaction
   choke point did not reach, and `GET /api/v1/logs` served it verbatim (deferred
