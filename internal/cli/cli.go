@@ -147,9 +147,10 @@ func commands() []command {
 		{names: []string{"risk"}, usage: "risk", summary: "show the deterministic risk profile", flags: jsonFlag, maxPositional: 1, run: cmdRisk, inHelp: true},
 		{names: []string{"executors"}, usage: "executors", summary: "list executors + capabilities", flags: jsonFlag, subs: map[string]flagSpec{
 			"setup": {"--kind": flagValue, "--image": flagValue, "--model": flagValue, "--yes": flagBool, "--smoke": flagBool,
-				"--acp-command": flagValue, "--acp-key-env": flagValue},
+				"--acp-command": flagValue, "--acp-key-env": flagValue,
+				"--url": flagValue, "--api-key-env": flagValue, "--agent": flagValue},
 		}, subsAreRequired: true, maxPositional: 1, run: cmdExecutors, inHelp: true},
-		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp|acp, default hermes (or --kind; acp needs --image and --acp-command)", inHelp: true},
+		{usage: "executors setup [<kind>]", summary: "wire a coding agent: hermes|omp|acp|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands|acp)", inHelp: true},
 		{names: []string{"integrations"}, usage: "integrations [status]", summary: "show Slack/Linear integration health: tokens present, deliveries, socket and poll state", flags: jsonFlag, subs: map[string]flagSpec{
 			"status": {"--json": flagBool},
 			"test":   {"--json": flagBool},
@@ -933,6 +934,9 @@ func cmdDoctor(stdout io.Writer) error {
 	// Which executor the next run uses -- loud when auto fell back to the
 	// placeholder (doctor_executor.go).
 	doctorExecutor(cfg, cfgErr, dotEnv, doctorClient, doctorProj, stdout)
+	if cfgErr == nil {
+		doctorOpenHands(cfg, dotEnv, stdout)
+	}
 
 	// Product-graph edge audit (§M2 tail): untraced tasks/objects + cycles.
 	graphOK := true

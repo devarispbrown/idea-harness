@@ -14,12 +14,9 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/domain"
+	"github.com/devarispbrown/idea-harness/internal/executor/ohfake"
 	"github.com/devarispbrown/idea-harness/internal/store"
 )
-
-func context10s(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, 10*time.Second)
-}
 
 const (
 	testSessionKey  = "oh-session-key-0123456789"
@@ -32,7 +29,7 @@ const (
 // process would.
 type ohHarness struct {
 	t        *testing.T
-	srv      *fakeAgentServer
+	srv      *ohfake.Server
 	db       *store.DB
 	sup      *RemoteSupervisor
 	ex       *OpenHandsExecutor
@@ -43,7 +40,7 @@ type ohHarness struct {
 
 func newOHHarness(t *testing.T, serverKey string) *ohHarness {
 	t.Helper()
-	srv := newFakeAgentServer(t, serverKey)
+	srv := ohfake.New(t, serverKey)
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +48,7 @@ func newOHHarness(t *testing.T, serverKey string) *ohHarness {
 	t.Cleanup(func() { db.Close() })
 	h := &ohHarness{t: t, srv: srv, db: db, workRoot: filepath.Join(t.TempDir(), "work"),
 		env:  map[string]string{"OPENHANDS_API_KEY": serverKey, "ANTHROPIC_API_KEY": testProviderKey},
-		opts: OpenHandsOptions{URL: srv.url(), Model: "anthropic/claude-sonnet-5", Timeout: time.Minute}}
+		opts: OpenHandsOptions{URL: srv.URL(), Model: "anthropic/claude-sonnet-5", Timeout: time.Minute}}
 	if err := os.MkdirAll(h.workRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,14 +139,14 @@ func (h *ohHarness) waitRecord(id string, want domain.RemoteRunStatus) *domain.R
 }
 
 // editingAgent edits a.txt, deletes b.txt, adds sub/c.txt, and says so.
-func editingAgent(c *fakeConv, dir string) {
+func editingAgent(c *ohfake.Conv, dir string) {
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("A, edited remotely\n"), 0o644)
 	_ = os.Remove(filepath.Join(dir, "b.txt"))
 	_ = os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "sub", "c.txt"), []byte("new\n"), 0o644)
-	c.emit(map[string]any{"kind": "ActionEvent", "source": "agent", "tool_name": "file_editor", "summary": "edit a.txt",
+	c.Emit(map[string]any{"kind": "ActionEvent", "source": "agent", "tool_name": "file_editor", "summary": "edit a.txt",
 		"thought": []map[string]string{{"type": "text", "text": "SECRET THOUGHT"}}})
-	c.say("done editing")
+	c.Say("done editing")
 }
 
 // The happy path: the work root goes up, the agent edits it on the server,
@@ -160,7 +157,7 @@ func TestOpenHandsHappyPathRoundTripsFileChanges(t *testing.T) {
 	h.write("a.txt", "A\n")
 	h.write("b.txt", "B\n")
 	h.write("keep.txt", "unchanged\n")
-	h.srv.agent = editingAgent
+	h.srv.Agent = editingAgent
 
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
@@ -199,10 +196,10 @@ func TestOpenHandsHappyPathRoundTripsFileChanges(t *testing.T) {
 
 	// What was sent: the OpenHands agent, the model in LiteLLM form, the
 	// key, the run's own directory, and no confirmation policy override.
-	if len(h.srv.creates) != 1 {
-		t.Fatalf("creates = %d, want 1", len(h.srv.creates))
+	if len(h.srv.Creates()) != 1 {
+		t.Fatalf("creates = %d, want 1", len(h.srv.Creates()))
 	}
-	body := h.srv.creates[0]
+	body := h.srv.Creates()[0]
 	agent := body["agent"].(map[string]any)
 	llm := agent["llm"].(map[string]any)
 	if agent["kind"] != "Agent" || llm["model"] != "anthropic/claude-sonnet-5" || llm["api_key"] != testProviderKey {
@@ -231,10 +228,10 @@ func TestOpenHandsRedispatchIsIdempotent(t *testing.T) {
 	h.write("a.txt", "A\n")
 	h.write("b.txt", "B\n")
 	release := make(chan struct{})
-	h.srv.agent = func(c *fakeConv, dir string) {
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
 		select {
 		case <-release:
-		case <-c.release:
+		case <-c.Released():
 		}
 		editingAgent(c, dir)
 	}
@@ -258,10 +255,10 @@ func TestOpenHandsRedispatchIsIdempotent(t *testing.T) {
 	if second.ID != first.ID {
 		t.Fatalf("re-dispatch made a new run %s, want %s", second.ID, first.ID)
 	}
-	if n := h.srv.count("POST /api/conversations"); n != 1 {
+	if n := h.srv.Count("POST /api/conversations"); n != 1 {
 		t.Fatalf("conversation creates = %d, want 1", n)
 	}
-	if n := h.srv.count("POST /api/file/upload"); n != 1 {
+	if n := h.srv.Count("POST /api/file/upload"); n != 1 {
 		t.Fatalf("uploads = %d, want 1", n)
 	}
 	// And a third, plain re-attach to a running row.
@@ -277,7 +274,7 @@ func TestOpenHandsRedispatchIsIdempotent(t *testing.T) {
 	if _, err := h.ex.Collect(ctx, third.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.srv.count("POST /api/conversations"); n != 1 {
+	if n := h.srv.Count("POST /api/conversations"); n != 1 {
 		t.Fatalf("conversation creates = %d, want 1", n)
 	}
 	// The next attempt of the task is a new run.
@@ -304,10 +301,10 @@ func TestOpenHandsDaemonRestartReconcilesAndCollects(t *testing.T) {
 	h.write("a.txt", "A\n")
 	h.write("b.txt", "B\n")
 	step := make(chan struct{})
-	h.srv.agent = func(c *fakeConv, dir string) {
-		c.say("before the restart")
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
+		c.Say("before the restart")
 		<-step
-		c.say("after the restart")
+		c.Say("after the restart")
 		editingAgent(c, dir)
 	}
 	ctx := context.Background()
@@ -329,14 +326,14 @@ func TestOpenHandsDaemonRestartReconcilesAndCollects(t *testing.T) {
 	if err := h.ex.Cancel(ctx, att.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.srv.count("POST /api/conversations/{id}/interrupt"); n != 0 {
+	if n := h.srv.Count("POST /api/conversations/{id}/interrupt"); n != 0 {
 		t.Fatalf("shutdown interrupted the remote run (%d calls)", n)
 	}
 	h.restart()
 
 	close(step) // the agent carries on while no daemon is attached
-	conv := h.srv.onlyConv(t)
-	for conv.getStatus() != "finished" {
+	conv := h.srv.OnlyConv(t)
+	for conv.Status() != "finished" {
 		time.Sleep(5 * time.Millisecond)
 	}
 
@@ -345,8 +342,8 @@ func TestOpenHandsDaemonRestartReconcilesAndCollects(t *testing.T) {
 		t.Fatalf("reconcile = %d, %v; want 1 run re-attached", n, err)
 	}
 	rec := h.waitRecord(att.ID, domain.RemoteRunFinished)
-	if rec.EventCount != conv.eventCount() {
-		t.Fatalf("ingested %d events, the server has %d (lost or duplicated)", rec.EventCount, conv.eventCount())
+	if rec.EventCount != conv.EventCount() {
+		t.Fatalf("ingested %d events, the server has %d (lost or duplicated)", rec.EventCount, conv.EventCount())
 	}
 	if strings.Count(rec.Progress, "before the restart") != 1 || !strings.Contains(rec.Progress, "after the restart") {
 		t.Fatalf("progress after catch-up:\n%s", rec.Progress)
@@ -375,7 +372,7 @@ func TestOpenHandsDaemonRestartReconcilesAndCollects(t *testing.T) {
 	if got, _ := h.read("a.txt"); got != "A, edited remotely\n" {
 		t.Fatalf("a.txt = %q after collecting the reconciled run", got)
 	}
-	if n := h.srv.count("POST /api/conversations"); n != 1 {
+	if n := h.srv.Count("POST /api/conversations"); n != 1 {
 		t.Fatalf("conversation creates = %d, want 1", n)
 	}
 }
@@ -386,10 +383,10 @@ func TestOpenHandsStaleBaseStartsNewAttempt(t *testing.T) {
 	h := newOHHarness(t, "")
 	h.write("a.txt", "A\n")
 	block := make(chan struct{})
-	h.srv.agent = func(c *fakeConv, dir string) {
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
 		select {
 		case <-block:
-		case <-c.release:
+		case <-c.Released():
 		}
 	}
 	ctx := context.Background()
@@ -410,7 +407,7 @@ func TestOpenHandsStaleBaseStartsNewAttempt(t *testing.T) {
 	if !strings.Contains(old.Error, "workspace changed") {
 		t.Fatalf("retired run's reason = %q", old.Error)
 	}
-	if h.srv.count("POST /api/conversations/{id}/interrupt") == 0 {
+	if h.srv.Count("POST /api/conversations/{id}/interrupt") == 0 {
 		t.Fatal("the stale run was not stopped on the server")
 	}
 	close(block)
@@ -421,14 +418,14 @@ func TestOpenHandsStaleBaseStartsNewAttempt(t *testing.T) {
 func TestOpenHandsRemoteVanished(t *testing.T) {
 	h := newOHHarness(t, testSessionKey)
 	h.write("a.txt", "A\n")
-	h.srv.agent = func(c *fakeConv, dir string) { <-c.release }
+	h.srv.Agent = func(c *ohfake.Conv, dir string) { <-c.Released() }
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.waitRecord(att.ID, domain.RemoteRunRunning)
-	h.srv.deleteConv(h.srv.onlyConv(t).id)
+	h.srv.DeleteConv(h.srv.OnlyConv(t).ID())
 	st := h.waitStatus(h.ex, att.ID)
 	if st.Status != "failed" || !strings.Contains(st.Action, "no longer exists") {
 		t.Fatalf("status = %+v, want failed: vanished", st)
@@ -437,14 +434,14 @@ func TestOpenHandsRemoteVanished(t *testing.T) {
 	// The same, discovered by reconciliation after a restart.
 	h2 := newOHHarness(t, testSessionKey)
 	h2.write("a.txt", "A\n")
-	h2.srv.agent = func(c *fakeConv, dir string) { <-c.release }
+	h2.srv.Agent = func(c *ohfake.Conv, dir string) { <-c.Released() }
 	att2, err := h2.ex.Start(ctx, h2.req())
 	if err != nil {
 		t.Fatal(err)
 	}
 	h2.waitRecord(att2.ID, domain.RemoteRunRunning)
 	h2.restart()
-	h2.srv.deleteConv(h2.srv.onlyConv(t).id)
+	h2.srv.DeleteConv(h2.srv.OnlyConv(t).ID())
 	if _, err := h2.sup.Reconcile(ctx, h2.db, OpenHandsReconcile{SessionKey: func(string) string { return testSessionKey }}); err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +457,7 @@ func TestOpenHandsReconcileUndispatchedRun(t *testing.T) {
 	h := newOHHarness(t, testSessionKey)
 	ctx := context.Background()
 	rec, _, err := h.db.CreateRemoteRun(ctx, domain.RemoteRun{Executor: "openhands", IdempotencyKey: IdempotencyKey("t", 1), TaskID: "t", Attempt: 1,
-		ServerURL: h.srv.url(), ConversationID: conversationIDFor(IdempotencyKey("t", 1)), RemoteDir: "/workspace/idea-harness/x"})
+		ServerURL: h.srv.URL(), ConversationID: conversationIDFor(IdempotencyKey("t", 1)), RemoteDir: "/workspace/idea-harness/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,10 +476,10 @@ func TestOpenHandsCancelInterruptsAndKeepsPartialWork(t *testing.T) {
 	h := newOHHarness(t, testSessionKey)
 	h.write("a.txt", "A\n")
 	wrote := make(chan struct{})
-	h.srv.agent = func(c *fakeConv, dir string) {
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
 		_ = os.WriteFile(filepath.Join(dir, "partial.txt"), []byte("half done\n"), 0o644)
 		close(wrote)
-		<-c.release
+		<-c.Released()
 	}
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
@@ -494,10 +491,10 @@ func TestOpenHandsCancelInterruptsAndKeepsPartialWork(t *testing.T) {
 	if err := h.ex.Cancel(ctx, att.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.srv.count("POST /api/conversations/{id}/interrupt"); n != 1 {
+	if n := h.srv.Count("POST /api/conversations/{id}/interrupt"); n != 1 {
 		t.Fatalf("interrupt calls = %d, want 1", n)
 	}
-	if s := h.srv.onlyConv(t).getStatus(); s != "paused" {
+	if s := h.srv.OnlyConv(t).Status(); s != "paused" {
 		t.Fatalf("remote status = %q, want paused", s)
 	}
 	rec, _ := h.db.GetRemoteRun(ctx, att.ID)
@@ -524,11 +521,11 @@ func TestOpenHandsRetriesTransient5xx(t *testing.T) {
 	h := newOHHarness(t, testSessionKey)
 	h.write("a.txt", "A\n")
 	h.write("b.txt", "B\n")
-	h.srv.agent = editingAgent
-	h.srv.failNext("POST /api/file/upload", 2)
-	h.srv.failNext("POST /api/conversations", 3)
-	h.srv.failNext("GET /api/conversations/{id}/events/search", 2)
-	h.srv.failNext("GET /api/file/archive", 1)
+	h.srv.Agent = editingAgent
+	h.srv.FailNext("POST /api/file/upload", 2)
+	h.srv.FailNext("POST /api/conversations", 3)
+	h.srv.FailNext("GET /api/conversations/{id}/events/search", 2)
+	h.srv.FailNext("GET /api/file/archive", 1)
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
 	if err != nil {
@@ -543,17 +540,17 @@ func TestOpenHandsRetriesTransient5xx(t *testing.T) {
 	if got, _ := h.read("a.txt"); got != "A, edited remotely\n" {
 		t.Fatalf("a.txt = %q", got)
 	}
-	if n := h.srv.count("POST /api/conversations"); n != 4 {
+	if n := h.srv.Count("POST /api/conversations"); n != 4 {
 		t.Fatalf("create calls = %d, want 3 refused + 1", n)
 	}
-	if len(h.srv.creates) != 1 {
-		t.Fatalf("conversations created = %d, want 1", len(h.srv.creates))
+	if len(h.srv.Creates()) != 1 {
+		t.Fatalf("conversations created = %d, want 1", len(h.srv.Creates()))
 	}
 
 	// A server that stays down exhausts the retries and says so.
 	h2 := newOHHarness(t, testSessionKey)
 	h2.write("a.txt", "A\n")
-	h2.srv.failNext("POST /api/file/upload", 100)
+	h2.srv.FailNext("POST /api/file/upload", 100)
 	if _, err := h2.ex.Start(ctx, h2.req()); err == nil || !strings.Contains(err.Error(), "503") || !strings.Contains(err.Error(), "after 4 attempts") {
 		t.Fatalf("persistent 503: %v", err)
 	}
@@ -573,13 +570,13 @@ func TestOpenHandsAuthFailure(t *testing.T) {
 	if strings.Contains(err.Error(), "wrong-session-key") {
 		t.Fatal("the session key leaked into the error")
 	}
-	if n := h.srv.count("GET /api/conversations/{id}"); n != 1 {
+	if n := h.srv.Count("GET /api/conversations/{id}"); n != 1 {
 		t.Fatalf("auth failure was retried: %d calls", n)
 	}
-	if _, err := ProbeOpenHands(context.Background(), h.srv.url(), "wrong-session-key-123456"); err == nil || !strings.Contains(err.Error(), "refused the session API key") {
+	if _, err := ProbeOpenHands(context.Background(), h.srv.URL(), "wrong-session-key-123456"); err == nil || !strings.Contains(err.Error(), "refused the session API key") {
 		t.Fatalf("probe with a wrong key: %v", err)
 	}
-	if v, err := ProbeOpenHands(context.Background(), h.srv.url(), testSessionKey); err != nil || v != "1.54.0" {
+	if v, err := ProbeOpenHands(context.Background(), h.srv.URL(), testSessionKey); err != nil || v != "1.54.0" {
 		t.Fatalf("probe = %q, %v", v, err)
 	}
 }
@@ -601,7 +598,7 @@ func TestOpenHandsRefusesNonHTTPS(t *testing.T) {
 		t.Fatal("probe accepted plain http to a remote host")
 	}
 	// Loopback over http is fine (the fake server is one).
-	if err := config.ValidateOpenHandsURL(h.srv.url()); err != nil {
+	if err := config.ValidateOpenHandsURL(h.srv.URL()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -616,7 +613,7 @@ func TestOpenHandsProviderKeyHandling(t *testing.T) {
 	if _, err := h.ex.Start(context.Background(), h.req()); err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("missing key: %v", err)
 	}
-	if h.srv.count("POST /api/file/upload") != 0 {
+	if h.srv.Count("POST /api/file/upload") != 0 {
 		t.Fatal("the work root was uploaded before the key check")
 	}
 	h.opts.WithholdProviderKey = true
@@ -626,7 +623,7 @@ func TestOpenHandsProviderKeyHandling(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.waitStatus(h.ex, att.ID)
-	llm := h.srv.creates[0]["agent"].(map[string]any)["llm"].(map[string]any)
+	llm := h.srv.Creates()[0]["agent"].(map[string]any)["llm"].(map[string]any)
 	if _, ok := llm["api_key"]; ok {
 		t.Fatal("a withheld key was sent")
 	}
@@ -644,7 +641,7 @@ func TestOpenHandsACPAgentSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.waitStatus(h.ex, att.ID)
-	body := h.srv.creates[0]
+	body := h.srv.Creates()[0]
 	agent := body["agent"].(map[string]any)
 	if agent["kind"] != "ACPAgent" || agent["acp_command"].([]any)[0] != "claude-agent-acp" {
 		t.Fatalf("agent = %v", agent)
@@ -661,7 +658,7 @@ func TestOpenHandsTimeoutInterrupts(t *testing.T) {
 	h.write("a.txt", "A\n")
 	h.opts.Timeout = 50 * time.Millisecond
 	h.ex = h.newExecutor()
-	h.srv.agent = func(c *fakeConv, dir string) { <-c.release }
+	h.srv.Agent = func(c *ohfake.Conv, dir string) { <-c.Released() }
 	att, err := h.ex.Start(context.Background(), h.req())
 	if err != nil {
 		t.Fatal(err)
@@ -670,7 +667,7 @@ func TestOpenHandsTimeoutInterrupts(t *testing.T) {
 	if st.Status != "failed" || !strings.Contains(st.Action, "did not finish within") {
 		t.Fatalf("status = %+v", st)
 	}
-	if h.srv.count("POST /api/conversations/{id}/interrupt") == 0 {
+	if h.srv.Count("POST /api/conversations/{id}/interrupt") == 0 {
 		t.Fatal("timed-out run was not interrupted on the server")
 	}
 }
@@ -680,10 +677,10 @@ func TestOpenHandsTimeoutInterrupts(t *testing.T) {
 func TestOpenHandsAgentErrorIsReportedRedacted(t *testing.T) {
 	h := newOHHarness(t, testSessionKey)
 	h.write("a.txt", "A\n")
-	h.srv.agent = func(c *fakeConv, dir string) {
-		c.emit(map[string]any{"kind": "AgentErrorEvent", "source": "agent", "error": "401 from provider with key " + testProviderKey})
-		c.say("my key is " + testProviderKey + " and the session is " + testSessionKey)
-		c.setStatus("error")
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
+		c.Emit(map[string]any{"kind": "AgentErrorEvent", "source": "agent", "error": "401 from provider with key " + testProviderKey})
+		c.Say("my key is " + testProviderKey + " and the session is " + testSessionKey)
+		c.SetStatus("error")
 	}
 	ctx := context.Background()
 	att, err := h.ex.Start(ctx, h.req())
@@ -752,8 +749,8 @@ func TestOpenHandsArchiveSafety(t *testing.T) {
 	h := newOHHarness(t, "")
 	h.write("a.txt", "A\n")
 	h.write("data.log", "kept\n")
-	h.srv.excluded["data.log"] = true
-	h.srv.agent = func(c *fakeConv, dir string) {
+	h.srv.Exclude("data.log")
+	h.srv.Agent = func(c *ohfake.Conv, dir string) {
 		_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("A2\n"), 0o644)
 	}
 	ctx := context.Background()
@@ -798,13 +795,13 @@ func TestLiteLLMModelMapping(t *testing.T) {
 // when a file comes back; an agent that writes nothing fails it with the
 // agent's own output.
 func TestSmokeOpenHands(t *testing.T) {
-	srv := newFakeAgentServer(t, testSessionKey)
-	srv.agent = func(c *fakeConv, dir string) {
+	srv := ohfake.New(t, testSessionKey)
+	srv.Agent = func(c *ohfake.Conv, dir string) {
 		_ = os.WriteFile(filepath.Join(dir, "smoke.txt"), []byte("smoke ok\n"), 0o644)
-		c.say("wrote smoke.txt")
+		c.Say("wrote smoke.txt")
 	}
 	env := map[string]string{"OPENHANDS_API_KEY": testSessionKey, "ANTHROPIC_API_KEY": testProviderKey}
-	opts := OpenHandsOptions{URL: srv.url(), Model: "anthropic/claude-sonnet-5", Timeout: time.Minute}
+	opts := OpenHandsOptions{URL: srv.URL(), Model: "anthropic/claude-sonnet-5", Timeout: time.Minute}
 	provider := AgentProvider{Name: "anthropic", Type: config.ProviderAnthropic, KeyEnv: "ANTHROPIC_API_KEY"}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -812,7 +809,7 @@ func TestSmokeOpenHands(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv.agent = func(c *fakeConv, dir string) { c.say("I refuse") }
+	srv.Agent = func(c *ohfake.Conv, dir string) { c.Say("I refuse") }
 	err := SmokeOpenHands(ctx, opts, provider, func(n string) string { return env[n] }, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "I refuse") {
 		t.Fatalf("an agent that wrote nothing: %v", err)

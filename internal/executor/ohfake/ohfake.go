@@ -1,7 +1,12 @@
-package executor
+// Package ohfake is a fake OpenHands Agent Server for tests: the subset of
+// the v1.54.0 API the openhands executor uses, over a real directory standing
+// in for the server's filesystem. It lives outside _test.go files so the
+// executor's tests and the workflow's end-to-end tests share one fake.
+package ohfake
 
 import (
 	"archive/tar"
+	"context"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -22,19 +27,19 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fakeAgentServer implements the subset of the OpenHands Agent Server API
+// Server implements the subset of the OpenHands Agent Server API
 // (v1.54.0) the executor uses, over a real directory standing in for the
 // server's filesystem. The "agent" is a Go func the test supplies; it runs
 // when the conversation starts and can block on a channel so a test can act
 // mid-run (restart the daemon, cancel, delete the conversation).
-type fakeAgentServer struct {
+type Server struct {
 	t    *testing.T
 	srv  *httptest.Server
 	root string // the server's "/" on disk
 	key  string // required X-Session-API-Key ("" = no auth)
 
 	mu      sync.Mutex
-	convs   map[string]*fakeConv
+	convs   map[string]*Conv
 	calls   map[string]int // "METHOD /path" -> count
 	fail    map[string]int // "METHOD /path" -> remaining 503s
 	creates []map[string]any
@@ -42,11 +47,11 @@ type fakeAgentServer struct {
 	// excludes are (a file of that name is still downloadable on its own).
 	excluded map[string]bool
 	// agent is what runs when a conversation starts.
-	agent func(c *fakeConv, dir string)
+	Agent func(c *Conv, dir string)
 }
 
-type fakeConv struct {
-	srv     *fakeAgentServer
+type Conv struct {
+	srv     *Server
 	id      string
 	dir     string
 	mu      sync.Mutex
@@ -56,9 +61,9 @@ type fakeConv struct {
 	release chan struct{} // closed to let a blocking agent finish
 }
 
-func newFakeAgentServer(t *testing.T, key string) *fakeAgentServer {
+func New(t *testing.T, key string) *Server {
 	t.Helper()
-	f := &fakeAgentServer{t: t, root: t.TempDir(), key: key, convs: map[string]*fakeConv{},
+	f := &Server{t: t, root: t.TempDir(), key: key, convs: map[string]*Conv{},
 		calls: map[string]int{}, fail: map[string]int{}, excluded: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(func() {
@@ -72,31 +77,31 @@ func newFakeAgentServer(t *testing.T, key string) *fakeAgentServer {
 	return f
 }
 
-func (f *fakeAgentServer) url() string { return f.srv.URL }
+func (f *Server) URL() string { return f.srv.URL }
 
-func (f *fakeAgentServer) local(remote string) string {
+func (f *Server) local(remote string) string {
 	return filepath.Join(f.root, filepath.FromSlash(remote))
 }
 
-func (f *fakeAgentServer) count(key string) int {
+func (f *Server) Count(key string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[key]
 }
 
-func (f *fakeAgentServer) failNext(key string, n int) {
+func (f *Server) FailNext(key string, n int) {
 	f.mu.Lock()
 	f.fail[key] = n
 	f.mu.Unlock()
 }
 
-func (f *fakeAgentServer) conv(id string) *fakeConv {
+func (f *Server) Conv(id string) *Conv {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.convs[id]
 }
 
-func (f *fakeAgentServer) onlyConv(t *testing.T) *fakeConv {
+func (f *Server) OnlyConv(t *testing.T) *Conv {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,7 +114,7 @@ func (f *fakeAgentServer) onlyConv(t *testing.T) *fakeConv {
 	return nil
 }
 
-func (f *fakeAgentServer) deleteConv(id string) {
+func (f *Server) DeleteConv(id string) {
 	f.mu.Lock()
 	c := f.convs[id]
 	delete(f.convs, id)
@@ -119,7 +124,30 @@ func (f *fakeAgentServer) deleteConv(id string) {
 	}
 }
 
-func (c *fakeConv) finishRelease() {
+// Released is closed when the conversation is interrupted, paused or
+// deleted, or the server shuts down: a blocking Agent func should select on
+// it so it never outlives the test.
+func (c *Conv) Released() <-chan struct{} { return c.release }
+
+// ID is the conversation id.
+func (c *Conv) ID() string { return c.id }
+
+// Creates returns every POST /api/conversations body received.
+func (f *Server) Creates() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.creates...)
+}
+
+// Exclude leaves files and directories with this base name out of archives,
+// as the real archive route's default excludes do.
+func (f *Server) Exclude(name string) {
+	f.mu.Lock()
+	f.excluded[name] = true
+	f.mu.Unlock()
+}
+
+func (c *Conv) finishRelease() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	select {
@@ -129,21 +157,21 @@ func (c *fakeConv) finishRelease() {
 	}
 }
 
-func (c *fakeConv) setStatus(s string) {
+func (c *Conv) SetStatus(s string) {
 	c.mu.Lock()
 	c.status = s
 	c.mu.Unlock()
-	c.emit(map[string]any{"kind": "ConversationStateUpdateEvent", "source": "environment", "key": "execution_status", "value": s})
+	c.Emit(map[string]any{"kind": "ConversationStateUpdateEvent", "source": "environment", "key": "execution_status", "value": s})
 }
 
-func (c *fakeConv) getStatus() string {
+func (c *Conv) Status() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status
 }
 
 // emit appends an event and wakes websocket subscribers.
-func (c *fakeConv) emit(ev map[string]any) {
+func (c *Conv) Emit(ev map[string]any) {
 	c.mu.Lock()
 	ev["id"] = fmt.Sprintf("ev-%04d", len(c.events)+1)
 	ev["timestamp"] = time.Now().UTC().Format("2006-01-02T15:04:05.000000")
@@ -158,18 +186,18 @@ func (c *fakeConv) emit(ev map[string]any) {
 	}
 }
 
-func (c *fakeConv) say(text string) {
-	c.emit(map[string]any{"kind": "MessageEvent", "source": "agent",
+func (c *Conv) Say(text string) {
+	c.Emit(map[string]any{"kind": "MessageEvent", "source": "agent",
 		"llm_message": map[string]any{"role": "assistant", "content": []map[string]string{{"type": "text", "text": text}}}})
 }
 
-func (c *fakeConv) eventCount() int {
+func (c *Conv) EventCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.events)
 }
 
-func (f *fakeAgentServer) writeJSON(w http.ResponseWriter, code int, v any) {
+func (f *Server) writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
@@ -177,7 +205,7 @@ func (f *fakeAgentServer) writeJSON(w http.ResponseWriter, code int, v any) {
 
 var unpackRe = regexp.MustCompile(`^set -e; rm -rf '([^']+)'; mkdir -p '([^']+)'; tar -xzf '([^']+)' -C '([^']+)'; rm -f '([^']+)'$`)
 
-func (f *fakeAgentServer) serve(w http.ResponseWriter, r *http.Request) {
+func (f *Server) serve(w http.ResponseWriter, r *http.Request) {
 	route := r.Method + " " + r.URL.Path
 	if strings.HasPrefix(r.URL.Path, "/api/conversations/") {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/conversations/"), "/")
@@ -214,7 +242,10 @@ func (f *fakeAgentServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case route == "GET /api/conversations/count":
-		f.writeJSON(w, 200, len(f.convs))
+		f.mu.Lock()
+		n := len(f.convs)
+		f.mu.Unlock()
+		f.writeJSON(w, 200, n)
 	case route == "POST /api/file/upload":
 		f.upload(w, r)
 	case route == "POST /api/bash/execute_bash_command":
@@ -236,7 +267,7 @@ func (f *fakeAgentServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeAgentServer) upload(w http.ResponseWriter, r *http.Request) {
+func (f *Server) upload(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("path")
 	file, _, err := r.FormFile("file")
 	if err != nil || !strings.HasPrefix(p, "/") {
@@ -253,7 +284,7 @@ func (f *fakeAgentServer) upload(w http.ResponseWriter, r *http.Request) {
 }
 
 // bash understands exactly one command: the executor's unpack.
-func (f *fakeAgentServer) bash(w http.ResponseWriter, r *http.Request) {
+func (f *Server) bash(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Command string `json:"command"`
 	}
@@ -299,7 +330,7 @@ func (f *fakeAgentServer) bash(w http.ResponseWriter, r *http.Request) {
 }
 
 // archive tars the directory with "./"-prefixed names, leaving out f.excluded.
-func (f *fakeAgentServer) archive(w http.ResponseWriter, r *http.Request) {
+func (f *Server) archive(w http.ResponseWriter, r *http.Request) {
 	dir := f.local(r.URL.Query().Get("path"))
 	if _, err := os.Stat(dir); err != nil {
 		f.writeJSON(w, 404, map[string]string{"detail": "not found"})
@@ -344,7 +375,7 @@ func (f *fakeAgentServer) archive(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(buf.Bytes())
 }
 
-func (f *fakeAgentServer) start(w http.ResponseWriter, r *http.Request) {
+func (f *Server) start(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		f.writeJSON(w, 422, map[string]string{"detail": err.Error()})
@@ -357,40 +388,40 @@ func (f *fakeAgentServer) start(w http.ResponseWriter, r *http.Request) {
 	f.creates = append(f.creates, body)
 	if c, ok := f.convs[id]; ok && id != "" {
 		f.mu.Unlock()
-		f.writeJSON(w, 200, map[string]any{"id": c.id, "execution_status": c.getStatus()})
+		f.writeJSON(w, 200, map[string]any{"id": c.id, "execution_status": c.Status()})
 		return
 	}
-	c := &fakeConv{srv: f, id: id, dir: dir, status: "idle", release: make(chan struct{})}
+	c := &Conv{srv: f, id: id, dir: dir, status: "idle", release: make(chan struct{})}
 	f.convs[id] = c
-	agent := f.agent
+	agent := f.Agent
 	f.mu.Unlock()
-	c.emit(map[string]any{"kind": "MessageEvent", "source": "user",
+	c.Emit(map[string]any{"kind": "MessageEvent", "source": "user",
 		"llm_message": map[string]any{"role": "user", "content": []map[string]string{{"type": "text", "text": "the brief"}}}})
 	go func() {
-		c.setStatus("running")
+		c.SetStatus("running")
 		if agent != nil {
 			agent(c, f.local(dir))
 		}
-		if c.getStatus() == "running" {
-			c.setStatus("finished")
+		if c.Status() == "running" {
+			c.SetStatus("finished")
 		}
 	}()
 	f.writeJSON(w, 201, map[string]any{"id": id, "execution_status": "idle"})
 }
 
-func (f *fakeAgentServer) conversationRoute(w http.ResponseWriter, r *http.Request) {
+func (f *Server) conversationRoute(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/conversations/"), "/")
-	c := f.conv(parts[0])
+	c := f.Conv(parts[0])
 	if c == nil {
 		f.writeJSON(w, 404, map[string]string{"detail": "Conversation not found"})
 		return
 	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
-		f.writeJSON(w, 200, map[string]any{"id": c.id, "execution_status": c.getStatus()})
+		f.writeJSON(w, 200, map[string]any{"id": c.id, "execution_status": c.Status()})
 	case len(parts) == 2 && (parts[1] == "interrupt" || parts[1] == "pause") && r.Method == http.MethodPost:
-		c.setStatus("paused")
-		c.emit(map[string]any{"kind": "PauseEvent", "source": "user"})
+		c.SetStatus("paused")
+		c.Emit(map[string]any{"kind": "PauseEvent", "source": "user"})
 		c.finishRelease()
 		f.writeJSON(w, 200, map[string]bool{"success": true})
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "search":
@@ -402,7 +433,7 @@ func (f *fakeAgentServer) conversationRoute(w http.ResponseWriter, r *http.Reque
 
 // searchEvents pages with inclusive page_id semantics, as the executor
 // assumes: a page starts AT page_id.
-func (f *fakeAgentServer) searchEvents(w http.ResponseWriter, r *http.Request, c *fakeConv) {
+func (f *Server) searchEvents(w http.ResponseWriter, r *http.Request, c *Conv) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -436,7 +467,7 @@ func (f *fakeAgentServer) searchEvents(w http.ResponseWriter, r *http.Request, c
 
 // socket implements /sockets/events/{id} with first-frame auth. It forwards
 // a frame per new event.
-func (f *fakeAgentServer) socket(w http.ResponseWriter, r *http.Request) {
+func (f *Server) socket(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/sockets/events/")
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -445,7 +476,7 @@ func (f *fakeAgentServer) socket(w http.ResponseWriter, r *http.Request) {
 	defer conn.CloseNow()
 	ctx := r.Context()
 	if f.key != "" {
-		rctx, cancel := context10s(ctx)
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, data, err := conn.Read(rctx)
 		cancel()
 		var auth struct {
@@ -457,7 +488,7 @@ func (f *fakeAgentServer) socket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	c := f.conv(id)
+	c := f.Conv(id)
 	if c == nil {
 		conn.Close(4004, "Conversation not found")
 		return

@@ -27,6 +27,9 @@ type ExecutorResolution struct {
 	Resolved string `json:"resolved"`
 	// Image is the agent image for an agent kind.
 	Image string `json:"image,omitempty"`
+	// Server is the Agent Server URL for kind openhands: where the work root
+	// goes.
+	Server string `json:"server,omitempty"`
 	// Warning is the loud one: auto fell back to the placeholder executor.
 	// It says why, and how to fix it.
 	Warning string `json:"warning,omitempty"`
@@ -87,6 +90,12 @@ func ResolveExecutor(ctx context.Context, h config.HarnessConfig, registry *mode
 		if res.Image == "" {
 			res.Image = executor.DefaultAgentImage(string(kind))
 		}
+		return res
+	case config.ExecutorOpenHands:
+		// Only ever explicit. Auto (below) never resolves to openhands: the
+		// work root, and the provider key unless withheld, leave the
+		// machine, which is a choice to make, not a default to fall into.
+		res.Server = h.Executor.OpenHands.URL
 		return res
 	default:
 		return res

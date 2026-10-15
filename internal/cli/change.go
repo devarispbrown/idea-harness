@@ -496,8 +496,14 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	image, model := a.value("--image"), a.value("--model")
 	yes, smoke := a.has("--yes"), a.has("--smoke")
+	if kind == "openhands" {
+		return cmdOpenHandsSetup(a, stdout, stderr)
+	}
+	if a.value("--url") != "" || a.value("--api-key-env") != "" || a.value("--agent") != "" {
+		return usageErrorf("--url, --api-key-env and --agent only apply to --kind openhands")
+	}
 	if kind != "hermes" && kind != "omp" && kind != "acp" {
-		return usageErrorf("unsupported executor kind %q (use hermes, omp or acp)", kind)
+		return usageErrorf("unsupported executor kind %q (use hermes, omp, acp or openhands)", kind)
 	}
 	acpCommand, err := parseACPCommand(a.value("--acp-command"))
 	if err != nil {
@@ -626,6 +632,127 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 			return errorf(kindRunFailed, "smoke failed: %w", serr)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
+	}
+	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
+	return nil
+}
+
+// cmdOpenHandsSetup wires the openhands executor: an OpenHands Agent Server
+// runs the agent, so there is no image to pull. It checks the URL is safe to
+// send the work root over, that the server answers and accepts the session
+// key, states what leaves the machine, and writes executor.kind/openhands.*
+// through the daemon. --smoke then runs the trivial task through the server.
+func cmdOpenHandsSetup(a cmdArgs, stdout, stderr io.Writer) error {
+	serverURL, model := strings.TrimSpace(a.value("--url")), a.value("--model")
+	keyEnv, agent := a.value("--api-key-env"), a.value("--agent")
+	yes, smoke := a.has("--yes"), a.has("--smoke")
+	if serverURL == "" {
+		return usageErrorf("--url is required for --kind openhands: the Agent Server's base URL, e.g. --url https://agents.example.com")
+	}
+	if a.value("--image") != "" || a.value("--acp-key-env") != "" {
+		return usageErrorf("--image and --acp-key-env do not apply to --kind openhands: the agent runs on the server")
+	}
+	acpCommand, err := parseACPCommand(a.value("--acp-command"))
+	if err != nil {
+		return err
+	}
+	if agent == "" {
+		agent = "openhands"
+	}
+	if agent != "openhands" && agent != "acp" {
+		return usageErrorf("--agent must be openhands or acp, got %q", agent)
+	}
+	if agent == "acp" && len(acpCommand) == 0 {
+		return usageErrorf("--agent acp needs --acp-command, the ACP agent's argv on the server, e.g. --acp-command claude-agent-acp")
+	}
+	if agent != "acp" && len(acpCommand) > 0 {
+		return usageErrorf("--acp-command only applies with --agent acp")
+	}
+	if err := config.ValidateOpenHandsURL(serverURL); err != nil {
+		return usageErrorf("%v", err)
+	}
+	oh := config.OpenHandsConfig{URL: serverURL, APIKeyEnv: keyEnv, Agent: agent, ACPCommand: acpCommand}
+	if err := config.ValidateExecutor(config.ExecutorConfig{OpenHands: oh}); err != nil {
+		return usageErrorf("%v", strings.TrimPrefix(err.Error(), "config: "))
+	}
+	if smoke && model == "" {
+		return usageErrorf("--smoke requires --model (the agent's coding model)")
+	}
+
+	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" openhands sends the work root (a copy of this workspace, minus .env and credential-looking files), "+
+		"the task brief, and the coding model's provider key (unless executor.openhands.withhold_provider_key is set) to "+serverURL+
+		", where the agent runs with auto-approve. Only use a server you trust.")
+	if !yes {
+		return usageErrorf("pass --yes to accept the security tradeoff and configure executor.kind=openhands")
+	}
+
+	dotEnv := config.LoadDotEnv(".")
+	lookup := func(name string) string {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+		return dotEnv[name]
+	}
+	sessionKeyEnv := oh.EffectiveAPIKeyEnv()
+	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	version, err := executor.ProbeOpenHands(pctx, serverURL, lookup(sessionKeyEnv))
+	cancel()
+	if err != nil {
+		return errorf(kindConfigInvalid, "verification failed: %w (session key read from %s)", err, sessionKeyEnv)
+	}
+	fmt.Fprintln(stderr, muted("Agent Server answered: version ")+code(version)+muted(", session key accepted"))
+	if version != executor.OpenHandsAPIVersion {
+		fmt.Fprintln(stderr, warn("⚠ ")+fmt.Sprintf("this server reports %s; idea-harness was written against openhands-agent-server %s. "+
+			"Run --smoke to confirm the routes it uses still behave.", version, executor.OpenHandsAPIVersion))
+	}
+
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	var provider executor.AgentProvider
+	if model != "" {
+		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
+			return err
+		}
+		if compat := executor.CheckModelCompat("openhands", model); compat.Message != "" {
+			if compat.Blocked {
+				return errorf(kindConfigInvalid, "%s", compat.Message)
+			}
+			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
+		}
+	}
+	if acpCommand == nil {
+		acpCommand = []string{} // clears a previous acp_command, rather than leaving it
+	}
+	body := map[string]any{"kind": "openhands", "openhands_url": serverURL, "openhands_agent": agent, "openhands_acp_command": acpCommand}
+	if keyEnv != "" {
+		body["openhands_api_key_env"] = keyEnv
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	var out struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/executors", body, &out); err != nil {
+		return err
+	}
+	for _, w := range out.Warnings {
+		fmt.Fprintln(stdout, warn("⚠ ")+w)
+	}
+	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code("openhands")+" ("+code(serverURL)+", agent "+agent+")")
+	if smoke {
+		fmt.Fprintln(stdout, muted("smoke: running a trivial task on the Agent Server…"))
+		sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		sctx, cancel := context.WithTimeout(sctx, 15*time.Minute)
+		defer cancel()
+		opts := executor.OpenHandsOptions{URL: serverURL, APIKeyEnv: sessionKeyEnv, Agent: agent, ACPCommand: acpCommand, Model: model}
+		if err := executor.SmokeOpenHands(sctx, opts, provider, lookup, ""); err != nil {
+			return errorf(kindRunFailed, "smoke failed: %w", err)
+		}
+		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the Agent Server's agent produced a real file change")
 	}
 	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil

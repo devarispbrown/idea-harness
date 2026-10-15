@@ -113,6 +113,13 @@ type Engine struct {
 	// on modelOverride/modelMu above.
 	noteMu       sync.Mutex
 	noteOverride map[string]string
+
+	// remoteMu guards remote, the supervisor of this project's runs on a
+	// remote execution plane (openhands). Not mu: a watcher follows a run
+	// for as long as it lasts and must never wait on, or hold, the lock
+	// Execute holds (remote.go).
+	remoteMu sync.Mutex
+	remote   *executor.RemoteSupervisor
 }
 
 // SetNoteOverride records a human note to steer the given initiative's next
