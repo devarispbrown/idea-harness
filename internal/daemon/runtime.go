@@ -85,6 +85,11 @@ type Runtime struct {
 	// first use by integrations().
 	integOnce sync.Once
 	integ     *integrationHub
+
+	// sched runs the scheduled automations (automations.go); created on
+	// first use by automations().
+	schedOnce sync.Once
+	sched     *scheduler
 }
 
 type projectRuntime struct {
@@ -784,6 +789,15 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 		r.log.Error(logMsg, "initiative", initiativeID, "op", opID, "err", runErr)
 	}
 	_ = pr.db.SetOperationFailed(sctx, opID, status, operationErrorMessage(pr, runErr.Error()))
+
+	// A spending-cap stop is not a failure: the work is fine, the money ran
+	// out. Park the initiative for a human (needs_human_judgment:
+	// budget_exceeded, remembering where it was) instead of failing it --
+	// for execute too, whose failures otherwise leave the initiative alone
+	// (budget.go).
+	if status == domain.OperationFailed && r.parkIfBudget(pr, initiativeID, runErr) {
+		return
+	}
 
 	// Release the initiative on cancellation too, not only on failure.
 	//
@@ -2142,6 +2156,8 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	// reason was recorded.
 	switch ini.JudgmentReason {
 	case "", domain.JudgmentPlanReview:
+	case domain.JudgmentBudget:
+		return "", preconditionf("this initiative stopped at its spending cap; raise the cap with `idea budget %s --set <usd>` first", initiativeID)
 	default:
 		return "", preconditionf("approve-plan accepts a plan whose review raised findings; "+
 			"this initiative is waiting on %s, which only `idea revise-plan` resolves", ini.JudgmentReason)
@@ -2675,6 +2691,9 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	}
 	if h.Demo.DanglePlanDependency {
 		fp.EnqueueResponse("execution_plan", model.DemoDanglingPlanJSON)
+	}
+	if h.Demo.CostPerCallUSD > 0 {
+		fp.SetDefaultCost(h.Demo.CostPerCallUSD)
 	}
 	return fp
 }

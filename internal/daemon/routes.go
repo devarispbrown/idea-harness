@@ -107,6 +107,16 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/integrations", s.handleIntegrationsStatus)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/integrations/{name}/test", s.handleIntegrationTest)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/integrations/{name}", s.handleUpdateIntegration)
+
+	// Spending caps (budget.go) and scheduled automations (automations.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/budget", s.handleProjectBudget)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/budget", s.handleSetProjectBudget)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/budget", s.handleGetBudget)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/initiatives/{id}/budget", s.handleSetBudget)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/automations", s.handleListAutomations)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/automations/{name}", s.handleUpdateAutomation)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/automations/{name}/run", s.handleRunAutomation)
 
 	// The initiative-scoped reads, on the nested path. These ten once answered
 	// only at the flat `/projects/{projectId}/<resource>?initiative_id=` form,
@@ -128,6 +138,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/doctor", s.handleDoctor)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/executors/smoke", s.handleExecutorSmoke)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/executors/config", s.handleExecutorConfig)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/agent-output", s.handleAgentOutput)
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/initiatives/{id}/partial-work", s.handleDiscardPartialWork)
 

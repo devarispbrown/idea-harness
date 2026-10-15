@@ -22,7 +22,7 @@ translates log rows into a small set of typed events and delivers each to Slack 
 | Event | When |
 |---|---|
 | `initiative.created` | A new initiative (from the CLI, the UI, `/idea new`, or a labeled Linear issue). |
-| `initiative.needs_judgment` | The workflow parked on a human, with the reason (`prd_review`, `plan_review`, `plan_dependencies`, `verification`). |
+| `initiative.needs_judgment` | The workflow parked on a human, with the reason (`prd_review`, `plan_review`, `plan_dependencies`, `verification`). A spending-cap stop is announced as `initiative.budget_exceeded` instead, not as well. |
 | `review.prd_approved` / `review.plan_approved` | The PRD or the execution plan was approved. An execute/apply's own claim-and-release of `plan_approved` is not re-announced. |
 | `change_set.created` | A task's change set started (Linear: In Progress). |
 | `change_set.ready_for_review` | A change set awaits a human verdict. |
@@ -31,6 +31,8 @@ translates log rows into a small set of typed events and delivers each to Slack 
 | `run.failed` | The initiative failed, with its reason. |
 | `task.status_changed` | A plan task moved (Linear only by default). |
 | `outcome.drifted` | An observation moved an outcome metric into `off_track` or `regressed` (see the README's objectives & outcomes section). Slack only; a metric going `stale` is a function of the clock and is never evented — it shows in `idea status`, `idea next` and the Health page instead. |
+| `initiative.budget_exceeded` | The initiative reached its spending cap and stopped before the next model or agent call, with "$spent of $cap (before <call>)" ([configuration.md](configuration.md#budget)). |
+| `eval.regressed` | A scheduled `idea eval` run regressed against its baseline, with the regressions ([configuration.md](configuration.md#automations)). Project-level: no initiative. |
 
 Delivery goes through an **outbox** in the project's `state.db`. Each subscriber has a cursor into
 the event log, and each (subscriber, event) pair is one outbox row with a unique idempotency key,
@@ -51,6 +53,13 @@ inserted in the same transaction that advances the cursor. So:
   again after the restart. The outbox makes that window the only one.
 
 None of this can slow the engine down: a Slack outage delays notifications, never a transition.
+
+Both can be configured from the web UI (Settings → Integrations) as well as by editing
+`harness.yaml`: the editor writes the same section through the same validation, keeps the file's
+comments, and applies it without a restart. It shows whether each token variable is set — never a
+value — and refuses a token pasted into any field. "Send test message" / "Test connection" run
+`idea integrations test`. Linear inbound polling is also listed, with its history and a Run now
+button, on the Automations page.
 
 Slack and Linear tokens are read from the process environment, then the project's `.env`, by the
 names harness.yaml gives — never from harness.yaml itself (`idea config validate` rejects a token

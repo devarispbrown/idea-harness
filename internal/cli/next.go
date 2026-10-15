@@ -396,6 +396,11 @@ func reportJudgment(reason string, stdout io.Writer) {
 	case "verification":
 		fmt.Fprintln(stdout, bold("Next:")+" a requirement was failed after this initiative completed")
 		line("idea verify <REQ-n> --pass|--fail --note \"<how you checked>\"", "record the evidence")
+	case "budget":
+		fmt.Fprintln(stdout, bold("Next:")+" this initiative reached its spending cap and stopped before the next model or agent call — "+muted("idea budget")+muted(" shows the meter"))
+		// Raising the cap returns the initiative to where it stopped; the
+		// step is then run again with `idea next`, which names it.
+		line("idea budget <initiative> --set <usd>", "raise the cap; the initiative goes back to where it stopped")
 	default:
 		// A daemon older than the recorded reason, or an initiative parked
 		// before it existed. Name where to look rather than a wrong command.

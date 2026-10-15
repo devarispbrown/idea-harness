@@ -718,6 +718,10 @@ func BuildGuidance(ini domain.Initiative, understanding Understanding, recentCha
 			return Guidance{Action: "Re-record verification evidence",
 				Why:      "A requirement was failed after this initiative completed, so it is no longer complete. Run `idea verify`.",
 				Affected: []string{"Verify"}}
+		case domain.JudgmentBudget:
+			return Guidance{Action: "Raise the spending cap",
+				Why:      "This initiative reached its spending cap and stopped before the next model or agent call. `idea budget` shows the meter; `idea budget <initiative> --set <usd>` raises the cap and returns the initiative to where it stopped.",
+				Affected: []string{"Budget"}}
 		}
 		return Guidance{Action: "Resolve blocking review findings",
 			Why:      "Adversarial review did not converge; the PRD is paused for your judgment. `idea reviews` lists the findings; `idea approve` accepts the PRD, `idea revise` regenerates it.",
