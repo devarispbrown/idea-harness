@@ -1147,7 +1147,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	usedCodes := map[string]bool{}
 
 	var decisionRefByReqID map[string]string // requirementID -> decision question text
-	objectiveRefs := map[string][]string{}  // requirementID -> objective keys/codes it serves
+	objectiveRefs := map[string][]string{}   // requirementID -> objective keys/codes it serves
 	for _, r := range objSlice(obj["requirements"]) {
 		var acs []domain.AcceptanceCriterion
 		for _, ac := range objSlice(r["acceptance_criteria"]) {

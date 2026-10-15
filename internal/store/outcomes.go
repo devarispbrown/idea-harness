@@ -112,7 +112,7 @@ func (db *DB) UpdateObjective(ctx context.Context, o *domain.Objective, actor st
 // model-authored metrics that have never been observed. Used by a PRD
 // revision that dropped an objective.
 //
-// A human-added objective (produced_by_run_id = '') is never superseded by a
+// A human-added objective (an empty produced_by_run_id) is never superseded by a
 // model revision -- it is the human's to change -- and neither is a metric
 // with observations: its history is evidence, and a revision that stopped
 // mentioning it does not make the measurements untrue.
