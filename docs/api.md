@@ -499,11 +499,11 @@ Sign-in for browsers on another device, and Web Push. See
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls}`. |
-| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used or expired code. `429` with `Retry-After` once a client has failed 10 times in 15 minutes (that client only), or once 100 failures from anyone have (everyone, and every outstanding code is cancelled) — see [security-model.md](security-model.md#remote-access). |
+| POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls, burned_codes, last_burned_at?}` — the last two report codes burned in the last 7 days. |
+| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used, expired or burned code. `429` with `Retry-After` once a client has failed 10 times in 15 minutes (that client only; never a loopback request). A code that 100 wrong codes were tried against while it was outstanding is burned; sign-in is never refused for everyone — see [security-model.md](security-model.md#remote-access). |
 | POST | `/ui/logout` | Revoke the calling session and clear its cookie. `204`. |
 | GET | `/ui/session` | `{auth: token\|session, csrf_token?, session?}` — how this request is authenticated; how a reloaded page gets its CSRF token back. |
-| GET | `/ui/sessions` | Every browser session (newest first, revoked ones included) and `current`. Never a secret. |
+| GET | `/ui/sessions` | Every browser session (newest first, revoked ones included), `current`, and `burned_codes`/`last_burned_at` (pairing codes burned in the last 7 days). Never a secret. |
 | DELETE | `/ui/sessions` | Revoke every browser session — `idea ui sessions revoke --all`. `{revoked}`. |
 | DELETE | `/ui/sessions/{id}` | Revoke one browser session. `204`. |
 | GET | `/push/vapid-public-key` | The daemon's VAPID public key (the `applicationServerKey` for `PushManager.subscribe`) and the subscribable `event_kinds`. |
