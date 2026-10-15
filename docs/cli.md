@@ -39,12 +39,25 @@ if this file has drifted.
 | `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
 | `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
 | `idea approve-plan` | accept the execution plan as it stands | none | takes no flags |
-| `idea revise-plan` | regenerate the execution plan | none | takes no flags |
+| `idea revise-plan [--note <text>]` | regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes | `--note` | no |
 | `idea plan` | render the execution plan | `--json` | rejected — use `idea tasks --json` |
 | `idea tasks` | list the ordered plan tasks | `--json` | yes |
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
+| `idea gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all]` | list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity) | `--all`, `--fail-on`, `--json`, `--kind` | yes |
+| `idea assumption <id> accept\|dispute\|retract` | judge an assumption or hypothesis (closes an unvalidated_assumption gap) | none | takes no flags |
+| `idea objectives [<initiative>]` | list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it | `--json` | yes |
+| `idea objective add\|edit\|link` | add, edit or link an objective (see the rows below) | `add --json`, `add --owner`, `add --rationale`, `edit --json`, `edit --owner`, `edit --rationale`, `edit --statement`, `edit --status`, `link --json`, `link --unlink` | takes no flags |
+| `idea objective add "<statement>"` | add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision | — | — |
+| `idea objective edit <OBJ>` | change --statement, --rationale, --owner or --status active\|achieved\|abandoned | — | — |
+| `idea objective link <REQ> <OBJ>` | record that a requirement serves an objective (--unlink removes it) | — | — |
+| `idea metrics [<initiative>]` | list outcome metrics with their drift: on track, off track, regressed, stale or no data | `--json` | yes |
+| `idea metric add\|edit\|record\|measure` | add, edit, record or measure an outcome metric (see the rows below) | `add --baseline`, `add --cadence`, `add --command`, `add --definition`, `add --direction`, `add --guardrail`, `add --hypothesis`, `add --json`, `add --manual`, `add --pointer`, `add --target`, `add --unit`, `add --url`, `edit --baseline`, `edit --cadence`, `edit --clear-baseline`, `edit --clear-guardrail`, `edit --command`, `edit --definition`, `edit --direction`, `edit --guardrail`, `edit --json`, `edit --manual`, `edit --name`, `edit --objective`, `edit --pointer`, `edit --target`, `edit --unit`, `edit --url`, `measure --json`, `record --at`, `record --json`, `record --note` | takes no flags |
+| `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective: --direction increase\|decrease\|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual | — | — |
+| `idea metric edit <MET>` | change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source | — | — |
+| `idea metric record <MET> <value>` | record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value | — | — |
+| `idea metric measure [<MET>]` | run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources | — | — |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
@@ -55,12 +68,14 @@ if this file has drifted.
 | `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
-| `idea review <id> <verdict> [--no-wait]` | approve\|reject\|changes_requested\|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait` | no |
-| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
+| `idea review <id> <verdict> [--note <text>] [--no-wait]` | approve\|reject\|changes_requested\|rerun; --note with changes_requested\|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait`, `--note` | no |
+| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard | `--confirm-passing-tests`, `--fail`, `--json`, `--no-measure`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
-| `idea executors` | list executors + capabilities | `--json`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
-| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp, default hermes (or --kind) | — | — |
+| `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --agent`, `setup --api-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --url`, `setup --yes` | yes |
+| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp\|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands\|acp) | — | — |
+| `idea integrations [status]` | show Slack/Linear integration health: tokens present, deliveries, socket and poll state | `--json`, `status --json`, `test --json` | yes |
+| `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
@@ -72,6 +87,8 @@ if this file has drifted.
 | `idea daemon` | run the daemon in the foreground | `status`, `stop` | takes no flags |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
+| `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
+| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
 | `idea version` | print the version, commit and build state | none | takes no flags |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | `--format` | no |
 
@@ -99,7 +116,7 @@ The **`--json`** column is the contract:
   a message pointing at `idea tasks --json` rather than ignoring the flag.
 - **`—`** — a documentation row describing a subcommand, listed under its parent.
 
-**`idea status` exits non-zero when it prints a failed initiative.** The reason travels with it,
+**`idea status` exits non-zero (`9`, `run_failed`) when it prints a failed initiative.** The reason travels with it,
 on both paths — rendered for a human, and as `failure_reason` in `--json` — so a script can run it
 as a health check and say why. An initiative merely waiting on your judgment is **not** a failure
 and still exits 0: that is the loop working, and `idea next` names what it is waiting for.
@@ -134,6 +151,61 @@ and `idea logs -n 200` silently showed the default 50 lines. Every command now p
 against the specification this table is generated from, and a test iterates that table so a new
 command cannot be added without joining it.
 
+## Exit codes
+
+Every failure exits with a code from this table, and the code says what kind of failure it was. A
+script can branch on it without parsing the message: start the daemon on `6`, ask a human on `5`, fix the
+invocation on `2`.
+
+<!-- BEGIN generated exit-codes -->
+<!-- Generated by `make docs` from internal/cli/exitcode.go — do not edit by hand. -->
+
+| Code | `kind` | Meaning |
+| --- | --- | --- |
+| 0 | — | success |
+| 1 | `error` | any failure not classified below, including a daemon-side 500 (which carries a correlation id) and a client-side timeout |
+| 2 | `usage` | the command line was wrong: unknown command, subcommand or flag, a missing or extra argument, or a request the daemon rejected as malformed (HTTP 400, 405, 413) |
+| 3 | `not_found` | a reference named nothing: an initiative, change set, decision, question, artifact or project that does not exist (HTTP 404) |
+| 4 | `conflict` | the request is valid but the current state does not allow it — approving what is already approved, revising under an approved plan (HTTP 409) |
+| 5 | `gate_unmet` | a gate a script asked about is not met: `idea verify` with requirements still unverified, or `idea gaps --fail-on <severity>` with a gap at or above that severity |
+| 6 | `daemon_unavailable` | the daemon could not be reached, started, or is not initialized |
+| 7 | `unauthorized` | the daemon rejected this CLI's token or origin (HTTP 401, 403) |
+| 8 | `config_invalid` | the project's configuration is invalid or incomplete: harness.yaml does not parse (HTTP 422), `idea config validate` found errors, or no model or API key is configured |
+| 9 | `run_failed` | work the daemon ran failed or was cancelled: an operation, an initiative, or an executor smoke run. Model and provider failures surface here, with the provider's reason |
+
+<!-- END generated exit-codes -->
+
+The codes and `kind` names are a contract: classes may be added, but a number or a name is never
+reused for something else. Where the daemon answered, the class follows its HTTP status (`404` is
+`not_found`, `409` is `conflict`, and so on); a failure the CLI detects itself — a flag it rejects,
+an unmet gate, a daemon it cannot reach — is tagged where it is raised. Anything not yet classified
+exits `1`, which is what every failure exited before this table existed.
+
+**Errors under `--json`.** When the invocation includes `--json`, a failure is reported as one JSON
+object instead of the `idea: …` line:
+
+```json
+{
+  "error": {
+    "kind": "not_found",
+    "message": "no change set matching \"CHG-99\"",
+    "hint": "`idea status` lists initiatives; …",
+    "exit_code": 3,
+    "http_status": 404
+  }
+}
+```
+
+`hint` is omitted when there is no single next step; `http_status` is omitted when the failure never
+reached the daemon. The object goes to **stdout**, so a script reads one stream whether the command
+succeeded or not — with one exception, chosen so that **stdout under `--json` always holds exactly
+one JSON document**: a command that already printed its payload before failing sends the error
+object to **stderr** instead. Today that is `idea verify --json` over an unmet gate, which prints the
+coverage on stdout, the error object on stderr, and exits `5`.
+
+Without `--json`, the message goes to stderr as `idea: <message>`, followed by a `hint:` line when
+the failure carries a specific next step its message does not already name.
+
 ## Watching progress in real time
 
 The daemon logs **every model request** (stage, role, model, duration) and every review cycle to
@@ -145,7 +217,7 @@ idea logs -f        # tail the log
 idea daemon         # then run `idea new` in another terminal
 ```
 
-The web UI shows a **Live activity** feed (the same events, polled on a timer — see [`ui.md`](ui.md)).
+The web UI shows a **Live activity** feed (the same events, refetched when the project's SSE stream reports a change, with a timer as a backstop — see [`ui.md`](ui.md)).
 
 ## Apply and revert protect edits made outside the harness
 
@@ -179,6 +251,10 @@ The CLI is a thin HTTP client to the daemon (§29, D1). On the first state comma
 detached daemon if none is running, then retries. The daemon is the single writer; the CLI never
 mutates state directly.
 
+`idea mcp` puts the same client behind the Model Context Protocol, so Claude Code, Cursor or Codex
+can read an initiative and record judgments as tool calls — setup, tiers and the tool list are in
+[`mcp.md`](mcp.md).
+
 Environment variables:
 
 ```text
@@ -201,16 +277,113 @@ idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --ke
 
 Provider configuration is also available in the web UI under **Settings**.
 
+## Finding gaps: `idea gaps`
+
+`idea gaps [<initiative>]` lists what the Product Graph is missing or no longer holds — requirements
+with no task or no applied change set, acceptance criteria with no evidence, evidence that failed or
+predates the code it verified, unvalidated assumptions, decisions whose basis moved, orphan tasks and
+change sets, artifacts older than what they were generated from, requirements serving no objective, objectives with no metric or no requirement, drifting outcome metrics, and verified requirements whose objective is failing — most severe first, each with the
+command that closes it. Deterministic; no model call. Every kind and the exact trigger behind it are
+in [architecture.md](architecture.md#asking-the-graph-gaps).
+
+| Flag | Meaning |
+| --- | --- |
+| `--kind k,...` | only these kinds (`unimplemented_requirement`, `unverified_requirement`, `untested_acceptance_criterion`, `unvalidated_assumption`, `invalidated_decision`, `orphan_task`, `orphan_change_set`, `stale_artifact`, `orphan_requirement`, `unmeasured_objective`, `unserved_objective`, `drifting_metric`, `ineffective_requirement`); an unknown kind exits `2` and lists them |
+| `--fail-on <severity>` | exit `5` (`gate_unmet`) when any gap is at or above `critical`, `high`, `medium`, `low` or `observation`. Without it `idea gaps` exits `0` whatever it finds |
+| `--all` | every initiative of the project, not just one |
+| `--json` | the `{"initiative_id", "gaps", "summary"}` report; with `--fail-on` the report stays the one document on stdout and the error object goes to stderr |
+
+```bash
+# CI: fail the build on any high or critical gap anywhere in the project
+idea gaps --all --fail-on high
+```
+
+`idea assumption <id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
+or hypothesis — the id is the 8-character prefix `idea gaps` prints. It is what closes an
+`unvalidated_assumption` gap; a retracted one that requirements still rest on becomes a high
+`refuted` gap until they are reworked.
+
+## Measuring the pipeline: `idea eval`
+
+`idea eval` runs a fixed suite of small greenfield ideas end to end — idea → PRD review → plan →
+change set → apply → verify — on a **private, in-process daemon**: its own state root and project
+directories under a temporary directory, never your running daemon or your projects. Each workflow
+step goes through the daemon's ordinary HTTP API, following the same `next` answer `idea next`
+acts on; an automatic judgment policy stands in for you wherever the workflow stops.
+
+| Flag | Meaning |
+| --- | --- |
+| `--suite <name\|file>` | a built-in suite (`default`, the only one so far) or a suite YAML file |
+| `--case <name>` | run only this case (repeatable) |
+| `--model <provider/model>` | run against a real model; its key must be exported. Without it the **scripted provider** runs: deterministic, no model calls |
+| `--policy approve\|stop` | at a human-judgment stop, accept and go on (`approve`, the default — each stop is still counted) or end the case there (`stop`) |
+| `--harness <file>` | extra `harness.yaml` merged into every case's project, e.g. an `executor:` block so the acceptance checks run against real code |
+| `--json-out <file>`, `--md-out <file>` | write the report |
+| `--baseline <report.json>` | compare against a saved report; a regression exits non-zero |
+| `--timeout <duration>` | per-case limit (default `20m`) |
+| `--keep` | keep every case's state and project directory, and print where |
+
+The report covers, per case and in aggregate: the furthest stage reached, whether the PRD review
+converged and in how many cycles, whether the plan review converged, every human-judgment stop and
+where (`prd_review`, `plan_review`, `plan_dependencies`, `change_set_review`), change sets produced
+and applied, whether verification passed, cost, tokens and wall time — plus each review cycle's
+convergence record (findings raised, new, re-raised and resolved by severity, what the convergence
+rules demoted, and the outcome). Approving a reviewed change set, applying it and recording
+verification are routine gates of every run and are not counted as stops.
+
+Each case has acceptance checks: shell commands run in the project after every change set is
+applied. With the built-in internal executor, which writes a placeholder file instead of code, they
+are **skipped and reported as skipped**; verification is still recorded, with a note saying so, so
+the gate itself is exercised. A regression is a case reaching an earlier stage, a review that used
+to converge no longer converging or needing more cycles, more human stops, verification no longer
+passing, a new error, or (real runs) cost up by more than 25%. Wall time is reported, never
+compared. A scripted baseline and a real run are never compared with each other.
+
+Exit status is non-zero when a scripted case misses its scenario's expectation, or when the run
+regresses against `--baseline`. A real-model run that merely stops for a human is a measurement,
+not a failure. CI runs the scripted suite as a Go test (`internal/eval`) against
+`internal/eval/testdata/baseline-scripted.json`.
+
+## Objectives and outcome metrics
+
+The PRD states objectives (`OBJ-n`) and the metrics that measure them (`MET-n`); these commands are
+the human side. All take an optional trailing initiative reference, like every initiative-scoped
+command, and `--json`.
+
+```bash
+idea objectives                                   # what each objective is, what serves and measures it
+idea objective add "Support load drops" --rationale "tickets cost us a day a week"
+idea objective edit OBJ-2 --status achieved       # or abandoned; --statement/--rationale/--owner
+idea objective link REQ-4 OBJ-2                   # REQ-4 serves OBJ-2 (--unlink removes it)
+
+idea metric add OBJ-2 "weekly tickets" --direction decrease --baseline 40 --target 15 --cadence weekly
+idea metric add OBJ-2 "error rate" --direction maintain --target 1 --guardrail 0.5 \
+    --command "go run ./cmd/errstats /repo/logs"   # the last number printed is the value
+idea metric edit MET-3 --clear-baseline           # the first observation stands in
+idea metric record MET-3 22 --note "Zendesk export"
+idea metric measure                               # every command/url source; or `idea metric measure MET-4`
+idea metrics                                      # each metric with its drift and the reasons
+```
+
+`metric record` prints the metric's drift after the value and how many change sets landed since the
+previous one (`idea trace metric MET-3` names them). `metric measure` runs a command source in the
+no-network check sandbox — never the host — and exits `9` (`run_failed`) when any measurement failed,
+after printing every result. The drift rules are in the README's
+[Objectives & outcomes](../README.md#objectives--outcomes) section. `idea status` and `idea next`
+print an `outcomes:` line whenever the initiative has a metric (how many, and how many are on track,
+off track, regressed, stale or without data), plus a "works, but fails its objective" line for each
+verified requirement whose objective is failing.
+
 ## Example
 
 ```bash
 mkdir my-product && cd my-product
 idea init
 idea model set ollama/llama3.1      # point at a local model
-idea new                            # interactive Huh form
-idea watch                          # follow the run live
+idea new                            # interactive Huh form; then follows the run live
 idea prd                            # read the reviewed PRD in your terminal
 ```
 
-The workflow runs asynchronously (Operations); `idea new` prints the new `initiative_id` immediately, and
-`idea watch` follows it to completion.
+The workflow runs asynchronously (Operations). `idea new "<idea>"` waits for the run it starts and
+the interactive form follows it live; `idea new "<idea>" --no-wait` prints the new `initiative_id`
+straight away, and `idea watch` follows it from any terminal.

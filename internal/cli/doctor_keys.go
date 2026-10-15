@@ -79,7 +79,7 @@ func renderKeyFindings(stale, missing []string, stdout io.Writer) error {
 			muted(" — or point that field at a provider you have a key for."))
 	}
 	if len(stale)+len(missing) > 0 {
-		return fmt.Errorf("the daemon is missing an API key the configured model needs; see above")
+		return errorf(kindConfigInvalid, "the daemon is missing an API key the configured model needs; see above")
 	}
 	return nil
 }

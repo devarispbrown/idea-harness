@@ -21,8 +21,8 @@ Status values: `open`, `fixed <commit>`, `deferred <reason>`, `not reproduced`.
 
 | # | Claim | Truth | Predicate | Status |
 |---|---|---|---|---|
-| D1 | `api.md`: following the SSE stream "is what `idea watch` and the UI do" | Both shipped clients poll; nothing in-tree opens the stream | `absent:docs/api.md:Both shipped clients poll` | fixed 5823d63 |
-| D2 | `cli.md`: the Live activity feed arrives "via SSE" | The UI polls on a `setInterval` timer | `absent:docs/cli.md:polled on a timer` | fixed 5823d63 |
+| D1 | `api.md`: following the SSE stream "is what `idea watch` and the UI do" | Both shipped clients polled; nothing in-tree opened the stream. (The UI has followed it since the live run view; `idea watch` still polls.) | `absent:docs/api.md:polls: it re-fetches` | fixed 5823d63 |
+| D2 | `cli.md`: the Live activity feed arrives "via SSE" | The UI polled on a `setInterval` timer. (Since the live run view it refetches on the SSE stream, the timer a backstop.) | `absent:docs/cli.md:with a timer as a backstop` | fixed 5823d63 |
 | D3 | `openapi.yaml`: operation history is "newest last" | The store orders `created_at DESC` | `present:docs/openapi.yaml:newest last` | fixed 5823d63 |
 | D4 | `configuration.md` promised redaction that does not happen | Logs are not redacted and the raw blob store is deliberately redaction-free | `absent:docs/configuration.md:returns it verbatim` | fixed 9152317 |
 | D5 | "Review runs require a distinct actor" | There is one actor identity for every automated write; the separation is a prompt and a run, not a checked identity | `absent:docs/security.md:not a checked identity` | fixed 9152317 |

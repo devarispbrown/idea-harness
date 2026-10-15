@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/devarispbrown/idea-harness/internal/config"
 	ccontext "github.com/devarispbrown/idea-harness/internal/context"
 	"github.com/devarispbrown/idea-harness/internal/domain"
 	"github.com/devarispbrown/idea-harness/internal/review"
@@ -218,6 +219,10 @@ func (e *Engine) ReopenPhase(ctx context.Context, initiativeID, phase string) (d
 // stale blocking findings survive the regeneration (full-platform review: plan
 // revision must not leave orphans or wedge the verify gate).
 func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.InitiativeStatus, error) {
+	// A revision note (POST .../revise-plan {"note"}) steers this revision
+	// only, exactly like execute's: cleared whatever happens, so it can never
+	// leak into a later plan or run.
+	defer e.clearNoteOverride(initiativeID)
 	// Defensive: plan revision is a pre-execution action — refuse once any task
 	// has produced work.
 	cses, err := e.db.ListChangeSets(ctx, initiativeID)
@@ -227,6 +232,21 @@ func (e *Engine) RevisePlan(ctx context.Context, initiativeID string) (domain.In
 	if changeSetsHoldingWork(cses) > 0 {
 		return domain.InitiativeFailed, fmt.Errorf("cannot revise a plan that already has change sets")
 	}
+	// The codes the plan's tasks carry now, by title, so the regenerated plan
+	// can give a task it kept the code it already had. The task counter is
+	// monotonic on purpose (a deleted code is never reused for a DIFFERENT
+	// task), and without this every revision renumbered every task -- a
+	// revision that changed nothing turned TASK-1 into TASK-2.
+	oldTasks, err := e.db.ListTasks(ctx, initiativeID)
+	if err != nil {
+		return domain.InitiativeFailed, err
+	}
+	keepCodes := map[string]string{}
+	for _, t := range oldTasks {
+		keepCodes[normTaskTitle(t.Title)] = t.Code
+	}
+	e.setKeepTaskCodes(initiativeID, keepCodes)
+	defer e.setKeepTaskCodes(initiativeID, nil)
 	if err := e.db.DeleteTasksForInitiative(ctx, initiativeID); err != nil {
 		return domain.InitiativeFailed, err
 	}
@@ -274,13 +294,16 @@ func changeSetsHoldingWork(cses []domain.ChangeSet) int {
 	return n
 }
 
-// storeArtifact renders a body into the BlobStore and records an artifact family
-// + first version (immutable, produced by run).
+// storeArtifact renders a body into the BlobStore and records it as the next
+// version of the initiative's artifact of that kind (v1 when there is none).
+// A body identical to the current version records nothing: regenerating a
+// design document or the plan with no change -- revise-plan with nothing to
+// revise, say -- must not mint a "v2" that differs from v1 only in its number.
 func (e *Engine) storeArtifact(ctx context.Context, initiativeID string, kind domain.ArtifactKind, runID, body string) error {
 	bodyDigest := e.storeBlob(body)
-	art := &domain.Artifact{InitiativeID: initiativeID, Kind: kind}
 	ver := &domain.ArtifactVersion{BodyDigest: bodyDigest, ProducedByRun: runID, Status: "draft"}
-	return e.db.CreateArtifact(ctx, art, ver)
+	_, err := e.db.RecordArtifactVersion(ctx, initiativeID, kind, ver, true)
+	return err
 }
 
 // createDesignDecision records a design-stage decision. If an equivalent
@@ -556,10 +579,24 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
+	// The human's revision note, when this plan is a revision they asked for
+	// with one (RevisePlan). Only ever set for a revise-plan: advance never
+	// sets a note override, and the override is cleared when RevisePlan returns.
+	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	if note != "" {
+		inputs = append(inputs, ccontext.Input{Selector: "human_note", Content: "The human asked for this revision of the plan: " + note})
+	}
 	e.setStage(ctx, initiativeID, "Planning the execution")
 	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlan, RoleEngineeringLead, "execution_plan", schema.ExecutionPlan, inputs, "Produce the execution plan.")
 	if err != nil {
 		return err
+	}
+	if note != "" {
+		// Best effort, like execute's: the run says what steered it, and a
+		// failure to record that must never fail the plan itself.
+		if err := e.db.SetRunNote(ctx, runID, note); err != nil && e.log != nil {
+			e.log.Warn("could not record the revision note on the run", "initiative", initiativeID, "run", runID, "error", err)
+		}
 	}
 	if err := e.storeArtifact(ctx, initiativeID, domain.ArtifactExecutionPlan, runID, renderExecutionPlan(obj)); err != nil {
 		return err
@@ -568,7 +605,11 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	// Two-pass task creation so dependency references resolve regardless of order,
 	// with normalized title matching (full-platform review: task-dependency
 	// ordering — backward/typo'd references must not be silently dropped).
-	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	norm := normTaskTitle
+	// Codes RevisePlan asks to keep: a regenerated task with the same title as
+	// one it replaced keeps that task's code (see RevisePlan). Each is used at
+	// most once, so two new tasks with one old title cannot share a code.
+	keepCodes := e.keptTaskCodes(initiativeID)
 	type pending struct {
 		task      *domain.Task
 		depTitles []string
@@ -588,6 +629,10 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 			Priority:      domain.RequirementPriority(str(t["priority"])),
 			Estimate:      str(t["estimate"]),
 			ProducedByRun: runID,
+		}
+		if code, ok := keepCodes[norm(task.Title)]; ok {
+			task.Code = code
+			delete(keepCodes, norm(task.Title))
 		}
 
 		// N:M requirement resolution (review A4 #4): the model may name several
@@ -721,8 +766,11 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{Requirements: len(tasks)})
 
+	rules := e.snapshotConfig().cfg.Review.Convergence.Effective()
+	guarded := !rules.Legacy()
+
 	det := e.deterministicPlanChecks(ctx, initiativeID)
-	adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor)
+	reviewRunID, adv, err := e.runPlanAdversarialReview(ctx, initiativeID, tasks, rigor, rules)
 	if err != nil {
 		return domain.InitiativeFailed, err
 	}
@@ -745,6 +793,36 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		}
 	}
 
+	// The plan review is a single pass, so of the convergence rules only the
+	// per-finding ones apply here: the severity gate and the citation rule
+	// (a plan finding must name the TASK or REQ it is about). The plan
+	// review parked 2 of 2 measured real-model runs on blocking findings,
+	// and a finding that names no task or requirement is not one a human
+	// re-planning can act on either. There is no prior cycle, no re-raise
+	// and no stall -- RevisePlan starts a fresh plan, not a revision of
+	// this one.
+	tel := newReviewTelemetry("execution_plan", 1, rules, rigor)
+	cls := classification{reRaiseOf: map[int]int{}, demoted: map[string]int{}, cites: make([]string, len(adv))}
+	if guarded {
+		allReqs, _ := e.db.ListRequirements(ctx, initiativeID)
+		taskCodes := make(map[string]bool, len(tasks))
+		for _, t := range tasks {
+			taskCodes[NormalizeRequirementRef(t.Code)] = true
+		}
+		ini, _ := e.db.GetInitiative(ctx, initiativeID)
+		cls = classifyFindings(classifyInput{
+			rules: rules, active: activeRequirements(allReqs), taskCodes: taskCodes, idea: ini.Description,
+		}, adv)
+		// Every plan finding targets the plan (see the loop below); the
+		// requirement a citation resolved to is the PRD loop's re-targeting,
+		// not this review's, so it is undone here rather than left as a
+		// requirement id under an execution_plan target type.
+		for i := range adv {
+			adv[i].TargetType, adv[i].TargetID = PlanFindingTarget, initiativeID
+		}
+	}
+	countCycle(&tel, adv, cls, nil)
+
 	all := append(det, adv...)
 	all = capFindings(all, findingCap(rigor), rigor)
 	for i := range all {
@@ -765,6 +843,7 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 		all[i].Evidence = e.redact(all[i].Evidence)
 		all[i].Impact = e.redact(all[i].Impact)
 		all[i].Recommendation = e.redact(all[i].Recommendation)
+		all[i].Note = e.redact(all[i].Note)
 	}
 
 	// ICP re-run defect A: RevisePlan/ReopenPhase regenerate the plan and
@@ -793,6 +872,13 @@ func (e *Engine) runExecutionPlanReview(ctx context.Context, initiativeID string
 	// there is no rigor level at which a structural plan defect is
 	// auto-approved.
 	blocked, reason := review.EvaluateApproval(all)
+	tel.OpenBlocking = countGating(all)
+	tel.Deterministic = countGating(det)
+	tel.Outcome = outcomeConverged
+	if blocked {
+		tel.Outcome = outcomeBlocked
+	}
+	e.recordReviewTelemetry(ctx, reviewRunID, tel)
 	if blocked {
 		e.log.Warn("plan review blocked", "initiative", initiativeID, "reason", reason)
 		if err := e.db.NeedsHumanJudgment(ctx, initiativeID, domain.JudgmentPlanReview, RoleAdversarialReviewer); err != nil {
@@ -973,7 +1059,7 @@ func overlapCount(set map[string]bool, tokens []string) int {
 	return n
 }
 
-func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string, tasks []domain.Task, rigor RigorLevel) ([]domain.Finding, error) {
+func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID string, tasks []domain.Task, rigor RigorLevel, rules config.ConvergenceConfig) (string, []domain.Finding, error) {
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	conventions := projectConventions(e.workspaceRoot)
 	// "plan_review", not "review". The name is a demo/test discriminator only:
@@ -985,18 +1071,25 @@ func (e *Engine) runPlanAdversarialReview(ctx context.Context, initiativeID stri
 	// land on the change-set review, where a blocking finding cannot be cleared
 	// by anything the CLI can do. Separate keys make a surplus harmless.
 	e.setStage(ctx, initiativeID, "Reviewing the plan")
-	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
-		[]ccontext.Input{
-			{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
-			{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(tasks)}, rigor, conventions)},
-			{Selector: "tasks", Content: renderTasks(tasks)},
-		},
-		"Adversarial review of the execution plan.",
-	)
-	if err != nil {
-		return nil, err
+	inputs := []ccontext.Input{
+		{Selector: "immutable_policy", Content: "Independently challenge the execution plan. Emit structured findings. Never set accepted_risk."},
+		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(tasks)}, rigor, conventions)},
+		{Selector: "tasks", Content: renderTasks(tasks)},
 	}
-	return review.ParseFindings(runID, "execution_plan", initiativeID, obj)
+	if !rules.Legacy() {
+		// The plan reviewer never got the PRD reviewer's severity calibration
+		// (reviewerSeverityGuidance is PRD-only), so "high" meant whatever the
+		// model felt it meant. The convergence policy states the bar and the
+		// citation rule the review is judged under.
+		inputs = append(inputs, ccontext.Input{Selector: "convergence_policy", Content: reviewerConvergencePolicy(rules, "a TASK code from the tasks below, or the REQ code it implements")})
+	}
+	runID, obj, err := e.runModel(ctx, initiativeID, StageExecutionPlanReview, RoleAdversarialReviewer, "plan_review", schema.Review,
+		inputs, "Adversarial review of the execution plan.")
+	if err != nil {
+		return runID, nil, err
+	}
+	findings, err := review.ParseFindings(runID, "execution_plan", initiativeID, obj)
+	return runID, findings, err
 }
 
 // detectCycle returns the first node id that participates in a cycle, or "".
@@ -1074,4 +1167,35 @@ func (e *Engine) suggestAnswersChunk(ctx context.Context, initiativeID, descript
 		}
 	}
 	return out, nil
+}
+
+// normTaskTitle is the title comparison task-dependency resolution and
+// RevisePlan's code reuse share: case- and whitespace-insensitive.
+func normTaskTitle(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+
+// setKeepTaskCodes records (or, with nil, clears) the title->code map
+// runExecutionPlan reuses for the initiative's regenerated tasks.
+func (e *Engine) setKeepTaskCodes(initiativeID string, codes map[string]string) {
+	e.noteMu.Lock()
+	defer e.noteMu.Unlock()
+	if codes == nil {
+		delete(e.keepTaskCodes, initiativeID)
+		return
+	}
+	if e.keepTaskCodes == nil {
+		e.keepTaskCodes = map[string]map[string]string{}
+	}
+	e.keepTaskCodes[initiativeID] = codes
+}
+
+// keptTaskCodes returns a copy of the map setKeepTaskCodes recorded, so the
+// caller can consume entries without touching the shared one.
+func (e *Engine) keptTaskCodes(initiativeID string) map[string]string {
+	e.noteMu.Lock()
+	defer e.noteMu.Unlock()
+	out := map[string]string{}
+	for k, v := range e.keepTaskCodes[initiativeID] {
+		out[k] = v
+	}
+	return out
 }

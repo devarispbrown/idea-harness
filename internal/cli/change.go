@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/executor"
+	"github.com/devarispbrown/idea-harness/internal/workflow"
 )
 
 // cliChangeSet mirrors the change-set API response.
@@ -80,6 +82,8 @@ type cliExecutor struct {
 	Network      bool     `json:"network"`
 	Capabilities []string `json:"capabilities"`
 	Selected     bool     `json:"selected"`
+	// Resolution is present on the row the next run would use.
+	Resolution *workflow.ExecutorResolution `json:"resolution,omitempty"`
 }
 
 // cmdExecute launches the execute pipeline for the next ready task.
@@ -106,9 +110,7 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("POST", initiativeResource(projectID, iniID, "execute"), body, &out); err != nil {
 		return err
 	}
-	if kind := out["executor_kind"]; kind == "internal" || kind == "" {
-		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
-	}
+	printExecutorResolution(out, stdout)
 	fmt.Fprintln(stdout, ok("✓ execute started")+" "+code(iniID))
 	opID := out["operation_id"]
 	if opID != "" {
@@ -129,7 +131,7 @@ func cmdExecute(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdCancel(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea cancel <operation-id>")
+		return usageErrorf("usage: idea cancel <operation-id>")
 	}
 	c, _, err := connect()
 	if err != nil {
@@ -193,7 +195,7 @@ func cmdChanges(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdChange(a cmdArgs, stdout, stderr io.Writer) error {
 	positional, flags := a.positional, a.flags
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea change <id>")
+		return usageErrorf("usage: idea change <id>")
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -274,7 +276,7 @@ func cmdPR(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea pr checks <change-set-id>")
+		return usageErrorf("usage: idea pr checks <change-set-id>")
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -321,7 +323,7 @@ func cmdPRChecks(a cmdArgs, stdout io.Writer) error {
 func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	positional := a.positional
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
+		return usageErrorf("usage: idea review <id> <approve|reject|changes_requested|rerun>")
 	}
 	verdict := positional[1]
 	switch verdict {
@@ -331,7 +333,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 		verdict = "rejected"
 	case "approved", "rejected", "changes_requested", "rerun":
 	default:
-		return fmt.Errorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
+		return usageErrorf("unknown verdict %q (use approve|reject|changes_requested|rerun)", positional[1])
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -341,9 +343,18 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	accepting := a.has("--accept-findings")
 	if accepting {
 		if verdict != "approved" {
-			return fmt.Errorf("--accept-findings only applies to `approve`")
+			return usageErrorf("--accept-findings only applies to `approve`")
 		}
 		body["accept_findings"] = true
+	}
+	// --note says what to change: recorded on the change set and carried into
+	// the task's next run. Only the two verdicts that reopen the task have a
+	// next run for it to steer.
+	if note := strings.TrimSpace(a.value("--note")); note != "" {
+		if verdict != "changes_requested" && verdict != "rejected" {
+			return usageErrorf("--note goes with changes_requested or reject: it steers the task's next run")
+		}
+		body["note"] = note
 	}
 	var out map[string]string
 	if err := c.do("POST", changeSetResource(projectID, positional[0], "review"), body, &out); err != nil {
@@ -370,6 +381,9 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 	if accepting {
 		line += " " + muted("(findings accepted)")
 	}
+	if _, noted := body["note"]; noted {
+		line += " " + muted("(note recorded; the task's next run carries it: idea execute)")
+	}
 	fmt.Fprintln(stdout, line)
 	return nil
 }
@@ -381,7 +395,7 @@ func cmdReview(a cmdArgs, stdout, stderr io.Writer) error {
 func runChangeSetAction(action string, a cmdArgs, stdout io.Writer) error {
 	positional := a.positional
 	if len(positional) < 1 {
-		return fmt.Errorf("usage: idea %s <id> [--wait]", action)
+		return usageErrorf("usage: idea %s <id> [--wait]", action)
 	}
 	id := positional[0]
 	c, projectID, err := connect()
@@ -485,7 +499,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	kind := positionalKind
 	if flagKind != "" {
 		if positionalKind != "" && positionalKind != flagKind {
-			return fmt.Errorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
+			return usageErrorf("conflicting executor kind: positional argument %q and --kind %q disagree", positionalKind, flagKind)
 		}
 		kind = flagKind
 	}
@@ -494,25 +508,43 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	}
 	image, model := a.value("--image"), a.value("--model")
 	yes, smoke := a.has("--yes"), a.has("--smoke")
-	if kind != "hermes" && kind != "omp" {
-		return fmt.Errorf("unsupported executor kind %q (use hermes or omp)", kind)
+	if kind == "openhands" {
+		return cmdOpenHandsSetup(a, stdout, stderr)
+	}
+	if a.value("--url") != "" || a.value("--api-key-env") != "" || a.value("--agent") != "" {
+		return usageErrorf("--url, --api-key-env and --agent only apply to --kind openhands")
+	}
+	if kind != "hermes" && kind != "omp" && kind != "acp" {
+		return usageErrorf("unsupported executor kind %q (use hermes, omp, acp or openhands)", kind)
+	}
+	acpCommand, err := parseACPCommand(a.value("--acp-command"))
+	if err != nil {
+		return err
+	}
+	acpKeyEnv := a.value("--acp-key-env")
+	if kind != "acp" && (len(acpCommand) > 0 || acpKeyEnv != "") {
+		return usageErrorf("--acp-command and --acp-key-env only apply to --kind acp")
+	}
+	if kind == "acp" && len(acpCommand) == 0 {
+		return usageErrorf("--acp-command is required for --kind acp: the agent's argv inside the image, e.g. --acp-command claude-code-acp " +
+			"or --acp-command \"gemini --experimental-acp\"")
 	}
 	if smoke && model == "" {
-		return fmt.Errorf("--smoke requires --model (to resolve the provider API key)")
+		return usageErrorf("--smoke requires --model (to resolve the provider API key)")
 	}
 	// Resolve the image: Hermes has a pinned default (auto-downloaded); OMP has
 	// no canonical image so --image is required.
 	if image == "" {
 		image = executor.DefaultAgentImage(kind)
 		if image == "" {
-			return fmt.Errorf("--image is required: no canonical %s image (provide one you trust)", kind)
+			return usageErrorf("--image is required: no canonical %s image (provide one you trust)", kind)
 		}
 		fmt.Fprintln(stderr, muted("no --image; using pinned default ")+code(image)+muted(" and downloading it now"))
 	}
 
 	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" a "+kind+" executor runs with network egress and auto-approve, and receives its provider API key. Only use an image you trust.")
 	if !yes {
-		return fmt.Errorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
+		return usageErrorf("pass --yes to accept the security tradeoff and configure executor.kind=%s", kind)
 	}
 
 	c, projectID, err := connect()
@@ -535,7 +567,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		// same as the model-warning above.
 		if compat := executor.CheckModelCompat(kind, model); compat.Message != "" {
 			if compat.Blocked {
-				return fmt.Errorf("%s", compat.Message)
+				return errorf(kindConfigInvalid, "%s", compat.Message)
 			}
 			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
 		}
@@ -545,13 +577,30 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("pull failed: %w", err)
 	}
-	if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
+	if kind == "acp" {
+		// An ACP adapter need not implement --version, so the presence check
+		// is the protocol itself: initialize, in the hardened container with
+		// no network and no key.
+		pctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		agent, err := executor.ProbeACP(pctx, image, acpCommand)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("verification failed: %w", err)
+		}
+		fmt.Fprintln(stderr, muted("ACP handshake ok: ")+code(agent))
+	} else if err := executor.VerifyAgentCLI(context.Background(), image, kind); err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
-	body := map[string]string{"kind": kind, "image": image}
+	body := map[string]any{"kind": kind, "image": image}
 	if model != "" {
 		body["model"] = model
+	}
+	if kind == "acp" {
+		body["acp_command"] = acpCommand
+		if acpKeyEnv != "" {
+			body["acp_key_env"] = acpKeyEnv
+		}
 	}
 	var out struct {
 		Warnings []string `json:"warnings"`
@@ -584,13 +633,182 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 			}
 			return dotEnv[name]
 		}
-		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup, ""); err != nil {
-			return fmt.Errorf("smoke failed: %w", err)
+		var serr error
+		if kind == "acp" {
+			opts := executor.ACPOptions{Image: image, Model: model, Command: acpCommand, KeyEnv: acpKeyEnv}
+			serr = executor.SmokeACPAgent(sctx, opts, provider, lookup, "")
+		} else {
+			serr = executor.SmokeAgent(sctx, kind, image, model, provider, lookup, "")
+		}
+		if serr != nil {
+			return errorf(kindRunFailed, "smoke failed: %w", serr)
 		}
 		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the "+kind+" CLI produced a real file change")
 	}
 	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
 	return nil
+}
+
+// cmdOpenHandsSetup wires the openhands executor: an OpenHands Agent Server
+// runs the agent, so there is no image to pull. It checks the URL is safe to
+// send the work root over, that the server answers and accepts the session
+// key, states what leaves the machine, and writes executor.kind/openhands.*
+// through the daemon. --smoke then runs the trivial task through the server.
+func cmdOpenHandsSetup(a cmdArgs, stdout, stderr io.Writer) error {
+	serverURL, model := strings.TrimSpace(a.value("--url")), a.value("--model")
+	keyEnv, agent := a.value("--api-key-env"), a.value("--agent")
+	yes, smoke := a.has("--yes"), a.has("--smoke")
+	if serverURL == "" {
+		return usageErrorf("--url is required for --kind openhands: the Agent Server's base URL, e.g. --url https://agents.example.com")
+	}
+	if a.value("--image") != "" || a.value("--acp-key-env") != "" {
+		return usageErrorf("--image and --acp-key-env do not apply to --kind openhands: the agent runs on the server")
+	}
+	acpCommand, err := parseACPCommand(a.value("--acp-command"))
+	if err != nil {
+		return err
+	}
+	if agent == "" {
+		agent = "openhands"
+	}
+	if agent != "openhands" && agent != "acp" {
+		return usageErrorf("--agent must be openhands or acp, got %q", agent)
+	}
+	if agent == "acp" && len(acpCommand) == 0 {
+		return usageErrorf("--agent acp needs --acp-command, the ACP agent's argv on the server, e.g. --acp-command claude-agent-acp")
+	}
+	if agent != "acp" && len(acpCommand) > 0 {
+		return usageErrorf("--acp-command only applies with --agent acp")
+	}
+	if err := config.ValidateOpenHandsURL(serverURL); err != nil {
+		return usageErrorf("%v", err)
+	}
+	oh := config.OpenHandsConfig{URL: serverURL, APIKeyEnv: keyEnv, Agent: agent, ACPCommand: acpCommand}
+	if err := config.ValidateExecutor(config.ExecutorConfig{OpenHands: oh}); err != nil {
+		return usageErrorf("%v", strings.TrimPrefix(err.Error(), "config: "))
+	}
+	if smoke && model == "" {
+		return usageErrorf("--smoke requires --model (the agent's coding model)")
+	}
+
+	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" openhands sends the work root (a copy of this workspace, minus .env and credential-looking files), "+
+		"the task brief, and the coding model's provider key (unless executor.openhands.withhold_provider_key is set) to "+serverURL+
+		", where the agent runs with auto-approve. Only use a server you trust.")
+	if !yes {
+		return usageErrorf("pass --yes to accept the security tradeoff and configure executor.kind=openhands")
+	}
+
+	dotEnv := config.LoadDotEnv(".")
+	lookup := func(name string) string {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+		return dotEnv[name]
+	}
+	sessionKeyEnv := oh.EffectiveAPIKeyEnv()
+	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	version, err := executor.ProbeOpenHands(pctx, serverURL, lookup(sessionKeyEnv))
+	cancel()
+	if err != nil {
+		return errorf(kindConfigInvalid, "verification failed: %w (session key read from %s)", err, sessionKeyEnv)
+	}
+	fmt.Fprintln(stderr, muted("Agent Server answered: version ")+code(version)+muted(", session key accepted"))
+	if version != executor.OpenHandsAPIVersion {
+		fmt.Fprintln(stderr, warn("⚠ ")+fmt.Sprintf("this server reports %s; idea-harness was written against openhands-agent-server %s. "+
+			"Run --smoke to confirm the routes it uses still behave.", version, executor.OpenHandsAPIVersion))
+	}
+
+	c, projectID, err := connect()
+	if err != nil {
+		return err
+	}
+	var provider executor.AgentProvider
+	if model != "" {
+		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
+			return err
+		}
+		if compat := executor.CheckModelCompat("openhands", model); compat.Message != "" {
+			if compat.Blocked {
+				return errorf(kindConfigInvalid, "%s", compat.Message)
+			}
+			fmt.Fprintln(stderr, warn("⚠ ")+compat.Message)
+		}
+	}
+	if acpCommand == nil {
+		acpCommand = []string{} // clears a previous acp_command, rather than leaving it
+	}
+	body := map[string]any{"kind": "openhands", "openhands_url": serverURL, "openhands_agent": agent, "openhands_acp_command": acpCommand}
+	if keyEnv != "" {
+		body["openhands_api_key_env"] = keyEnv
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	var out struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := c.do("PUT", "/api/v1/projects/"+projectID+"/executors", body, &out); err != nil {
+		return err
+	}
+	for _, w := range out.Warnings {
+		fmt.Fprintln(stdout, warn("⚠ ")+w)
+	}
+	fmt.Fprintln(stdout, ok("✓ executor configured")+" "+code("openhands")+" ("+code(serverURL)+", agent "+agent+")")
+	if smoke {
+		fmt.Fprintln(stdout, muted("smoke: running a trivial task on the Agent Server…"))
+		sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		sctx, cancel := context.WithTimeout(sctx, 15*time.Minute)
+		defer cancel()
+		opts := executor.OpenHandsOptions{URL: serverURL, APIKeyEnv: sessionKeyEnv, Agent: agent, ACPCommand: acpCommand, Model: model}
+		if err := executor.SmokeOpenHands(sctx, opts, provider, lookup, ""); err != nil {
+			return errorf(kindRunFailed, "smoke failed: %w", err)
+		}
+		fmt.Fprintln(stdout, ok("✓ smoke passed")+" — the Agent Server's agent produced a real file change")
+	}
+	fmt.Fprintln(stdout, muted("run ")+bold("idea execute")+muted(" to produce a real change set"))
+	return nil
+}
+
+// parseACPCommand reads --acp-command: a JSON array (`["gemini",
+// "--experimental-acp"]`) when an argument itself contains a space, otherwise
+// whitespace-separated words. No shell quoting is interpreted -- this argv
+// runs inside the container, and guessing at a shell's rules here would be a
+// second, subtly different shell.
+func parseACPCommand(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(s, "[") {
+		var argv []string
+		if err := json.Unmarshal([]byte(s), &argv); err != nil {
+			return nil, usageErrorf("--acp-command looks like a JSON array but is not one: %w", err)
+		}
+		if len(argv) == 0 || argv[0] == "" {
+			return nil, usageErrorf("--acp-command is an empty array")
+		}
+		return argv, nil
+	}
+	return strings.Fields(s), nil
+}
+
+// printExecutorResolution prints what POST .../execute said about the
+// executor: the fallback warning loudly (this run writes no real code), or
+// the quiet placeholder note for an explicit `kind: internal`.
+func printExecutorResolution(out map[string]string, stdout io.Writer) {
+	if w := out["executor_warning"]; w != "" {
+		fmt.Fprintln(stdout, errText("⚠ "+w))
+		return
+	}
+	resolved := out["executor_resolved"]
+	if resolved == "" {
+		// A daemon from before auto existed reports only the requested kind.
+		resolved = out["executor_kind"]
+	}
+	if resolved == "internal" || resolved == "" {
+		fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); remove executor.kind from .idea-harness/harness.yaml (auto) or set it to hermes|omp|acp to generate real code."))
+	}
 }
 
 // cliCoverage mirrors the per-requirement verification coverage.
@@ -634,13 +852,13 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		}
 	}
 	if dispositions > 1 {
-		return fmt.Errorf("--pass, --fail and --waive are alternatives; give exactly one")
+		return usageErrorf("--pass, --fail and --waive are alternatives; give exactly one")
 	}
 	if req == "" && (dispositions > 0 || note != "") {
-		return fmt.Errorf("recording evidence needs the requirement it is about: idea verify <req> --pass|--fail|--waive [--note <text>]")
+		return usageErrorf("recording evidence needs the requirement it is about: idea verify <req> --pass|--fail|--waive [--note <text>]")
 	}
 	if len(a.positional) > 1 {
-		return fmt.Errorf("usage: idea verify [<req>] [--pass|--fail|--waive] [--note <text>]")
+		return usageErrorf("usage: idea verify [<req>] [--pass|--fail|--waive] [--note <text>]")
 	}
 
 	c, projectID, err := connect()
@@ -677,9 +895,23 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		// same gate call.
 		body["confirm_passing_tests"] = true
 	}
+	// Quality dimensions (verify.dimensions) are measured BEFORE the gate
+	// runs, so the gate reads a scorecard for the work as it is now. Only
+	// when something enabled is unmeasured or stale; --no-measure keeps the
+	// last recorded scorecard (a stale gated dimension then stays unmet).
+	if !a.has("--no-measure") {
+		progress := stdout
+		if a.has("--json") {
+			progress = stderr // stdout is the JSON document
+		}
+		if err := measureQualityIfStale(c, projectID, iniID, progress); err != nil {
+			return err
+		}
+	}
 	var out struct {
 		Status   string        `json:"status"`
 		Coverage []cliCoverage `json:"coverage"`
+		Quality  *cliScorecard `json:"quality,omitempty"`
 	}
 	if err := c.do("POST", initiativeResource(projectID, iniID, "verify"), body, &out); err != nil {
 		return err
@@ -707,15 +939,21 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 			}
 		}
 	}
+	// Only GATED quality dimensions count; the daemon has already applied the
+	// policy, so gate_unmet is exactly that list.
+	if out.Quality != nil {
+		for _, u := range out.Quality.GateUnmet {
+			unmet = append(unmet, "quality: "+u)
+		}
+	}
 	if a.has("--json") {
-		// The JSON payload is unchanged (still just {status, coverage}) --
-		// only the exit code gains the same gate the human-readable path
-		// already applies below.
+		// {status, coverage, quality} -- and the exit code applies the same
+		// gate the human-readable path applies below.
 		if err := dumpJSON(stdout, out); err != nil {
 			return err
 		}
 		if failOnUnmet && len(unmet) > 0 {
-			return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+			return errorf(kindGateUnmet, "verification incomplete: %s", strings.Join(unmet, "; "))
 		}
 		return nil
 	}
@@ -741,6 +979,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 		}
 		fmt.Fprintln(stdout)
 	}
+	renderScorecard(stdout, out.Quality)
 
 	// The gate has to be able to fail.
 	//
@@ -751,7 +990,7 @@ func runVerify(a cmdArgs, stdout, stderr io.Writer, failOnUnmet bool) error {
 	// unconditionally. The previous round fixed this command's recording half
 	// and never looked at its reporting half.
 	if failOnUnmet && len(unmet) > 0 {
-		return fmt.Errorf("verification incomplete: %s", strings.Join(unmet, "; "))
+		return errorf(kindGateUnmet, "verification incomplete: %s", strings.Join(unmet, "; "))
 	}
 	return nil
 }
@@ -786,7 +1025,7 @@ func cmdRetry(a cmdArgs, stdout, stderr io.Writer) error {
 		model = view.DefaultModel
 	}
 	if model == "" {
-		return fmt.Errorf("no model configured; set one with `idea model set <provider>/<model>` or pass --model")
+		return errorf(kindConfigInvalid, "no model configured; set one with `idea model set <provider>/<model>` or pass --model")
 	}
 
 	// D-a, wave 3 contract: an optional note steering this retry, joining the
@@ -847,7 +1086,7 @@ func reportRetryOutcome(c *client, projectID, iniID string, stdout io.Writer) er
 func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (executor.AgentProvider, error) {
 	i := strings.Index(model, "/")
 	if i <= 0 || i == len(model)-1 {
-		return executor.AgentProvider{}, fmt.Errorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
+		return executor.AgentProvider{}, usageErrorf("--model %q must be provider/model, e.g. openai/gpt-5.6-luna or ollama/qwen3.8", model)
 	}
 	name := model[:i]
 	var view cliProvidersView
@@ -858,7 +1097,7 @@ func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (e
 	for _, p := range view.Providers {
 		if p.Name == name {
 			if p.Problem != "" {
-				return executor.AgentProvider{}, fmt.Errorf("provider %q is not usable: %s", name, p.Problem)
+				return executor.AgentProvider{}, errorf(kindConfigInvalid, "provider %q is not usable: %s", name, p.Problem)
 			}
 			ap := executor.AgentProvider{Name: p.Name, Type: config.ProviderType(p.Type), KeyEnv: p.KeyEnv, BaseURL: p.BaseURL}
 			if err := ap.Validate(); err != nil {
@@ -877,5 +1116,5 @@ func checkAgentProvider(c *client, projectID, model string, stderr io.Writer) (e
 		names = append(names, p.Name)
 	}
 	sort.Strings(names)
-	return executor.AgentProvider{}, fmt.Errorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
+	return executor.AgentProvider{}, usageErrorf("unknown provider %q in --model; use one of: %s", name, strings.Join(names, ", "))
 }

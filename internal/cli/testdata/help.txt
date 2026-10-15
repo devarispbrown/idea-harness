@@ -23,12 +23,14 @@ Commands:
   approve              accept the reviewed PRD as it stands
   revise               regenerate the PRD from the review findings
   approve-plan         accept the execution plan as it stands
-  revise-plan          regenerate the execution plan
+  revise-plan [--note <text>] regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes
   plan                 render the execution plan
   tasks                list the ordered plan tasks
   why <type> <id>      show the provenance chain
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents
+  gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all] list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)
+  assumption <id> accept|dispute|retract judge an assumption or hypothesis (closes an unvalidated_assumption gap)
   diff                 structured requirement/decision diff
   execute [--note <text>] [--wait] run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait
   reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
@@ -39,12 +41,14 @@ Commands:
   revert <id> [--wait] roll back a change set; returns a handle immediately unless --wait
   pr [<initiative>]    open a pull request for the initiative's branch (git.branch_per_initiative)
   pr checks <change-set-id> show the latest CI status via `gh pr checks`
-  review <id> <verdict> [--no-wait] approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
-  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed
+  review <id> <verdict> [--note <text>] [--no-wait] approve|reject|changes_requested|rerun; --note with changes_requested|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
+  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
-  executors setup [<kind>] wire a coding agent: hermes|omp, default hermes (or --kind)
+  executors setup [<kind>] wire a coding agent: hermes|omp|acp|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands|acp)
+  integrations [status] show Slack/Linear integration health: tokens present, deliveries, socket and poll state
+  integrations test slack|linear post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   watch                watch a run live
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config

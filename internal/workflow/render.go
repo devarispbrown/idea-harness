@@ -52,9 +52,46 @@ func renderPRD(obj map[string]any) string {
 	if s := str(obj["summary"]); s != "" {
 		fmt.Fprintf(&b, "%s\n\n", s)
 	}
+	if objs := objSlice(obj["objectives"]); len(objs) > 0 {
+		b.WriteString("## Objectives\n\n")
+		for _, o := range objs {
+			title := str(o["statement"])
+			if k := str(o["key"]); k != "" {
+				title = k + ": " + title
+			}
+			fmt.Fprintf(&b, "### %s\n\n", title)
+			if r := str(o["rationale"]); r != "" {
+				fmt.Fprintf(&b, "%s\n\n", r)
+			}
+			b.WriteString("Metrics:\n\n")
+			for _, m := range objSlice(o["metrics"]) {
+				fmt.Fprintf(&b, "- %s: %s", str(m["name"]), str(m["direction"]))
+				if v, ok := num(m["baseline"]); ok {
+					fmt.Fprintf(&b, " from %s", domain.FormatMetricValue(v))
+				}
+				if v, ok := num(m["target"]); ok {
+					fmt.Fprintf(&b, " to %s", domain.FormatMetricValue(v))
+				}
+				if u := str(m["unit"]); u != "" {
+					fmt.Fprintf(&b, " %s", u)
+				}
+				if v, ok := num(m["guardrail"]); ok {
+					fmt.Fprintf(&b, " (guardrail %s)", domain.FormatMetricValue(v))
+				}
+				if h := str(m["hypothesis"]); h != "" {
+					fmt.Fprintf(&b, " -- hypothesis: %s", h)
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("## Requirements\n\n")
 	for _, r := range objSlice(obj["requirements"]) {
 		fmt.Fprintf(&b, "### %s\n\n", str(r["statement"]))
+		if serves := strSlice(r["objectives"]); len(serves) > 0 {
+			fmt.Fprintf(&b, "Serves: %s\n\n", strings.Join(serves, ", "))
+		}
 		b.WriteString("Acceptance criteria:\n\n")
 		for _, ac := range objSlice(r["acceptance_criteria"]) {
 			fmt.Fprintf(&b, "- %s %s (%s)\n", str(ac["metric"]), str(ac["target"]), str(ac["condition"]))
@@ -275,9 +312,18 @@ func (e *Engine) renderQuestionsWithAnswers(questions []domain.Question) string 
 // not found)" when there is no digest, no blob store, or the blob cannot be
 // read, so a lookup failure degrades the rendered context rather than
 // failing the review/plan/brief it feeds.
+//
+// Read from the REDACTED store, which is where both writers put an answer
+// (handleAnswerQuestion's pr.blobs.Put, storeBlob). This used to read
+// contentBlobs() -- the redaction-free raw store -- which in the daemon is a
+// different directory, so every answer resolved to "(answer not found)"
+// outside tests (whose engine wires one store as both). Found auditing every
+// raw-blobs read path: the raw store holds file content for apply/revert and
+// nothing a prompt should be built from.
 func (e *Engine) answerText(q domain.Question) string {
-	if q.AnswerDigest != "" && e.contentBlobs() != nil {
-		if data, err := e.contentBlobs().Get(q.AnswerDigest); err == nil {
+	blobs := e.snapshotConfig().blobs
+	if q.AnswerDigest != "" && blobs != nil {
+		if data, err := blobs.Get(q.AnswerDigest); err == nil {
 			return strings.TrimSpace(string(data))
 		}
 	}

@@ -64,6 +64,8 @@ type cliGuidance struct {
 	Action   string   `json:"action"`
 	Why      string   `json:"why"`
 	Affected []string `json:"affected"`
+	// GapSummary is set when the initiative has Product Graph gaps.
+	GapSummary *cliGapSummary `json:"gap_summary,omitempty"`
 }
 
 // cliTimelineEntry mirrors one entry of GET .../timeline (C1, wave 3
@@ -166,11 +168,16 @@ func cmdStatus(a cmdArgs, stdout, stderr io.Writer) error {
 		if err := c.do("GET", initiativeResource(projectID, ini.ID, "costs"), nil, &costs); err == nil {
 			fmt.Fprintln(stdout, "  "+muted(costs.summary()))
 		}
+		// Outcome drift (objectives & outcomes). Best-effort like costs.
+		printOutcomeNote(c, projectID, ini.ID, "  ", stdout)
 		var nm cliGuidance
 		if err := c.do("GET", initiativeResource(projectID, ini.ID, "guidance"), nil, &nm); err == nil && nm.Action != "" {
 			fmt.Fprintln(stdout, "  "+accent("→ ")+nm.Action)
 			if nm.Why != "" {
 				fmt.Fprintln(stdout, "    "+muted(nm.Why))
+			}
+			if nm.GapSummary != nil && nm.GapSummary.Total > 0 {
+				fmt.Fprintln(stdout, "  "+muted("gaps: "+nm.GapSummary.summaryLine()+" — ")+bold("idea gaps"))
 			}
 		}
 		fmt.Fprintln(stdout)
@@ -254,9 +261,9 @@ func failedInitiativeExit(inis []cliInitiative) error {
 		return nil
 	}
 	if ini.FailureReason != "" {
-		return fmt.Errorf("%s failed: %s", ini.Title, ini.FailureReason)
+		return errorf(kindRunFailed, "%s failed: %s", ini.Title, ini.FailureReason)
 	}
-	return fmt.Errorf("%s failed; `idea logs` has the full text", ini.Title)
+	return errorf(kindRunFailed, "%s failed; `idea logs` has the full text", ini.Title)
 }
 
 // cmdChanged shows What Changed since last look, per initiative, in human

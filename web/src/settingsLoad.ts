@@ -25,8 +25,17 @@ export interface ProvidersViewLike {
 }
 
 // resolveInitialProvider picks which provider's models to preload once the
-// providers view has loaded: the default model's provider, or "openai" when
-// none is set yet. Settings.tsx's `load` uses this same rule.
-export function resolveInitialProvider(defaultModel: string): string {
-  return defaultModel?.includes("/") ? defaultModel.split("/")[0] : "openai";
+// providers view has loaded: the default model's provider; with no default,
+// the first provider that is actually ready; "openai" only when none is.
+// Settings.tsx's `load` uses this same rule.
+//
+// "openai" unconditionally used to greet a fresh install with an amber
+// "OPENAI_API_KEY is not set…" nobody had asked about, while a working local
+// provider sat one line further down.
+export function resolveInitialProvider(
+  defaultModel: string,
+  providers: { name: string; ready: boolean }[] = [],
+): string {
+  if (defaultModel?.includes("/")) return defaultModel.split("/")[0];
+  return providers.find((p) => p.ready)?.name ?? "openai";
 }

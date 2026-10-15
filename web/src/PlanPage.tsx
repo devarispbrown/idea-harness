@@ -8,6 +8,11 @@ import type { DocumentRowProps } from "./DocumentRow";
 import { FindingCard, type FindingItem } from "./JudgmentCard";
 import { findingsForPlan } from "./judgmentScope";
 import { planTaskActions } from "./judgmentCopy";
+import LineagePanel from "./LineagePanel";
+import ReviewConvergence from "./ReviewConvergence";
+import NoteField from "./NoteField";
+import { isOperationInFlight } from "./buildLogic";
+import { revisionOutcome, type PlanSnapshot } from "./planRevision";
 
 interface Task {
   id: string;
@@ -58,6 +63,15 @@ export default function PlanPage({
   const [adding, setAdding] = useState(false);
   const [hasChangeSets, setHasChangeSets] = useState(false);
   const [error, setError] = useState("");
+  // "Ask for a revision" takes a note: null while the form is closed, the
+  // draft while it is open. It used to post straight away with no input, so
+  // the planner regenerated from exactly what produced the plan in hand.
+  const [revisionNote, setRevisionNote] = useState<string | null>(null);
+  // The revision in flight, with the plan as it stood when it was asked for,
+  // so the page can say what the revision changed -- including "nothing" --
+  // rather than leaving the reader to compare version numbers.
+  const [pendingRevision, setPendingRevision] = useState<{ opId: string; before: PlanSnapshot } | null>(null);
+  const [revisionResult, setRevisionResult] = useState("");
 
   // Merge (review B3, task 6): pick exactly two tasks, then choose which one
   // survives.
@@ -109,6 +123,44 @@ export default function PlanPage({
     const id = setInterval(load, 2500);
     return () => clearInterval(id);
   }, [load]);
+
+  // Follow the revision's operation; once it settles, reload and say what it
+  // changed against the snapshot taken when it was asked for.
+  useEffect(() => {
+    if (!pendingRevision) return;
+    let cancelled = false;
+    const poll = async () => {
+      let op: { status: string; error?: string } | null = null;
+      try {
+        op = await get<{ status: string; error?: string }>(`/operations/${pendingRevision.opId}`);
+      } catch {
+        return; // transient; keep polling
+      }
+      if (cancelled || !op || isOperationInFlight(op.status)) return;
+      const [t, a] = await Promise.all([
+        get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => null),
+        get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => null),
+      ]);
+      if (cancelled) return;
+      const versions = (a ?? []).filter((x) => x.kind === "execution_plan").map((x) => x.version);
+      setRevisionResult(
+        op.status === "succeeded"
+          ? revisionOutcome(pendingRevision.before, {
+              version: versions.length ? Math.max(...versions) : 0,
+              codes: (t ?? []).map((x) => x.code),
+            })
+          : `The revision did not finish (${op.status})${op.error ? `: ${op.error}` : "."}`,
+      );
+      setPendingRevision(null);
+      await load();
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [pendingRevision, projectId, initiativeId, load]);
 
   const planVersions = artifacts.filter((a) => a.kind === "execution_plan");
   const planVersion = planVersions.length ? Math.max(...planVersions.map((a) => a.version)) : 0;
@@ -209,15 +261,27 @@ export default function PlanPage({
     }
     await load();
   };
+  const snapshot = (): PlanSnapshot => ({ version: planVersion, codes: tasks.map((t) => t.code) });
   const revisePlan = async () => {
     setError("");
+    setRevisionResult("");
+    const note = (revisionNote ?? "").trim();
     try {
-      await post(`/projects/${projectId}/initiatives/${initiativeId}/revise-plan`, {});
+      const res = await post<{ operation_id: string }>(
+        `/projects/${projectId}/initiatives/${initiativeId}/revise-plan`,
+        note ? { note } : {},
+      );
+      setPendingRevision({ opId: res.operation_id, before: snapshot() });
+      setRevisionNote(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       return;
     }
     await load();
+  };
+  const openRevision = () => {
+    setRevisionResult("");
+    setRevisionNote((n) => n ?? "");
   };
 
   // ---- task 6: merge ----------------------------------------------------
@@ -406,8 +470,8 @@ export default function PlanPage({
   // is the only `revise-plan` trigger in the whole UI, so gating the bar on
   // `awaitingApproval` alone left the page with nothing to do once a plan was
   // approved. The daemon accepts it from `plan_approved` only while no change
-  // set exists, so the bar goes away when Build starts -- and the pill says
-  // "building" rather than disappearing, because the state is not an error.
+  // set exists, so once Build starts the bar explains that instead (below)
+  // and the pill keeps saying "approved": that is still the plan's state.
   const approvedIdle = status === "plan_approved" && planCommandsAvailable;
 
   // D1: the plan-review findings, scoped out of the initiative-wide list by
@@ -431,7 +495,11 @@ export default function PlanPage({
     : parkedElsewhere
       ? { label: "needs a revision", state: "needs-you" }
       : status === "plan_approved"
-        ? { label: hasChangeSets ? "building" : "approved", state: "verified" }
+        ? // The plan's own state, the same on every viewport. It used to switch
+          // to "building" once a change set existed, so the same plan read
+          // APPROVED in one window and BUILDING in another; Build's own rail
+          // entry is what says building is under way.
+          { label: "approved", state: "verified" }
         : undefined;
 
   const commit = awaitingApproval
@@ -440,24 +508,60 @@ export default function PlanPage({
           "Approving accepts the plan as it stands and unlocks Build. Tasks run one at a time, each pausing for review.",
         actionLabel: "Approve plan →",
         onAction: approve,
-        secondary: { label: "Ask for a revision", onAction: revisePlan },
+        secondary: { label: "Ask for a revision…", onAction: openRevision },
       }
     : parkedElsewhere
       ? {
           explanation: "This plan needs regenerating before it can be approved.",
-          actionLabel: "Ask for a revision",
-          onAction: revisePlan,
+          actionLabel: "Ask for a revision…",
+          onAction: openRevision,
         }
       : approvedIdle
         ? {
             explanation: "This plan is approved. Build runs it task by task.",
-            actionLabel: "Ask for a revision",
-            onAction: revisePlan,
+            actionLabel: "Ask for a revision…",
+            onAction: openRevision,
           }
-        : undefined;
+        : status === "plan_approved" && hasChangeSets
+          ? {
+              // The bar used to vanish here, so the page simply lost its
+              // footer once Build started (it read as missing on a phone).
+              // It stays, and says why revising is closed.
+              explanation:
+                "This plan is approved and Build has started. Revising is closed once a change set exists.",
+              actionLabel: "Go to Build →",
+              onAction: () => navigate(`#/i/${initiativeId}/build`),
+            }
+          : undefined;
 
   return (
     <PhasePage title="Plan" purpose="The work, ordered. Approve it before anything runs." pill={pill} docs={docs} commit={commit}>
+      {revisionNote !== null && (
+        <section className="revision-request" aria-label="Ask for a revision">
+          <NoteField
+            id={`revise-plan-note-${initiativeId}`}
+            label="What should the revised plan change?"
+            placeholder="e.g. split the import step into its own task — joins the planner's inputs (optional)"
+            value={revisionNote}
+            onChange={setRevisionNote}
+            autoFocus
+          />
+          <div className="revision-request-actions">
+            <button className="cs-green" disabled={!!pendingRevision} onClick={revisePlan}>
+              Regenerate the plan
+            </button>
+            <button className="cs-secondary" onClick={() => setRevisionNote(null)}>
+              Cancel
+            </button>
+          </div>
+        </section>
+      )}
+      {pendingRevision && <p className="muted revision-status">Regenerating the plan…</p>}
+      {revisionResult && (
+        <p className="revision-status" role="status">
+          {revisionResult}
+        </p>
+      )}
       {openPlanFindings.length > 0 && (
         <div className="judgment-head">
           <h2 className="section-title">
@@ -665,6 +769,7 @@ export default function PlanPage({
                     ))}
                   </div>
                 )}
+                <LineagePanel projectId={projectId} initiativeId={initiativeId} type="task" id={t.id} code={t.code} />
               </div>
               <span className={`plan-prio prio-${t.priority}`}>{t.priority}</span>
               <span className="plan-est">{t.estimate || "–"}</span>
@@ -782,6 +887,7 @@ export default function PlanPage({
         )}
       </section>
       {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
+      <ReviewConvergence projectId={projectId} initiativeId={initiativeId} review="execution_plan" />
     </PhasePage>
   );
 }

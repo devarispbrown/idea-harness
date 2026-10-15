@@ -63,10 +63,10 @@ func cmdRevise(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := c.do("GET", path, nil, &ini); err == nil {
 		switch ini.Status {
 		case "plan_approved":
-			return fmt.Errorf("revise regenerates the PRD, which would discard the approved plan below it; " +
+			return errorf(kindConflict, "revise regenerates the PRD, which would discard the approved plan below it; "+
 				"use `idea revise-plan` to change the plan, or `idea reopen-phase` to go further back")
 		case "complete":
-			return fmt.Errorf("this initiative is complete; revising its PRD would reopen it and discard the plan. " +
+			return errorf(kindConflict, "this initiative is complete; revising its PRD would reopen it and discard the plan. "+
 				"Start a new initiative with `idea new`, or `idea reopen-phase` if you mean to reopen this one")
 		}
 	}
@@ -80,7 +80,17 @@ func cmdApprovePlan(a cmdArgs, stdout, stderr io.Writer) error {
 
 // cmdRevisePlan regenerates the execution plan.
 func cmdRevisePlan(a cmdArgs, stdout, stderr io.Writer) error {
-	return judgmentOperation(a, stdout, "revise-plan", "regenerating the plan")
+	c, projectID, iniID, err := judgmentTarget(a)
+	if err != nil {
+		return err
+	}
+	// --note says what to change; without it the planner regenerates from the
+	// same inputs that produced the plan being revised.
+	var body map[string]any
+	if note := strings.TrimSpace(a.value("--note")); note != "" {
+		body = map[string]any{"note": note}
+	}
+	return judgmentPostBody(c, projectID, iniID, stdout, "revise-plan", "regenerating the plan", body)
 }
 
 // judgmentTarget resolves the client and the initiative these commands act on.
@@ -109,8 +119,18 @@ func judgmentOperation(a cmdArgs, stdout io.Writer, path, gerund string) error {
 
 // judgmentPost is the half after the target is resolved.
 func judgmentPost(c *client, projectID, iniID string, stdout io.Writer, path, gerund string) error {
+	return judgmentPostBody(c, projectID, iniID, stdout, path, gerund, nil)
+}
+
+// judgmentPostBody is judgmentPost with a request body. A nil map is sent as
+// no body at all, exactly what judgmentPost always sent.
+func judgmentPostBody(c *client, projectID, iniID string, stdout io.Writer, path, gerund string, body map[string]any) error {
+	var payload any
+	if body != nil {
+		payload = body
+	}
 	var out map[string]string
-	if err := c.do("POST", initiativeResource(projectID, iniID, path), nil, &out); err != nil {
+	if err := c.do("POST", initiativeResource(projectID, iniID, path), payload, &out); err != nil {
 		return err
 	}
 	opID := out["operation_id"]
@@ -140,12 +160,12 @@ var reopenPhases = []string{"architecture", "product_design", "verification_desi
 // it wrong.
 func cmdReopenPhase(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) == 0 {
-		return fmt.Errorf("usage: idea reopen-phase <%s> [<initiative>]",
+		return usageErrorf("usage: idea reopen-phase <%s> [<initiative>]",
 			strings.Join(reopenPhases, "|"))
 	}
 	phase := a.positional[0]
 	if !slices.Contains(reopenPhases, phase) {
-		return fmt.Errorf("unknown phase %q; use one of: %s", phase, strings.Join(reopenPhases, ", "))
+		return usageErrorf("unknown phase %q; use one of: %s", phase, strings.Join(reopenPhases, ", "))
 	}
 	c, projectID, err := connect()
 	if err != nil {
@@ -228,9 +248,9 @@ func resolveQuestionRef(c *client, projectID, iniID, ref string) (string, error)
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", fmt.Errorf("no question matching %q; `idea questions` lists them", ref)
+		return "", errorf(kindNotFound, "no question matching %q; `idea questions` lists them", ref)
 	default:
-		return "", fmt.Errorf("%q matches more than one question; use more of the id shown by `idea questions`", ref)
+		return "", usageErrorf("%q matches more than one question; use more of the id shown by `idea questions`", ref)
 	}
 }
 
@@ -276,7 +296,7 @@ func cmdQuestions(a cmdArgs, stdout, stderr io.Writer) error {
 // cmdAnswer answers an open question.
 func cmdAnswer(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 2 {
-		return fmt.Errorf(`usage: idea answer <question> "<answer>" [<initiative>]`)
+		return usageErrorf(`usage: idea answer <question> "<answer>" [<initiative>]`)
 	}
 	ref, answer := a.positional[0], a.positional[1]
 	c, projectID, err := connect()
@@ -304,7 +324,7 @@ func cmdAnswer(a cmdArgs, stdout, stderr io.Writer) error {
 // them in that order) or free text for a decision with none.
 func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 2 {
-		return fmt.Errorf(`usage: idea resolve <decision> <option#>|"<resolution>" [<initiative>]`)
+		return usageErrorf(`usage: idea resolve <decision> <option#>|"<resolution>" [<initiative>]`)
 	}
 	ref, resolution := a.positional[0], a.positional[1]
 	c, projectID, err := connect()
@@ -315,9 +335,24 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	target, resolved, err := resolveDecision(c, projectID, iniID, ref, resolution)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(target.Code)+" → "+resolved)
+	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
+	return nil
+}
+
+// resolveDecision finds the decision ref names (id or code) in an initiative,
+// turns an option number into that option's text, and resolves it. It returns
+// the decision and the resolution text actually recorded. Shared with the MCP
+// server's resolve_decision tool, so an option number means the same thing on
+// both surfaces.
+func resolveDecision(c *client, projectID, iniID, ref, resolution string) (cliDecision, string, error) {
 	var decs []cliDecision
 	if err := c.do("GET", initiativeResource(projectID, iniID, "decisions"), nil, &decs); err != nil {
-		return err
+		return cliDecision{}, "", err
 	}
 	var target *cliDecision
 	for i := range decs {
@@ -327,24 +362,22 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("no decision matching %q; `idea decisions` lists them", ref)
+		return cliDecision{}, "", errorf(kindNotFound, "no decision matching %q; `idea decisions` lists them", ref)
 	}
 	resolved := resolution
 	if len(target.Options) > 0 {
 		if n, convErr := strconv.Atoi(resolution); convErr == nil {
 			if n < 1 || n > len(target.Options) {
-				return fmt.Errorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
+				return cliDecision{}, "", usageErrorf("%s has %d option(s); %d is out of range -- `idea decisions --json` lists them",
 					target.Code, len(target.Options), n)
 			}
 			resolved = target.Options[n-1]
 		}
 	}
 	if err := c.do("POST", decisionResource(projectID, target.ID, "resolve"), map[string]string{"resolution": resolved}, nil); err != nil {
-		return err
+		return cliDecision{}, "", err
 	}
-	fmt.Fprintln(stdout, ok("✓ resolved")+" "+code(target.Code)+" → "+resolved)
-	fmt.Fprintln(stdout, muted("next: ")+bold("idea next --until-human"))
-	return nil
+	return *target, resolved, nil
 }
 
 // cmdReopenDecision returns a resolved decision to open, so it can be
@@ -352,7 +385,7 @@ func cmdResolve(a cmdArgs, stdout, stderr io.Writer) error {
 // which until now only the web UI could reach.
 func cmdReopenDecision(a cmdArgs, stdout, stderr io.Writer) error {
 	if len(a.positional) < 1 {
-		return fmt.Errorf("usage: idea reopen-decision <decision> [<initiative>]")
+		return usageErrorf("usage: idea reopen-decision <decision> [<initiative>]")
 	}
 	ref := a.positional[0]
 	c, projectID, err := connect()

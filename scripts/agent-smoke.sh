@@ -13,9 +13,20 @@ export GOPATH="$ROOT/.gopath" GOCACHE="$ROOT/.buildcache" GOMODCACHE="$ROOT/.gop
 
 HERMES_IMAGE="${HERMES_IMAGE:-}"
 AGENT_MODEL="${AGENT_MODEL:-}"
+# Alternatively an Agent Client Protocol agent: ACP_IMAGE plus ACP_COMMAND, the
+# agent's argv inside the image as a YAML flow sequence, e.g. [claude-code-acp]
+# or [gemini, --experimental-acp]. ACP_KEY_ENV optionally renames the key
+# inside the container (Gemini CLI reads GEMINI_API_KEY).
+ACP_IMAGE="${ACP_IMAGE:-}"
+ACP_COMMAND="${ACP_COMMAND:-}"
+ACP_KEY_ENV="${ACP_KEY_ENV:-}"
 
-if [ -z "$HERMES_IMAGE" ] || [ -z "$AGENT_MODEL" ]; then
-  echo "SKIP: agent integration requires HERMES_IMAGE and AGENT_MODEL (plus a model API key)."
+if [ -n "$ACP_IMAGE" ] && [ -n "$ACP_COMMAND" ] && [ -n "$AGENT_MODEL" ]; then
+  AGENT_KIND=acp
+elif [ -n "$HERMES_IMAGE" ] && [ -n "$AGENT_MODEL" ]; then
+  AGENT_KIND=hermes
+else
+  echo "SKIP: agent integration requires AGENT_MODEL and either HERMES_IMAGE or ACP_IMAGE + ACP_COMMAND (plus a model API key)."
   echo "Set them as repository variables and the key as a secret, then trigger via workflow_dispatch."
   exit 0
 fi
@@ -47,8 +58,23 @@ done
 cd "$PROJ"
 "$ROOT/bin/idea" init >/dev/null
 
-# Switch to the sandboxed Hermes agent (review B2) + a real model.
-cat > "$PROJ/.idea-harness/harness.yaml" <<YAML
+# Switch to the sandboxed agent (review B2) + a real model.
+if [ "$AGENT_KIND" = acp ]; then
+  cat > "$PROJ/.idea-harness/harness.yaml" <<YAML
+network: disabled
+review:
+    max_cycles: 3
+providers: {}
+executor:
+    kind: acp
+    image: $ACP_IMAGE
+    model: $AGENT_MODEL
+    acp:
+        command: $ACP_COMMAND
+${ACP_KEY_ENV:+        key_env: $ACP_KEY_ENV}
+YAML
+else
+  cat > "$PROJ/.idea-harness/harness.yaml" <<YAML
 network: disabled
 review:
     max_cycles: 3
@@ -58,6 +84,7 @@ executor:
     image: $HERMES_IMAGE
     model: $AGENT_MODEL
 YAML
+fi
 
 # Restart the daemon so the cached runtime re-reads harness.yaml.
 kill "$DPID" 2>/dev/null || true
@@ -73,7 +100,7 @@ sleep 4
 # Snapshot the canonical workspace before the agent runs (exclude .idea-harness).
 before=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
 
-echo "=== EXECUTE (Hermes, sandboxed) ==="
+echo "=== EXECUTE ($AGENT_KIND, sandboxed) ==="
 "$ROOT/bin/idea" execute >/dev/null
 sleep 12 # a real coding agent takes a while
 
@@ -86,7 +113,7 @@ sleep 2
 
 after=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
 if [ "$before" = "$after" ]; then
-  echo "FAIL: the Hermes agent produced no real file diff in the workspace"
+  echo "FAIL: the $AGENT_KIND agent produced no real file diff in the workspace"
   exit 1
 fi
-echo "OK: Hermes agent produced a real file diff"
+echo "OK: $AGENT_KIND agent produced a real file diff"

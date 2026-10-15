@@ -67,7 +67,13 @@ type Requirement struct {
 	// always as fresh as the last check run. Nil/empty means no test is known
 	// to cover this requirement yet, not that it failed.
 	EvidenceTests []EvidenceTest `json:"evidence_tests,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
+	// ObjectiveIDs are the live objectives this requirement serves
+	// (requirement --serves--> objective, N:M). Computed at read time from
+	// graph edges by store.ListRequirements -- never nil there, so a
+	// requirement serving nothing is `[]`, which is exactly the gap the
+	// PRD's deterministic outcome check reports.
+	ObjectiveIDs []string  `json:"objective_ids"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // EvidenceTest is one test-run result mapped to a requirement (C2, wave 3
@@ -125,9 +131,14 @@ type Question struct {
 	Question     string         `json:"question"`
 	Status       QuestionStatus `json:"status"`
 	AnswerDigest string         `json:"answer_digest,omitempty"`
-	AnsweredBy   string         `json:"answered_by,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	ResolvedAt   *time.Time     `json:"resolved_at,omitempty"`
+	// Answer is the answer's text, filled at read time by the questions list
+	// (never stored on the row: the text lives in the blob store under
+	// AnswerDigest). The UI's Resolved section shows it; without it an
+	// answered question simply vanished from Define.
+	Answer     string     `json:"answer,omitempty"`
+	AnsweredBy string     `json:"answered_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
 // DocComment is a human comment anchored to a section of an artifact version.
@@ -254,6 +265,61 @@ type Finding struct {
 	// yet.
 	Advisory  bool      `json:"advisory,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Cites, ReRaises and Justification are the adversarial reviewer's own
+	// convergence fields (schema.Review: "requirement", "reraises",
+	// "justification"), read by review.ParseFindings and consumed by the PRD
+	// review loop's convergence rules before the finding is persisted. They
+	// are parse-time only -- no column stores them, so a finding read back
+	// from the store always has them empty, and json:"-" keeps the API from
+	// advertising fields it could never fill. What they decided is persisted
+	// where a human can see it: the cited requirement as TargetType/TargetID,
+	// and the justification (or the reason a finding was made advisory) in
+	// Note.
+	Cites         string `json:"-"`
+	ReRaises      string `json:"-"`
+	Justification string `json:"-"`
+}
+
+// ReviewTelemetry is one review cycle's convergence record, persisted on the
+// adversarial reviewer's run manifest (RunManifest.Review). It exists because
+// the PRD review loop used to be a black box: "did not converge" was the only
+// output, and nothing distinguished a reviewer that kept finding genuinely new
+// problems from one that kept rephrasing the same three -- which is the
+// difference between a loop that needs a human and one that needs a fix.
+//
+// Counts are per severity (critical/high/medium/low/observation). Raised is
+// every adversarial finding this cycle produced; New and ReRaised partition it
+// against the previous cycle's gating findings; Resolved counts previous-cycle
+// gating findings this cycle did NOT re-raise. Demoted counts findings made
+// advisory by a convergence rule, keyed by the rule.
+type ReviewTelemetry struct {
+	// Review is which review loop this is: "prd" or "execution_plan".
+	Review string `json:"review"`
+	Cycle  int    `json:"cycle"`
+	// Mode is review.convergence.mode as it ran: "guarded" or "legacy".
+	Mode  string `json:"mode"`
+	Rigor string `json:"rigor,omitempty"`
+
+	Raised   map[Severity]int `json:"raised,omitempty"`
+	New      map[Severity]int `json:"new,omitempty"`
+	ReRaised map[Severity]int `json:"reraised,omitempty"`
+	Resolved map[Severity]int `json:"resolved,omitempty"`
+	Demoted  map[string]int   `json:"demoted,omitempty"`
+
+	// Deterministic is the number of gating deterministic-check findings
+	// (duplicate code, missing/vague criterion, plan structure) this cycle.
+	Deterministic int `json:"deterministic"`
+	// OpenBlocking is every finding still gating approval after this cycle's
+	// rules ran, deterministic ones included. PrevOpenBlocking is the same
+	// figure for the previous cycle of the same loop, -1 on a loop's first
+	// cycle -- the pair is what the stall detector compares.
+	OpenBlocking     int `json:"open_blocking"`
+	PrevOpenBlocking int `json:"prev_open_blocking"`
+	// Outcome is what the loop did next: "converged", "revise", "stalled"
+	// (the open blocking count stopped decreasing), "max_cycles", or
+	// "blocked" (a single-pass review, e.g. the plan's, that parked).
+	Outcome string `json:"outcome"`
 }
 
 // ResolvesBlocking reports whether f's current disposition clears it from the
@@ -393,6 +459,13 @@ type RunManifest struct {
 	ResultDigest   string            `json:"result_digest,omitempty"`
 	StartedAt      time.Time         `json:"started_at"`
 	FinishedAt     time.Time         `json:"finished_at"`
+	// Executor is set on coding-agent (implementer) runs only.
+	Executor *ExecutorProvenance `json:"executor,omitempty"`
+	// Review is the convergence record of the review cycle this run was the
+	// adversarial reviewer for (nil on every other run). Written after the
+	// manifest itself, once the cycle's rules have run -- see
+	// store.SetRunManifestReview.
+	Review *ReviewTelemetry `json:"review,omitempty"`
 }
 
 // RunUsage records token/cost/duration for a run (§17, §36).
@@ -562,6 +635,12 @@ type ChangeSet struct {
 	// ReviewNeverCompletedCause, which falls back to "likely cancelled
 	// mid-review" in that case). See ReviewUnavailable.
 	ReviewUnavailableReason string `json:"review_unavailable_reason,omitempty"`
+	// ReviewNote is what the human asked for when they requested changes on,
+	// or rejected, this change set (`idea review <id> changes_requested
+	// --note`, POST .../review {"note"}). The task's next run carries it in the
+	// implementer's brief, so "request changes" says what to change. Empty for
+	// a verdict given without one.
+	ReviewNote string `json:"review_note,omitempty"`
 }
 
 // ReviewCompleted reports whether the adversarial reviewer actually finished
@@ -846,4 +925,50 @@ func TrimToWordBoundary(s string, n int) string {
 		cut = n
 	}
 	return strings.TrimSpace(string(r[:cut]))
+}
+
+// QualityCitation points a quality check at the evidence behind it: a file
+// and line in the workspace, and/or the requirement it bears on.
+type QualityCitation struct {
+	Path        string `json:"path,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Requirement string `json:"requirement,omitempty"`
+}
+
+// QualityCheck is one check inside a quality dimension: what was checked, how
+// (deterministic or model-reviewed), the outcome, and where the evidence is.
+type QualityCheck struct {
+	Name      string            `json:"name"`
+	Status    QualityStatus     `json:"status"`
+	Method    QualityMethod     `json:"method"`
+	Detail    string            `json:"detail,omitempty"`
+	Citations []QualityCitation `json:"citations,omitempty"`
+}
+
+// QualityResult is one dimension's measured outcome for an initiative's
+// applied work (verify.dimensions). Results are append-only: every
+// measurement writes a new row per dimension, the scorecard is the latest of
+// each, and the previous one is the performance baseline. Each result is
+// linked to the requirements it bears on with a `verifies` edge, so
+// `idea why quality_result <id>` and `idea impact requirement REQ-n` show it.
+type QualityResult struct {
+	ID            string           `json:"id"`
+	InitiativeID  string           `json:"initiative_id"`
+	MeasurementID string           `json:"measurement_id"`
+	Dimension     QualityDimension `json:"dimension"`
+	Mode          QualityMode      `json:"mode"`
+	Status        QualityStatus    `json:"status"`
+	Summary       string           `json:"summary"`
+	Checks        []QualityCheck   `json:"checks"`
+	// Metrics are named numeric measurements (performance budgets record
+	// theirs here; they are the next measurement's baseline).
+	Metrics map[string]float64 `json:"metrics,omitempty"`
+	// InputDigest names what was measured: the applied change sets and the
+	// verify policy. A result whose digest no longer matches the initiative's
+	// current one is stale and counts as not measured at the gate.
+	InputDigest string `json:"input_digest"`
+	// Requirements are the codes of the requirements this result is linked
+	// to in the Product Graph.
+	Requirements []string  `json:"requirements"`
+	CreatedAt    time.Time `json:"created_at"`
 }

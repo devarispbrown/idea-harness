@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 )
 
 type cliTask struct {
@@ -30,7 +31,7 @@ type cliTask struct {
 // same error value: `idea doctor` rendered an unreadable store as
 // "graph audit: no initiative yet — nothing to audit" and reported
 // "all checks passed", while every other command exited 1 on the same state.
-var errNoInitiatives = errors.New("no initiatives yet; run `idea new` first")
+var errNoInitiatives error = &cliError{kind: kindNotFound, err: errors.New("no initiatives yet; run `idea new` first")}
 
 func resolveInitiative(c *client, projectID string, args []string) (string, error) {
 	var inis []cliInitiative
@@ -53,7 +54,7 @@ func resolveInitiative(c *client, projectID string, args []string) (string, erro
 				return ini.ID, nil
 			}
 		}
-		return "", fmt.Errorf("no initiative matching %q; `idea status` lists them", args[0])
+		return "", errorf(kindNotFound, "no initiative matching %q; `idea status` lists them", args[0])
 	}
 	// The newest, which is what docs/cli.md promises: ListInitiatives is
 	// ORDER BY created_at ASC, so the last row is the most recently created.
@@ -98,7 +99,7 @@ func cmdPlan(a cmdArgs, stdout, stderr io.Writer) error {
 	// plan declares --json in its spec so dispatch accepts it and this message
 	// is what the user gets, rather than the parser's generic "unknown flag".
 	if a.has("--json") {
-		return fmt.Errorf("--json is not supported for plan (the execution plan is a markdown artifact); use `idea tasks --json`")
+		return usageErrorf("--json is not supported for plan (the execution plan is a markdown artifact); use `idea tasks --json`")
 	}
 	return cmdExport(cmdArgs{positional: append([]string{"execution_plan"}, a.positional...)}, stdout, stderr)
 }
@@ -137,6 +138,8 @@ type idCode struct {
 	Code  string `json:"code"`
 	Kind  string `json:"kind"`
 	Title string `json:"title"`
+	// HumanID is a change set's CHG-n (change sets have no `code`).
+	HumanID string `json:"human_id"`
 }
 
 // resolveObjectID resolves an object reference (code or id) to its id.
@@ -153,6 +156,28 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		endpoint = initiativeResource(projectID, iniID, "artifacts")
 	case "context_doc":
 		endpoint = initiativeResource(projectID, iniID, "docs")
+	case "quality_result":
+		// A dimension name ("docs_completeness") resolves to its latest
+		// result; anything else is taken as a result id.
+		var sc cliScorecard
+		if err := c.do("GET", initiativeResource(projectID, iniID, "quality"), nil, &sc); err != nil {
+			return "", err
+		}
+		for _, d := range sc.Dimensions {
+			if d.Dimension == ref {
+				if d.Result == nil {
+					return "", errorf(kindNotFound, "%s has never been measured (`idea verify` measures it)", ref)
+				}
+				return d.Result.ID, nil
+			}
+		}
+		return ref, nil
+	case "objective":
+		endpoint = initiativeResource(projectID, iniID, "objectives")
+	case "metric":
+		endpoint = initiativeResource(projectID, iniID, "metrics")
+	case "change_set":
+		endpoint = initiativeResource(projectID, iniID, "change-sets")
 	default:
 		return ref, nil // run/assertion/etc: treat ref as the id
 	}
@@ -161,11 +186,12 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		return "", err
 	}
 	for _, o := range list {
-		if o.ID == ref || o.Code == ref || o.Kind == ref || o.Title == ref {
+		if o.ID == ref || o.Code == ref || o.Kind == ref || o.Title == ref ||
+			(o.Code != "" && strings.EqualFold(o.Code, ref)) || (o.HumanID != "" && strings.EqualFold(o.HumanID, ref)) {
 			return o.ID, nil
 		}
 	}
-	return "", fmt.Errorf("no %s matching %q", typ, ref)
+	return "", errorf(kindNotFound, "no %s matching %q", typ, ref)
 }
 
 type cliWhyItem struct {
@@ -192,7 +218,7 @@ func cmdImpact(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdTrace(a cmdArgs, stdout, stderr io.Writer) error {
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>")
+		return usageErrorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc|quality_result|objective|metric|change_set> <code-or-id>")
 	}
 	// trace is two queries. Rendered for a human they are two sections; as JSON
 	// they have to be one document — printing why's array and then impact's
@@ -272,6 +298,14 @@ func fetchTrace(mode string, positional []string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return queryTrace(c, projectID, iniID, mode, typ, ref)
+}
+
+// queryTrace resolves typ/ref within an initiative and returns its why
+// ([]cliWhyItem) or impact ([]cliImpactItem) edges. Shared by `idea trace
+// --json` and the MCP server's why/impact/trace tools, so the two cannot
+// resolve a reference differently.
+func queryTrace(c *client, projectID, iniID, mode, typ, ref string) (any, error) {
 	objID, err := resolveObjectID(c, projectID, iniID, typ, ref)
 	if err != nil {
 		return nil, err
@@ -300,7 +334,7 @@ func runTraceCmd(mode string, a cmdArgs, stdout io.Writer) error {
 	// sliced by position.
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc> <code-or-id>", mode)
+		return usageErrorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc|quality_result|objective|metric|change_set> <code-or-id>", mode)
 	}
 	typ, ref := positional[0], positional[1]
 	c, projectID, err := connect()

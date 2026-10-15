@@ -224,3 +224,48 @@ func renderHunks(ops []op) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// Counts returns how many lines a change from old to new adds and removes,
+// the "+12 -3" a file list shows. It uses the same prefix/suffix trim and LCS
+// as Hunks; past MaxDiffCells it falls back to counting lines by multiset
+// (a line present more times in new than in old is added, and vice versa),
+// which never undercounts a pure addition or deletion and is cheap at any
+// size -- a live run view must not stall on a rewritten lockfile.
+func Counts(old, new string) (added, removed int) {
+	o, n := splitLines(old), splitLines(new)
+	pre := 0
+	for pre < len(o) && pre < len(n) && o[pre] == n[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(o)-pre && suf < len(n)-pre && o[len(o)-1-suf] == n[len(n)-1-suf] {
+		suf++
+	}
+	om, nm := o[pre:len(o)-suf], n[pre:len(n)-suf]
+	if (len(om)+1)*(len(nm)+1) > MaxDiffCells {
+		seen := make(map[string]int, len(om))
+		for _, l := range om {
+			seen[l]++
+		}
+		for _, l := range nm {
+			if seen[l] > 0 {
+				seen[l]--
+				continue
+			}
+			added++
+		}
+		for _, c := range seen {
+			removed += c
+		}
+		return added, removed
+	}
+	for _, x := range lcsOps(om, nm) {
+		switch x.kind {
+		case '+':
+			added++
+		case '-':
+			removed++
+		}
+	}
+	return added, removed
+}

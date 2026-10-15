@@ -126,7 +126,7 @@ func resolveArtifact(c *client, projectID, iniID, kind string) (*cliArtifact, er
 		}
 	}
 	if target == nil {
-		return nil, fmt.Errorf("no %q artifact yet; run `idea new` first", kind)
+		return nil, errorf(kindNotFound, "no %q artifact yet; run `idea new` first", kind)
 	}
 	return target, nil
 }
