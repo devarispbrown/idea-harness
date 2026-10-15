@@ -32,7 +32,9 @@ const ResearchBrief = `{
           "statement": {"type": "string"},
           "type": {"enum": ["fact", "assumption", "hypothesis"]},
           "confidence": {"enum": ["high", "medium", "low"]},
-          "source": {"type": "string"}
+          "source": {"type": "string"},
+          "supports": {"type": "array", "items": {"type": "string"}, "description": "ASM codes of framing assumptions listed under assertions that this finding corroborates."},
+          "contradicts": {"type": "array", "items": {"type": "string"}, "description": "ASM codes of framing assumptions listed under assertions that this finding contradicts."}
         },
         "required": ["statement", "type", "confidence", "source"]
       }
@@ -57,6 +59,7 @@ const PRD = `{
           "code": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"REQ-4\") of the requirement this one continues/updates, copied from the Requirements context. Leave empty for a genuinely new requirement."},
           "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
           "objectives": {"type": "array", "items": {"type": "string"}, "description": "The key(s) or OBJ code(s) of the objective(s) listed under objectives that this requirement serves. Every requirement must serve at least one."},
+          "based_on": {"type": "array", "items": {"type": "string"}, "description": "ASM codes, exactly as listed under assertions, of the facts, assumptions or hypotheses this requirement rests on -- the ones that, if false, would make it wrong. Empty when it rests on none."},
           "acceptance_criteria": {
             "type": "array",
             "items": {
@@ -83,7 +86,8 @@ const PRD = `{
           "recommendation": {
             "type": "string",
             "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
-          }
+          },
+          "based_on": {"type": "array", "items": {"type": "string"}, "description": "ASM codes, exactly as listed under assertions, of the facts, assumptions or hypotheses the recommendation rests on."}
         },
         "required": ["question", "options", "recommendation"]
       }

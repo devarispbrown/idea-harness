@@ -304,7 +304,7 @@ in [architecture.md](architecture.md#asking-the-graph-gaps).
 idea gaps --all --fail-on high
 ```
 
-`idea assumption <id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
+`idea assumption <ASM-n|id> accept|dispute|retract [<initiative>]` records your judgment on an assumption
 or hypothesis — the id is the 8-character prefix `idea gaps` prints. It is what closes an
 `unvalidated_assumption` gap; a retracted one that requirements still rest on becomes a high
 `refuted` gap until they are reworked.

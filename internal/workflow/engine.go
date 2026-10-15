@@ -999,6 +999,12 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 		{Selector: "task", Content: idea},
 		{Selector: "untrusted", Content: e.researchEvidence(ctx)},
 	}
+	// The framing assumptions, by code, so a finding can say which one it
+	// corroborates or contradicts (supports / contradicts edges).
+	framing := e.liveAssertions(ctx, initiativeID)
+	if len(framing) > 0 {
+		inputs = append(inputs, ccontext.Input{Selector: "assertions", Content: renderAssertions(framing, nil)})
+	}
 	if docs := e.contextDocs(ctx, initiativeID); docs != "" {
 		inputs = append(inputs, ccontext.Input{Selector: "context_docs", Content: docs})
 	}
@@ -1029,12 +1035,13 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 	// snapshotConfig, not e.cfg directly (review H4): runResearch is an
 	// entry point Run reaches without holding mu.
 	offline := e.snapshotConfig().cfg.Network == config.NetworkDisabled
+	framingByCode := assertionIDsByCode(framing)
 	for _, f := range objSlice(obj["findings"]) {
 		ftype := domain.AssertionType(str(f["type"]))
 		if offline && ftype == domain.AssertionFact {
 			ftype = domain.AssertionAssumption
 		}
-		if err := e.db.CreateAssertion(dctx, &domain.Assertion{
+		a := &domain.Assertion{
 			InitiativeID:  initiativeID,
 			Type:          ftype,
 			Status:        domain.AssertionCandidate,
@@ -1042,8 +1049,22 @@ func (e *Engine) runResearch(ctx context.Context, initiativeID, idea string) err
 			Confidence:    domain.Confidence(str(f["confidence"])),
 			Source:        e.redact(str(f["source"])),
 			ProducedByRun: runID,
-		}); err != nil {
+		}
+		if err := e.db.CreateAssertion(dctx, a); err != nil {
 			return err
+		}
+		// Only the framing assumptions listed above are citable: a finding
+		// relating to another finding of the same brief has no code yet.
+		for _, rel := range []domain.EdgeType{domain.EdgeSupports, domain.EdgeContradicts} {
+			ids, unknown := resolveAssertionCodes(strSlice(f[string(rel)]), framingByCode)
+			for _, to := range ids {
+				if err := e.db.RelateAssertions(dctx, initiativeID, a.ID, rel, to); err != nil {
+					return err
+				}
+			}
+			if len(unknown) > 0 {
+				e.log.Debug("research finding cited unknown assertion codes; skipped", "initiative", initiativeID, "edge", rel, "codes", unknown)
+			}
 		}
 	}
 	return nil
@@ -1098,7 +1119,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement. State the product objectives this work exists to move -- outcomes for users or the business, not features -- each with at least one measurable metric (direction, target, a baseline only when known, an optional guardrail and cadence), and list in every requirement's 'objectives' field the objective(s) it serves; every requirement must serve at least one. When revising, keep each continuing objective's and metric's existing code (OBJ-n, MET-n) as its key."},
+		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement. State the product objectives this work exists to move -- outcomes for users or the business, not features -- each with at least one measurable metric (direction, target, a baseline only when known, an optional guardrail and cadence), and list in every requirement's 'objectives' field the objective(s) it serves; every requirement must serve at least one. When revising, keep each continuing objective's and metric's existing code (OBJ-n, MET-n) as its key. When a requirement or a decision rests on a fact, assumption or hypothesis listed under assertions -- one that, if false, would make it wrong -- list its ASM code(s) in that item's based_on; cite only codes listed there."},
 		{Selector: "project_scale", Content: proportionateContext(scale, detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot)) + requirementCountGuidance(rigor)},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
@@ -1106,6 +1127,10 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 		{Selector: "decisions", Content: renderDecisions(decisions)},
 		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 		{Selector: "findings", Content: renderFindings(findings)},
+	}
+	asserts := e.liveAssertions(ctx, initiativeID)
+	if len(asserts) > 0 {
+		inputs = append(inputs, ccontext.Input{Selector: "assertions", Content: renderAssertions(asserts, nil)})
 	}
 	if rev != nil {
 		// The precise brief (convergence.go root cause 4): the "findings"
@@ -1165,6 +1190,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	usedCodes := map[string]bool{}
 
 	var decisionRefByReqID map[string]string // requirementID -> decision question text
+	basisByReqID := map[string][]string{}    // requirementID -> cited ASM codes
 	objectiveRefs := map[string][]string{}   // requirementID -> objective keys/codes it serves
 	for _, r := range objSlice(obj["requirements"]) {
 		var acs []domain.AcceptanceCriterion
@@ -1210,6 +1236,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 		// response does not continue at all is dropped.
 		keptIDs = append(keptIDs, req.ID)
 		objectiveRefs[req.ID] = strSlice(r["objectives"])
+		basisByReqID[req.ID] = strSlice(r["based_on"])
 		if ref := strings.TrimSpace(e.redact(str(r["decision"]))); ref != "" {
 			if decisionRefByReqID == nil {
 				decisionRefByReqID = map[string]string{}
@@ -1233,6 +1260,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	// its EARLIER wording, and the two need not normalize identically even
 	// though they're Jaccard-similar enough to have merged.
 	decIDByNorm := make(map[string]string, len(decisionRefByReqID))
+	basisByDecID := map[string][]string{}
 	for _, d := range objSlice(obj["decisions"]) {
 		question := e.redact(str(d["question"]))
 		id, err := e.createDecisionIfNew(dctx, initiativeID, &domain.Decision{
@@ -1247,7 +1275,11 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 		}
 		if id != "" {
 			decIDByNorm[normalizeJudgment(question)] = id
+			basisByDecID[id] = append(basisByDecID[id], strSlice(d["based_on"])...)
 		}
+	}
+	if err := e.recordAssertionBasis(dctx, initiativeID, asserts, basisByReqID, basisByDecID); err != nil {
+		return nil, err
 	}
 	// allDecisionsByNorm is a fallback lookup across EVERY decision already on
 	// record for the initiative -- not just the ones raised this cycle (ICP
@@ -1898,6 +1930,18 @@ func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, 
 	// with no objectives sends exactly the prompt it always has.
 	if objs, metrics := e.liveOutcomes(ctx, initiativeID); len(objs) > 0 {
 		inputs = append(inputs, ccontext.Input{Selector: "objectives", Content: renderObjectives(objs, metrics, reqs)})
+	}
+	// The assertions the requirements rest on, with their status, so the
+	// reviewer can challenge a requirement built on an unvalidated
+	// hypothesis. Only when something rests on one: a PRD citing nothing
+	// sends exactly the prompt it always has.
+	if rested := e.requirementBasis(ctx, initiativeID, reqs); len(rested) > 0 {
+		if body := renderAssertions(e.liveAssertions(ctx, initiativeID), rested); body != "(none)" {
+			// The instruction joins the policy; the assertions themselves are
+			// model output and stay framed as untrusted data.
+			inputs[0].Content += " " + reviewerBasisPolicy
+			inputs = append(inputs, ccontext.Input{Selector: "assertions", Content: body})
+		}
 	}
 	inputs = append(inputs, extra...)
 	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,

@@ -1136,6 +1136,21 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automation, started_at);
 `,
+	// 48: assertion codes (ASM-n), initiative-scoped like REQ-n and DEC-n.
+	//
+	// A PRD cites the assertions a requirement or decision rests on
+	// (`based_on`), and a model can only cite what it can name: a ULID is not
+	// something a model copies reliably, and a per-prompt label would not
+	// survive a revise cycle. Existing rows are numbered in creation order so
+	// an upgraded database reads the same as a fresh one.
+	`
+ALTER TABLE assertions ADD COLUMN code TEXT NOT NULL DEFAULT '';
+UPDATE assertions SET code = 'ASM-' || (
+	SELECT COUNT(*) FROM assertions a2
+	WHERE a2.initiative_id = assertions.initiative_id
+	  AND (a2.created_at < assertions.created_at OR (a2.created_at = assertions.created_at AND a2.rowid <= assertions.rowid))
+);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

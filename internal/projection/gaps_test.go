@@ -370,31 +370,31 @@ func TestGapsUnvalidatedAssumptionRankedByDependents(t *testing.T) {
 	}
 
 	gaps := f.gaps(domain.GapUnvalidatedAssumption)
-	g := one(t, gaps, domain.GapUnvalidatedAssumption, shortID(loadBearing.ID))
+	g := one(t, gaps, domain.GapUnvalidatedAssumption, loadBearing.Code)
 	if g.State != domain.GapStateUnvalidated || g.Severity != domain.SeverityMedium || g.Dependents != 3 {
 		t.Errorf("load-bearing = %+v; want unvalidated, medium, 3 dependents", g)
 	}
-	if !strings.HasPrefix(g.Next, "idea assumption "+shortID(loadBearing.ID)) {
+	if !strings.HasPrefix(g.Next, "idea assumption "+loadBearing.Code) {
 		t.Errorf("next = %q", g.Next)
 	}
-	g = one(t, gaps, domain.GapUnvalidatedAssumption, shortID(loose.ID))
+	g = one(t, gaps, domain.GapUnvalidatedAssumption, loose.Code)
 	if g.Severity != domain.SeverityLow || g.Dependents != 0 {
 		t.Errorf("loose = %+v", g)
 	}
-	g = one(t, gaps, domain.GapUnvalidatedAssumption, shortID(retracted.ID))
+	g = one(t, gaps, domain.GapUnvalidatedAssumption, retracted.Code)
 	if g.State != domain.GapStateRefuted || g.Severity != domain.SeverityHigh {
 		t.Errorf("retracted+cited = %+v", g)
 	}
-	none(t, gaps, domain.GapUnvalidatedAssumption, shortID(fact.ID))
-	none(t, gaps, domain.GapUnvalidatedAssumption, shortID(accepted.ID))
-	none(t, gaps, domain.GapUnvalidatedAssumption, shortID(retractedLoose.ID))
+	none(t, gaps, domain.GapUnvalidatedAssumption, fact.Code)
+	none(t, gaps, domain.GapUnvalidatedAssumption, accepted.Code)
+	none(t, gaps, domain.GapUnvalidatedAssumption, retractedLoose.Code)
 
 	// Ranked: the refuted one (high) first, then medium by dependents, then low.
 	var order []string
 	for _, g := range gaps {
 		order = append(order, g.Nodes[0].Code)
 	}
-	want := []string{shortID(retracted.ID), shortID(loadBearing.ID), shortID(loose.ID)}
+	want := []string{retracted.Code, loadBearing.Code, loose.Code}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Errorf("order = %v, want %v", order, want)
 	}
@@ -403,7 +403,7 @@ func TestGapsUnvalidatedAssumptionRankedByDependents(t *testing.T) {
 	if err := f.db.SetAssertionStatus(f.ctx, loadBearing.ID, domain.AssertionAccepted, "human"); err != nil {
 		t.Fatal(err)
 	}
-	none(t, f.gaps(domain.GapUnvalidatedAssumption), domain.GapUnvalidatedAssumption, shortID(loadBearing.ID))
+	none(t, f.gaps(domain.GapUnvalidatedAssumption), domain.GapUnvalidatedAssumption, loadBearing.Code)
 }
 
 func TestSetAssertionStatusRefusesSuperseded(t *testing.T) {
