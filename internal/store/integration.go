@@ -365,6 +365,33 @@ func (db *DB) PreviousInitiativeStatus(ctx context.Context, initiativeID string,
 	return op, nil
 }
 
+// MetricRef is what the integration bus needs to narrate an outcome metric's
+// drift: its initiative, its code and name, and its objective's code.
+type MetricRef struct {
+	InitiativeID  string
+	Code          string
+	Name          string
+	ObjectiveCode string
+}
+
+// GetMetricRef resolves an outcome metric to its initiative and codes.
+func (db *DB) GetMetricRef(ctx context.Context, metricID string) (*MetricRef, error) {
+	var r MetricRef
+	var obj sql.NullString
+	err := db.sql.QueryRowContext(ctx, `
+		SELECT m.initiative_id, m.code, m.name, o.code
+		FROM outcome_metrics m LEFT JOIN objectives o ON o.id = m.objective_id
+		WHERE m.id = ?`, metricID).Scan(&r.InitiativeID, &r.Code, &r.Name, &obj)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, notFound("metric", metricID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: metric ref: %w", err)
+	}
+	r.ObjectiveCode = obj.String
+	return &r, nil
+}
+
 // VerificationEvidenceRef is what the integration bus needs to narrate one
 // recorded piece of verification evidence.
 type VerificationEvidenceRef struct {

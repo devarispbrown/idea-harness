@@ -18,6 +18,7 @@ type Lookup interface {
 	GetTask(ctx context.Context, taskID string) (*domain.Task, error)
 	PreviousInitiativeStatus(ctx context.Context, initiativeID string, beforeSeq int64, skipRunning bool) (string, error)
 	GetVerificationEvidenceRef(ctx context.Context, evidenceID string) (*store.VerificationEvidenceRef, error)
+	GetMetricRef(ctx context.Context, metricID string) (*store.MetricRef, error)
 }
 
 // Translate maps one event-log row to zero or more typed domain events.
@@ -93,6 +94,21 @@ func translate(ctx context.Context, lk Lookup, ev Event, row store.EventRow) ([]
 			return nil, err
 		}
 		ev.Kind, ev.RequirementCode, ev.Reason = KindVerifyFailed, ref.RequirementCode, ref.Note
+		return []Event{ev}, nil
+
+	case "metric.drifted":
+		// The store appends this only when an observation moves a metric INTO
+		// off_track or regressed (Operation "<from>-><to>"); staleness is a
+		// function of the clock, never evented, so it is not published here.
+		ref, err := lk.GetMetricRef(ctx, row.AggregateID)
+		if err != nil {
+			return nil, err
+		}
+		if err := withInitiative(ctx, lk, &ev, ref.InitiativeID); err != nil {
+			return nil, err
+		}
+		_, to, _ := strings.Cut(row.Operation, "->")
+		ev.Kind, ev.MetricCode, ev.MetricName, ev.ObjectiveCode, ev.Status = KindOutcomeDrifted, ref.Code, ref.Name, ref.ObjectiveCode, to
 		return []Event{ev}, nil
 
 	case "task.status_changed":

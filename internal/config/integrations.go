@@ -36,6 +36,7 @@ var IntegrationEventKinds = []string{
 	"verify.failed",
 	"run.failed",
 	"task.status_changed",
+	"outcome.drifted",
 }
 
 // DefaultSlackEvents is what Slack posts when `events` is unset: every kind a
@@ -54,6 +55,7 @@ var DefaultSlackEvents = []string{
 	"verify.passed",
 	"verify.failed",
 	"run.failed",
+	"outcome.drifted",
 }
 
 // SlackConfig is `integrations.slack`.
