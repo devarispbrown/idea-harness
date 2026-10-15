@@ -18,17 +18,52 @@ const VIEWPORTS = [
 let page: Page;
 let routes: { label: string; hash: string }[] = [];
 
-// api reads the daemon as the page does: same origin, with the page's token.
-async function api<T>(path: string): Promise<T> {
-  return page.evaluate(async (p) => {
-    const token = document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "";
-    const res = await fetch(`/api/v1${p}`, { headers: token ? { "X-Idea-Token": token } : {} });
-    if (!res.ok) throw new Error(`${p}: ${res.status}`);
-    return res.json();
-  }, path) as Promise<T>;
+// api calls the daemon as the page does: same origin, with the page's token.
+async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  return page.evaluate(
+    async ({ p, m, b }) => {
+      const token = document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "";
+      const headers: Record<string, string> = token ? { "X-Idea-Token": token } : {};
+      if (b !== undefined) headers["Content-Type"] = "application/json";
+      const res = await fetch(`/api/v1${p}`, { method: m, headers, body: b === undefined ? undefined : JSON.stringify(b) });
+      if (!res.ok) throw new Error(`${m} ${p}: ${res.status}`);
+      return res.json();
+    },
+    { p: path, m: method, b: body },
+  ) as Promise<T>;
+}
+
+// seedPRDRevision gives the artifact-diff route a diff with real added and
+// removed lines. The demo provider writes the same PRD every time, so a plain
+// revise diffs as "no change"; a person's edit to OBJ-1 is kept by the
+// revision, which then files its own objective under the next code, and the
+// PRD's OBJ lines change. A second initiative, so the journey's one is left
+// as the earlier suites put it. Returns the PRD's first and newest version.
+async function seedPRDRevision(pid: string): Promise<{ iid: string; from: string; to: string }> {
+  const created = await api<{ initiative_id: string }>(`/projects/${pid}/initiatives`, "POST", {
+    title: "A meal planner for busy weeks",
+    description: "A meal planner for busy weeks",
+  });
+  const iid = created.initiative_id;
+  const base = `/projects/${pid}/initiatives/${iid}`;
+  const settled = async () => {
+    const list = await api<{ id: string; status: string }[]>(`/projects/${pid}/initiatives`);
+    return list.find((x) => x.id === iid)?.status !== "running";
+  };
+  const prds = async () =>
+    (await api<{ id: string; kind: string; version: number }[]>(`${base}/artifacts`)).filter((a) => a.kind === "prd");
+  await expect.poll(async () => (await settled()) && (await prds()).length, { timeout: 60_000 }).toBe(1);
+  const objectives = await api<{ id: string }[]>(`${base}/objectives`);
+  await api(`${base}/objectives/${objectives[0].id}`, "PATCH", { statement: "Busy households plan a week of meals in five minutes" });
+  await api(`${base}/revise`, "POST", {});
+  await expect.poll(async () => (await settled()) && (await prds()).length, { timeout: 60_000 }).toBe(2);
+  const versions = (await prds()).sort((a, b) => a.version - b.version);
+  return { iid, from: versions[0].id, to: versions[versions.length - 1].id };
 }
 
 test.beforeAll(async ({ browser }, testInfo) => {
+  // Seeding the diff runs the demo M1 pipeline and a revision.
+  test.setTimeout(3 * 60_000);
   const context = await browser.newContext({ baseURL: testInfo.project.use.baseURL });
   page = await context.newPage();
   await page.goto("/");
@@ -49,11 +84,12 @@ test.beforeAll(async ({ browser }, testInfo) => {
   const decisions = await api<{ id: string }[]>(`/projects/${pid}/initiatives/${iid}/decisions`).catch(() => []);
   const p = `#/p/${pid}`;
   const i = `${p}/i/${iid}`;
-  const prd = artifacts.filter((a) => a.kind === artifacts[0]?.kind);
+  const diff = await seedPRDRevision(pid);
   routes = [
     { label: "home", hash: `${p}/` },
     { label: "settings", hash: `${p}/settings` },
     { label: "automations", hash: `${p}/automations` },
+    { label: "remote runs", hash: `${p}/runs` },
     { label: "queue", hash: `${p}/queue` },
     { label: "not found", hash: `${p}/no-such-page` },
     ...(["explore", "define", "design", "plan", "build", "verify"] as const).map((ph) => ({ label: ph, hash: `${i}/${ph}` })),
@@ -67,7 +103,7 @@ test.beforeAll(async ({ browser }, testInfo) => {
     { label: "unknown initiative", hash: `${p}/i/0123456789abcdef0123456789abcdef/gaps` },
   ];
   if (artifacts[0]) routes.push({ label: "document", hash: `${i}/doc/${artifacts[0].id}/${artifacts[0].version}` });
-  if (prd.length >= 2) routes.push({ label: "artifact diff", hash: `${i}/diff/${prd[0].id}/${prd[1].id}` });
+  routes.push({ label: "artifact diff", hash: `${p}/i/${diff.iid}/diff/${diff.from}/${diff.to}` });
 });
 test.afterAll(async () => {
   await page.context().close();
@@ -132,6 +168,11 @@ for (const vp of VIEWPORTS) {
       // after their first fetch).
       await expect(page.locator("main h1").first(), `${r.label}: an h1`).toBeVisible();
       await page.waitForLoadState("networkidle").catch(() => {});
+      if (r.label === "artifact diff") {
+        // The diff itself, not its loading line or "(no change)".
+        await expect(page.locator(".diff-line.diff-added").first(), "the diff's added lines").toBeVisible();
+        await expect(page.locator(".diff-line.diff-removed").first(), "the diff's removed lines").toBeVisible();
+      }
       const h1s = await page.locator("h1").allInnerTexts();
       if (h1s.length !== 1) problems.push(`${r.label} @${vp.width}: ${h1s.length} h1s (${h1s.join(" | ")})`);
       for (const scheme of ["light", "dark"] as const) {

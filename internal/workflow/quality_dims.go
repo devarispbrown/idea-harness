@@ -88,10 +88,11 @@ func (e *Engine) sandboxRun(ctx context.Context, sb QualitySandbox, image, workD
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, code, err := sb.Run(cctx, image, executor.RunOptions{
-		WorkRoot: workDir,
-		Cmd:      []string{"sh", "-c", cmd},
-		Network:  network,
-		Env:      verifyCacheEnv,
+		WorkRoot:    workDir,
+		Cmd:         []string{"sh", "-c", cmd},
+		Network:     network,
+		Env:         verifyCacheEnv,
+		ProjectRoot: e.workspaceRoot, // whose uid the check runs as under a root daemon
 	})
 	o := sandboxOutcome{out: e.redact(out), code: code, err: err}
 	if cctx.Err() == context.DeadlineExceeded {

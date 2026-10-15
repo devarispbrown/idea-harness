@@ -401,6 +401,12 @@ func (s *Server) handleMeasureMetrics(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A metric command's scratch root is under the state root, which the
+	// startup sweep's recovery may still be clearing. Fails only when the
+	// client has gone, so there is no one to answer.
+	if s.rt.waitSwept(r.Context()) != nil {
+		return
+	}
 	res, err := pr.engine.MeasureMetrics(r.Context(), ini.ID, strings.TrimSpace(body.Metric), store.HumanActor)
 	if err != nil {
 		// writeErr answers 404 for an unknown metric (a store NotFoundError)

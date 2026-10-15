@@ -18,7 +18,7 @@ interface Props {
   initiativeIndex: number; // 1-based
   initiativeCount: number;
   phases: PhaseState[];
-  active: PhaseName | "settings" | "automations";
+  active: PhaseName | "settings" | "automations" | "runs";
   inbox: InboxItem[]; // empty → hidden
   modelChip: string;
   modelDot?: "ready" | "warn";
@@ -166,6 +166,12 @@ export default function PhaseNav({
           onClick={() => onNavigate("#/automations")}
         >
           <span>Automations</span>
+        </button>
+        <button
+          className={`pn-settings pn-automations ${active === "runs" ? "on" : ""}`}
+          onClick={() => onNavigate("#/runs")}
+        >
+          <span>Remote runs</span>
         </button>
         <button
           className={`pn-settings ${active === "settings" ? "on" : ""}`}

@@ -50,7 +50,7 @@ func initRepo(t *testing.T) string {
 // answers each subcommand Commit invokes. `rev-parse HEAD` returns "abc123fake".
 func writeFakeGit(t *testing.T, argsPath, envPath string) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$@" >> '%s'
 { echo '---env---'; env | sort; } >> '%s'
 while [ "$#" -gt 0 ] && [ "$1" = "-c" ]; do shift 2; done

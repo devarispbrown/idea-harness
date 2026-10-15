@@ -4864,7 +4864,8 @@ paths:
       summary: The project's openhands remote runs
       description: |
         The same rows across every initiative, newest first, at most 200. `?active=true` keeps
-        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`.
+        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`;
+        the UI's Remote runs (`#/runs`).
       parameters:
         - name: active
           in: query
@@ -5075,7 +5076,9 @@ paths:
         authenticated by a session cookie is refused `403`, so a stolen session cannot mint the
         next one and outlive its own revocation. `remote` says whether any other device can reach
         this daemon at all (a `daemon.listen` listener, or `daemon.allowed_hosts` for a proxy), and
-        `urls` names where. See `docs/security-model.md` "Remote access".
+        `urls` names where. `burned_codes` and `last_burned_at` report pairing codes burned in the
+        last 7 days because too many wrong codes were tried while they were outstanding — a sign
+        someone is guessing. The new code is unaffected. See `docs/security-model.md` "Remote access".
       security:
         - ideaToken: []
         - bearerToken: []
@@ -5120,10 +5123,12 @@ paths:
         session's CSRF token, which every state-changing cookie-authenticated request must echo in
         `X-Idea-CSRF`.
 
-        Wrong codes are counted per client and globally (docs/security-model.md, "Remote access"):
-        10 failures from one client within fifteen minutes refuse that client only (`429`); 100
-        failures from anyone refuse everyone and cancel every outstanding pairing code. Either
-        `429` carries `Retry-After` (seconds until the budget has room) and says which lock it is.
+        Wrong codes are counted per client and per code (docs/security-model.md, "Remote access"):
+        10 failures from one client within fifteen minutes refuse that client only (`429`, with
+        `Retry-After` in seconds). Every wrong code also counts against each code outstanding at
+        that moment; a code that reaches 100 is burned and can never be redeemed. Sign-in is never
+        refused for everyone: a code minted after the burn works at once. A request from this
+        machine (loopback, no proxy headers) is never counted or refused.
       security: []
       requestBody:
         required: true
@@ -5144,7 +5149,7 @@ paths:
               schema: { $ref: "#/components/schemas/UISessionView" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401":
-          description: "`pairing code is invalid, expired or already used` — one message for all three."
+          description: "`pairing code is invalid, expired or already used` — one message for all three. A real code that was burned gets its own message saying so."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5154,7 +5159,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: "A failure budget is spent: this client's (the code still works elsewhere), or the global ceiling (every pairing code was cancelled). See `Retry-After`."
+          description: "This client's failure budget is spent; nobody else is affected. See `Retry-After`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5220,7 +5225,9 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/UISession" }
                   current: { type: string }
-                required: [sessions]
+                  burned_codes: { type: integer, description: "Pairing codes burned in the last 7 days (too many wrong codes tried while they were outstanding). 0 when none." }
+                  last_burned_at: { type: string, format: date-time, description: When the latest burned. Absent when none did. }
+                required: [sessions, current, burned_codes]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/InternalError" }
     delete:
@@ -7673,10 +7680,12 @@ components:
     ImpactItem:
       title: ImpactItem
       description: |
-        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"`
-        (supersedes/invalidates edges), `"revalidate"` (every other edge type), or `"stale"` (review
-        A4 #5: an active stale mark on this exact node, which always wins over the edge-type
-        classification).
+        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"` (reached
+        by a `supersedes` edge, or the node is the target of an `invalidates` edge -- a retracted
+        assertion it rests on), `"revalidate"` (every other edge type), or `"stale"` (review A4 #5:
+        an active stale mark on this exact node, which always wins over the edge-type
+        classification). Impact never follows an incoming `invalidates` edge: the invalidator is not
+        a dependent.
       allOf:
         - $ref: "#/components/schemas/TraceItem"
         - type: object
@@ -8120,7 +8129,9 @@ components:
           type: array
           items: { type: string }
           description: Where a remote browser reaches the UI.
-      required: [code, expires_at, remote, urls]
+        burned_codes: { type: integer, description: "Pairing codes burned in the last 7 days (too many wrong codes tried while they were outstanding). 0 when none." }
+        last_burned_at: { type: string, format: date-time, description: When the latest burned. Absent when none did. }
+      required: [code, expires_at, remote, urls, burned_codes]
 
     UISession:
       type: object

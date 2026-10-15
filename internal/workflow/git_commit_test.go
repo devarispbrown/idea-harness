@@ -28,7 +28,7 @@ import (
 // internal/git/guard_test.go).
 func writeWorkflowFakeGit(t *testing.T, recordPath string) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 printf 'called\n' >> '%s'
 while [ "$#" -gt 0 ] && [ "$1" = "-c" ]; do shift 2; done
 sub="${1:-}"

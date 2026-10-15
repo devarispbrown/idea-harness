@@ -329,7 +329,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/initiatives/{id}/timeline?since=` | (C1) The human-language "what changed" timeline: change sets applied/rejected/denied/reverted, decisions changed, stale marks, run failures/stops, and completed phases, newest first. `since` (optional, RFC3339) excludes entries at or before it. `idea changed` uses this, not `/changed` above. |
 | GET | `/projects/{projectId}/initiatives/{id}/costs` | (C3) Spend and time per workflow phase from the run records, plus the coding-agent run count/duration/spend separately (`usd: null` with a note when agent spend could not be measured for every run). `idea status` prints the total. |
 | GET | `/projects/{projectId}/initiatives/{id}/why?type=&id=` | Provenance chain behind one graph node. `type` and `id` are required (`400` otherwise). |
-| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. A task's change sets are query-linked (not edge-linked) and are included as synthetic dependents; `staleness` is `"stale"` when the node carries an active review-A4 stale mark, else `"obsolete"`/`"revalidate"` by edge type. |
+| GET | `/projects/{projectId}/initiatives/{id}/impact?type=&id=` | Dependents and staleness for one graph node. A task's change sets are query-linked (not edge-linked) and are included as synthetic dependents; `staleness` is `"stale"` when the node carries an active review-A4 stale mark, else `"obsolete"` when reached by `supersedes` or itself the target of an `invalidates` edge, else `"revalidate"`. An incoming `invalidates` edge is not followed (the invalidator is not a dependent); `why` lists it instead. |
 | GET | `/projects/{projectId}/initiatives/{id}/trace?type=&id=` | Both directions at once: `{"why": …, "impact": …}`. |
 | GET | `/projects/{projectId}/initiatives/{id}/diff` | Structured requirement/decision diff: requirements as added vs. removed, decisions as open/decided/superseded, read from the graph rather than by diffing rendered markdown. Not a source diff — that is `/change-sets/{id}/diff`. |
 | GET | `/projects/{projectId}/initiatives/{id}/doctor` | Product-graph traceability audit: untraced nodes, dependency cycles. |
@@ -484,7 +484,7 @@ Scheduled background jobs, each off until enabled. See [configuration.md](config
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/remote-runs` | The initiative's OpenHands remote runs (`executor.kind: openhands`), newest first: `status`, `attempt`, `server_url`, `conversation_id`, `task_code`, `last_event` (the progress log's last line), `event_count` and `error`. `idea runs remote`; the run panel's Remote runs. |
-| GET | `/projects/{projectId}/remote-runs` | The same across every initiative, at most 200; `?active=true` keeps the ones not yet over. `idea runs remote --all`. |
+| GET | `/projects/{projectId}/remote-runs` | The same across every initiative, at most 200; `?active=true` keeps the ones not yet over. `idea runs remote --all`; the UI's Remote runs (`#/runs`). |
 | GET | `/projects/{projectId}/initiatives/{id}/current-run` | The run the run view shows: the live agent run, else the last one with events. `live`, `executor`, `steerable`, `ui_url` ("Open in OpenHands", only when `executor.openhands.ui_url` is set) and `pending_notes`. |
 | GET | `/projects/{projectId}/runs/{runId}/events` | A run's events, paged: `?after=<seq>&limit=` (at most 500). `{events, first_seq, last_seq, more, run_status}`. |
 | GET | `/projects/{projectId}/runs/{runId}/events/stream` | **Not JSON.** SSE stream of the run's events (`event: run_event`, id = seq); resumes from `Last-Event-ID`/`?after=`; `event: end` when the run is over; accepts `?token=`. |
@@ -499,11 +499,11 @@ Sign-in for browsers on another device, and Web Push. See
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls}`. |
-| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used or expired code. `429` with `Retry-After` once a client has failed 10 times in 15 minutes (that client only), or once 100 failures from anyone have (everyone, and every outstanding code is cancelled) — see [security-model.md](security-model.md#remote-access). |
+| POST | `/ui/pairing-codes` | Mint a one-time pairing code (`XXXXX-XXXXX`, ten minutes, single use) — what `idea ui pair` calls. **Token only**: a session cookie is refused `403`. `{code, expires_at, remote, urls, burned_codes, last_burned_at?}` — the last two report codes burned in the last 7 days. |
+| POST | `/ui/login` | `{code, label?}` → a session cookie and `{auth, csrf_token, session}`. Unauthenticated; must be JSON with an allowed `Origin`. `401` for a bad, used, expired or burned code. `429` with `Retry-After` once a client has failed 10 times in 15 minutes (that client only; never a loopback request). A code that 100 wrong codes were tried against while it was outstanding is burned; sign-in is never refused for everyone — see [security-model.md](security-model.md#remote-access). |
 | POST | `/ui/logout` | Revoke the calling session and clear its cookie. `204`. |
 | GET | `/ui/session` | `{auth: token\|session, csrf_token?, session?}` — how this request is authenticated; how a reloaded page gets its CSRF token back. |
-| GET | `/ui/sessions` | Every browser session (newest first, revoked ones included) and `current`. Never a secret. |
+| GET | `/ui/sessions` | Every browser session (newest first, revoked ones included), `current`, and `burned_codes`/`last_burned_at` (pairing codes burned in the last 7 days). Never a secret. |
 | DELETE | `/ui/sessions` | Revoke every browser session — `idea ui sessions revoke --all`. `{revoked}`. |
 | DELETE | `/ui/sessions/{id}` | Revoke one browser session. `204`. |
 | GET | `/push/vapid-public-key` | The daemon's VAPID public key (the `applicationServerKey` for `PushManager.subscribe`) and the subscribable `event_kinds`. |

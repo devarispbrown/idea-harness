@@ -95,6 +95,16 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Every initiative's remote runs in the UI.** `#/runs` (the sidebar's **Remote runs**, or ⌘K)
+  lists the project's OpenHands remote runs across initiatives, newest first, each linking to its
+  initiative's Build, with **Only runs not yet over** for `?active=true` — the UI side of
+  `idea runs remote --all`, which makes `runs remote` `ui` in the parity ledger. It reads the
+  existing `GET /projects/{projectId}/remote-runs`; no API change.
+- **The artifact diff is in the viewport sweep.** `web/e2e/views.e2e.ts` used to add the diff
+  route only when the first artifact kind had two versions, which it never did, so the route was
+  never checked. The sweep now seeds a second initiative with a revised PRD whose diff has added
+  and removed lines, checks both render, and runs the usual one-h1, overflow and axe checks on it
+  at 390px and 1280px.
 - **Edit every field of a metric from the Define page.** The metric edit form adds guardrail
   (blank clears it), cadence, definition, source — recorded by hand, a command, or a URL with a JSON
   pointer — and, with more than one objective, which objective it measures; `metric edit` is now
@@ -125,6 +135,17 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   **1.1.0**. The demo provider's requirement cites the two research findings and the scripted eval's
   first requirement cites the research hypotheses, so both graphs carry basis edges; the scripted
   baseline moved only in its nominal token counts (the prompts list the assertions).
+
+- **Retracting an assertion writes `invalidates` edges.** The edge type was declared and read by
+  `basis_refuted`, but nothing wrote it. Now `idea assumption ASM-n retract` (or `POST
+  …/assertions/{id}/status`) writes `assertion --invalidates--> requirement|decision` for each live
+  node resting on it, with an `assertion.invalidates_set` event. The set is reconciled: repeating
+  the retraction writes nothing, accepting or disputing the assertion later removes the edges, a
+  PRD cycle citing an already-retracted assertion gains one, and a revision dropping the citation
+  loses it. `idea why` (and the lineage page's Why) lists the edge on the invalidated node; `idea
+  impact` on the assertion classes those nodes `obsolete` instead of `revalidate`. Impact and gap
+  `dependents` no longer follow an incoming `invalidates` edge, so the invalidator is not counted
+  as the node's dependent; `basis_refuted` lists the assertion once. No migration.
 
 - **`idea ui pair --qr`** draws the sign-in address as a QR code in the terminal (UTF-8 half
   blocks, black on white whatever the theme), so a phone's camera opens the page. The pairing code
@@ -164,7 +185,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - API: `POST /ui/pairing-codes`, `POST /ui/login`, `POST /ui/logout`, `GET /ui/session`,
   `GET|DELETE /ui/sessions`, `DELETE /ui/sessions/{id}`, `GET /push/vapid-public-key`, and
   `GET|POST /projects/{projectId}/push/subscriptions`, `PATCH|DELETE …/{id}`, `POST …/{id}/test`.
-  Migrations: global.db 2 (sessions, pairing codes), state.db 46 (push subscriptions).
+  Migrations: global.db 2 (sessions, pairing codes) and 3 (per-code failure counts), state.db 46 (push subscriptions).
 
 - **Keyboard and accessibility in the web UI** ([docs/ui.md](docs/ui.md#keyboard-and-accessibility)).
   A **Skip to content** link is the first Tab stop; after a route change focus moves to the new
@@ -519,15 +540,37 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   user for the run (symlinks never followed) and back afterwards, so the engine sees ordinary
   daemon-owned files. Non-root daemons are unchanged. Closes the audit 3 / S6 deferred item;
   details and what is left in `docs/security-model.md` (Execution gateway).
-- **One guesser can no longer lock the owner out of remote sign-in.** Wrong pairing codes were
-  counted daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and
-  cancelled every outstanding code. Now each client has its own budget (10 per 15 minutes; only
-  that client is refused, codes survive), and a global ceiling of 100 is the backstop that still
-  pauses everyone and cancels codes. A client is the peer address (IPv6 by /64); proxy headers
+- **A root daemon runs containers as the project's owner.** Under a root daemon, agents, the
+  `container` executor, checks, quality dimensions and metric commands now run as the uid:gid that
+  owns the project root, so a check can read the owner's `0600` files in `/repo` and nothing left
+  behind is owned by root. `65532:65532` remains the fallback when the project root is owned by
+  root, and for the setup probes; gid `0` is never passed. Non-root daemons are unchanged.
+- **A killed root daemon's work roots are handed back at the next start.** Once the startup sweep
+  has removed every leftover container, a root daemon chowns foreign-owned files in
+  `<state>/projects/*/work/` back to itself and deletes leftover quality-dimension copies and
+  metric-command scratch roots. Nothing outside those directories is touched. Metric commands
+  now use a scratch root under the project's state directory (`metric-*`) instead of the system
+  temp directory, and wait for the startup sweep before they run. Check containers now carry the agent label, so the sweep
+  also removes a check a killed daemon left running.
+- **Nobody can lock the owner out of remote sign-in.** Wrong pairing codes were counted
+  daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and cancelled every
+  outstanding code. A later version kept a global ceiling of 100 as a backstop, which anyone with
+  ten addresses could still spend to pause sign-in for everyone. Now there is no daemon-wide lock.
+  Each client has its own budget (10 per 15 minutes; only that client is refused). Each pairing
+  code has its own: every wrong code counts against each code outstanding at that moment, and a
+  code that reaches 100 is burned — it can never be redeemed, and typing it says so. A code minted
+  afterwards (`idea ui pair`, on the daemon's machine) starts at zero and works at once. A code is
+  50 bits, so one code is guessed with probability at most 100/2⁵⁰ ≈ 8.9×10⁻¹⁴ — the same per-code
+  exposure the old ceiling gave — and the counts are in `global.db` (migration 3), so a restart no
+  longer resets them. Burns are reported: `idea ui pair`, `idea ui sessions` and Settings → Remote
+  access show how many codes burned in the last 7 days and when (`burned_codes`,
+  `last_burned_at` on `POST /ui/pairing-codes` and `GET /ui/sessions`), and the daemon log warns.
+  A request from the daemon's own machine is never counted or refused, and signed-in sessions are
+  never affected. A client is the peer address (IPv6 by /64); proxy headers
   (`Tailscale-User-Login`, the rightmost `X-Forwarded-For` entry) are believed only through a
   loopback proxy answering to an `allowed_hosts` name, so a header cannot buy a fresh budget. The
   session list's address and default label use the same rule (they used to believe
-  `X-Forwarded-For` on any loopback connection). The `429` now says which lock it is and carries
+  `X-Forwarded-For` on any loopback connection). The `429` now carries
   an accurate `Retry-After`. Design and code-space arithmetic: `docs/security-model.md` (Remote
   access).
 - **A remote execution plane is a trust boundary, and the harness treats it as one.** For

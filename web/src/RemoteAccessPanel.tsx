@@ -12,12 +12,16 @@ export default function RemoteAccessPanel() {
   const [current, setCurrent] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [burned, setBurned] = useState<{ count: number; last?: string }>({ count: 0 });
 
   const load = useCallback(async () => {
     try {
-      const v = await get<{ sessions: UISession[]; current?: string }>("/ui/sessions");
+      const v = await get<{ sessions: UISession[]; current?: string; burned_codes?: number; last_burned_at?: string }>(
+        "/ui/sessions",
+      );
       setSessions(v.sessions ?? []);
       setCurrent(v.current ?? "");
+      setBurned({ count: v.burned_codes ?? 0, last: v.last_burned_at });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -78,6 +82,14 @@ export default function RemoteAccessPanel() {
         <code>idea ui pair</code> for a one-time code, then open this UI on the other device and enter it.
         Setup (Tailscale, TLS): docs/configuration.md, "Remote access".
       </p>
+      {burned.count > 0 && (
+        <p className="warn-text" role="status">
+          {burned.count} pairing code{burned.count === 1 ? " was" : "s were"} burned in the last 7 days
+          {burned.last ? ` (last ${new Date(burned.last).toLocaleString()})` : ""}: too many wrong codes were tried at
+          the sign-in page while {burned.count === 1 ? "it was" : "they were"} outstanding. Someone who can reach this
+          daemon may be guessing. A new code from <code>idea ui pair</code> still works.
+        </p>
+      )}
       {sessions !== null && live.length === 0 && <p className="muted">No other device is signed in.</p>}
       {live.length > 0 && (
         <ul className="remote-sessions">

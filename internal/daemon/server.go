@@ -168,7 +168,16 @@ func RunWith(addr, stateRoot string, log *slog.Logger, onReady func(), override 
 	// sweep can never touch an attempt of this daemon's.
 	rt.holdOperationsUntilSwept()
 	go func() {
-		executor.SweepAgentLeftovers(ctx, stateRoot)
+		// A root daemon killed mid-run also left its work roots owned by
+		// the container user. Handed back only once no leftover container
+		// can still be writing to them.
+		if executor.SweepAgentLeftovers(ctx, stateRoot) {
+			if n, err := executor.RecoverWorkRoots(stateRoot); err != nil {
+				log.Warn("could not hand every leftover work root back to the daemon", "err", err)
+			} else if n > 0 {
+				log.Info("handed leftover work roots back to the daemon", "count", n)
+			}
+		}
 		rt.markSwept()
 	}()
 

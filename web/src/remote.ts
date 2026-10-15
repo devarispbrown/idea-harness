@@ -68,11 +68,16 @@ export function normalizeCode(input: string): string {
 export function loginErrorMessage(status: number, message: string): string {
   switch (status) {
     case 401:
+      // A real code that was burned (too many wrong codes tried while it was
+      // outstanding) gets its own answer: the owner should know someone may
+      // be guessing.
+      if (/too many wrong codes/.test(message)) {
+        return "That code was cancelled: too many wrong codes were tried at this page while it was waiting, so someone may be guessing. Run `idea ui pair` again — a new code works straight away.";
+      }
       return "That code didn't work — it may be mistyped, already used, or more than ten minutes old. Run `idea ui pair` again for a new one.";
     case 429:
-      // The daemon says which lock it is -- this device only (the code still
-      // works later), or everyone (codes cancelled) -- and for how long.
-      return message || "Too many wrong codes. Wait up to 15 minutes before trying again; if sign-in is still refused, run `idea ui pair` for a new code.";
+      // Only this device is ever refused; the daemon says for how long.
+      return message || "Too many wrong codes from this device. Wait up to 15 minutes, or sign in from another device.";
     case 403:
       return "This page can't sign in from here: open the idea-harness address directly rather than through another site.";
     default:

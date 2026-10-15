@@ -49,6 +49,10 @@ type Request struct {
 	TaskStatement string `json:"task_statement"`
 	Brief         string `json:"brief,omitempty"`
 	WorkRoot      string `json:"work_root"`
+	// ProjectRoot is the user's workspace the work root was copied from.
+	// Under a root daemon the agent's container runs as its owner
+	// (containeruser.go); nothing mounts it.
+	ProjectRoot string `json:"project_root,omitempty"`
 	// RunID is the agent run (runs.id) this attempt belongs to. An executor
 	// whose events outlive the attempt in memory (openhands: its watcher
 	// survives a daemon restart) records it durably so they still reach the

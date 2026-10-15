@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -58,18 +59,32 @@ type RunOptions struct {
 	// caller can move a cache into the work root to survive between two
 	// containers (a network prepare phase, then the offline run).
 	Env []string
+	// ProjectRoot is the project the check works for. Under a root daemon
+	// the container runs as its owner (containeruser.go). Defaults to
+	// RepoRoot; set it when the run mounts no /repo.
+	ProjectRoot string
+}
+
+// projectRoot is whose files this run works on, for containerUser.
+func (o RunOptions) projectRoot() string {
+	if o.ProjectRoot != "" {
+		return o.ProjectRoot
+	}
+	return o.RepoRoot
 }
 
 // isolatedArgs builds the `docker run` args (after the leading "run") for an
-// isolated container running as containerUser(), with writable tmpfs
-// caches under /tmp.
+// isolated container running as containerUser, with writable tmpfs
+// caches under /tmp. Labelled like an agent container, so a check a killed
+// daemon left running is found and removed by SweepAgentLeftovers.
 func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
-	uid := containerUser()
+	uid := containerUser(opts.projectRoot())
 	network := "none"
 	if opts.Network {
 		network = "bridge"
 	}
 	args := []string{
+		"--label", agentLabel + "=" + filepath.Dir(opts.WorkRoot),
 		"--network", network,
 		"--read-only",
 		"--cap-drop", "ALL",
@@ -116,12 +131,12 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 func (s *ContainerSandbox) Run(ctx context.Context, opts RunOptions) (stdout, stderr string, exitCode int, err error) {
 	name := fmt.Sprintf("idea-harness-check-%d", time.Now().UnixNano())
 
-	// Under a root daemon the container runs as ContainerUID, so the work
-	// root is handed to it for the run. Deferred BEFORE the removal below, so
+	// Under a root daemon the container is not root, so the work root is
+	// handed to its user for the run. Deferred BEFORE the removal below, so
 	// it runs after it: the walk must not race a live container
 	// (containeruser.go). RepoRoot is the user's workspace and is never
 	// chowned; it is mounted read-only.
-	grant, err := grantMounts(opts.WorkRoot)
+	grant, err := grantMounts(containerIdentity(opts.projectRoot()), opts.WorkRoot)
 	if err != nil {
 		return "", "", -1, err
 	}
