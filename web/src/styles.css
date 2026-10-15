@@ -3997,3 +3997,33 @@ body { overflow-x: clip; }
 .automation-table caption { text-align: left; padding: 4px 0; }
 .automation-history > summary { cursor: pointer; color: var(--text-muted); margin-top: 8px; }
 .eval-settings { margin: 8px 0; }
+
+/* ===== One h1 per page, and the 390px / 1280px sweep =====
+   Settings' page heading; the document reader's title h1, with the
+   document's own headings one level down (sized as they were before). */
+.settings-head { display: flex; flex-direction: column; gap: 4px; }
+.doc-reader-body .doc-reader-title { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 10px; }
+.doc-reader-body h2 { font-size: 16px; font-weight: 650; margin: 16px 0 6px; }
+.doc-reader-body h3 { font-size: 14px; font-weight: 650; margin: 16px 0 6px; }
+.doc-reader-body h4 { font-size: 12.5px; font-weight: 650; margin: 12px 0 4px; }
+/* Found by the sweep (web/e2e/views.e2e.ts). An unbreakable string -- an
+   absolute reports path, a node label or id with no spaces -- sized its box
+   to itself: Automations' history note ran past a phone's edge (html and
+   body clip, so it was cut off rather than scrollable), and lineage's Full
+   trace table grew to 1554px at 1280. Let such strings break anywhere. */
+.automation-history p,
+.automation-table td,
+.lv-table td { overflow-wrap: anywhere; }
+/* A node's label is nowrap + ellipsis everywhere else, but an auto-layout
+   table cell has no width to ellipsise against: the column grew to the
+   whole label. In the trace table the label wraps instead. */
+.lv-table .gv-node { display: inline; }
+.lv-table .gv-node-text { white-space: normal; }
+/* The top bar on Home/Settings/Automations/queue: its footer kept the
+   sidebar's column, so Automations and Settings (44px tap targets on a
+   phone) stacked into a tall block beside an empty band. A row instead. */
+@media (max-width: 999px) {
+  .phase-nav:not(:has(.pn-rail)) .pn-footer { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0 4px; }
+  .phase-nav:not(:has(.pn-rail)) .pn-settings { align-items: center; }
+  .phase-nav:not(:has(.pn-rail)) .pn-automations { margin-bottom: 0; }
+}

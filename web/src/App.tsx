@@ -771,12 +771,12 @@ export default function App() {
         {route.name === "queue" && <QueuePage projectId={projectId} />}
         {route.name === "automations" && <AutomationsPage projectId={projectId} />}
         {/* The Product Graph views (lineage, gaps, outcomes, quality). */}
-        {route.name === "lineage" && (
+        {route.name === "lineage" && currentInitiative && (
           <LineageView projectId={projectId} initiativeId={route.id} nodeType={route.nodeType} nodeRefParam={route.ref} />
         )}
-        {route.name === "gaps" && <GapsPage projectId={projectId} initiativeId={route.id} />}
-        {route.name === "outcomes" && <OutcomesPage projectId={projectId} initiativeId={route.id} />}
-        {route.name === "quality" && <QualityPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "gaps" && currentInitiative && <GapsPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "outcomes" && currentInitiative && <OutcomesPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "quality" && currentInitiative && <QualityPage projectId={projectId} initiativeId={route.id} />}
         </main>
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />

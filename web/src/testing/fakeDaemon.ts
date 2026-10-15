@@ -10,6 +10,17 @@ export interface RecordedRequest {
   body: unknown;
 }
 
+// fail is a route body that answers an error instead: the daemon's own
+// {"error": "..."} shape with a non-2xx status, so a test can check what a
+// component shows when a write is refused.
+export class FakeFailure {
+  constructor(
+    readonly status: number,
+    readonly error: string,
+  ) {}
+}
+export const fail = (status: number, error: string) => new FakeFailure(status, error);
+
 export function fakeDaemon(routes: Record<string, unknown>) {
   const requests: RecordedRequest[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -35,7 +46,14 @@ export function fakeDaemon(routes: Record<string, unknown>) {
     if (!key) {
       return new Response(JSON.stringify({ error: `no fake for ${method} ${path}` }), { status: 404 });
     }
-    return new Response(JSON.stringify(routes[key]), {
+    const answer = routes[key];
+    if (answer instanceof FakeFailure) {
+      return new Response(JSON.stringify({ error: answer.error }), {
+        status: answer.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify(answer), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
