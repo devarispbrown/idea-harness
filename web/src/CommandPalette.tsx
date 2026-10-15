@@ -41,6 +41,7 @@ export default function CommandPalette({
       }
     }
     out.push({ id: "home", label: "All initiatives", hint: "home", run: () => onNavigate("#/") });
+    out.push({ id: "automations", label: "Automations", hint: "automations", run: () => onNavigate("#/automations") });
     out.push({ id: "settings", label: "Settings", hint: "settings", run: () => onNavigate("#/settings") });
     return out;
   }, [initiativeId, onNavigate]);

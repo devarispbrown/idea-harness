@@ -20,6 +20,8 @@ import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
 import ChangedPage from "./ChangedPage";
 import QueuePage from "./QueuePage";
+import AutomationsPage from "./AutomationsPage";
+import BudgetMeter from "./BudgetMeter";
 import StaleBanner from "./StaleBanner";
 import TimelinePanel from "./TimelinePanel";
 import LineageView from "./LineageView";
@@ -259,7 +261,8 @@ export default function App() {
     route.name !== "home" &&
     route.name !== "settings" &&
     route.name !== "not-found" &&
-    route.name !== "queue"
+    route.name !== "queue" &&
+    route.name !== "automations"
       ? route.id
       : "";
   const currentInitiative = initiativeId
@@ -340,12 +343,14 @@ export default function App() {
     verifiedRequirements,
   };
   const phases = derivePhases(phaseSource);
-  const activePhase: PhaseName | "settings" =
+  const activePhase: PhaseName | "settings" | "automations" =
     route.name === "phase"
       ? route.phase
       : route.name === "settings"
         ? "settings"
-        : currentPhase(phaseSource); // decision/health/doc sub-surfaces
+        : route.name === "automations"
+          ? "automations"
+          : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
   const createIdea = async (text: string) => {
     if (!projectId || !text.trim()) return;
@@ -485,6 +490,12 @@ export default function App() {
             <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
           )}
 
+          {/* The spending-cap meter, on every phase -- only when a cap
+              applies or the initiative is stopped at one (BudgetMeter). */}
+          {currentInitiativeId && (
+            <BudgetMeter projectId={projectId} initiativeId={currentInitiativeId} variant="shell" />
+          )}
+
           {/* C1 / JTBD 6: "no useful 'what changed'" -- a compact panel on
               every phase, with a link to the full history. */}
           {currentInitiativeId && timeline.length > 0 && (
@@ -605,6 +616,7 @@ export default function App() {
           <ChangedPage projectId={projectId} initiativeId={route.id} />
         )}
         {route.name === "queue" && <QueuePage projectId={projectId} />}
+        {route.name === "automations" && <AutomationsPage projectId={projectId} />}
         {/* The Product Graph views (lineage, gaps, outcomes, quality). */}
         {route.name === "lineage" && (
           <LineageView projectId={projectId} initiativeId={route.id} nodeType={route.nodeType} nodeRefParam={route.ref} />
