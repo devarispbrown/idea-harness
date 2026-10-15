@@ -87,7 +87,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `executors setup` | partial | `#/settings` — executor kind and smoke test | image pull and ACP/OpenHands wiring flags are CLI-only |
 | `integrations` | ui | `#/settings` — Integrations panel | |
 | `integrations test` | ui | `#/settings` — Integrations panel Test buttons | |
-| `watch` | cli-only | CLI-only: the live run stream; the UI's running card polls stage and agent-output tail instead | agent C's live run view may flip this |
+| `watch` | ui | `#/i/<id>/build` — the run panel streams the running agent's events live and resumes after a reload | |
 | `cancel` | ui | `#/i/<id>/<phase>` — Cancel on the running card | |
 | `config` | partial | `#/settings` — providers and executor settings are written to harness.yaml | no view of the whole config file |
 | `config validate` | cli-only | CLI-only: validates harness.yaml on disk with a non-zero exit, for scripts and CI | |
