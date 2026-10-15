@@ -727,5 +727,12 @@ intercept those requests: no product data is ever stored on the device.
   switches the executor profile to internal and back, watches a spending cap stop a demo run
   (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
   it now and reads its history.
+- **Every route, two widths, two schemes** — `web/e2e/views.e2e.ts` runs last, on the state the
+  others left, and visits every route (Home, Settings, Automations, Needs you, not-found, the six
+  phases, health, activity, gaps, outcomes, quality, a task's lineage, a decision, a document, an
+  unknown initiative) at 390px and 1280px. On each it checks exactly one `h1`; no horizontal
+  overflow in either colour scheme — `scrollWidth <= innerWidth`, and, because `html` and `body`
+  clip sideways overflow rather than scroll it, no visible element (collapsed `<details>` opened
+  for the check) past the right edge unless a box of its own scrolls or clips it; and axe.
 - **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
   why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.
