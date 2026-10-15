@@ -189,6 +189,9 @@ func commands() []command {
 		{names: []string{"run"}, usage: "run events <run-id|current> [<initiative>] [--follow] [--json]", summary: "print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line", flags: flagSpec{}, subs: map[string]flagSpec{
 			"events": {"--follow": flagBool, "--json": flagBool},
 		}, subsAreRequired: true, maxPositional: 2, run: cmdRun, inHelp: true},
+		{names: []string{"runs"}, usage: "runs remote [<initiative>] [--all] [--json]", summary: "list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative)", flags: flagSpec{}, subs: map[string]flagSpec{
+			"remote": {"--all": flagBool, "--json": flagBool},
+		}, subsAreRequired: true, maxPositional: 1, run: cmdRuns, inHelp: true},
 		{names: []string{"steer"}, usage: `steer <run-id|current> "<note>" [<initiative>] [--interrupt]`, summary: "send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run", flags: flagSpec{"--interrupt": flagBool, "--json": flagBool}, maxPositional: 3, run: cmdSteer, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},

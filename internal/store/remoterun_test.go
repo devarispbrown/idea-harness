@@ -139,3 +139,41 @@ func TestRemoteRunProgressCursorGuard(t *testing.T) {
 		t.Fatal("trimming should drop the oldest lines and keep whole lines")
 	}
 }
+
+// The per-initiative listing returns every attempt of that initiative, newest
+// first, terminal ones included, and nothing of another initiative's.
+func TestListInitiativeRemoteRunsScopesAndOrders(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openRemoteRunDB(t)
+	for _, r := range []domain.RemoteRun{
+		{ID: "a", Executor: "openhands", IdempotencyKey: "k-a", InitiativeID: "ini-1", TaskID: "t1", Attempt: 1},
+		{ID: "b", Executor: "openhands", IdempotencyKey: "k-b", InitiativeID: "ini-2", TaskID: "t9", Attempt: 1},
+		{ID: "c", Executor: "openhands", IdempotencyKey: "k-c", InitiativeID: "ini-1", TaskID: "t1", Attempt: 2},
+	} {
+		if _, _, err := db.CreateRemoteRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed := domain.RemoteRunFailed
+	if err := db.UpdateRemoteRun(ctx, "a", RemoteRunUpdate{Status: &failed}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.ListInitiativeRemoteRuns(ctx, "ini-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d runs, want 2: %+v", len(got), got)
+	}
+	ids := map[string]bool{got[0].ID: true, got[1].ID: true}
+	if !ids["a"] || !ids["c"] {
+		t.Fatalf("wrong runs: %+v", got)
+	}
+	if got[0].CreatedAt.Before(got[1].CreatedAt) {
+		t.Fatalf("not newest first: %v then %v", got[0].CreatedAt, got[1].CreatedAt)
+	}
+	none, err := db.ListInitiativeRemoteRuns(ctx, "nope")
+	if err != nil || none == nil || len(none) != 0 {
+		t.Fatalf("unknown initiative: %v %v", none, err)
+	}
+}

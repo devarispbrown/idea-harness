@@ -453,6 +453,9 @@ the bash route returns only the last 1 MiB of output, so it cannot carry files b
 
 Every run is a row in `remote_runs` (the project's `state.db`): local id, remote conversation id,
 server URL, status, event cursor, idempotency key, timestamps, and the compact progress log.
+`idea runs remote [<initiative>] [--all] [--json]` lists them (task, status, attempt, server,
+conversation id, last event, error), as do `GET …/initiatives/{id}/remote-runs` and the run panel's
+**Remote runs** when the run's executor is `openhands`.
 
 - **Idempotent dispatch.** The key is a hash of (task, attempt), where the attempt number counts
   the task's runs that are already over, so a retry after a crash computes the same key and finds

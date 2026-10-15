@@ -4829,6 +4829,60 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/remote-runs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [runs]
+      operationId: listRemoteRuns
+      summary: The initiative's openhands remote runs
+      description: |
+        Every dispatch of a task to an OpenHands Agent Server (`executor.kind: openhands`), newest
+        first, terminal or not: status, attempt, server, conversation id, the progress log's last
+        line, and the error. The progress log itself is not included (it is the run's events).
+        `idea runs remote`; the run panel's Remote runs.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The remote runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RemoteRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/remote-runs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [runs]
+      operationId: listProjectRemoteRuns
+      summary: The project's openhands remote runs
+      description: |
+        The same rows across every initiative, newest first, at most 200. `?active=true` keeps
+        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`.
+      parameters:
+        - name: active
+          in: query
+          required: false
+          schema: { type: boolean }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The remote runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RemoteRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
   /api/v1/projects/{projectId}/runs/{runId}/events:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -5859,7 +5913,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 144 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 146 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -6995,6 +7049,33 @@ components:
           description: Steering notes held for the task's next run.
         started_at: { type: string, format: date-time }
       required: [run_id, live, steerable, pending_notes]
+
+    RemoteRun:
+      type: object
+      title: RemoteRun
+      description: One dispatch of a task to an OpenHands Agent Server (a `remote_runs` row, without its progress log).
+      properties:
+        id: { type: string }
+        executor: { type: string }
+        initiative_id: { type: string }
+        task_id: { type: string }
+        task_code: { type: string, description: "Omitted when the task has since been removed." }
+        attempt: { type: integer }
+        server_url: { type: string }
+        conversation_id: { type: string, description: "Empty until the conversation is created." }
+        status:
+          type: string
+          enum: [dispatching, running, finished, collected, failed, cancelled]
+        remote_status: { type: string, description: "The server's own execution_status, as last seen." }
+        event_count: { type: integer }
+        last_event_id: { type: string }
+        last_event: { type: string, description: "The progress log's last line (redacted)." }
+        error: { type: string }
+        run_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+      required: [id, executor, initiative_id, task_id, attempt, server_url, status, event_count, created_at, updated_at]
 
     SteerResult:
       type: object
