@@ -23,6 +23,8 @@ import {
   requirementsWithoutObjective,
   type RequirementLike,
 } from "./outcomes";
+import LineagePanel from "./LineagePanel";
+import { lineageHref } from "./lineage";
 
 interface Requirement extends RequirementLike {
   statement: string;
@@ -173,6 +175,7 @@ export default function ObjectivesSection({
                   <div className="health-sub">
                     Served by: {served.length ? served.join(", ") : <span className="muted">no requirements</span>}
                   </div>
+                  <LineagePanel projectId={projectId} initiativeId={initiativeId} type="objective" id={o.id} code={o.code} />
                   {linkable.length > 0 && (
                     <div className="row" style={{ marginTop: 6, gap: 8 }}>
                       <select
@@ -200,7 +203,7 @@ export default function ObjectivesSection({
                   )}
                   {oms.map((m) => (
                     <div key={m.id} className="row" style={{ marginTop: 6, gap: 8, flexWrap: "wrap" }}>
-                      <span className="code">{m.code}</span>
+                      <a className="code" href={lineageHref(initiativeId, "metric", m.code)}>{m.code}</a>
                       <span>{m.name}</span>
                       <span className="muted">{metricRange(m)}</span>
                       <span className={`idchip ${driftClass(m.status?.drift ?? "no_data")}`}>
