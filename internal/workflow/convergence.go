@@ -128,7 +128,7 @@ type classifyInput struct {
 	// requirement citation is.
 	outcomeRefs map[string]NodeRef
 	idea        string
-	prior     []priorFinding
+	prior       []priorFinding
 	// changed is the set of active requirement codes the revision since the
 	// previous cycle added or changed. nil means unknown (a seeded first
 	// cycle), and the "changed" later-findings bar is then not applied --
