@@ -50,6 +50,7 @@ nothing in it.
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
 | `#/automations` | **Automations** — every scheduled background job (Linear inbound polling, metric measurement, eval), each off until enabled, with its schedule, last and next run, history and Run now; reached from the sidebar's **Automations** button and the command palette |
+| `#/runs` | **Remote runs** — every OpenHands remote run in the project, across initiatives, newest first (`GET …/remote-runs`, at most 200; `idea runs remote --all`), each linking to its initiative's Build; **Only runs not yet over** adds `?active=true`. Reached from the sidebar's **Remote runs** button and the command palette |
 | `#/settings` | Settings |
 
 Every route may carry a **project prefix**, `#/p/<projectId>/…` — `#/p/<projectId>/i/<id>/build`
@@ -332,7 +333,8 @@ actions, notes and report. The panel shows:
 - **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
 - **Remote runs** (when the run's executor is `openhands`): every dispatch of this initiative's
   tasks to the Agent Server - status, attempt, server, conversation id, last event, error - read
-  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`).
+  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`). Every initiative's are on
+  `#/runs` (`web/src/RemoteRunsPage.tsx`; `idea runs remote --all`).
 
 It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
 far, then follows the run's SSE stream (`web/src/useEventStream.ts`). A dropped connection
@@ -737,9 +739,12 @@ intercept those requests: no product data is ever stored on the device.
   (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
   it now and reads its history.
 - **Every route, two widths, two schemes** — `web/e2e/views.e2e.ts` runs last, on the state the
-  others left, and visits every route (Home, Settings, Automations, Needs you, not-found, the six
-  phases, health, activity, gaps, outcomes, quality, a task's lineage, a decision, a document, an
-  unknown initiative) at 390px and 1280px. On each it checks exactly one `h1`; no horizontal
+  others left, and visits every route (Home, Settings, Automations, Remote runs, Needs you,
+  not-found, the six phases, health, activity, gaps, outcomes, quality, a task's lineage, a
+  decision, a document, an artifact diff, an unknown initiative) at 390px and 1280px. For the diff
+  it seeds a second initiative whose PRD is revised after a person edits `OBJ-1` — the demo
+  provider writes the same PRD every time, so only that edit gives the diff added and removed
+  lines — and checks both kinds render. On each it checks exactly one `h1`; no horizontal
   overflow in either colour scheme — `scrollWidth <= innerWidth`, and, because `html` and `body`
   clip sideways overflow rather than scroll it, no visible element (collapsed `<details>` opened
   for the check) past the right edge unless a box of its own scrolls or clips it; and axe.

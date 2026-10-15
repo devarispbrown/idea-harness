@@ -484,7 +484,7 @@ Scheduled background jobs, each off until enabled. See [configuration.md](config
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/projects/{projectId}/initiatives/{id}/remote-runs` | The initiative's OpenHands remote runs (`executor.kind: openhands`), newest first: `status`, `attempt`, `server_url`, `conversation_id`, `task_code`, `last_event` (the progress log's last line), `event_count` and `error`. `idea runs remote`; the run panel's Remote runs. |
-| GET | `/projects/{projectId}/remote-runs` | The same across every initiative, at most 200; `?active=true` keeps the ones not yet over. `idea runs remote --all`. |
+| GET | `/projects/{projectId}/remote-runs` | The same across every initiative, at most 200; `?active=true` keeps the ones not yet over. `idea runs remote --all`; the UI's Remote runs (`#/runs`). |
 | GET | `/projects/{projectId}/initiatives/{id}/current-run` | The run the run view shows: the live agent run, else the last one with events. `live`, `executor`, `steerable`, `ui_url` ("Open in OpenHands", only when `executor.openhands.ui_url` is set) and `pending_notes`. |
 | GET | `/projects/{projectId}/runs/{runId}/events` | A run's events, paged: `?after=<seq>&limit=` (at most 500). `{events, first_seq, last_seq, more, run_status}`. |
 | GET | `/projects/{projectId}/runs/{runId}/events/stream` | **Not JSON.** SSE stream of the run's events (`event: run_event`, id = seq); resumes from `Last-Event-ID`/`?after=`; `event: end` when the run is over; accepts `?token=`. |

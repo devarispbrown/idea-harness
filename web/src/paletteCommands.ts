@@ -83,6 +83,7 @@ export function paletteCommands(initiativeId: string): PaletteCommand[] {
     { id: "home", label: "All initiatives", hint: "home", href: "#/" },
     { id: "queue", label: "Needs you", hint: "queue", href: "#/queue", keywords: ["queue", "inbox", "attention"] },
     { id: "automations", label: "Automations", hint: "automations", href: "#/automations", keywords: ["schedule", "jobs", "eval", "measure"] },
+    { id: "remote-runs", label: "Remote runs", hint: "runs", href: "#/runs", keywords: ["openhands", "agent server", "conversation"] },
     { id: "settings", label: "Settings", hint: "settings", href: "#/settings" },
   );
   for (const s of SETTINGS_SECTIONS) {

@@ -13,6 +13,9 @@ export type Route =
   | { name: "settings" }
   // Every scheduled background job, project-scoped (AutomationsPage).
   | { name: "automations" }
+  // Every OpenHands remote run in the project, across initiatives
+  // (RemoteRunsPage; `idea runs remote --all`).
+  | { name: "runs" }
   // C1: the per-initiative "What changed" view (wave 3) -- the timeline in
   // full, distinct from the compact panel shown in the app shell.
   | { name: "changed"; id: string }
@@ -85,6 +88,7 @@ export function parseRoute(hash: string): Route {
   if (segs[0] === "settings" && segs.length === 1) return { name: "settings" };
   if (segs[0] === "queue" && segs.length === 1) return { name: "queue" };
   if (segs[0] === "automations" && segs.length === 1) return { name: "automations" };
+  if (segs[0] === "runs" && segs.length === 1) return { name: "runs" };
   if (segs[0] === "i" && segs.length >= 3) {
     const id = segs[1];
     const rest = segs[2];
