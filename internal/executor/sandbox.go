@@ -49,6 +49,15 @@ type RunOptions struct {
 	WorkRoot string   // writable, mounted at /work
 	RepoRoot string   // optional, mounted read-only at /repo (the canonical workspace)
 	Cmd      []string // command + args (run with work dir /work)
+	// Network gives the container Docker's default bridge network instead
+	// of --network none. Every other restriction stays. Only verify's
+	// explicitly configured prepare and scanner commands set it -- never a
+	// build/test check, never an agent -- and docs/security-model.md says so.
+	Network bool
+	// Env adds environment variables (NAME=value) after the defaults, so a
+	// caller can move a cache into the work root to survive between two
+	// containers (a network prepare phase, then the offline run).
+	Env []string
 }
 
 // isolatedArgs builds the `docker run` args (after the leading "run") for an
@@ -56,8 +65,12 @@ type RunOptions struct {
 // caches under /tmp. See the type comment on why that is not "non-root".
 func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	network := "none"
+	if opts.Network {
+		network = "bridge"
+	}
 	args := []string{
-		"--network", "none",
+		"--network", network,
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -84,6 +97,9 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 		"-e", "GOTMPDIR=/tmp",
 		"-e", "NPM_CONFIG_CACHE=/tmp/cache/npm",
 		"-v", opts.WorkRoot + ":/work",
+	}
+	for _, e := range opts.Env {
+		args = append(args, "-e", e)
 	}
 	if opts.RepoRoot != "" {
 		args = append(args, "-v", opts.RepoRoot+":/repo:ro")
