@@ -95,6 +95,15 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Push notifications survive the push service replacing a subscription.** The service worker
+  now handles `pushsubscriptionchange` (`web/public/sw-push.js`): it re-subscribes with the
+  daemon's VAPID key when the browser does not hand it a new subscription, and posts the new one
+  to `POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew` for every project this
+  browser had notifications on in. The worker has no API token and maybe no session, so each
+  subscription gets a renewal token at subscribe time (`renewal_token` in the subscribe response,
+  stored hashed — migration 48), kept in IndexedDB; it can only re-point that one subscription and
+  rotates with each use. Previously a rotated subscription went silent until the push service
+  answered 410. Threat notes in `docs/security-model.md` (Remote access).
 - **Use the UI from your phone or another computer, without the token leaving the machine.**
   Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
   `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),

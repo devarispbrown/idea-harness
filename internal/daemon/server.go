@@ -345,7 +345,14 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path == "/api/v1/ui/login" && r.Method == http.MethodPost {
-			// The one unauthenticated write; it carries its own checks.
+			// An unauthenticated write; it carries its own checks.
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodPost && isPushRenewPath(r.URL.Path) {
+			// The other one: authenticated by the subscription's renewal
+			// token in the body, because the service worker that calls it
+			// holds no token and maybe no live session (push.go).
 			next.ServeHTTP(w, r)
 			return
 		}

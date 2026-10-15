@@ -506,10 +506,11 @@ Sign-in for browsers on another device, and Web Push. See
 | DELETE | `/ui/sessions/{id}` | Revoke one browser session. `204`. |
 | GET | `/push/vapid-public-key` | The daemon's VAPID public key (the `applicationServerKey` for `PushManager.subscribe`) and the subscribable `event_kinds`. |
 | GET | `/projects/{projectId}/push/subscriptions` | This project's push subscriptions: id, label, the endpoint's **host only**, events, last delivery and error. |
-| POST | `/projects/{projectId}/push/subscriptions` | Subscribe a browser: its `PushSubscription` JSON (`endpoint` must be https) plus `events?` (default all four) and `label?`. Keyed by endpoint: `201` new, `200` updated. Each becomes its own integration-bus subscriber with Slack's delivery semantics. |
+| POST | `/projects/{projectId}/push/subscriptions` | Subscribe a browser: its `PushSubscription` JSON (`endpoint` must be https) plus `events?` (default all four) and `label?`. Keyed by endpoint: `201` new, `200` updated. The response alone carries `renewal_token`, for the service worker's `…/renew`. Each becomes its own integration-bus subscriber with Slack's delivery semantics. |
 | PATCH | `/projects/{projectId}/push/subscriptions/{id}` | `{events}`: which kinds notify this browser; `[]` pauses it. |
 | DELETE | `/projects/{projectId}/push/subscriptions/{id}` | Unsubscribe, with its bus cursor and pending deliveries. `204`. |
 | POST | `/projects/{projectId}/push/subscriptions/{id}/test` | Send one notification now. `{ok, error?, gone?}`; `gone` means the push service reported it dead and it was removed. |
+| POST | `/projects/{projectId}/push/subscriptions/{id}/renew` | **Unauthenticated; the service worker's.** `{renewal_token, endpoint, keys}` re-points this subscription after the push service replaced it (`pushsubscriptionchange`) and returns it with the next `renewal_token`. The token comes from the subscribe response and is spent by each renewal; every refusal is the same `401`. See [security-model.md](security-model.md#remote-access). |
 
 ## Related
 

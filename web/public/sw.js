@@ -19,6 +19,12 @@
 // is shown as a notification; clicking it focuses an open tab on that URL or
 // opens one.
 
+//
+// Renewal: when the push service replaces this browser's subscription, the
+// worker re-points the daemon's rows at the new one (sw-push.js).
+
+importScripts("/sw-push.js");
+
 const SHELL = "idea-harness-shell-v1";
 const ASSETS = "idea-harness-assets-v1";
 const PRECACHE = ["/offline.html", "/icons/icon-192.png", "/icons/icon-512.png", "/manifest.webmanifest"];
@@ -82,6 +88,16 @@ self.addEventListener("push", (event) => {
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
       data: { url: sameOrigin(data.url) },
+    }),
+  );
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    self.IdeaPushRenewal.renewAll(event, {
+      store: self.IdeaPushRenewal.idbStore(self.indexedDB),
+      pushManager: self.registration.pushManager,
+      fetch: (url, init) => fetch(url, init),
     }),
   );
 });

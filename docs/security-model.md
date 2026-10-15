@@ -547,6 +547,20 @@ short reason — passes through the redactor, but it is shown on a lock screen. 
 endpoint must be `https`, and the daemon's push client refuses non-public addresses and redirects.
 The endpoint path and keys are never returned by the API.
 
+**Push renewal.** A push service can replace a browser's subscription at any time and tells only the
+service worker (`pushsubscriptionchange`), which holds no API token and may have no live session —
+so the cookie-and-CSRF route is not available to it. Instead, subscribing returns a
+**per-subscription renewal token** (256 bits; the daemon keeps its SHA-256), which the page stores
+in IndexedDB for the worker. `POST …/push/subscriptions/{id}/renew` is outside the token/cookie
+check and authorised by that token alone, in the JSON body (never the URL), with an allowed
+`Origin` required as for sign-in. It can do exactly one thing: point that one subscription at a new
+endpoint and keys, which must pass the subscribe validation (https, public address). It cannot read
+anything, change which events are sent, or touch another subscription; each use rotates it, and
+every refusal is the same `401`. What a stolen token buys: redirecting that subscription's
+notifications — the redacted lines above — to a browser of the thief's choosing, until the owner
+notices them stop or removes the subscription in Settings. Taking it needs this browser's own
+storage, which also holds the session cookie.
+
 What this does **not** cover:
 
 - **Plain HTTP on a private network is readable by that network.** The cookie and every diff
