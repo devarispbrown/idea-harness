@@ -193,8 +193,14 @@ func commands() []command {
 		}, run: cmdDocs, inHelp: true},
 		{usage: "docs add <path>", summary: "upload a context doc (--kind, --title)", inHelp: true},
 		{names: []string{"logs"}, usage: "logs [-f] [n]", summary: "show (or follow) the daemon log", flags: flagSpec{"-f": flagBool, "--follow": flagBool, "-n": flagValue}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdLogs(a, stdout) }, inHelp: true},
-		{names: []string{"daemon"}, usage: "daemon", summary: "run the daemon in the foreground", flags: flagSpec{}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
+		{names: []string{"daemon"}, usage: "daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]", summary: "run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md \"Remote access\")", flags: flagSpec{"--listen": flagValue, "--tls-cert": flagValue, "--tls-key": flagValue, "--allowed-hosts": flagValue}, subs: map[string]flagSpec{"status": {}, "stop": {}}, subsAreRequired: true, run: func(a cmdArgs, stdout, stderr io.Writer) error { return runDaemon(a, stdout, stderr) }, inHelp: true},
 		{usage: "daemon status|stop", summary: "manage the managed daemon", inHelp: true},
+		{names: []string{"ui"}, usage: "ui pair|sessions", summary: "sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
+			"pair":     {"--label": flagValue, "--json": flagBool},
+			"sessions": {"--all": flagBool, "--json": flagBool},
+		}, subsAreRequired: true, maxPositional: 2, run: cmdUI, inHelp: true},
+		{usage: "ui pair [--label <name>]", summary: "mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine", inHelp: true},
+		{usage: "ui sessions [revoke <id>|--all]", summary: "list remote browser sessions; revoke one, or every one", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
 		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
 		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
@@ -405,7 +411,25 @@ func runDaemon(a cmdArgs, stdout, stderr io.Writer) error {
 	// Written only once this process owns the address and the state dir. A
 	// second `idea daemon` wrote it first and then failed on the port, leaving
 	// the running daemon with a pidfile naming a dead process.
-	return daemon.Run(daemonAddr(), daemon.DefaultStateRoot(), log, writePID)
+	return daemon.RunWith(daemonAddr(), daemon.DefaultStateRoot(), log, writePID, func(c *daemon.DaemonConfig) {
+		if v := a.value("--listen"); v != "" {
+			c.Listen = v
+		}
+		if v := a.value("--tls-cert"); v != "" {
+			c.TLSCert = v
+		}
+		if v := a.value("--tls-key"); v != "" {
+			c.TLSKey = v
+		}
+		if v := a.value("--allowed-hosts"); v != "" {
+			c.AllowedHosts = nil
+			for _, h := range strings.Split(v, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					c.AllowedHosts = append(c.AllowedHosts, h)
+				}
+			}
+		}
+	})
 }
 
 func pidPath() string {
