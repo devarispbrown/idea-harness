@@ -62,6 +62,12 @@ type Options struct {
 	Log *slog.Logger
 	// Progress, when set, is told as each case starts and finishes.
 	Progress func(c Case, r *CaseResult)
+	// MaxCostUSD caps the whole run's spend (0: no cap). Each case's
+	// initiative is held to what is left of it -- the case daemon's own
+	// spending cap (budget.default_initiative_usd) stops it before the call
+	// that would go over -- and no case starts once it is spent. The
+	// scheduled eval (harness.yaml automations.eval) always sets one.
+	MaxCostUSD float64
 }
 
 // Run runs every case of the suite and returns the report. A case that fails
@@ -109,17 +115,28 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 		}
 	}
 
-	rep := &Report{Suite: opts.Suite.Name, Model: opts.Model, Policy: opts.Policy, StartedAt: time.Now().UTC()}
+	rep := &Report{Suite: opts.Suite.Name, Model: opts.Model, Policy: opts.Policy, StartedAt: time.Now().UTC(), MaxCostUSD: opts.MaxCostUSD}
 	if opts.Model == "" {
 		rep.Provider = "scripted"
 	} else {
 		rep.Provider = "real"
 	}
+	spent := 0.0
 	for _, c := range opts.Suite.Cases {
+		caseOpts := opts
+		if opts.MaxCostUSD > 0 {
+			left := opts.MaxCostUSD - spent
+			if left <= 0 {
+				rep.StoppedAtCap = true
+				break
+			}
+			caseOpts.Harness = strings.TrimSpace(opts.Harness + fmt.Sprintf("\nbudget:\n  default_initiative_usd: %g\n", left))
+		}
 		if opts.Progress != nil {
 			opts.Progress(c, nil)
 		}
-		res := runCase(ctx, opts, c, filepath.Join(work, c.Name))
+		res := runCase(ctx, caseOpts, c, filepath.Join(work, c.Name))
+		spent += res.CostUSD
 		if opts.Model == "" && c.Expect != nil {
 			res.ExpectationFailures = checkExpect(*c.Expect, res)
 		}

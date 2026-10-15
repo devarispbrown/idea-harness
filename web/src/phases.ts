@@ -167,6 +167,9 @@ export function derivePhases(src: PhaseSource): PhaseState[] {
     // artifact is the only evidence available, and dropping it here would
     // un-complete Define mid-build and jump the rail backwards.
     ((status === "running" || status === "failed") && hasExecutionPlan) ||
+    // A budget stop can happen in any phase, so its reason says nothing
+    // about how far the initiative got: the artifact decides, as for running.
+    (judgmentReason === "budget_exceeded" && hasExecutionPlan) ||
     pastDefinePark;
 
   const done: Record<PhaseName, boolean> = {

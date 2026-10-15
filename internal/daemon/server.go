@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -71,8 +72,29 @@ func newHTTPServer(handler http.Handler, baseContext func(net.Listener) context.
 // the state directory -- the point at which it is THE daemon -- and is where
 // the caller records its pid.
 func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
+	return RunWith(addr, stateRoot, log, onReady, nil)
+}
+
+// RunWith is Run with the daemon config (<stateRoot>/config.yaml) adjusted by
+// override first -- `idea daemon --listen ...` flags win over the file.
+func RunWith(addr, stateRoot string, log *slog.Logger, onReady func(), override func(*DaemonConfig)) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
+
+	// The remote-listen policy is checked before anything is bound: a
+	// refused daemon.listen must stop the daemon, not quietly leave it
+	// loopback-only while the user waits for a phone that will never connect.
+	dcfg, err := LoadDaemonConfig(stateRoot)
+	if err != nil {
+		return err
+	}
+	if override != nil {
+		override(&dcfg)
+	}
+	plan, err := planRemoteListen(dcfg)
+	if err != nil {
+		return err
+	}
 
 	// Claim the address and the state directory FIRST, before anything that
 	// assumes this process is the only daemon. The startup sweep removes agent
@@ -116,6 +138,29 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 		onReady()
 	}
 	rt.setIntegrationUIBase("http://" + ln.Addr().String())
+	rt.configureRemote(dcfg, plan)
+
+	// The remote listener, when configured: the same handler, which serves it
+	// a token-free page and accepts only a header token or a paired session.
+	var remoteLn net.Listener
+	if plan != nil {
+		remoteLn, err = net.Listen("tcp", plan.Addr)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("daemon.listen %s: %w", plan.Addr, err)
+		}
+		if plan.TLS != nil {
+			remoteLn = tls.NewListener(remoteLn, plan.TLS)
+		}
+		if plan.Warning != "" {
+			log.Warn("REMOTE ACCESS: " + plan.Warning)
+		}
+		log.Info("idea-harness daemon listening for remote browsers", "addr", remoteLn.Addr().String(), "tls", plan.TLS != nil,
+			"sign_in", "run `idea ui pair` on this machine for a one-time code")
+	}
+	if len(dcfg.AllowedHosts) > 0 {
+		log.Info("idea-harness daemon accepts proxied browsers", "allowed_hosts", strings.Join(dcfg.AllowedHosts, ","))
+	}
 
 	// Whatever an agent left under the state root now belongs to a daemon that
 	// is gone. Swept in the background so a slow Docker cannot hold up serving,
@@ -136,12 +181,19 @@ func Run(addr, stateRoot string, log *slog.Logger, onReady func()) error {
 	defer cancelBase()
 	srv := newHTTPServer(NewServer(rt).Handler(), func(net.Listener) context.Context { return base })
 	srv.RegisterOnShutdown(cancelBase)
-	served := make(chan error, 1)
+	served := make(chan error, 2)
 	go func() { served <- srv.Serve(ln) }()
+	if remoteLn != nil {
+		go func() { served <- srv.Serve(remoteLn) }()
+	}
 	// Projects that configure Slack/Linear are opened now rather than on
 	// their first request, so notifications and the Linear poll resume after
 	// a restart without anyone touching the project.
 	go rt.startConfiguredIntegrations(ctx)
+	// Scheduled automations (automations.go): the projects that enable one
+	// are opened now, and the scheduler ticks until shutdown.
+	go rt.startConfiguredAutomations(ctx)
+	go rt.runScheduler(ctx)
 	select {
 	case err := <-served:
 		return err
@@ -180,7 +232,14 @@ type Server struct {
 func NewServer(rt *Runtime) *Server {
 	s := &Server{rt: rt, mux: http.NewServeMux()}
 	s.routes()
-	s.mux.Handle("/", s.apiAwareNotFound(web.Handler(rt.Token())))
+	// The token goes only into a page served to a browser on this machine;
+	// a remote one gets the same page without it, and signs in (remote.go).
+	s.mux.Handle("/", s.apiAwareNotFound(web.HandlerFor(func(r *http.Request) string {
+		if isLocalRequest(r) {
+			return rt.Token()
+		}
+		return ""
+	})))
 	// Integration actions (a Slack button, a Linear import) go through this
 	// same handler -- auth, host guard and all -- never around it.
 	rt.setIntegrationHandler(s.Handler())
@@ -257,9 +316,24 @@ func (s *Server) Handler() http.Handler {
 	return s.hostOriginGuard(s.auth(s.mux))
 }
 
-// auth enforces the per-install token on every API request (§15). Non-API
-// paths (the embedded UI) are served without a token; the token is injected
-// into the page and used by the UI's own fetch calls.
+// auth enforces authentication on every API request (§15). Non-API paths
+// (the embedded UI) are served without it: a local page carries the token,
+// a remote one carries none (remote.go).
+//
+// Two credentials are accepted, in this order:
+//
+//  1. the API token, in X-Idea-Token or a Bearer header (or, on the two SSE
+//     streams only, a ?token= query parameter) -- the CLI, MCP, scripts and
+//     the local UI. A header cannot be attached by a cross-site page, so a
+//     token-authenticated request needs no CSRF defence;
+//  2. a browser session cookie from a pairing-code sign-in (uisession.go). A
+//     cookie IS attached by the browser on its own, so a state-changing
+//     request authenticated this way must also carry the session's CSRF token
+//     and an allowed Origin.
+//
+// A request that presents a wrong token is refused outright rather than
+// falling through to the cookie: a broken client should fail loudly, not
+// quietly act as whichever browser session shares its cookie jar.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -267,6 +341,11 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/api/v1/ui/login" && r.Method == http.MethodPost {
+			// The one unauthenticated write; it carries its own checks.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -281,26 +360,44 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			// EventSource cannot set headers; allow the token as a query param
 			// on the SSE events stream ONLY. Every other endpoint requires the
 			// header so a token never leaks via URL/logs/history/referrer.
+			// (A signed-in remote browser needs neither: EventSource sends the
+			// same-origin session cookie.)
 			provided = r.URL.Query().Get("token")
 		}
-		if !security.TokenEqual(provided, s.rt.Token()) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+		if provided != "" {
+			if !security.TokenEqual(provided, s.rt.Token()) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			next.ServeHTTP(w, withAuth(r, authInfo{kind: authToken}))
 			return
 		}
-		next.ServeHTTP(w, r)
+		if sess, secret, ok := s.sessionFromRequest(r); ok {
+			if isUnsafeMethod(r.Method) {
+				if err := checkSessionCSRF(r, secret); err != nil {
+					writeError(w, http.StatusForbidden, err.Error())
+					return
+				}
+			}
+			next.ServeHTTP(w, withAuth(r, authInfo{kind: authSession, sessionID: sess.ID, csrf: csrfFor(secret)}))
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 	})
 }
 
 // hostOriginGuard hardens against CSRF/DNS-rebinding (§15): exact-match
-// loopback Host and Origin allowlists, Origin: null rejection, no CORS.
+// Host and Origin allowlists -- loopback, plus the hostnames named in
+// daemon.allowed_hosts and the remote listener's own address (remote.go) --
+// Origin: null rejection, no CORS.
 func (s *Server) hostOriginGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isLoopbackHost(r.Host) {
+		if !s.rt.hosts.allowsHost(r.Host) {
 			writeError(w, http.StatusForbidden, "invalid host")
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
-			if origin == "null" || !isLoopbackOrigin(origin) {
+			if origin == "null" || !s.rt.hosts.allowsOrigin(origin) {
 				writeError(w, http.StatusForbidden, "invalid origin")
 				return
 			}

@@ -84,7 +84,8 @@ var harnessSchema = `{
         "block_review_cycles": { "type": "integer", "minimum": 0 },
         "block_plan_review_cycles": { "type": "integer", "minimum": 0 },
         "block_change_set_review_cycles": { "type": "integer", "minimum": 0 },
-        "dangle_plan_dependency": { "type": "boolean" }
+        "dangle_plan_dependency": { "type": "boolean" },
+        "cost_per_call_usd": { "type": "number", "minimum": 0 }
       },
       "additionalProperties": false
     },
@@ -221,6 +222,39 @@ var harnessSchema = `{
         "image":                   { "type": "string" },
         "measure_timeout_seconds": { "type": "integer", "minimum": 0 },
         "allow_url_sources":       { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "default_initiative_usd": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "automations": {
+      "type": "object",
+      "properties": {
+        "metric_measurement": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "eval": {
+          "type": "object",
+          "properties": {
+            "enabled":        { "type": "boolean" },
+            "model":          { "type": "string" },
+            "suite":          { "type": "string" },
+            "cases":          { "type": "array", "items": { "type": "string" } },
+            "interval_hours": { "type": "integer", "minimum": 0 },
+            "max_cost_usd":   { "type": "number", "minimum": 0 },
+            "baseline":       { "type": "string" }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

@@ -18,6 +18,8 @@ import {
   type RunEventState,
 } from "./runEvents";
 import { useEventStream, useProjectChanges } from "./useEventStream";
+import { announce, runStatusAnnouncement } from "./announce";
+import { isSubmitShortcut, modLabel } from "./shortcuts";
 
 // CurrentRun mirrors GET .../initiatives/{id}/current-run.
 interface CurrentRun {
@@ -174,8 +176,20 @@ export default function RunPanel({
     return () => clearInterval(id);
   }, [live]);
 
+  // A run going live is said once in the app's polite live region, not per
+  // event: the action chip below changes every few seconds and is
+  // deliberately not a live region. Only the live panel speaks (the idle
+  // "Last agent run" is history); the running card says when it is over.
+  const lastAnnounced = useRef<{ runId: string; live: boolean } | null>(null);
+  useEffect(() => {
+    if (idleOnly || !runId) return;
+    const msg = runStatusAnnouncement(lastAnnounced.current, { runId, live });
+    if (msg) announce(msg);
+    lastAnnounced.current = { runId, live };
+  }, [idleOnly, runId, live]);
+
   const events = state.events;
-  const groups = useMemo(() => groupToolCalls(events), [events]);
+  const groups = useMemo(() => groupToolCalls(events, !live), [events, live]);
   const summary = actionSummary(groups);
   const files = useMemo(() => fileList(events), [events]);
   const perms = useMemo(() => permissions(events), [events]);
@@ -195,7 +209,7 @@ export default function RunPanel({
     <section className="run-panel" aria-label="Agent run">
       <div className="run-panel-head">
         {live ? (
-          <span className="run-chip" aria-live="polite">
+          <span className="run-chip">
             <span className="run-chip-dot" aria-hidden="true" />
             {chip || "Thinking"}
           </span>
@@ -239,12 +253,13 @@ export default function RunPanel({
           <summary>
             {summary.total === 0 ? "No tool calls yet" : summary.label}
             {summary.failed > 0 && <span className="run-failed-count"> · {summary.failed} failed</span>}
+            {summary.cancelled > 0 && <span className="muted"> · {summary.cancelled} cancelled</span>}
           </summary>
           <ol className="run-action-list">
             {groups.slice(-200).map((g) => (
               <li key={g.id} className={"run-action run-action-" + (g.status || "pending")}>
-                <span className="run-action-status" aria-label={g.status}>
-                  {g.status === "completed" ? "✓" : g.status === "failed" ? "✗" : "…"}
+                <span className="run-action-status" role="img" aria-label={(g.status || "pending").replace(/_/g, " ")}>
+                  {g.status === "completed" ? "✓" : g.status === "failed" ? "✗" : g.status === "cancelled" ? "⊘" : "…"}
                 </span>{" "}
                 {g.title}
                 {g.call.detail && g.call.detail !== g.title && <code className="run-action-detail">{g.call.detail}</code>}
@@ -379,8 +394,18 @@ function SteerBox({
         value={note}
         maxLength={8000}
         placeholder={steerable ? "e.g. Use the existing date helper instead of adding a dependency" : "Added to this task's next run"}
+        aria-describedby="run-steer-shortcut"
         onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => {
+          if (isSubmitShortcut(e.nativeEvent)) {
+            e.preventDefault();
+            if (!busy) send();
+          }
+        }}
       />
+      <span id="run-steer-shortcut" className="note-field-hint">
+        <kbd>{modLabel()}</kbd> <kbd>Enter</kbd> to send
+      </span>
       <div className="run-steer-row">
         {steerable && (
           <label className="run-steer-interrupt">

@@ -60,12 +60,47 @@ type Syncer struct {
 	// Redact scrubs known secrets from outbound text (issue bodies, comments).
 	Redact func(string) string
 	Log    *slog.Logger
+	// OnPoll, when set, is told about every poll the poller runs: when it
+	// started and finished, how many issues it imported, whether a person
+	// asked for it (PollNow), and its error. The daemon keeps the ones worth
+	// keeping as Automations history.
+	OnPoll func(PollRecord)
 
 	mu        sync.Mutex
 	team      *Team
 	projectID string
 	lastPoll  time.Time
 	pollErr   string
+	kickOnce  sync.Once
+	kick      chan struct{}
+	manual    bool
+	imported  int
+}
+
+// PollRecord is one poll, as OnPoll reports it.
+type PollRecord struct {
+	Started, Finished time.Time
+	Imported          int
+	Manual            bool
+	Err               error
+}
+
+func (s *Syncer) kicks() chan struct{} {
+	s.kickOnce.Do(func() { s.kick = make(chan struct{}, 1) })
+	return s.kick
+}
+
+// PollNow asks a running poller to poll at once instead of waiting out its
+// interval ("Run now" in the Automations view). A no-op when one is already
+// pending.
+func (s *Syncer) PollNow() {
+	s.mu.Lock()
+	s.manual = true
+	s.mu.Unlock()
+	select {
+	case s.kicks() <- struct{}{}:
+	default:
+	}
 }
 
 // Name implements integrations.Subscriber.
@@ -407,6 +442,11 @@ func (s *Syncer) RunPoller(ctx context.Context) {
 	interval := time.Duration(s.Cfg.EffectivePollSeconds()) * time.Second
 	for {
 		wait := interval
+		started := time.Now().UTC()
+		s.mu.Lock()
+		manual := s.manual
+		s.manual, s.imported = false, 0
+		s.mu.Unlock()
 		err := s.Poll(ctx)
 		if ctx.Err() != nil {
 			return
@@ -418,7 +458,11 @@ func (s *Syncer) RunPoller(ctx context.Context) {
 		if err != nil {
 			s.pollErr = err.Error()
 		}
+		imported := s.imported
 		s.mu.Unlock()
+		if s.OnPoll != nil {
+			s.OnPoll(PollRecord{Started: started, Finished: now, Imported: imported, Manual: manual, Err: err})
+		}
 		if err != nil {
 			s.log().Warn("linear: poll failed", "project", s.ProjectID, "err", err)
 			if after, ok := integrations.RetryAfter(err); ok && after > wait {
@@ -429,6 +473,7 @@ func (s *Syncer) RunPoller(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
+		case <-s.kicks():
 		}
 	}
 }
@@ -514,6 +559,9 @@ func (s *Syncer) importOne(ctx context.Context, is Issue) error {
 		LocalID: id, RemoteID: is.ID, RemoteKey: is.Identifier, RemoteURL: is.URL, RemoteState: is.State.Type}); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.imported++
+	s.mu.Unlock()
 	s.log().Info("linear: imported labeled issue", "project", s.ProjectID, "issue", is.Identifier, "initiative", id)
 	return s.Client.Comment(ctx, is.ID, "Imported into idea-harness as initiative `"+id+"`. This issue's text was attached as "+
 		"untrusted context, not as instructions. When the execution plan is approved, its tasks are filed as sub-issues here.")

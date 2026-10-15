@@ -1,5 +1,7 @@
 import { useState } from "react";
 import LineageChip from "./LineageChip";
+import InlinePanel from "./InlinePanel";
+import { isSubmitShortcut } from "./shortcuts";
 
 export interface DecisionItem {
   id: string;
@@ -131,17 +133,27 @@ export function DecisionCard({
             {o}
           </button>
         ))}
-        <button className="jc-secondary" onClick={() => setWriting((v) => !v)}>
+        <button className="jc-secondary" aria-expanded={writing} onClick={() => setWriting((v) => !v)}>
           Write my own…
         </button>
       </div>
       {writing && (
-        <div className="jc-own">
+        // A disclosure: focus moves to the field, Escape closes it and puts
+        // focus back on "Write my own…". Enter (or ⌘/Ctrl+Enter, as in every
+        // note field) resolves with what was typed.
+        <InlinePanel className="jc-own" label={`Your own resolution for ${d.code}`} onClose={() => setWriting(false)}>
           <input
             className="text-input"
             placeholder="Your resolution…"
+            aria-label={`Your resolution for ${d.code}: ${d.question}`}
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || isSubmitShortcut(e.nativeEvent)) && custom.trim()) {
+                e.preventDefault();
+                onResolve(custom.trim());
+              }
+            }}
           />
           <button
             className="jc-primary"
@@ -149,7 +161,7 @@ export function DecisionCard({
           >
             Resolve
           </button>
-        </div>
+        </InlinePanel>
       )}
     </section>
   );
@@ -198,7 +210,12 @@ export function FindingCard({
             {d.label}
           </button>
         ))}
-        <button className="jc-secondary" onClick={() => setOpen((v) => !v)}>
+        <button
+          className="jc-secondary"
+          aria-expanded={open}
+          aria-label="More dispositions"
+          onClick={() => setOpen((v) => !v)}
+        >
           …
         </button>
         {open && (

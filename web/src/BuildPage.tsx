@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
 import QualityScorecard from "./QualityScorecard";
 import LineagePanel from "./LineagePanel";
 import RunPanel from "./RunPanel";
+import BudgetMeter from "./BudgetMeter";
 import {
   acceptableFindingCount,
   advisoryBacklogLabel,
@@ -38,8 +39,25 @@ import {
   type PRChecksResultLike,
 } from "./buildLogic";
 import { isHttpUrl } from "./url";
+import { diffStat, initialCollapsed, narrowNow, toggled } from "./mobileLayout";
 import { changeSetChip } from "./statusChips";
 import NoteField from "./NoteField";
+import InlinePanel from "./InlinePanel";
+import { announce } from "./announce";
+
+// What a screen reader hears when a change-set action lands (announce.ts):
+// the chip changing colour is the only other sign.
+const ACTION_DONE: Record<string, string> = {
+  approve: "approved",
+  "approve-accept": "approved, accepting its findings",
+  changes: "sent back with your note",
+  reject: "rejected",
+  apply: "applied",
+  revert: "reverted",
+  "resolve-retry": "apply retried",
+  "resolve-reject": "rejected",
+  "rerun-review": "review re-run",
+};
 
 interface Task {
   id: string;
@@ -178,7 +196,12 @@ export default function BuildPage({
   const [openDiff, setOpenDiff] = useState<string | null>(null);
   const [diffText, setDiffText] = useState("");
   const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
+  // Phone review (mobileLayout.ts): long lines wrap by default on a narrow
+  // screen, and past the first few files a change set opens collapsed.
+  const [wrapDiff, setWrapDiff] = useState(() => narrowNow());
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(() => new Set());
   const [revertTarget, setRevertTarget] = useState<ChangeSet | null>(null);
+  const revertCancelRef = useRef<HTMLButtonElement>(null);
   const [executorName, setExecutorName] = useState("internal");
   const [initiative, setInitiative] = useState<Initiative | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
@@ -316,9 +339,12 @@ export default function BuildPage({
     let ok = true;
     try {
       await fn();
+      announce(`${cs.human_id} ${ACTION_DONE[action] ?? "updated"}.`);
     } catch (e) {
       ok = false;
-      setCsError((prev) => ({ ...prev, [cs.id]: formatError(errMessage(e)) }));
+      const msg = formatError(errMessage(e));
+      setCsError((prev) => ({ ...prev, [cs.id]: msg }));
+      announce(`${cs.human_id}: ${msg}`);
     } finally {
       setCsBusy((b) => {
         const next = { ...b };
@@ -487,8 +513,10 @@ export default function BuildPage({
       try {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") {
-          if (Array.isArray(parsed.files)) setDiffFiles(parsed.files);
-          else setDiffFiles([]);
+          if (Array.isArray(parsed.files)) {
+            setDiffFiles(parsed.files);
+            setCollapsedFiles(initialCollapsed(parsed.files.map((f: DiffFile) => f.path), narrowNow()));
+          } else setDiffFiles([]);
           setDiffText(typeof parsed.patch === "string" ? parsed.patch : "");
           return;
         }
@@ -535,6 +563,7 @@ export default function BuildPage({
         meta={buildHeaderMeta(executorName)}
       />
       <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
+      <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
 
       {/* task 3: the initiative's dedicated branch and its PR, once
           git.branch_per_initiative has created one. Absent (not just
@@ -650,6 +679,8 @@ export default function BuildPage({
             placeholder="e.g. what to try differently this time — appended to the implementer's brief"
             value={runNote}
             onChange={setRunNote}
+            onSubmit={runNext}
+            submitLabel="run it"
           />
         </div>
       )}
@@ -818,7 +849,26 @@ export default function BuildPage({
               <div className="cs-git-warning">{cs.git_commit_warning}</div>
             )}
             {openDiff === cs.id && (
-              <div className="cs-files">
+              <div className={`cs-files${wrapDiff ? " cs-diff-wrap" : ""}`}>
+                {diffFiles.length > 0 && (
+                  <div className="cs-diff-toolbar">
+                    <label className="cs-diff-wrap-toggle">
+                      <input type="checkbox" checked={wrapDiff} onChange={(e) => setWrapDiff(e.target.checked)} />
+                      Wrap long lines
+                    </label>
+                    {diffFiles.length > 1 && (
+                      <button
+                        type="button"
+                        className="cs-action"
+                        onClick={() =>
+                          setCollapsedFiles(collapsedFiles.size > 0 ? new Set() : new Set(diffFiles.map((f) => f.path)))
+                        }
+                      >
+                        {collapsedFiles.size > 0 ? "Expand all files" : "Collapse all files"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {diffFiles.length === 0 ? (
                   <pre className="cs-diff">{diffText || noDiffMessage(noFiles)}</pre>
                 ) : (
@@ -829,9 +879,20 @@ export default function BuildPage({
                     // the raw new content is shown underneath it rather than
                     // silently falling back with no explanation.
                     const lines = f.patch ? patchLines(f.patch) : [];
+                    const collapsed = collapsedFiles.has(f.path);
+                    const stat = f.patch ? diffStat(f.patch) : null;
                     return (
-                      <div key={f.path} className="cs-file">
+                      <div key={f.path} className={`cs-file${collapsed ? " cs-file-collapsed" : ""}`}>
                         <div className="cs-file-head">
+                          <button
+                            type="button"
+                            className="cs-file-toggle"
+                            aria-expanded={!collapsed}
+                            aria-label={`${collapsed ? "Show" : "Hide"} ${f.path}`}
+                            onClick={() => setCollapsedFiles((c) => toggled(c, f.path))}
+                          >
+                            {collapsed ? "▸" : "▾"}
+                          </button>
                           <span className={`cs-file-badge cs-file-${f.change_type}`}>
                             {diffChangeTypeLabel(f.change_type)}
                           </span>
@@ -844,11 +905,17 @@ export default function BuildPage({
                               whole-file rewrite
                             </span>
                           )}
+                          {stat && (
+                            <span className="cs-file-stat">
+                              <span className="cs-file-stat-add">+{stat.added}</span>{" "}
+                              <span className="cs-file-stat-del">−{stat.removed}</span>
+                            </span>
+                          )}
                           {f.change_type !== "delete" && (
                             <span className="cs-file-size">{f.size ?? 0} B</span>
                           )}
                         </div>
-                        {f.change_type === "delete" ? (
+                        {collapsed ? null : f.change_type === "delete" ? (
                           <div className="cs-file-deleted">file deleted</div>
                         ) : lines.length > 0 ? (
                           <pre className="cs-file-content">
@@ -950,6 +1017,11 @@ export default function BuildPage({
                 observations, not a real review, so Approve will refuse until the review runs.
               </p>
             )}
+            {/* On a phone the decision stays in reach: for a change set
+                awaiting review, the actions and the note form below them
+                stick to the bottom of the screen while the diff scrolls
+                (styles.css, "Remote use and phones"). */}
+            <div className={cs.status === "review_required" ? "cs-decision-bar" : undefined}>
             <div className="cs-actions">
               {cs.status === "review_required" &&
                 (reviewNeverCompleted(cs) ? (
@@ -1073,14 +1145,21 @@ export default function BuildPage({
                 ))}
             </div>
             {cs.status === "review_required" && requestNote !== undefined && (
-              <div className="request-changes-form">
+              <InlinePanel
+                className="request-changes-form"
+                label={`Request changes to ${cs.human_id}`}
+                onClose={() => closeRequestChanges(cs)}
+              >
                 <NoteField
                   id={`request-changes-${cs.id}`}
                   label={`What should change in ${cs.human_id}?`}
                   placeholder="Recorded on the change set; the task's next run gets it in its brief"
                   value={requestNote}
                   onChange={(v) => setRequesting((r) => ({ ...r, [cs.id]: v }))}
-                  autoFocus
+                  onSubmit={() => {
+                    if (!busyAction && requestNote.trim()) sendRequestChanges(cs);
+                  }}
+                  submitLabel="send it back"
                 />
                 <div className="request-changes-actions">
                   <button
@@ -1090,12 +1169,24 @@ export default function BuildPage({
                   >
                     {busyAction === "changes" ? "Sending…" : "Send back with this note"}
                   </button>
+                  {/* Rejecting can carry the same note: it is recorded on the
+                      change set, and the task's next run gets it. */}
+                  <button
+                    className="cs-secondary"
+                    disabled={!!busyAction || !requestNote.trim()}
+                    onClick={async () => {
+                      if (await review(cs, "rejected", false, requestNote)) closeRequestChanges(cs);
+                    }}
+                  >
+                    {busyAction === "reject" ? "Rejecting…" : "Reject with this note"}
+                  </button>
                   <button className="cs-secondary" disabled={!!busyAction} onClick={() => closeRequestChanges(cs)}>
                     Cancel
                   </button>
                 </div>
-              </div>
+              </InlinePanel>
             )}
+            </div>
             {cs.review_note && (
               <p className="muted cs-review-note">
                 You asked: “{cs.review_note}” —{" "}
@@ -1116,8 +1207,17 @@ export default function BuildPage({
       )}
 
       {revertTarget && (
-        <section className="revert-card">
-          <div className="revert-title">Revert {revertTarget.human_id}?</div>
+        // A confirmation that opens at the foot of the page, far from the
+        // Revert button that asked for it: focus moves to its Cancel (the
+        // safe choice), Escape cancels, and focus goes back to Revert.
+        <InlinePanel
+          className="revert-card"
+          role="alertdialog"
+          labelledBy="revert-title"
+          initial={revertCancelRef}
+          onClose={() => setRevertTarget(null)}
+        >
+          <div className="revert-title" id="revert-title">Revert {revertTarget.human_id}?</div>
           <div className="revert-desc">
             Restores the files to their exact pre-apply bytes. This is a file-level restore, not a git
             revert — your git history is untouched. The requirement returns to approved and its
@@ -1132,6 +1232,7 @@ export default function BuildPage({
               {csBusy[revertTarget.id] === "revert" ? "Reverting…" : "Revert byte-for-byte"}
             </button>
             <button
+              ref={revertCancelRef}
               className="cs-secondary"
               disabled={csBusy[revertTarget.id] === "revert"}
               onClick={() => setRevertTarget(null)}
@@ -1140,7 +1241,7 @@ export default function BuildPage({
             </button>
           </div>
           {csError[revertTarget.id] && <p className="error">{csError[revertTarget.id]}</p>}
-        </section>
+        </InlinePanel>
       )}
     </div>
   );

@@ -49,7 +49,14 @@ nothing in it.
 | `#/i/<initiativeId>/quality` | Quality scorecard and history |
 | `#/i/<initiativeId>/doc/<artifactId>[/<version>]` | Document reader |
 | `#/i/<initiativeId>/diff/<fromArtifactId>/<toArtifactId>` | Artifact version diff |
+| `#/automations` | **Automations** — every scheduled background job (Linear inbound polling, metric measurement, eval), each off until enabled, with its schedule, last and next run, history and Run now; reached from the sidebar's **Automations** button and the command palette |
 | `#/settings` | Settings |
+
+Every route may carry a **project prefix**, `#/p/<projectId>/…` — `#/p/<projectId>/i/<id>/build`
+opens that change set in that project, whichever one the reader last chose. A bare `#/…` means the
+current project, and the shell rewrites it to the prefixed form in place (`replaceState`, so Back is
+unchanged), so a copied address — and every push notification's link — names its project. A prefix
+naming a project the daemon does not serve renders **Project not found**.
 
 The daemon additionally serves the API reference at
 [`/api-reference`](http://127.0.0.1:8787/api-reference) and the spec at `/openapi.yaml` and
@@ -62,6 +69,11 @@ A left sidebar (`PhaseNav`) plus a main region.
 The sidebar shows:
 
 - the **`ih` logo**, which returns to home;
+- the **project switcher** — a labelled select of every project the daemon serves — when there is
+  more than one. The choice is remembered in this browser (`localStorage`) and a link naming a
+  project wins over it; switching goes to that project's home;
+- **Needs you** with a count of everything waiting across the project, when no initiative is open
+  (Home, Settings, the queue) — on a phone, that is the top bar's way into the queue;
 - the **initiative button** — its title over `<project name> · #<n> of <total>` — which also returns
   to home (there is no dropdown behind the `▾`);
 - **Needs you elsewhere** with a count, shown only while you are inside one initiative and *other*
@@ -192,6 +204,22 @@ a **Resolved** section; a resolved decision keeps an **Undo** button
 Under **Produced** the current PRD offers **Read** and, once there is more than one version,
 **Diff v*n-1* → v*n***.
 
+**Objectives** lists each objective (`OBJ-n`) with the requirements serving it and the metrics
+(`MET-n`) measuring it, and takes every human edit the CLI does:
+
+| Control | CLI |
+|---|---|
+| **Add objective** (statement, optional rationale) | `idea objective add` |
+| **Edit** on an objective — statement, rationale, owner, status (`active`, `achieved`, `abandoned`) | `idea objective edit <OBJ>` |
+| **Link a requirement…** / **Link** | `idea objective link <REQ> <OBJ>` |
+| **×** beside a serving requirement ("Unlink REQ-1 from OBJ-1") | `idea objective link <REQ> <OBJ> --unlink` |
+| **+ Metric** — name, direction, baseline, target, unit | `idea metric add` |
+| **Edit** on a metric — the same fields; a baseline left blank is cleared | `idea metric edit <MET>` (`--clear-baseline`) |
+| A value and **Record** | `idea metric record` |
+
+An edit sends only the fields that changed (`PATCH …/objectives/{id}`, `PATCH …/metrics/{id}`), so
+saving an untouched form changes nothing.
+
 The bar at the bottom is the phase's commit action:
 
 | Status | Bar |
@@ -237,7 +265,11 @@ viewport and whether or not Build has started.
 The header reads `<executor> executor`, with `· placeholder code` appended only for `internal`.
 Above the cards, the next task's **Run TASK-n: <title>** button, and under it a labelled **Note to
 the agent for TASK-n** field — appended to the implementer's brief, as `idea execute --note` does. A
-failed run's banner has its own note field for its **Retry**. Below, one card per change set showing
+failed run's banner has its own note field for its **Retry**. A **Spending cap** card shows the initiative's meter — spent against its cap, model
+calls and the coding agent split out, and a plain statement when the agent's spend is not counted
+(hermes and omp report none) — with a field to set this initiative's own cap (**Set cap**, or
+**Raise cap** when it is stopped at one) and **Use project default**; raising a cap past the spend
+sends a stopped initiative back to where it stopped. Below, one card per change set showing
 its `CHG-n` code, the task title, the first 12 characters of the patch digest, a status chip, and
 **View diff**.
 
@@ -281,8 +313,10 @@ actions, notes and report. The panel shows:
 - **Current action** - a chip with what the agent is doing now: "editing src/x.ts", "running npm
   test", "reading …". It falls back to **Thinking** while the agent reasons (only the fact is
   shown; the reasoning text is never stored).
-- **Actions** - tool calls grouped by call, summarized as "7/12 actions" (with the failed count),
-  expandable to the list with each call's status.
+- **Actions** - tool calls grouped by call, summarized as "7/12 actions" (with the failed and
+  cancelled counts), expandable to the list with each call's status. A call still open when the
+  run ends — stopped mid-call, or its result never recorded — reads **cancelled** (⊘), never
+  "in progress" under a finished run.
 - **Files** - the files the agent has written, live, with +/- line counts; replaced by the
   orchestrator's own diff once the agent finishes.
 - **Permissions answered for you** - for an ACP agent, every permission it asked for and the answer
@@ -291,7 +325,7 @@ actions, notes and report. The panel shows:
 - **Errors** - surfaced at the top as an alert.
 - **Send a note** - steer the running agent (see [agents.md](agents.md#steering-a-running-agent)).
   For an executor that cannot be steered the box says the note will apply to the next run, and
-  notes held for the next run are listed.
+  notes held for the next run are listed. ⌘/Ctrl+Enter sends it.
 - **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
 
 It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
@@ -358,8 +392,14 @@ newest few.
 **Needs you** (`#/queue`) — every open decision, question and blocking finding across the project's
 initiatives, ranked, each linking to where it is resolved.
 
-**Command palette** — `⌘K` / `Ctrl-K` opens a filter box over the six phases of the current
-initiative plus **All initiatives** and **Settings**. `↑`/`↓` move, Enter runs, Escape closes.
+**Command palette** — `⌘K` / `Ctrl-K` opens a filter box over every page: inside an initiative its
+six phases, **Gaps**, **Outcomes**, **Quality**, **Activity** (What changed) and **Graph health**;
+everywhere **All initiatives**, **Needs you**, **Settings** and each Settings section
+(**Settings › Executor** opens Settings with focus on that section). Typing a node code — `REQ-3`,
+`TASK-2`, `OBJ-1`, `MET-1`, `DEC-1`, `CHG-1`, any case — puts **Lineage of REQ-3** first, which
+opens `#/i/<id>/lineage/<type>/<code>`. Matching is on the label and a few keywords ("timeline"
+finds Activity, "drift" finds Outcomes). `↑`/`↓` move, Enter runs, Escape closes and returns focus
+where it was. It lives in `web/src/paletteCommands.ts`.
 
 ## Product Graph views
 
@@ -422,6 +462,55 @@ demoted to advisory by rule, and gating deterministic findings. Hidden until a r
 quality evidence as five linked boxes with counts (and how many are on track, verified, done or
 applied); each opens the page holding that layer.
 
+## Keyboard and accessibility
+
+Every control is reachable with Tab and operable with Enter or Space; every interactive element
+shows a focus ring (`:focus-visible`). Pages pass axe's WCAG 2 A/AA checks in both the light and the
+dark colour scheme (see Tests).
+
+### Shortcuts
+
+`?` (outside a text field) opens this list in the app; it comes from `web/src/shortcuts.ts`, so the
+two cannot drift. ⌘ on a Mac, Ctrl elsewhere — either works on any platform.
+
+| Keys | Does |
+|---|---|
+| `⌘K` / `Ctrl+K` | Open the command palette (above) |
+| `?` | Show the keyboard shortcuts |
+| `⌘Enter` / `Ctrl+Enter` in a note | Send it: the run note (runs the task), Request changes, a plan revision, a retry, a note to the running agent; in an answer or your own resolution, Enter alone works too |
+| `Esc` | Close the open dialog, or the inline form focus is in, and return focus to the button that opened it |
+| `↑` `↓` `Enter` in the palette | Move, go |
+| `Tab` from the top of a page | **Skip to content** |
+
+Each note field with a shortcut says so under it ("⌘ Enter to send it back"), as its description.
+
+### Focus
+
+- **Skip to content** is the first Tab stop on every page and moves focus to the main region.
+- **After a route change** focus moves to the new page's `h1` (its first `h2` when it has none,
+  else the main region), once the page has rendered it — never on the first load, so the skip link
+  stays first. The palette's Settings sections land on that section's heading instead.
+- **Dialogs** — the command palette and the shortcut reference are modal: focus moves in, Tab
+  cycles inside, Escape or a click outside closes, and focus returns to what had it.
+- **Inline forms** — Request changes, Ask for a revision…, the revert confirmation (an
+  `alertdialog`, focus on **Cancel**), Write my own…, and the objective/metric edit and add forms:
+  focus moves to the first field, Escape (while focus is inside) closes, and focus returns to the
+  button that opened it. Tab is not trapped; the page around them is still live.
+
+### Announcements
+
+One polite live region (`web/src/announce.ts`, rendered once by the shell) says what an async action
+did when the only other sign is a chip changing colour: a change-set action landing ("CHG-2
+applied.", or its error), the plan approved, an objective or metric saved or (un)linked, an
+operation starting and finishing or stopping, an agent run starting. It is deliberately quiet — one
+message per completed action or state change, never per streamed run event; the run panel's
+current-action chip is not a live region. Errors that block (a failed run's banner, the run's own
+errors) are `role="alert"`.
+
+### Reduced motion
+
+Under `prefers-reduced-motion: reduce` spinners, the run chip's pulse and every transition stop.
+
 ## Settings
 
 Settings writes the same `.idea-harness/harness.yaml` the CLI edits. The shell's **Demo mode**
@@ -472,22 +561,39 @@ GROQ_API_KEY`.
 
 ### Executor
 
+The executor profile — the whole `executor` block — is edited here, with each kind's trust
+trade-off stated under the kind (nothing leaves the machine, local with network and your key, or
+another machine), the executor/model compatibility advisory as you type ("Known not to work" /
+"Untested"), the block's configuration problems, and which referenced variables are set.
+
 - **Kind** — `auto` (what an unset kind means), `internal` (the placeholder), `container`, `omp`,
-  or `hermes`. The selection is what `harness.yaml` asks for; under `auto` the card also says what
+  `hermes`, `acp` or `openhands`. The selection is what `harness.yaml` asks for; under `auto` the card also says what
   it resolves to right now — "Requested: auto · resolves to: internal." — with the daemon's
   `NO REAL CODE WILL BE WRITTEN` warning when it fell back to the placeholder (`GET …/executors`'
   `resolution`).
 - **Image** — the container image carrying the agent CLI.
 - **Model** — the coding model as `provider/model`; empty falls back to the default.
+- **ACP agent** (`acp`) — the agent's command inside the image (words, or a JSON array), the name
+  the provider key is exposed under, and the turn timeout.
+- **OpenHands Agent Server** (`openhands`) — the server URL (https unless loopback), the agent
+  (`openhands` or an ACP agent the server carries, with its command), the session key's variable
+  name, **Keep the coding model's provider key on this machine**, and the optional web UI link.
+- **MCP servers** (`acp`) — each a stdio server (command, arguments, environment) or an http/sse
+  server (URL, headers); every variable or header is **from variable** (a name) or **literal**, and
+  a literal whose name or value looks like a credential is refused at the field, as the config
+  loader refuses it.
 
-`internal`, or `auto` resolving to it, shows "placeholder executor — writes no real code. Select
-hermes/omp for real code." The image and key status lines appear only for a kind that has an image
-or a key to report.
-Selecting `omp` or `hermes` shows a warning:
+**Save executor** sends only what changed. **Run smoke test** runs the saved profile for any coding
+agent kind (hermes, omp, acp, openhands), and is disabled while the form has unsaved changes.
 
-> Runs with network egress + auto-approve and receives its provider API key (see
-> [`security-model.md`](security-model.md#what-this-does-not-protect-against)). Only use an image you
-> trust.
+The image and key status lines appear only for a kind that has an image or a key to report. The
+trade-off line under the kind is the one [`agents.md`](agents.md#security--trust-tradeoff--read-this-before-wiring-an-agent)
+states: `internal` writes a placeholder and nothing leaves the machine (and `auto` resolving to it
+carries the daemon's `NO REAL CODE WILL BE WRITTEN` warning); `omp` and `hermes` run with network
+egress, auto-approve and their provider API key, so only an image you trust; `acp` the same, widened
+by its MCP servers; `openhands` uploads the work root — and the provider key unless withheld — to
+another machine whose sandbox the harness does not enforce (see
+[`security-model.md`](security-model.md#what-this-does-not-protect-against)).
 
 That is the same tradeoff `idea executors setup` prints. Read [`docs/agents.md`](agents.md) before
 switching; the one-liner is `idea executors setup --kind hermes|omp --image <img> --model
@@ -500,14 +606,81 @@ A single **git commit on apply** checkbox — the `git_commit: true` option in
 staging only the patch's files. The resulting commit SHA is not surfaced anywhere in the UI; revert
 remains a byte-for-byte file restore, not git history.
 
+### Budget
+
+The project's default spending cap per initiative (`budget.default_initiative_usd`; empty for none),
+and every initiative's meter. One initiative's own cap is set on its Build page. When a cap is in
+force, a compact meter shows above every phase of that initiative; when the initiative is stopped at
+its cap, the meter says so and links to Build.
+
 ### Integrations
 
-Read-only health for Slack and Linear: whether each is configured and running, which token
+Health for Slack and Linear, and an editor for each: whether each is configured and running, which token
 environment variables are set (never their values), problems such as an empty Slack allowlist or
 dropped deliveries, delivery counts, the Socket Mode connection and the Linear poll. A configured
 integration has a **Send test message** (Slack) or **Test connection** (Linear) button, the same
-check as `idea integrations test`. Configuration stays in `harness.yaml` and `.env` so tokens never
-pass through the browser; see [`integrations.md`](integrations.md).
+check as `idea integrations test`. **Set up** / **Edit settings** opens the integration's section:
+Slack's channel ID, the events it posts (with **Reset to the defaults**), who is mentioned when a
+human is needed, who may act from Slack, Socket Mode, and the token variable names; Linear's team,
+project, inbound polling and label, poll interval and state mapping. Saving writes the section to
+`harness.yaml` (validated as a hand edit would be, comments kept, no restart); **Turn off** removes
+it. Tokens never pass through the browser — the editor names the variables and says whether each is
+set, and refuses a token pasted into any field; see [`integrations.md`](integrations.md).
+
+## Automations
+
+`#/automations` lists the background jobs: **Linear inbound polling**, **Scheduled metric
+measurement** and **Scheduled eval**. Each card has an On/Off switch (off by default — nothing runs
+until it is turned on), its schedule, when it last ran and runs next, **Run now** (one run, on or
+off), and its history — when, trigger (schedule or Run now), status, cost and the result or error.
+The measurement card lists the command/url metrics it covers with each one's cadence, last and next
+measurement, why the schedule skips one (no cadence, url sources off), and **Measure now**. The eval
+card sets the model, the per-run cost cap (required), the interval, and optionally the suite, cases
+and baseline; its Run now spends real money up to the cap. See
+[`configuration.md`](configuration.md#automations).
+
+### Notifications
+
+Web Push for the project being viewed, per browser. **Turn on notifications on this device** asks
+the browser for permission — only then, never on load — subscribes with the daemon's VAPID key and
+registers the subscription (`POST …/push/subscriptions`). Each subscribed browser is listed with the
+push service it uses (host only), a checkbox per event — *needs your judgment*, *change set ready
+for review*, *verification failed*, *outcome drifting* — **Send a test**, and **Turn off** (this
+project only; other projects keep theirs). A notification opens the page it is about. Delivery,
+retries and what the payload carries: [`configuration.md`](configuration.md#push-notifications).
+Unavailable, with the reason, on a page that is not a secure context (HTTPS or `localhost`) or a
+browser without push — on an iPhone, add the app to the Home Screen first.
+
+### Remote access
+
+The browsers signed in from other devices, each with **Revoke** (or **Sign out** on this one), and
+**Sign out everywhere**. Signing a device in is deliberately not here: `idea ui pair` on the
+daemon's machine mints the one-time code. See [`configuration.md`](configuration.md#remote-access).
+
+## Remote use and phones
+
+The same app serves a phone. Turned on and secured as in
+[`configuration.md`](configuration.md#remote-access) (`tailscale serve` is the recommended path), a
+browser on another device gets the page **without the API token** and a **Sign in** screen asking
+for a pairing code from `idea ui pair`; after that it is the full UI, on a session that expires and
+can be revoked. If the session ends, the next request returns it to Sign in.
+
+At phone widths (≤ 760px) the sidebar is a top bar, and change-set review is built for the thumb:
+
+- **diffs** wrap long lines by default (**Wrap long lines** turns it off, and then each file scrolls
+  sideways on its own, never the page); a change set of more than three files opens with only the
+  first two expanded, each file header showing `+added −removed`, with **Expand/Collapse all
+  files**;
+- the **decision bar** — Approve, Request changes…, Reject, and the note form — sticks to the bottom
+  of the screen while the diff scrolls. The note can go back as **Send back with this note** or
+  **Reject with this note**;
+- questions and decisions are answered in place, as on the desk.
+
+**Installable.** The daemon serves a web app manifest and icons, so a browser on a secure context
+offers "Install" / "Add to Home Screen". A service worker (`web/public/sw.js`) provides an offline
+page when the daemon cannot be reached and caches the content-hashed `/assets/` files. It never
+caches the app's HTML (on loopback it carries the token) or anything under `/api/`, and does not even
+intercept those requests: no product data is ever stored on the device.
 
 ## Tests
 
@@ -519,9 +692,26 @@ pass through the browser; see [`integrations.md`](integrations.md).
   hermetic demo daemon (port 19590 or `IDEA_E2E_PORT`, state under `web/e2e/.work`, every provider
   key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op revision → run
   with a note → diff → request changes with a note → approve → apply → verify → activity and health,
-  plus not-found routes and Settings. Every page gets an axe (WCAG 2 A/AA) check that fails on a
-  serious or critical violation; accepted exceptions, each with its reason, live in
-  `web/e2e/a11y.ts` (none today). `IDEA_E2E_A11Y=report` logs violations instead of failing, and
-  `IDEA_E2E_SHOTS=<dir>` keeps a screenshot of each checked page.
+  plus not-found routes, the queue, the document reader, an objective edit, the keyboard (skip link,
+  focus on route change, ⌘K to a node code and a Settings section, `?`, Escape and ⌘/Ctrl+Enter in
+  a note form) and Settings. Every page gets an axe (WCAG 2 A/AA) check in **both colour schemes**
+  (`prefers-color-scheme: light` and `dark`) that fails on a serious or critical violation; a
+  modal is checked on its own (`{ include }`), since the page under its overlay is dimmed on
+  purpose. Accepted exceptions, each with its reason, live in `web/e2e/a11y.ts` (none today).
+  `IDEA_E2E_A11Y=report` logs violations instead of failing, and `IDEA_E2E_SHOTS=<dir>` keeps a
+  screenshot of each checked page in each scheme.
+- **Keyboard tests** — `web/src/keyboard.test.tsx` (jsdom) covers ⌘/Ctrl+Enter, Escape and focus
+  return, the `?` and ⌘K dialogs, the live region, and the objective/metric edits and unlink.
+- **Remote use** — `web/e2e/remote.e2e.ts` adds a second project and checks the switcher (canonical
+  `#/p/` addresses, remembered choice, deep links, an unknown project); then a phone on "another
+  device" — Chromium resolves `remote.test` to the loopback daemon, which `demo-daemon.sh` allows —
+  is served no token, signs in with a code from `idea ui pair`, switches project in the top bar,
+  answers a question, reviews a diff and approves and applies from the sticky bar at 390px, and signs
+  out from Settings, with an axe check on each page. `remoteUse.test.ts` and
+  `remoteUse.components.test.tsx` cover the same logic and components in vitest.
+- **Settings and automations** — `web/e2e/settings-automations.e2e.ts` edits an integration,
+  switches the executor profile to internal and back, watches a spending cap stop a demo run
+  (`demo.cost_per_call_usd`) and raising it send the initiative back, and toggles an automation, runs
+  it now and reads its history.
 - **CLI/UI parity** — [`ui-parity.md`](ui-parity.md) maps every CLI verb to its UI surface or says
   why it is CLI-only; `TestUIParityLedger` fails when a verb is added without a row.

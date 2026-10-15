@@ -252,6 +252,10 @@ type Report struct {
 	// Regressions is filled when the run was compared to a baseline.
 	Regressions []Regression `json:"regressions,omitempty"`
 	Baseline    string       `json:"baseline,omitempty"`
+	// MaxCostUSD is the run's spending cap (0: none), and StoppedAtCap says
+	// whether it ran out before every case had run.
+	MaxCostUSD   float64 `json:"max_cost_usd,omitempty"`
+	StoppedAtCap bool    `json:"stopped_at_cap,omitempty"`
 }
 
 // Failed reports whether the run should fail a gate: a scripted case missed

@@ -122,7 +122,15 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	if l := cfg.Linear; l != nil {
 		linearKey = lookupEnv(l.APIKeyEnvName(), pr.dotEnv)
 	}
-	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey)
+	// Browsers subscribed to push notifications are bus subscribers too
+	// (push.go): a project with any needs a dispatcher even when it
+	// configures no Slack or Linear.
+	pushSubs, err := pr.db.ListPushSubscriptions(r.lifetimeContext())
+	if err != nil {
+		r.log.Warn("push: listing subscriptions", "project", projectID, "err", err)
+		pushSubs = nil
+	}
+	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, pushFingerprint(pushSubs))
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -137,7 +145,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	if hub.sockets != nil {
 		hub.sockets.Unregister(projectID)
 	}
-	if !cfg.Configured() {
+	if !cfg.Configured() && len(pushSubs) == 0 {
 		return
 	}
 
@@ -193,6 +201,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 			engine := pr.engine
 			pi.syncer = &linear.Syncer{
 				ProjectID: projectID, Cfg: *l, DB: pr.db, Actions: actions, Redact: redact, Log: r.log,
+				OnPoll: func(rec linear.PollRecord) { r.recordLinearPoll(pr.db, rec) },
 				Client: &linear.Client{Endpoint: hub.linearEndpoint, APIKey: linearKey, HTTP: hub.httpClient},
 				Why: func(ctx context.Context, initiativeID, taskID string) ([]linear.WhyStep, error) {
 					items, err := engine.Why(ctx, initiativeID, "task", taskID)
@@ -209,6 +218,8 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 			subs = append(subs, pi.syncer)
 		}
 	}
+
+	subs = append(subs, r.pushNotifiers(projectID, pr, pushSubs)...)
 
 	pi.dispatcher = integrations.NewDispatcher(pr.db, projectID, subs, r.log, hub.dispatchOpts)
 	ctx, cancel := context.WithCancel(r.lifetimeContext())
@@ -239,7 +250,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		close(pi.ready)
 		wg.Wait()
 	}()
-	r.log.Info("integrations configured", "project", projectID, "slack", cfg.Slack != nil, "linear", cfg.Linear != nil)
+	r.log.Info("integrations configured", "project", projectID, "slack", cfg.Slack != nil, "linear", cfg.Linear != nil, "push_subscriptions", len(pushSubs))
 }
 
 func orLabel(label, typ string) string {
@@ -283,8 +294,15 @@ func (r *Runtime) startConfiguredIntegrations(ctx context.Context) {
 	}
 	for _, p := range projects {
 		cfg, err := config.Load(filepath.Join(p.RootPath, config.Dir))
-		if err != nil || !cfg.Harness.Integrations.Configured() {
+		if err != nil {
 			continue
+		}
+		if !cfg.Harness.Integrations.Configured() {
+			// A project with push subscriptions is marked in global.db, so it
+			// can be found without opening every project's database.
+			if v, _ := r.global.DaemonMeta(ctx, pushMetaKey(p.ID)); v == "" {
+				continue
+			}
 		}
 		if _, err := r.EnsureProject(ctx, p.ID); err != nil {
 			r.log.Warn("integrations: opening project", "project", p.ID, "err", err)
@@ -424,6 +442,14 @@ type IntegrationStatus struct {
 	Poll        *linear.PollState  `json:"poll,omitempty"`
 	// LinkedIssues counts Linear issues linked to initiatives and tasks.
 	LinkedIssues int `json:"linked_issues,omitempty"`
+	// Config is the integration's harness.yaml section as written (null when
+	// not configured), for the Settings editor. It holds environment
+	// variable NAMES only; Tokens says whether each is set.
+	Config any `json:"config"`
+	// TokenEnvs names the variables the integration reads (defaults
+	// applied), so an unconfigured integration's editor can say which ones
+	// it will need.
+	TokenEnvs []string `json:"token_envs"`
 }
 
 var integrationNames = []string{"slack", "linear"}
@@ -440,7 +466,13 @@ func (s *Server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"integrations": out,
+		// The event vocabulary and Slack's default selection, so the editor
+		// lists what harness.yaml accepts rather than a copy of its own.
+		"event_kinds":          config.IntegrationEventKinds,
+		"default_slack_events": config.DefaultSlackEvents,
+	})
 }
 
 func (r *Runtime) integrationStatus(ctx context.Context, projectID string, pr *projectRuntime) ([]IntegrationStatus, error) {
@@ -455,6 +487,26 @@ func (r *Runtime) integrationStatus(ctx context.Context, projectID string, pr *p
 	for _, name := range integrationNames {
 		st := IntegrationStatus{Name: name, Problems: []string{}}
 		st.Configured = (name == "slack" && cfg.Slack != nil) || (name == "linear" && cfg.Linear != nil)
+		switch {
+		case name == "slack" && cfg.Slack != nil:
+			st.Config = cfg.Slack
+			st.TokenEnvs = []string{cfg.Slack.BotTokenEnvName(), cfg.Slack.AppTokenEnvName()}
+		case name == "slack":
+			st.TokenEnvs = []string{config.SlackConfig{}.BotTokenEnvName(), config.SlackConfig{}.AppTokenEnvName()}
+		case name == "linear" && cfg.Linear != nil:
+			st.Config = cfg.Linear
+			st.TokenEnvs = []string{cfg.Linear.APIKeyEnvName()}
+		default:
+			st.TokenEnvs = []string{config.LinearConfig{}.APIKeyEnvName()}
+		}
+		if st.Tokens == nil {
+			// Set-or-not for every variable, even before the integration is
+			// running (the hub only fills Tokens for a started one).
+			st.Tokens = map[string]bool{}
+			for _, env := range st.TokenEnvs {
+				st.Tokens[env] = lookupEnv(env, pr.dotEnv) != ""
+			}
+		}
 		if st.Configured && pi != nil {
 			st.Tokens = pi.tokens[name]
 			st.Problems = append(st.Problems, pi.problems[name]...)

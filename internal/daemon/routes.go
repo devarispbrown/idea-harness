@@ -107,6 +107,16 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/executors", s.handleListExecutors)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/integrations", s.handleIntegrationsStatus)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/integrations/{name}/test", s.handleIntegrationTest)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/integrations/{name}", s.handleUpdateIntegration)
+
+	// Spending caps (budget.go) and scheduled automations (automations.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/budget", s.handleProjectBudget)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/budget", s.handleSetProjectBudget)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/budget", s.handleGetBudget)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/initiatives/{id}/budget", s.handleSetBudget)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/automations", s.handleListAutomations)
+	m.HandleFunc("PUT /api/v1/projects/{projectId}/automations/{name}", s.handleUpdateAutomation)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/automations/{name}/run", s.handleRunAutomation)
 
 	// The initiative-scoped reads, on the nested path. These ten once answered
 	// only at the flat `/projects/{projectId}/<resource>?initiative_id=` form,
@@ -128,6 +138,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/doctor", s.handleDoctor)
 	m.HandleFunc("PUT /api/v1/projects/{projectId}/executors", s.handleUpdateExecutors)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/executors/smoke", s.handleExecutorSmoke)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/executors/config", s.handleExecutorConfig)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/agent-output", s.handleAgentOutput)
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/initiatives/{id}/partial-work", s.handleDiscardPartialWork)
 
@@ -147,6 +158,24 @@ func (s *Server) routes() {
 	// Review convergence and quality history for the web UI (graph_views.go).
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/review-telemetry", s.handleReviewTelemetry)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/quality/history", s.handleQualityHistory)
+
+	// Remote browser sign-in (uisession.go): pairing codes, sessions, logout.
+	m.HandleFunc("POST /api/v1/ui/pairing-codes", s.handleCreatePairingCode)
+	m.HandleFunc("POST /api/v1/ui/login", s.handleLogin)
+	m.HandleFunc("POST /api/v1/ui/logout", s.handleLogout)
+	m.HandleFunc("GET /api/v1/ui/session", s.handleGetUISession)
+	m.HandleFunc("GET /api/v1/ui/sessions", s.handleListUISessions)
+	m.HandleFunc("DELETE /api/v1/ui/sessions", s.handleRevokeAllUISessions)
+	m.HandleFunc("DELETE /api/v1/ui/sessions/{id}", s.handleRevokeUISession)
+
+	// Web Push notifications (push.go): the VAPID key, and per-project
+	// browser subscriptions -- each one a subscriber on the integration bus.
+	m.HandleFunc("GET /api/v1/push/vapid-public-key", s.handlePushConfig)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/push/subscriptions", s.handleListPushSubscriptions)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions", s.handleCreatePushSubscription)
+	m.HandleFunc("PATCH /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleUpdatePushSubscription)
+	m.HandleFunc("DELETE /api/v1/projects/{projectId}/push/subscriptions/{id}", s.handleDeletePushSubscription)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/test", s.handleTestPushSubscription)
 
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make

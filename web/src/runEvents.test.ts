@@ -76,7 +76,31 @@ describe("groupToolCalls / actionSummary", () => {
       ["b", "failed", 1],
       ["c", "pending", 0],
     ]);
-    expect(actionSummary(g)).toEqual({ done: 2, total: 3, failed: 1, label: "2/3 actions" });
+    expect(actionSummary(g)).toEqual({ done: 2, total: 3, failed: 1, cancelled: 0, label: "2/3 actions" });
+  });
+
+  it("closes calls still open when the run is over as cancelled, not in progress", () => {
+    const events = [
+      ev({ kind: "tool_call", tool_call_id: "a", title: "Read a.ts", status: "completed" }),
+      ev({ kind: "tool_call", tool_call_id: "b", title: "npm test", status: "in_progress" }),
+      ev({ kind: "tool_call", tool_call_id: "c", title: "Edit x.ts", status: "pending" }),
+      ev({ kind: "tool_call", tool_call_id: "d", title: "rm -rf", status: "failed" }),
+    ];
+    // While live, an open call is still open.
+    expect(groupToolCalls(events).map((g) => g.status)).toEqual(["completed", "in_progress", "pending", "failed"]);
+    // Once the run is over, nothing is left spinning; finished ones keep their status.
+    const over = groupToolCalls(events, true);
+    expect(over.map((g) => g.status)).toEqual(["completed", "cancelled", "cancelled", "failed"]);
+    expect(actionSummary(over)).toEqual({ done: 4, total: 4, failed: 1, cancelled: 2, label: "4/4 actions" });
+  });
+
+  it("takes the engine's own cancelled result for an interrupted call", () => {
+    const events = [
+      ev({ kind: "tool_call", tool_call_id: "a", title: "npm test", status: "in_progress" }),
+      ev({ kind: "tool_result", tool_call_id: "a", title: "npm test", status: "cancelled" }),
+    ];
+    expect(groupToolCalls(events)[0].status).toBe("cancelled");
+    expect(currentAction(events, true)).toBe("Thinking");
   });
 
   it("makes a call without an id its own group", () => {

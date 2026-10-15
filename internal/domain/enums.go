@@ -145,6 +145,11 @@ const (
 	// already completed, so it dropped back out of `complete`. Resolve by
 	// recording verification evidence, not by touching the plan.
 	JudgmentVerification JudgmentReason = "verification"
+	// JudgmentBudget: the initiative reached its spending cap (`budget`) and
+	// the engine stopped before the next model or agent call. Resolve by
+	// raising the cap (`idea budget <initiative> --set <usd>`), which returns
+	// the initiative to where it was, and running the step again.
+	JudgmentBudget JudgmentReason = "budget_exceeded"
 )
 
 // Valid reports whether r is a known judgment reason. The empty string is valid
@@ -152,7 +157,7 @@ const (
 // any producer that has not been taught to set it.
 func (r JudgmentReason) Valid() bool {
 	switch r {
-	case "", JudgmentPRDReview, JudgmentPlanDependencies, JudgmentPlanReview, JudgmentVerification:
+	case "", JudgmentPRDReview, JudgmentPlanDependencies, JudgmentPlanReview, JudgmentVerification, JudgmentBudget:
 		return true
 	}
 	return false
@@ -446,8 +451,9 @@ func (d MetricDirection) Valid() bool {
 // manual is recorded by a human (`idea metric record`); command runs a shell
 // command in the no-network check sandbox and reads the number it prints;
 // url fetches a JSON document through the SSRF-guarded fetcher and reads the
-// number at a JSON pointer. Neither command nor url ever runs on its own: a
-// human (or an MCP client) asks for `idea metric measure`.
+// number at a JSON pointer. Neither command nor url runs on its own: a human
+// (or an MCP client) asks for `idea metric measure`, or a person has enabled
+// automations.metric_measurement, which measures each on its cadence.
 type MetricSourceKind string
 
 const (
