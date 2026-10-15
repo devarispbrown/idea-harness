@@ -118,6 +118,8 @@ tags:
     description: Providers, models and executors, backed by harness.yaml.
   - name: events
     description: The event timeline and its SSE stream.
+  - name: outcomes
+    description: Objectives, outcome metrics, observations and drift — the outcome end of the Product Graph.
 
 paths:
   /api/v1/health:
@@ -489,6 +491,366 @@ paths:
                 properties:
                   status: { type: string, const: discarded }
                 required: [status]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: listObjectives
+      summary: The initiative's live objectives
+      description: |
+        Every objective not superseded by a PRD revision, any status, each with the active
+        requirements serving it and its live metrics. The PRD stage writes objectives; a human adds,
+        edits and links them here.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The objectives, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Objective" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: createObjective
+      summary: Add an objective
+      description: A human-added objective is never rewritten or superseded by a PRD revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                statement: { type: string, description: "The outcome, stated as a change in the world." }
+                rationale: { type: string }
+                owner: { type: string }
+                status: { $ref: "#/components/schemas/ObjectiveStatus" }
+              required: [statement]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: Created; `code` is the next `OBJ-n`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/ObjectiveId"
+    patch:
+      tags: [outcomes]
+      operationId: updateObjective
+      summary: Edit an objective
+      description: Changes only the fields present. `status` moves it to `achieved` or `abandoned` (or back).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                statement: { type: string }
+                rationale: { type: string }
+                owner: { type: string }
+                status: { $ref: "#/components/schemas/ObjectiveStatus" }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The updated objective.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}/requirements:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/ObjectiveId"
+    post:
+      tags: [outcomes]
+      operationId: linkObjectiveRequirement
+      summary: Link (or unlink) a requirement to an objective
+      description: |
+        Records `requirement --serves--> objective` (N:M; linking twice is one edge). `unlink: true`
+        removes it. A superseded requirement cannot be linked (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requirement: { type: string, description: "Code (`REQ-1`) or id." }
+                unlink: { type: boolean }
+              required: [requirement]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The objective with its updated `requirement_ids`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: listMetrics
+      summary: The initiative's live outcome metrics, with drift
+      description: Each metric carries `status`, its deterministic drift evaluation at request time.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The metrics, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OutcomeMetric" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: createMetric
+      summary: Add an outcome metric to an objective
+      description: |
+        `source` defaults to `manual`. A `hypothesis` ("we believe X will move this") is recorded as
+        a hypothesis assertion linked to the metric (`assertion --predicts--> metric`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objective: { type: string, description: "Code (`OBJ-1`) or id." }
+                name: { type: string }
+                definition: { type: string }
+                unit: { type: string }
+                direction: { $ref: "#/components/schemas/MetricDirection" }
+                baseline: { type: number }
+                target: { type: number }
+                guardrail: { type: number }
+                cadence: { type: string }
+                source: { $ref: "#/components/schemas/MetricSource" }
+                hypothesis: { type: string }
+              required: [objective, name, direction, target]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: Created; `code` is the next `MET-n`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeMetric" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/measure:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [outcomes]
+      operationId: measureMetrics
+      summary: Measure command and url sources now
+      description: |
+        Measures one metric (`metric`) or, with no body, every live metric with a `command` or `url`
+        source, and records each value read. A command runs in the no-network check sandbox with
+        the workspace read-only at `/repo` (never on the host; no Docker, no measurement) and the
+        last number it prints is the value. A url is fetched through the SSRF-guarded fetcher and
+        read at its JSON pointer, only when `outcomes.allow_url_sources` is on. Synchronous: each
+        command is bounded by `outcomes.measure_timeout_seconds`. One source failing does not stop
+        the rest; naming a manual metric is a 400.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                metric: { type: string, description: "Code (`MET-1`) or id; omit for all." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: One result per metric.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/MeasureResult" }
+                required: [results]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/MetricId"
+    patch:
+      tags: [outcomes]
+      operationId: updateMetric
+      summary: Edit an outcome metric
+      description: |
+        Changes only the fields present. `clear_baseline` / `clear_guardrail` remove those values
+        (with no baseline, the first observation stands in). Its observations are untouched: a
+        changed target re-evaluates the same history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objective: { type: string }
+                name: { type: string }
+                definition: { type: string }
+                unit: { type: string }
+                direction: { $ref: "#/components/schemas/MetricDirection" }
+                baseline: { type: number }
+                clear_baseline: { type: boolean }
+                target: { type: number }
+                guardrail: { type: number }
+                clear_guardrail: { type: boolean }
+                cadence: { type: string }
+                source: { $ref: "#/components/schemas/MetricSource" }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The updated metric, re-evaluated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeMetric" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/MetricId"
+    get:
+      tags: [outcomes]
+      operationId: listObservations
+      summary: A metric's observations, oldest first
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The observations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MetricObservation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: recordObservation
+      summary: Record a measured value
+      description: |
+        Records a human-supplied value (source `manual`). In the same transaction the store
+        attributes the change sets applied since the previous observation (and wires
+        `metric --attributed_to--> change_set`), and, when the value moves the metric into
+        `off_track` or `regressed`, appends the `metric.drifted` event the integration bus
+        publishes as `outcome.drifted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value: { type: number }
+                note: { type: string }
+                observed_at: { type: string, format: date-time, description: "RFC 3339; defaults to now; not in the future." }
+              required: [value]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: The observation and the metric's drift after it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  observation: { $ref: "#/components/schemas/MetricObservation" }
+                  status: { $ref: "#/components/schemas/MetricStatus" }
+                required: [observation, status]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/outcomes:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: getOutcomes
+      summary: Outcome drift report
+      description: |
+        Live objectives, live metrics with drift, the "works but fails its objective" signals
+        (a verified requirement whose objective has an off-track or regressed metric), the outcome
+        chain's gaps, and counts. The one shape `idea status`, `idea next`, the Health page and the
+        MCP `outcomes` tool read.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -1067,8 +1429,9 @@ paths:
       operationId: getWhy
       summary: Provenance chain behind one graph node
       description: |
-        Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`) from the
-        node towards its sources, bounded in depth. Both `type` and `id` are required.
+        Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`, and the
+        outcome chain's `serves`, `measures`, `predicts`, `attributed_to`) from the node towards its
+        sources, bounded in depth. Both `type` and `id` are required.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1098,7 +1461,9 @@ paths:
         A task's change sets are not graph edges (`ChangeSet.TaskID` links them instead), so when the
         walk reaches a task, its change sets are added as synthetic dependents (`edge_type:
         "change_set"`) -- otherwise impact on a requirement or decision could reach the task and stop
-        there (review A4 #4/#5).
+        there (review A4 #4/#5). The walk continues from each such change set, so an outcome metric
+        an observation attributed to it (`metric --attributed_to--> change_set`) is reached too:
+        impact on a requirement includes the outcomes its work moved.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3796,7 +4161,21 @@ components:
       name: type
       in: query
       required: true
-      description: Graph node type, e.g. `requirement`, `task`, `decision`, `assertion`, `change_set`.
+      description: |
+        Graph node type: `task`, `requirement`, `decision`, `question`, `artifact`, `context_doc`,
+        `run`, `objective`, `metric`, `assertion` or `change_set`. Anything else is a 400.
+      schema: { type: string }
+    ObjectiveId:
+      name: objectiveId
+      in: path
+      required: true
+      description: An objective's code (`OBJ-1`, any case) or id.
+      schema: { type: string }
+    MetricId:
+      name: metricId
+      in: path
+      required: true
+      description: An outcome metric's code (`MET-1`, any case) or id.
       schema: { type: string }
     GraphNodeId:
       name: id
@@ -3852,6 +4231,13 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
       description: The requested transition is not legal from the current state; the message says why.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: |
+        The body is unparseable or a field is invalid; the message names which (e.g. `an objective
+        needs a statement`, `invalid direction "up" (use increase, decrease or maintain)`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -3963,7 +4349,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 99 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 110 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -4164,8 +4550,228 @@ components:
             reflects the last check run. Absent means no test is known to cover this requirement
             yet, not that one failed.
           items: { $ref: "#/components/schemas/EvidenceTest" }
+        objective_ids:
+          type: array
+          items: { type: string }
+          description: |
+            The live objectives this requirement serves (`requirement --serves--> objective`),
+            computed from graph edges. `[]` when it serves none -- the gap the PRD review's
+            outcome check reports.
         created_at: { type: string, format: date-time }
-      required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]
+      required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, objective_ids, created_at]
+
+    ObjectiveStatus:
+      type: string
+      title: ObjectiveStatus
+      description: Only an `active` objective is checked for drift or required to have a metric.
+      enum: [active, achieved, abandoned]
+
+    MetricDirection:
+      type: string
+      title: MetricDirection
+      description: Which way the metric should move; `maintain` holds it at the target.
+      enum: [increase, decrease, maintain]
+
+    MetricSourceKind:
+      type: string
+      title: MetricSourceKind
+      enum: [manual, command, url]
+
+    MetricDrift:
+      type: string
+      title: MetricDrift
+      description: |
+        The deterministic drift status (`domain.EvaluateMetricDrift`), most urgent first:
+        `regressed` (worse than the previous observation, with a change set landed in between),
+        `off_track` (worse than the baseline -- declared, or else the first observation -- or past
+        the guardrail), `stale` (more than one cadence since the last observation), `no_data`,
+        `on_track`.
+      enum: [on_track, off_track, stale, regressed, no_data]
+
+    Objective:
+      type: object
+      title: Objective
+      description: A product objective an initiative exists to move (`domain.Objective`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        code: { type: string, description: "`OBJ-n`." }
+        statement: { type: string }
+        rationale: { type: string }
+        status: { $ref: "#/components/schemas/ObjectiveStatus" }
+        owner: { type: string }
+        produced_by_run: { type: string, description: "The PRD run that authored it; absent for a human-added one." }
+        superseded_by: { type: string }
+        requirement_ids:
+          type: array
+          items: { type: string }
+        metric_ids:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, initiative_id, code, statement, status, requirement_ids, metric_ids, created_at, updated_at]
+
+    MetricSource:
+      type: object
+      title: MetricSource
+      description: |
+        How a metric is measured. `command` runs `sh -c` in the no-network check sandbox with the
+        workspace read-only at `/repo`; the last number it prints is the value. `url` is fetched by
+        the SSRF-guarded fetcher and read at `pointer` (RFC 6901; empty means the document itself).
+      properties:
+        kind: { $ref: "#/components/schemas/MetricSourceKind" }
+        command: { type: string }
+        url: { type: string }
+        pointer: { type: string }
+      required: [kind]
+
+    MetricStatus:
+      type: object
+      title: MetricStatus
+      description: One metric's drift evaluation; every signal is reported alongside the primary `drift`.
+      properties:
+        drift: { $ref: "#/components/schemas/MetricDrift" }
+        off_track: { type: boolean }
+        stale: { type: boolean }
+        regressed: { type: boolean }
+        guardrail_breached: { type: boolean }
+        achieved: { type: boolean }
+        observations: { type: integer }
+        latest: { type: number }
+        latest_at: { type: string, format: date-time }
+        previous: { type: number }
+        effective_baseline: { type: number }
+        baseline_source:
+          type: string
+          enum: [declared, first_observation]
+        regressed_by:
+          type: array
+          items: { type: string }
+          description: Change set ids attributed to the observation that moved the metric the wrong way.
+        next_due_at: { type: string, format: date-time }
+        reasons:
+          type: array
+          items: { type: string }
+      required: [drift, off_track, stale, regressed, guardrail_breached, achieved, observations, regressed_by, reasons]
+
+    OutcomeMetric:
+      type: object
+      title: OutcomeMetric
+      description: How an objective is measured (`domain.OutcomeMetric`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        objective_id: { type: string }
+        objective_code: { type: string }
+        code: { type: string, description: "`MET-n`." }
+        name: { type: string }
+        definition: { type: string }
+        unit: { type: string }
+        direction: { $ref: "#/components/schemas/MetricDirection" }
+        baseline: { type: number, description: "Absent when unknown." }
+        target: { type: number }
+        guardrail:
+          type: number
+          description: A floor (increase), a ceiling (decrease), or the largest allowed distance from the target (maintain).
+        source: { $ref: "#/components/schemas/MetricSource" }
+        cadence: { type: string, description: "hourly, daily, weekly, biweekly, monthly, quarterly, `<n>d`, `<n>w`, or a duration." }
+        produced_by_run: { type: string }
+        superseded_by: { type: string }
+        status: { $ref: "#/components/schemas/MetricStatus" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, initiative_id, objective_id, code, name, direction, target, source, created_at, updated_at]
+
+    MetricObservation:
+      type: object
+      title: MetricObservation
+      description: One measured value with its provenance and outcome attribution.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        metric_id: { type: string }
+        value: { type: number }
+        observed_at: { type: string, format: date-time }
+        source: { $ref: "#/components/schemas/MetricSourceKind" }
+        note: { type: string }
+        recorded_by: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        change_set_ids:
+          type: array
+          items: { type: string }
+          description: Change sets applied (still applied, not no-op) between the previous observation and this one.
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, metric_id, value, observed_at, source, recorded_by, provenance, change_set_ids, created_at]
+
+    RequirementOutcomeDrift:
+      type: object
+      title: RequirementOutcomeDrift
+      description: A verified requirement whose objective has an off-track or regressed metric.
+      properties:
+        requirement_id: { type: string }
+        requirement_code: { type: string }
+        objective_id: { type: string }
+        objective_code: { type: string }
+        metric_codes:
+          type: array
+          items: { type: string }
+        signal: { type: string, const: works_but_fails_objective }
+        detail: { type: string }
+      required: [requirement_id, requirement_code, objective_id, objective_code, metric_codes, signal, detail]
+
+    OutcomeSummary:
+      type: object
+      title: OutcomeSummary
+      properties:
+        objectives: { type: integer }
+        metrics: { type: integer }
+        on_track: { type: integer }
+        off_track: { type: integer }
+        regressed: { type: integer }
+        stale: { type: integer }
+        no_data: { type: integer }
+        drifting: { type: integer, description: "off_track + regressed + stale." }
+        works_but_fails: { type: integer }
+      required: [objectives, metrics, on_track, off_track, regressed, stale, no_data, drifting, works_but_fails]
+
+    OutcomeReport:
+      type: object
+      title: OutcomeReport
+      properties:
+        objectives:
+          type: array
+          items: { $ref: "#/components/schemas/Objective" }
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/OutcomeMetric" }
+        requirement_drift:
+          type: array
+          items: { $ref: "#/components/schemas/RequirementOutcomeDrift" }
+        gaps:
+          type: object
+          properties:
+            objectives_without_metrics: { type: array, items: { type: string } }
+            objectives_without_requirements: { type: array, items: { type: string } }
+            requirements_without_objectives: { type: array, items: { type: string } }
+          required: [objectives_without_metrics, objectives_without_requirements, requirements_without_objectives]
+        summary: { $ref: "#/components/schemas/OutcomeSummary" }
+      required: [objectives, metrics, requirement_drift, gaps, summary]
+
+    MeasureResult:
+      type: object
+      title: MeasureResult
+      description: One metric's measurement; exactly one of `observation`, `skipped` and `error` is set.
+      properties:
+        metric_id: { type: string }
+        metric_code: { type: string }
+        observation: { $ref: "#/components/schemas/MetricObservation" }
+        status: { $ref: "#/components/schemas/MetricStatus" }
+        skipped: { type: string }
+        error: { type: string }
+      required: [metric_id, metric_code]
 
     EvidenceTest:
       type: object
@@ -4932,6 +5538,12 @@ components:
             warning: { type: string }
             note: { type: string }
           required: [requested, resolved]
+        outcomes:
+          allOf: [{ $ref: "#/components/schemas/OutcomeSummary" }]
+          description: |
+            Outcome drift counts, present only when a metric is off track, regressed or stale, or a
+            verified requirement's objective is failing; `why` then also carries a sentence naming
+            the codes. Never replaces `action`: drift is something to know, not a gate.
       required: [action, why, affected]
 
     StaleItemRef:
