@@ -316,6 +316,34 @@ regresses against `--baseline`. A real-model run that merely stops for a human i
 not a failure. CI runs the scripted suite as a Go test (`internal/eval`) against
 `internal/eval/testdata/baseline-scripted.json`.
 
+## Objectives and outcome metrics
+
+The PRD states objectives (`OBJ-n`) and the metrics that measure them (`MET-n`); these commands are
+the human side. All take an optional trailing initiative reference, like every initiative-scoped
+command, and `--json`.
+
+```bash
+idea objectives                                   # what each objective is, what serves and measures it
+idea objective add "Support load drops" --rationale "tickets cost us a day a week"
+idea objective edit OBJ-2 --status achieved       # or abandoned; --statement/--rationale/--owner
+idea objective link REQ-4 OBJ-2                   # REQ-4 serves OBJ-2 (--unlink removes it)
+
+idea metric add OBJ-2 "weekly tickets" --direction decrease --baseline 40 --target 15 --cadence weekly
+idea metric add OBJ-2 "error rate" --direction maintain --target 1 --guardrail 0.5 \
+    --command "go run ./cmd/errstats /repo/logs"   # the last number printed is the value
+idea metric edit MET-3 --clear-baseline           # the first observation stands in
+idea metric record MET-3 22 --note "Zendesk export"
+idea metric measure                               # every command/url source; or `idea metric measure MET-4`
+idea metrics                                      # each metric with its drift and the reasons
+```
+
+`metric record` prints the metric's drift after the value and how many change sets landed since the
+previous one (`idea trace metric MET-3` names them). `metric measure` runs a command source in the
+no-network check sandbox — never the host — and exits `9` (`run_failed`) when any measurement failed,
+after printing every result. The drift rules are in the README's
+[Objectives & outcomes](../README.md#objectives--outcomes) section; `idea status` and `idea next`
+add an outcome line whenever something drifts.
+
 ## Example
 
 ```bash
