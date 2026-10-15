@@ -31,7 +31,7 @@ func fakeOriginRemote(t *testing.T, workspace string) {
 // tests: a fake `gh` that answers `pr create` and `pr checks` offline.
 func writeWorkflowFakeGH(t *testing.T, url, checksJSON string, checksExit int) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 sub="$1"
 case "$sub" in
   pr)

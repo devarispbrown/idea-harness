@@ -595,6 +595,21 @@ func (r *Runtime) detachedContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.lifetimeContext(), 5*time.Minute)
 }
 
+// waitSwept blocks until the startup sweep is done, for work that starts a
+// container outside an operation (metric commands): the sweep may delete
+// the scratch directory of anything that starts before it finishes.
+func (r *Runtime) waitSwept(ctx context.Context) error {
+	if r.swept == nil {
+		return nil
+	}
+	select {
+	case <-r.swept:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // markSwept records that the startup sweep is done.
 func (r *Runtime) markSwept() { r.sweptOnce.Do(func() { close(r.swept) }) }
 

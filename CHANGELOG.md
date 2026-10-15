@@ -526,8 +526,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   root, and for the setup probes; gid `0` is never passed. Non-root daemons are unchanged.
 - **A killed root daemon's work roots are handed back at the next start.** Once the startup sweep
   has removed every leftover container, a root daemon chowns foreign-owned files in
-  `<state>/projects/*/work/` back to itself and deletes leftover quality-dimension copies. Nothing
-  outside those directories is touched. Check containers now carry the agent label, so the sweep
+  `<state>/projects/*/work/` back to itself and deletes leftover quality-dimension copies and
+  metric-command scratch roots. Nothing outside those directories is touched. Metric commands
+  now use a scratch root under the project's state directory (`metric-*`) instead of the system
+  temp directory, and wait for the startup sweep before they run. Check containers now carry the agent label, so the sweep
   also removes a check a killed daemon left running.
 - **One guesser can no longer lock the owner out of remote sign-in.** Wrong pairing codes were
   counted daemon-wide: ten in fifteen minutes from anyone paused sign-in for everyone and

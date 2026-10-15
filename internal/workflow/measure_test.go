@@ -100,6 +100,21 @@ func TestMeasureCommandSourceInSandbox(t *testing.T) {
 		t.Fatalf("stored observations = %+v", obs)
 	}
 
+	// The scratch work root sits under the engine's work root (the project's
+	// state directory, where startup recovery can find a leftover), and is
+	// gone once the command is done.
+	state := t.TempDir()
+	eng.SetWorkRoot(state)
+	if _, err := eng.MeasureMetrics(context.Background(), ini, "MET-2", store.HumanActor); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(sb.opts.WorkRoot) != state || !strings.HasPrefix(filepath.Base(sb.opts.WorkRoot), "metric-") {
+		t.Fatalf("metric work root %q, want %s/metric-*", sb.opts.WorkRoot, state)
+	}
+	if _, err := os.Stat(sb.opts.WorkRoot); !os.IsNotExist(err) {
+		t.Fatalf("the metric work root was left behind: %v", err)
+	}
+
 	// outcomes.image wins over check.image.
 	eng.cfg.Outcomes.Image = "alpine:3.20"
 	if _, err := eng.MeasureMetrics(context.Background(), ini, "MET-2", store.HumanActor); err != nil {

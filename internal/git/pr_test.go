@@ -13,7 +13,7 @@ import (
 // answers `pr create` and `pr checks` deterministically, entirely offline.
 func writeFakeGH(t *testing.T, argsPath string, checksJSON string, checksExit int) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$@" >> '%s'
 echo '---' >> '%s'
 sub="$1"
@@ -211,7 +211,7 @@ func TestCreatePRPassesThroughAuthEnv(t *testing.T) {
 // environment to envPath on `push` and no-ops otherwise.
 func writeFakeGitRecordingPushEnv(t *testing.T, envPath string) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "push" ]; then
   env | sort > '%s'
   exit 0
@@ -236,7 +236,7 @@ exit 1
 // to envPath and answers `pr create` deterministically.
 func writeFakeGHRecordingEnv(t *testing.T, envPath string) string {
 	t.Helper()
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 env | sort > '%s'
 if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
   echo "https://github.com/example/repo/pull/42"

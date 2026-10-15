@@ -216,8 +216,10 @@ func (g *mountGrant) handOver(root, path string) error {
 //     is the next attempt's base until re-seeded, and a stopped run's partial
 //     files are read from it -- so every path in it not owned by the daemon
 //     is chowned back to the daemon, as Restore would have done;
-//   - a quality-dimension copy (projects/<id>/quality-*) is a disposable temp
-//     root, so it is removed.
+//   - a quality-dimension copy (projects/<id>/quality-*) and a metric
+//     command's scratch root (projects/<id>/metric-*) are disposable temp
+//     roots, so they are removed. Metric commands wait for the startup sweep
+//     before they start, so none of this daemon's can be caught here.
 //
 // Agent homes (work/.agent-home-*) are SweepAgentLeftovers' to remove. A
 // symlink is never followed: one at the top of a root is skipped, one inside
@@ -276,7 +278,11 @@ func RecoverWorkRoots(stateRoot string) (recovered int, err error) {
 				}
 			}
 		}
-		temps, _ := filepath.Glob(filepath.Join(proj, "quality-*"))
+		var temps []string
+		for _, pattern := range []string{"quality-*", "metric-*"} {
+			m, _ := filepath.Glob(filepath.Join(proj, pattern))
+			temps = append(temps, m...)
+		}
 		for _, tmp := range temps {
 			if !isRealDir(tmp) {
 				continue

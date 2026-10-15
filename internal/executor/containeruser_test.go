@@ -357,6 +357,8 @@ func TestRecoverWorkRoots(t *testing.T) {
 	quality := filepath.Join(proj, "quality-123")
 	os.MkdirAll(filepath.Join(quality, "d"), 0o755)
 	os.WriteFile(filepath.Join(quality, "d", "f"), []byte("x"), 0o644)
+	metric := filepath.Join(proj, "metric-456")
+	os.MkdirAll(metric, 0o755)
 	notOurs := filepath.Join(state, "elsewhere", "work", "ini")
 	os.MkdirAll(notOurs, 0o755)
 
@@ -371,8 +373,8 @@ func TestRecoverWorkRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Errorf("recovered %d roots, want 2 (the work root and the quality copy)", n)
+	if n != 3 {
+		t.Errorf("recovered %d roots, want 3 (the work root, the quality copy, the metric root)", n)
 	}
 	for _, p := range []string{work, filepath.Join(work, "src"), filepath.Join(work, "src", "a.go"), filepath.Join(work, "link")} {
 		if o, ok := log.owner(p); !ok || o != [2]int{4242, 4242} {
@@ -386,6 +388,9 @@ func TestRecoverWorkRoots(t *testing.T) {
 	}
 	if _, err := os.Stat(quality); !os.IsNotExist(err) {
 		t.Errorf("the quality copy was not removed: %v", err)
+	}
+	if _, err := os.Stat(metric); !os.IsNotExist(err) {
+		t.Errorf("the metric root was not removed: %v", err)
 	}
 	if _, err := os.Stat(home); err != nil {
 		t.Errorf("an agent home was removed (that is the sweep's job): %v", err)

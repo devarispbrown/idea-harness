@@ -15,7 +15,7 @@ import (
 
 // smokeDocker is a fake docker for the smoke test: when $FAKE_WRITES is set
 // the agent writes a file into its /work mount, as a working agent does.
-const smokeDocker = `#!/usr/bin/env bash
+const smokeDocker = `#!/bin/sh
 case "$1" in
   run)
     prev=""
