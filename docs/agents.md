@@ -730,8 +730,9 @@ The coding-agent container is sandboxed for **filesystem and process** isolation
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- never as root: the daemon's own UID/GID, or a fixed unprivileged `65532:65532` when the daemon
-  runs as root (the work root is handed to that user for the run and back afterwards — details in
+- never as root: the daemon's own UID/GID; when the daemon runs as root, the UID/GID that owns the
+  project root, or a fixed unprivileged `65532:65532` if that owner is root (the work root is
+  handed to that user for the run and back afterwards — details in
   [`security-model.md`](security-model.md))
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 

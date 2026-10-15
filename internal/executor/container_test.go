@@ -12,7 +12,7 @@ import (
 
 // fakeDockerScript is a minimal Docker CLI stand-in: it records its arguments
 // and returns canned responses so the adapter can be tested hermetically.
-const fakeDockerScript = `#!/usr/bin/env bash
+const fakeDockerScript = `#!/bin/sh
 sub="$1"
 shift
 printf '%s\n' "$@" >> "$FAKE_DOCKER_RECORD"
@@ -124,7 +124,7 @@ func TestContainerExecutorStartStatusCollect(t *testing.T) {
 func TestContainerExecutorStatusFailure(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "record")
 	t.Setenv("FAKE_DOCKER_RECORD", record)
-	script := `#!/usr/bin/env bash
+	script := `#!/bin/sh
 sub="$1"
 shift
 printf '%s\n' "$@" >> "$FAKE_DOCKER_RECORD"

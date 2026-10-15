@@ -15,7 +15,7 @@ import (
 
 // fakeAgentDocker stands in for docker. The container exits with
 // $FAKE_AGENT_EXIT and prints a provider error, the way Hermes does on a 401.
-const fakeAgentDocker = `#!/usr/bin/env bash
+const fakeAgentDocker = `#!/bin/sh
 case "$1" in
   run) echo "cid-agent" ;;
   inspect) echo "exited ${FAKE_AGENT_EXIT:-0}" ;;

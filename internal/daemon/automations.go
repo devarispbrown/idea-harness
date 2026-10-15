@@ -367,6 +367,9 @@ func (s *scheduler) metricTargets(ctx context.Context, pr *projectRuntime, now t
 
 // measureMetric measures one metric and records the run.
 func (s *scheduler) measureMetric(ctx context.Context, projectID string, pr *projectRuntime, initiativeID, metricID, code, trigger string) {
+	if s.rt.waitSwept(ctx) != nil {
+		return
+	}
 	run, err := pr.db.StartAutomationRun(ctx, AutomationMetricMeasurement, metricID, trigger, s.now().UnixMilli())
 	if err != nil {
 		s.rt.log.Warn("automations: recording a run", "project", projectID, "err", err)
