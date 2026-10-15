@@ -198,7 +198,7 @@ func TestMCPToolAnnotations(t *testing.T) {
 			t.Errorf("%s annotations = %v, want destructive", name, ann[name])
 		}
 	}
-	for _, name := range []string{"list_initiatives", "status", "next_step", "show_prd", "list_findings", "why", "impact", "trace", "changed", "list_questions", "list_decisions", "list_change_sets", "show_change_set", "get_operation"} {
+	for _, name := range []string{"list_initiatives", "status", "next_step", "show_prd", "list_findings", "why", "impact", "trace", "gaps", "changed", "list_questions", "list_decisions", "list_change_sets", "show_change_set", "get_operation"} {
 		if ann[name]["readOnlyHint"] != true || ann[name]["destructiveHint"] != false {
 			t.Errorf("%s annotations = %v, want read-only", name, ann[name])
 		}
@@ -431,5 +431,40 @@ func TestMCPOutsideAProjectFailsAsToolError(t *testing.T) {
 	text, _, isErr := startMCP(t).callTool("status", map[string]any{})
 	if !isErr || !strings.Contains(text, "idea init") {
 		t.Errorf("status outside a project: isError=%v text=%q", isErr, text)
+	}
+}
+
+// gaps is a read tool over GET …/gaps: the kind filter reaches the daemon as
+// ?kind=, the text names each gap's closing command, and an empty report is
+// [] rather than null in structuredContent.
+func TestMCPGapsTool(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.seedMCP()
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/gaps", map[string]any{
+		"initiative_id": "ini-1",
+		"gaps": []map[string]any{{
+			"kind": "unverified_requirement", "state": "evidence_stale", "severity": "medium",
+			"nodes":      []map[string]any{{"type": "requirement", "id": "req-1", "code": "REQ-1"}},
+			"why":        "pass evidence for REQ-1/AC-1 predates CHG-2 changing the code it verified",
+			"next":       "idea verify REQ-1 --pass",
+			"dependents": 0, "initiative_id": "ini-1",
+		}},
+		"summary": map[string]any{"total": 1, "by_severity": map[string]int{"medium": 1}, "by_kind": map[string]int{"unverified_requirement": 1}},
+	})
+	s := startMCP(t, "--read-only")
+
+	text, st, isErr := s.callTool("gaps", map[string]any{"kind": "unverified_requirement"})
+	if isErr {
+		t.Fatalf("gaps isError: %s", text)
+	}
+	if !strings.Contains(text, "1 gap(s): 1 medium") || !strings.Contains(text, "unverified_requirement REQ-1") ||
+		!strings.Contains(text, "→ idea verify REQ-1 --pass") {
+		t.Errorf("gaps text = %q", text)
+	}
+	if gaps, ok := st["gaps"].([]any); !ok || len(gaps) != 1 {
+		t.Errorf("gaps structured = %v", st)
+	}
+	if !f.asked("/initiatives/ini-1/gaps?kind=unverified_requirement") {
+		t.Errorf("kind did not reach the daemon; requests: %v", f.requests)
 	}
 }
