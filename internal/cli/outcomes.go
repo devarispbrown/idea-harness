@@ -77,7 +77,7 @@ type cliOutcomes struct {
 
 // given reports whether a flag was on the command line at all -- a bool flag
 // set, or a value flag passed (even as ""). cmdArgs.has answers only for bool
-// flags, and an edit has to tell "--rationale ''" (clear it) from absent.
+// flags, and an edit has to tell "--rationale ”" (clear it) from absent.
 func (a cmdArgs) given(name string) bool {
 	if a.flags.bools[name] {
 		return true
@@ -460,11 +460,11 @@ func cmdMetric(a cmdArgs, stdout, _ io.Writer) error {
 		}
 		var res struct {
 			Results []struct {
-				MetricCode  string           `json:"metric_code"`
+				MetricCode  string                   `json:"metric_code"`
 				Observation *struct{ Value float64 } `json:"observation"`
-				Status      *cliMetricStatus `json:"status"`
-				Skipped     string           `json:"skipped"`
-				Error       string           `json:"error"`
+				Status      *cliMetricStatus         `json:"status"`
+				Skipped     string                   `json:"skipped"`
+				Error       string                   `json:"error"`
 			} `json:"results"`
 		}
 		if err := c.do("POST", initiativeResource(projectID, iniID, "metrics/measure"), body, &res); err != nil {
