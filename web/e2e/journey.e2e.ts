@@ -33,8 +33,9 @@ test("home lists the seeded initiative", async () => {
   await expect(card).toBeVisible();
   await expectAccessible(page, "home");
   await card.click();
-  await expect(page).toHaveURL(/#\/i\/[0-9a-f]{32}\/explore$/);
-  initiative = page.url().match(/#\/i\/([0-9a-f]{32})\//)![1];
+  // The shell names the project in every address (#/p/<project>/…).
+  await expect(page).toHaveURL(/#\/p\/[0-9a-f]{32}\/i\/[0-9a-f]{32}\/explore$/);
+  initiative = page.url().match(/\/i\/([0-9a-f]{32})\//)![1];
   // One demo banner, worded as what demo means: no model selected.
   await expect(page.locator(".banner-app")).toHaveCount(1);
   await expect(page.locator(".banner-app")).toContainText("no model is selected");
@@ -145,10 +146,10 @@ test("verify: pass with evidence", async () => {
 test("activity is the timeline; health shows the graph and its gaps", async () => {
   await page.goto(at("verify"));
   await page.getByRole("button", { name: "Activity ↗" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/i/${initiative}/changed$`));
+  await expect(page).toHaveURL(new RegExp(`/i/${initiative}/changed$`));
   await expectAccessible(page, "activity (what changed)");
   await page.getByRole("button", { name: "Health ↗" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/i/${initiative}/health$`));
+  await expect(page).toHaveURL(new RegExp(`/i/${initiative}/health$`));
   await expect(page.getByText(/Product gaps/)).toBeVisible();
   await expectAccessible(page, "health");
 });
@@ -158,7 +159,7 @@ test("explore's trace opens the lineage route for that document", async () => {
   const trace = page.getByRole("button", { name: /^Trace / }).first();
   if ((await trace.count()) === 0) test.skip(true, "the demo seeds no context documents");
   await trace.click();
-  await expect(page).toHaveURL(new RegExp(`#/i/${initiative}/lineage/context_doc/`));
+  await expect(page).toHaveURL(new RegExp(`/i/${initiative}/lineage/context_doc/`));
 });
 
 test("product graph views: gaps, outcomes, quality and a task's lineage", async () => {

@@ -26,6 +26,8 @@ import {
 import { chipsToShow, orderModels } from "./modelCatalog";
 import { resolveInitialProvider } from "./settingsLoad";
 import IntegrationsPanel from "./IntegrationsPanel";
+import NotificationsPanel from "./NotificationsPanel";
+import RemoteAccessPanel from "./RemoteAccessPanel";
 
 interface Provider {
   name: string;
@@ -1069,6 +1071,8 @@ export default function Settings({ projectId }: { projectId: string }) {
       </section>
 
       <IntegrationsPanel projectId={projectId} />
+      <NotificationsPanel projectId={projectId} />
+      <RemoteAccessPanel />
 
       {saved && <p className="ok-text">{saved}</p>}
       {warning && <p className="warn-text">{warning}</p>}
