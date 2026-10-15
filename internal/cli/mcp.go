@@ -325,6 +325,15 @@ func mcpToolTable(tier mcpTier) []mcpToolDef {
 			Handler: mcpHandler(func(a mcpArgs) (mcp.Result, error) { return mcpTrace("trace", a) }),
 		}},
 		{tier: mcpTierRead, Tool: mcp.Tool{
+			Name: "gaps", Title: "Product Graph gaps",
+			Description: "What the Product Graph is missing or no longer holds, most severe first: requirements with no task or no applied change set, acceptance criteria with no evidence, failed or stale (code changed since) evidence, unvalidated assumptions the plan rests on, decisions whose basis moved, orphan tasks and change sets, artifacts older than what they were generated from. Deterministic, no model call. Each gap names its nodes, why, and the command that closes it.",
+			InputSchema: mcpObject(map[string]any{
+				"kind":       mcpString("Comma-separated gap kinds to keep, e.g. unverified_requirement,invalidated_decision. Defaults to every kind."),
+				"initiative": mcpInitiativeProp,
+			}), Annotations: annRead,
+			Handler: mcpHandler(mcpGaps),
+		}},
+		{tier: mcpTierRead, Tool: mcp.Tool{
 			Name: "changed", Title: "What changed",
 			Description: "The initiative's timeline in plain language: what happened since it started, newest last.",
 			InputSchema: mcpObject(map[string]any{"initiative": mcpInitiativeProp}), Annotations: annRead,
@@ -753,6 +762,39 @@ func mcpTrace(mode string, a mcpArgs) (mcp.Result, error) {
 		}
 	}
 	return mcp.Result{Text: b.String(), Structured: out}, nil
+}
+
+func mcpGaps(a mcpArgs) (mcp.Result, error) {
+	c, projectID, iniID, err := mcpInitiative(a.Initiative)
+	if err != nil {
+		return mcp.Result{}, err
+	}
+	path := initiativeResource(projectID, iniID, "gaps")
+	if a.Kind != "" {
+		path += "?kind=" + url.QueryEscape(a.Kind)
+	}
+	var report cliGapReport
+	if err := c.do("GET", path, nil, &report); err != nil {
+		return mcp.Result{}, err
+	}
+	report.Gaps = nonNil(report.Gaps)
+	var b strings.Builder
+	if len(report.Gaps) == 0 {
+		b.WriteString("No gaps.")
+	} else {
+		fmt.Fprintf(&b, "%d gap(s): %s", report.Summary.Total, report.Summary.summaryLine())
+	}
+	for _, g := range report.Gaps {
+		subject := ""
+		if len(g.Nodes) > 0 {
+			subject = g.Nodes[0].Code
+		}
+		fmt.Fprintf(&b, "\n[%s] %s %s: %s", g.Severity, g.Kind, subject, g.Why)
+		if g.Next != "" {
+			fmt.Fprintf(&b, "\n    → %s", g.Next)
+		}
+	}
+	return mcp.Result{Text: b.String(), Structured: map[string]any{"initiative_id": iniID, "gaps": report.Gaps, "summary": report.Summary}}, nil
 }
 
 func mcpChanged(a mcpArgs) (mcp.Result, error) {

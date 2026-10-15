@@ -290,6 +290,12 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. %s",
 			g.Why, len(items), strings.Join(codes, ", "), advice)
 	}
+	// Gap counts (`idea gaps`), best-effort: a failure here must not turn the
+	// recommended next move into a 500, so it is simply omitted.
+	if gaps, err := projection.BuildGaps(r.Context(), pr.db, ini, projection.GapOptions{}); err == nil && len(gaps) > 0 {
+		sum := domain.Summarize(gaps)
+		g.GapSummary = &sum
+	}
 	// ICP re-run defect #5: changeSetFailureWhy (BuildGuidance, no store
 	// access) can only say "a check or the review found a problem it would
 	// not pass" for a rejected change set -- true, but not what a human

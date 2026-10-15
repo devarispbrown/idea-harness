@@ -114,6 +114,13 @@ type Guidance struct {
 	// the Build page must show it, because that run writes no real code. Same
 	// population note as NextTask: composed by the daemon handler.
 	ExecutorResolution *ExecutorResolutionRef `json:"executor_resolution,omitempty"`
+	// GapSummary counts the initiative's Product Graph gaps (BuildGaps) by
+	// severity and kind, omitted when there are none -- the hook that makes
+	// `idea status` say "gaps: 2 high" without a second request. Computed
+	// without mapped-test evidence (that needs the blob stores and a parse
+	// of every check output, too heavy for a page that polls guidance); `idea
+	// gaps` itself includes it. Same population note as NextTask.
+	GapSummary *domain.GapSummary `json:"gap_summary,omitempty"`
 }
 
 // ExecutorResolutionRef mirrors workflow.ExecutorResolution (projection does

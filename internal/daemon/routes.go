@@ -46,6 +46,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/stale/{staleId}/ack", s.handleAckStale)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/trace", s.handleTrace)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/diff", s.handleDiff)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/gaps", s.handleGaps)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/gaps", s.handleProjectGaps)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/assertions/{id}/status", s.handleSetAssertionStatus)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers", s.handleSuggestAnswers)
 	m.HandleFunc("GET /api/v1/logs", s.handleLogs)
 

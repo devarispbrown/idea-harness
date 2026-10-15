@@ -29,6 +29,8 @@ Commands:
   why <type> <id>      show the provenance chain
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents
+  gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all] list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)
+  assumption <id> accept|dispute|retract judge an assumption or hypothesis (closes an unvalidated_assumption gap)
   diff                 structured requirement/decision diff
   execute [--note <text>] [--wait] run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait
   reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
