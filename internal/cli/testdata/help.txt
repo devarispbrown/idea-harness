@@ -62,7 +62,7 @@ Commands:
   daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>] run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access")
   daemon status|stop   manage the managed daemon
   ui pair|sessions     sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)
-  ui pair [--label <name>] mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine
+  ui pair [--label <name>] [--qr] mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it)
   ui sessions [revoke <id>|--all] list remote browser sessions; revoke one, or every one
   dev                  start the daemon and serve the web UI
   version              print the version, commit and build state

@@ -101,7 +101,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `daemon` | cli-only | CLI-only: runs the process that serves the UI | |
 | `daemon status\|stop` | cli-only | CLI-only: process management of the daemon serving the UI | |
 | `dev` | cli-only | CLI-only: starts the daemon and opens the UI | |
-| `ui pair` | cli-only | CLI-only: by design — a pairing code is minted with the API token on the daemon's machine; a signed-in browser cannot mint one, so a stolen session cannot outlive its own revocation | |
+| `ui pair` | cli-only | CLI-only: by design — a pairing code is minted with the API token on the daemon's machine; a signed-in browser cannot mint one, so a stolen session cannot outlive its own revocation. `--qr` draws the sign-in address (never the code) as a terminal QR code for the phone to scan | |
 | `ui sessions` | ui | `#/settings` — Remote access: every browser session, Revoke on each, Sign out on this one, Sign out everywhere | |
 | `mcp` | cli-only | CLI-only: stdio server for MCP clients; no UI by design | |
 | `eval` | partial | `#/automations` — Scheduled eval: model, per-run cost cap, interval, Run now, history with cost and regressions | ad-hoc flags (`--policy`, `--harness`, `--keep`, scripted runs) are CLI-only |
