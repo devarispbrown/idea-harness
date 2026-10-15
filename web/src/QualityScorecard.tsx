@@ -64,6 +64,9 @@ export default function QualityScorecard({
     <>
       <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>
         Quality · rigor {sc.rigor}
+        <a className="gv-eyebrow-link" href={`#/i/${initiativeId}/quality`}>
+          Full scorecard and history →
+        </a>
       </div>
       <section className="health-card">
         <div className="health-row">

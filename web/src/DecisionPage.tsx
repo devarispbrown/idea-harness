@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, post, resource } from "./api";
 import { navigate } from "./router";
+import LineagePanel from "./LineagePanel";
 
 interface Decision {
   id: string;
@@ -90,6 +91,7 @@ export default function DecisionPage({
                   ? "Still open. Discussing does not decide it — you resolve it when you're ready."
                   : "Resolved."}
               </div>
+              <LineagePanel projectId={projectId} initiativeId={initiativeId} type="decision" id={decision.id} code={decision.code} />
             </section>
           )}
           <div className="discussion-thread">

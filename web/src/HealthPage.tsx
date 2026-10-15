@@ -3,6 +3,7 @@ import { get, getOutcomes, resource, type OutcomeReport } from "./api";
 import { driftClass, driftLabel, driftingMetrics, metricRange, outcomeGapRows } from "./outcomes";
 import PhaseHeader from "./PhaseHeader";
 import QualityScorecard from "./QualityScorecard";
+import GraphDiagram from "./GraphDiagram";
 import { gapKindLabel, gapSubject, gapSummaryLine, topGaps, type GapReport } from "./gaps";
 
 // How many gaps the page lists before "N more": the daemon sorts most severe
@@ -64,6 +65,7 @@ export default function HealthPage({
   return (
     <div className="phase-page">
       <PhaseHeader title="Graph health" purpose="Whether the provenance you're relying on is actually complete." />
+      <GraphDiagram projectId={projectId} initiativeId={initiativeId} />
 
       {risk && (
         <section className="risk-card">
@@ -104,9 +106,10 @@ export default function HealthPage({
                 </div>
               </div>
             ))}
-            {topGaps(gaps.gaps, GAPS_SHOWN).hidden > 0 && (
+            {gaps.gaps.length > 0 && (
               <div className="muted" style={{ padding: "13px 16px" }}>
-                {topGaps(gaps.gaps, GAPS_SHOWN).hidden} more — <code>idea gaps</code> lists every one.
+                {topGaps(gaps.gaps, GAPS_SHOWN).hidden > 0 && <>{topGaps(gaps.gaps, GAPS_SHOWN).hidden} more · </>}
+                <a href={`#/i/${initiativeId}/gaps`}>See all {gaps.gaps.length} gaps, with what closes each →</a>
               </div>
             )}
             {gaps.gaps.length === 0 && (
@@ -120,6 +123,11 @@ export default function HealthPage({
 
       <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>
         Outcomes{outcomes && outcomes.summary.objectives > 0 ? ` · ${outcomes.summary.drifting} drifting` : ""}
+        {outcomes && outcomes.summary.objectives > 0 && (
+          <a className="gv-eyebrow-link" href={`#/i/${initiativeId}/outcomes`}>
+            Open the dashboard →
+          </a>
+        )}
       </div>
       {!outcomes || outcomes.summary.objectives === 0 ? (
         <div className="muted">No objectives yet — add them on Define to track whether this work moves anything.</div>

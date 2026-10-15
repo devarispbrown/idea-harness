@@ -77,6 +77,22 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
+  page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full
+  edge trace — what `idea why/impact/trace` print), and a lazy **Why / Impact** panel on
+  requirements (Define), tasks (Plan), change sets (Build), decisions, objectives and metrics. A
+  sidebar **Product graph** group opens three new pages: **Gaps** (the whole `idea gaps` report,
+  grouped and filterable, each gap with its closing action — assumption judgments in place, links to
+  the page that closes it, the CLI command to copy otherwise), **Outcomes** (per objective, each
+  metric's progress, drift with reasons, an inline-SVG sparkline, observation history with the change
+  sets that landed between readings, record and measure) and **Quality** (every dimension's checks,
+  methods, citations, linked requirements and measurement history). Define and Plan gain a review
+  convergence timeline; Graph health gains a chain diagram and a **See all** link to Gaps.
+- **`GET …/initiatives/{id}/review-telemetry`** (`?review=prd|execution_plan`): every review
+  cycle's convergence record — findings raised, new, re-raised and resolved by severity, demotions by
+  rule, open blocking count, outcome — read from the reviewer runs' manifests, oldest first.
+- **`GET …/initiatives/{id}/quality/history`** (`?dimension=`): every recorded quality result,
+  oldest first, with its linked requirement codes; an unknown dimension is a 400.
 - **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
   missing or no longer holds" — no model call, every trigger a comparison of recorded state:
   `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence

@@ -8,6 +8,8 @@ import type { DocumentRowProps } from "./DocumentRow";
 import { FindingCard, type FindingItem } from "./JudgmentCard";
 import { findingsForPlan } from "./judgmentScope";
 import { planTaskActions } from "./judgmentCopy";
+import LineagePanel from "./LineagePanel";
+import ReviewConvergence from "./ReviewConvergence";
 
 interface Task {
   id: string;
@@ -665,6 +667,7 @@ export default function PlanPage({
                     ))}
                   </div>
                 )}
+                <LineagePanel projectId={projectId} initiativeId={initiativeId} type="task" id={t.id} code={t.code} />
               </div>
               <span className={`plan-prio prio-${t.priority}`}>{t.priority}</span>
               <span className="plan-est">{t.estimate || "–"}</span>
@@ -782,6 +785,7 @@ export default function PlanPage({
         )}
       </section>
       {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
+      <ReviewConvergence projectId={projectId} initiativeId={initiativeId} review="execution_plan" />
     </PhasePage>
   );
 }
