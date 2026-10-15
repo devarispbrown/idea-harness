@@ -18,7 +18,7 @@ import {
   type RunEventState,
 } from "./runEvents";
 import { useEventStream, useProjectChanges } from "./useEventStream";
-import { announce, runStatusAnnouncement } from "./announce";
+import { announce, RUN_RANK, runStatusAnnouncement, runTopic } from "./announce";
 import { isSubmitShortcut, modLabel } from "./shortcuts";
 import RemoteRuns from "./RemoteRuns";
 
@@ -181,13 +181,17 @@ export default function RunPanel({
   // event: the action chip below changes every few seconds and is
   // deliberately not a live region. Only the live panel speaks (the idle
   // "Last agent run" is history); the running card says when it is over.
+  // The stopped card's panel (active false) shows a run that is over even
+  // while its stream has not said so yet: it is not news, so it is silent.
+  // Its start shares the run topic with the card's "Executing the plan …",
+  // so a run that starts and ends within one poll is said once (announce.ts).
   const lastAnnounced = useRef<{ runId: string; live: boolean } | null>(null);
   useEffect(() => {
-    if (idleOnly || !runId) return;
+    if (idleOnly || !active || !runId) return;
     const msg = runStatusAnnouncement(lastAnnounced.current, { runId, live });
-    if (msg) announce(msg);
+    if (msg) announce(msg, { topic: runTopic(initiativeId), rank: RUN_RANK.runStarted });
     lastAnnounced.current = { runId, live };
-  }, [idleOnly, runId, live]);
+  }, [idleOnly, active, runId, live, initiativeId]);
 
   const events = state.events;
   const groups = useMemo(() => groupToolCalls(events, !live), [events, live]);

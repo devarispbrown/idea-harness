@@ -571,6 +571,30 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **Content cut off at the edge of the screen, and a tall phone top bar.** A sweep of every route
+  at 390px and 1280px in both colour schemes (`web/e2e/views.e2e.ts`) found: Automations' "Reports
+  are written to <path>" ran past a phone's edge and was clipped (`html`/`body` clip horizontal
+  overflow, so it could not even be scrolled to); lineage's Full trace table grew to ~1550px at
+  1280 because a node label inside it never wraps; and the top bar on Home, Settings, Automations
+  and Needs you stacked Automations above Settings in a column, leaving a tall empty band. Long
+  strings now wrap in those places and the top bar's links sit in a row.
+- **Every route has exactly one `h1`.** Settings had none, so a route change focused its first
+  section ("Model") as if that were the page; it now opens with a "Settings" h1. The document
+  reader had none of its own and turned every `#` line of a document into another h1: the
+  document's title is now the page's h1 and its headings render one level down. A decision's
+  "Discussion" label is its h1. Gaps, Outcomes, Quality and lineage under an unknown initiative
+  rendered their own page beside "Initiative not found"; they render only the not-found page now.
+- **The page behind a modal was still reachable.** The command palette and the `?` reference set
+  `aria-modal` and trapped Tab, but a screen reader's virtual cursor (and a pointer) could still
+  reach the page under them. They now render into `<body>` and make the app root `inert` while
+  open, restoring it on close; the live region sits outside it so announcements are still heard.
+  The browser suite's axe check of an open dialog now covers the whole page instead of the dialog
+  alone.
+- **An agent run's end was announced twice.** A run that went live and ended inside one poll (the
+  demo executor's, or one failing on its first call), and a stopped run's panel catching up, put
+  "Agent run started." and "Executing the plan finished." (or "stopped.") into the live region
+  back to back. The two now share a topic in `announce.ts`: held briefly, only the more specific
+  operation message is said, and a late less-specific echo is dropped.
 - **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
   accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
   the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on

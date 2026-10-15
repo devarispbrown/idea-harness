@@ -422,6 +422,13 @@ export default function Settings({ projectId }: { projectId: string }) {
 
   return (
     <div className="settings-page">
+      {/* The page's one h1: what a route change focuses (focus.ts), and
+          what a screen reader's heading list starts from. Without it focus
+          landed on the first section's h2, "Model", as if that were the page. */}
+      <header className="settings-head">
+        <h1 className="phase-title">Settings</h1>
+        <p className="phase-purpose">This project's harness.yaml: model, executor, budget, git, review and integrations.</p>
+      </header>
       {/* No banner of its own: the app shell's demo banner is on this page
           too, and the two said it twice. */}
       <section className="card">

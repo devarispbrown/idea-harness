@@ -83,8 +83,12 @@ export function useDialog(
     // inline disclosure only the keys typed inside it.
     const target: HTMLElement | Document | null = modal ? document : ref.current;
     target?.addEventListener("keydown", onKey as EventListener, modal);
+    const restoreInert = modal && ref.current ? inertOutside(ref.current) : () => {};
     return () => {
       target?.removeEventListener("keydown", onKey as EventListener, modal);
+      // Before focus goes back: an element inside an inert root cannot
+      // take focus.
+      restoreInert();
       // Only when the element is still on the page: a dialog opened from a
       // control that has since gone (a row that was removed) has nowhere to
       // return to, and focusing a detached node does nothing anyway.
@@ -92,6 +96,34 @@ export function useDialog(
     };
     // ref and initial are refs: stable, read when the dialog opens.
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+// inertOutside makes everything but the modal inert -- every child of
+// <body> that does not hold it (the app root, #root, in the app) -- and
+// returns the undo. aria-modal alone is a hint some screen readers ignore,
+// and the Tab trap does not stop a screen reader's virtual cursor or a
+// pointer; inert takes the page out of the accessibility tree, the Tab
+// order and hit testing at once. Modals render through a portal into
+// <body> (dialogRoot) so the app root can be inert without them. The
+// live region is exempt (data-inert-exempt): an announcement made while a
+// dialog is open is still news. Only what this call made inert is
+// restored, so an element already inert for another reason stays so.
+export function inertOutside(dialog: HTMLElement): () => void {
+  const changed: Element[] = [];
+  for (const el of Array.from(document.body.children)) {
+    if (el.contains(dialog) || el.hasAttribute("inert") || el.hasAttribute("data-inert-exempt")) continue;
+    if (el.tagName === "SCRIPT" || el.tagName === "STYLE") continue;
+    el.setAttribute("inert", "");
+    changed.push(el);
+  }
+  return () => {
+    for (const el of changed) el.removeAttribute("inert");
+  };
+}
+
+// dialogRoot is where a modal portals to: <body> itself.
+export function dialogRoot(): HTMLElement {
+  return document.body;
 }
 
 // pageHeading is what a route change focuses: the page's h1, else its first
