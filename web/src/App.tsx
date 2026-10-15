@@ -21,6 +21,7 @@ import ProductHome from "./ProductHome";
 import ChangedPage from "./ChangedPage";
 import QueuePage from "./QueuePage";
 import AutomationsPage from "./AutomationsPage";
+import RemoteRunsPage from "./RemoteRunsPage";
 import BudgetMeter from "./BudgetMeter";
 import StaleBanner from "./StaleBanner";
 import TimelinePanel from "./TimelinePanel";
@@ -352,7 +353,8 @@ export default function App() {
     route.name !== "settings" &&
     route.name !== "not-found" &&
     route.name !== "queue" &&
-    route.name !== "automations"
+    route.name !== "automations" &&
+    route.name !== "runs"
       ? route.id
       : "";
   const currentInitiative = initiativeId
@@ -433,14 +435,16 @@ export default function App() {
     verifiedRequirements,
   };
   const phases = derivePhases(phaseSource);
-  const activePhase: PhaseName | "settings" | "automations" =
+  const activePhase: PhaseName | "settings" | "automations" | "runs" =
     route.name === "phase"
       ? route.phase
       : route.name === "settings"
         ? "settings"
         : route.name === "automations"
           ? "automations"
-          : currentPhase(phaseSource); // decision/health/doc sub-surfaces
+          : route.name === "runs"
+            ? "runs"
+            : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
   const createIdea = async (text: string) => {
     if (!projectId || !text.trim()) return;
@@ -770,6 +774,7 @@ export default function App() {
         )}
         {route.name === "queue" && <QueuePage projectId={projectId} />}
         {route.name === "automations" && <AutomationsPage projectId={projectId} />}
+        {route.name === "runs" && <RemoteRunsPage projectId={projectId} initiatives={initiatives} />}
         {/* The Product Graph views (lineage, gaps, outcomes, quality). */}
         {route.name === "lineage" && currentInitiative && (
           <LineageView projectId={projectId} initiativeId={route.id} nodeType={route.nodeType} nodeRefParam={route.ref} />

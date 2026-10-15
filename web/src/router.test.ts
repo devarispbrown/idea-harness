@@ -17,6 +17,12 @@ describe("parseRoute", () => {
     expect(parseRoute("#/automations/eval").name).toBe("not-found");
   });
 
+  it("resolves the project-wide remote runs", () => {
+    expect(parseRoute("#/runs")).toEqual({ name: "runs" });
+    expect(parseRoute("#/p/abc/runs")).toEqual({ name: "runs" });
+    expect(parseRoute("#/runs/r1").name).toBe("not-found");
+  });
+
   it("resolves settings", () => {
     expect(parseRoute("#/settings")).toEqual({ name: "settings" });
   });
