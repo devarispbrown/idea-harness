@@ -119,6 +119,18 @@ func (db *DB) LatestQualityResults(ctx context.Context, initiativeID string) (ma
 	return out, nil
 }
 
+// ListQualityResults returns every result for an initiative, oldest first
+// (the trace label cache reads it; Requirements is left empty).
+func (db *DB) ListQualityResults(ctx context.Context, initiativeID string) ([]domain.QualityResult, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
+		SELECT id, initiative_id, measurement_id, dimension, mode, status, summary, checks_json, metrics_json, input_digest, created_at
+		FROM quality_results WHERE initiative_id = ? ORDER BY created_at, rowid`, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	return scanQualityResults(rows)
+}
+
 // GetQualityResult returns one result by id.
 func (db *DB) GetQualityResult(ctx context.Context, resultID string) (*domain.QualityResult, error) {
 	rows, err := db.SQL().QueryContext(ctx, `

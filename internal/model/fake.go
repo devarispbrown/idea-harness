@@ -392,6 +392,14 @@ func demoResponse(schemaName, idea string) string {
 		m = map[string]any{
 			"summary": "Synthetic demo convergence: reconcile the dissenting positions around " + idea,
 		}
+	case "quality_review":
+		// Not an empty findings list: that would score the demo's "review" as
+		// a clean pass. The demo says it did not look, and the quality
+		// dimension reports not_measured.
+		m = map[string]any{
+			"findings":          []any{},
+			"unreviewed_reason": "demo provider: no model is configured, so nothing was reviewed",
+		}
 	default:
 		m = map[string]any{}
 	}
