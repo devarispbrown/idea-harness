@@ -17,7 +17,7 @@ import (
 // the `-v <host>:/work` argument and does what a coding agent asked to add a
 // /health route does: appends to server.js, if server.js is there. An agent
 // that never saw server.js would create it, which is the defect.
-const editingAgentDocker = `#!/usr/bin/env bash
+const editingAgentDocker = `#!/bin/sh
 case "$1" in
   run)
     prev=""

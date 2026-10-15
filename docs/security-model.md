@@ -363,10 +363,12 @@ daemon (`internal/executor/containeruser.go`):
   A root daemon killed mid-run cannot hand the mounts back. The next one does, at startup, once
   its sweep has removed every leftover container (`RecoverWorkRoots`): each work root under
   `<state>/projects/*/work/` is chowned back to the daemon wherever a path is owned by someone
-  else, and leftover quality-dimension copies (`<state>/projects/*/quality-*`) are deleted. Nothing
-  outside those directories is touched, and no symlink is followed. If Docker cannot be reached,
-  recovery waits for the next start. Check containers carry the same label as agent containers, so
-  the sweep finds one a killed daemon left running.
+  else, and leftover quality-dimension copies (`<state>/projects/*/quality-*`) and metric-command
+  scratch roots (`<state>/projects/*/metric-*`) are deleted. Nothing outside those directories is
+  touched, and no symlink is followed. If Docker cannot be reached, recovery waits for the next
+  start. Metric commands wait for the startup sweep before they run, so recovery never deletes a
+  live one's scratch root. Check containers carry the same label as agent containers, so the sweep
+  finds one a killed daemon left running.
 
 Refusing to run as root was considered and rejected: root-only CI and Docker-in-Docker setups
 would have had no way forward.
@@ -685,11 +687,6 @@ page had was an unscoped generalisation, not a typo.
   unprivileged on the host, but it is the same uid that owns your files, so a
   container escape lands as you. Run the daemon as a dedicated user if that
   matters.
-- **Metric commands' temp work roots are outside the state root.** A root
-  daemon killed while a metric command runs leaves its `idea-metric-*`
-  directory in the system temp directory, owned by the container user; startup
-  recovery does not reach outside the state root, so it stays until the system
-  clears its temp directory.
 - **No agent image signature is verified.** The default Hermes image is pinned
   by digest, so a re-pushed tag no longer changes what is pulled — but an
   operator-supplied tag-only `--image` is used as given, and `omp` and `acp`
