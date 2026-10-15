@@ -124,6 +124,13 @@ type Engine struct {
 	// qualitySandbox runs verify's sandboxed quality commands (quality.go).
 	// Nil means the real Docker sandbox; tests script it.
 	qualitySandbox QualitySandbox
+
+	// metricSandbox and metricFetcher are how `idea metric measure` runs a
+	// command source and fetches a url source (measure.go). nil means the
+	// real no-network container sandbox and the SSRF-guarded fetcher; tests
+	// substitute both.
+	metricSandbox func(image string) sandboxRunner
+	metricFetcher jsonFetcher
 }
 
 // SetNoteOverride records a human note to steer the given initiative's next
@@ -1064,6 +1071,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	findings, _ := e.db.ListFindingsByInitiative(ctx, initiativeID)
 	questions, _ := e.db.ListQuestions(ctx, initiativeID)
 	ini, _ := e.db.GetInitiative(ctx, initiativeID)
+	liveObjs, liveMetrics := e.liveOutcomes(ctx, initiativeID)
 
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	// Calibrated from the idea's own size and the project's scale (ICP
@@ -1076,10 +1084,11 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement."},
+		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement. State the product objectives this work exists to move -- outcomes for users or the business, not features -- each with at least one measurable metric (direction, target, a baseline only when known, an optional guardrail and cadence), and list in every requirement's 'objectives' field the objective(s) it serves; every requirement must serve at least one. When revising, keep each continuing objective's and metric's existing code (OBJ-n, MET-n) as its key."},
 		{Selector: "project_scale", Content: proportionateContext(scale, detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot)) + requirementCountGuidance(rigor)},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
+		{Selector: "objectives", Content: renderObjectives(liveObjs, liveMetrics, reqs)},
 		{Selector: "decisions", Content: renderDecisions(decisions)},
 		{Selector: "questions", Content: e.renderQuestionsWithAnswers(questions)},
 		{Selector: "findings", Content: renderFindings(findings)},
@@ -1149,6 +1158,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	usedCodes := map[string]bool{}
 
 	var decisionRefByReqID map[string]string // requirementID -> decision question text
+	objectiveRefs := map[string][]string{}   // requirementID -> objective keys/codes it serves
 	for _, r := range objSlice(obj["requirements"]) {
 		var acs []domain.AcceptanceCriterion
 		for _, ac := range objSlice(r["acceptance_criteria"]) {
@@ -1192,6 +1202,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 		// created brand new -- only a PRIOR requirement this cycle's
 		// response does not continue at all is dropped.
 		keptIDs = append(keptIDs, req.ID)
+		objectiveRefs[req.ID] = strSlice(r["objectives"])
 		if ref := strings.TrimSpace(e.redact(str(r["decision"]))); ref != "" {
 			if decisionRefByReqID == nil {
 				decisionRefByReqID = map[string]string{}
@@ -1267,6 +1278,11 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 			}
 		}
 	}
+	// Objectives and metrics after the requirements exist, so each
+	// requirement's serves edges can be wired to them in the same pass.
+	if err := e.recordPRDObjectives(dctx, initiativeID, runID, obj, reviseReason, objectiveRefs); err != nil {
+		return nil, err
+	}
 	for _, q := range strSlice(obj["open_questions"]) {
 		if err := e.createQuestionIfNew(dctx, initiativeID, e.redact(q)); err != nil {
 			return nil, err
@@ -1333,10 +1349,17 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		}
 
 		detFindings := review.DeterministicChecks(initiativeID, active)
+		liveObjs, liveMetrics := e.liveOutcomes(ctx, initiativeID)
+		detFindings = append(detFindings, review.OutcomeChecks(initiativeID, active, liveObjs, liveMetrics)...)
+		outcomeRefs, outcomeCodes := e.outcomeCitables(ctx, initiativeID)
 		e.setStage(ctx, initiativeID, fmt.Sprintf("Reviewing the PRD (cycle %d)", cycle))
 		var extra []ccontext.Input
 		if guarded {
-			extra = append(extra, ccontext.Input{Selector: "convergence_policy", Content: reviewerConvergencePolicy(rules, "a REQ code from the requirements below")})
+			subject := "a REQ code from the requirements below"
+			if len(liveObjs) > 0 {
+				subject = "a REQ code from the requirements below, or an OBJ/MET code from the objectives"
+			}
+			extra = append(extra, ccontext.Input{Selector: "convergence_policy", Content: reviewerConvergencePolicy(rules, subject)})
 			if len(prior) > 0 {
 				extra = append(extra, ccontext.Input{Selector: "prior_findings", Content: renderPriorFindings(prior, changed, rules)})
 			}
@@ -1372,7 +1395,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 		if guarded {
 			cls = classifyFindings(classifyInput{
 				rules: rules, later: len(prior) > 0, active: active, idea: ini.Description,
-				prior: prior, changed: changed,
+				prior: prior, changed: changed, outcomeRefs: outcomeRefs,
 			}, advFindings)
 		} else {
 			cls = classification{reRaiseOf: map[int]int{}, demoted: map[string]int{}, cites: make([]string, len(advFindings))}
@@ -1514,7 +1537,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 				switch f.ReviewRunID {
 				case reviewRunID:
 					gating = append(gating, f)
-					cites = append(cites, citationOf(f, active))
+					cites = append(cites, citationOf(f, active, outcomeCodes))
 				case "deterministic-check":
 					det = append(det, f)
 				}
@@ -1522,6 +1545,7 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			next = gatingPriors(gating, cites)
 			rev = &prdRevision{findings: renderReviewFindingsForReviser(det, next, all)}
 		}
+		beforeOutcomes := outcomeFingerprints(liveObjs, liveMetrics)
 		responses, err := e.runProductDefinitionRevising(ctx, initiativeID, active, "review-cycle-"+fmt.Sprint(cycle), rev)
 		if err != nil {
 			return domain.InitiativeFailed, err
@@ -1533,6 +1557,10 @@ func (e *Engine) runReviewLoop(ctx context.Context, initiativeID string) (domain
 			}
 			var removed map[string]bool
 			changed, removed = changedRequirements(active, activeRequirements(after))
+			// An OBJ/MET citation is judged against whether the revision
+			// changed that objective or metric, like a REQ citation.
+			afterObjs, afterMetrics := e.liveOutcomes(ctx, initiativeID)
+			changedOutcomes(beforeOutcomes, outcomeFingerprints(afterObjs, afterMetrics), changed, removed)
 			markAddressed(next, responses, changed, removed)
 			prior = next
 		}
@@ -1551,7 +1579,10 @@ type prdRevision struct {
 // of the requirement it targets, or "" -- for the prior list. The parse-time
 // Cites field does not survive persistence, but the re-targeting it caused
 // does.
-func citationOf(f domain.Finding, reqs []domain.Requirement) string {
+func citationOf(f domain.Finding, reqs []domain.Requirement, outcomeCodeByID map[string]string) string {
+	if f.TargetType == "objective" || f.TargetType == "metric" {
+		return strings.ToUpper(outcomeCodeByID[f.TargetID])
+	}
 	if f.TargetType != "requirement" {
 		return ""
 	}
@@ -1582,6 +1613,7 @@ func (e *Engine) seedPriorFindings(ctx context.Context, initiativeID string) ([]
 	for _, r := range activeRequirements(reqs) {
 		activeIDs[r.ID] = true
 	}
+	_, outcomeCodes := e.outcomeCitables(ctx, initiativeID)
 	arts, err := e.db.ListArtifacts(ctx, initiativeID)
 	if err != nil {
 		return nil, err
@@ -1599,12 +1631,19 @@ func (e *Engine) seedPriorFindings(ctx context.Context, initiativeID string) ([]
 		if f.Disposition != "" || f.Advisory || !f.Severity.Blocking() || f.Code != "" {
 			continue
 		}
-		if f.ReviewRunID == "deterministic-check" || (f.TargetType != "prd" && f.TargetType != "requirement") {
+		if f.ReviewRunID == "deterministic-check" {
+			continue
+		}
+		switch f.TargetType {
+		case "prd", "requirement", "objective", "metric":
+		default:
 			continue
 		}
 		gating = append(gating, f)
-		cites = append(cites, citationOf(f, reqs))
-		addressed = append(addressed, (f.TargetType == "requirement" && !activeIDs[f.TargetID]) || latestPRD.After(f.CreatedAt))
+		cites = append(cites, citationOf(f, reqs, outcomeCodes))
+		gone := (f.TargetType == "requirement" && !activeIDs[f.TargetID]) ||
+			((f.TargetType == "objective" || f.TargetType == "metric") && outcomeCodes[f.TargetID] == "")
+		addressed = append(addressed, gone || latestPRD.After(f.CreatedAt))
 	}
 	out := gatingPriors(gating, cites)
 	for i := range out {
@@ -1829,6 +1868,14 @@ func (e *Engine) runAdversarialReview(ctx context.Context, initiativeID string, 
 		{Selector: "immutable_policy", Content: "Independently challenge the PRD. Emit structured findings. Never set accepted_risk. " + reviewerSeverityGuidance(rigor, scale)},
 		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, conventions)},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
+	}
+	// The outcome chain, when the PRD has one: which objective each
+	// requirement serves and how each objective is measured, so the
+	// reviewer can challenge a requirement that serves no objective or an
+	// objective with no measurable metric -- citing the REQ/OBJ code. A PRD
+	// with no objectives sends exactly the prompt it always has.
+	if objs, metrics := e.liveOutcomes(ctx, initiativeID); len(objs) > 0 {
+		inputs = append(inputs, ccontext.Input{Selector: "objectives", Content: renderObjectives(objs, metrics, reqs)})
 	}
 	inputs = append(inputs, extra...)
 	runID, obj, err := e.runModel(ctx, initiativeID, StageReview, RoleAdversarialReviewer, "review", schema.Review,

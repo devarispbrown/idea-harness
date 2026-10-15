@@ -333,6 +333,27 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | GET | `/projects/{projectId}/artifacts/{id}/body` | One artifact **version**'s markdown body, sanitized, as JSON. |
 | GET | `/projects/{projectId}/artifacts/{id}/raw` | **Not JSON.** The same artifact version's body as `text/markdown` for download/export — served **unsanitized**, unlike `/body`. |
 
+### Objectives and outcomes
+
+The outcome end of the Product Graph: objectives (`OBJ-n`), the outcome metrics that measure them
+(`MET-n`), and observations. `{objectiveId}` and `{metricId}` accept the code (any case) or the id.
+Every write here is a human edit; the PRD stage writes its own objectives through the engine, and a
+human-added objective is never rewritten by a later PRD revision.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/projects/{projectId}/initiatives/{id}/objectives` | Live objectives (not superseded by a PRD revision), each with `requirement_ids` and `metric_ids`. |
+| POST | `/projects/{projectId}/initiatives/{id}/objectives` | Add an objective (`statement`, optional `rationale`, `owner`, `status`). **201**. |
+| PATCH | `/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}` | Edit the fields present; `status` is `active`, `achieved` or `abandoned`. |
+| POST | `/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}/requirements` | Link `{"requirement": "REQ-1"}` to the objective (`requirement --serves--> objective`), or unlink with `"unlink": true`. **409** for a superseded requirement. |
+| GET | `/projects/{projectId}/initiatives/{id}/metrics` | Live metrics, each with `status` -- its deterministic drift evaluation at request time. |
+| POST | `/projects/{projectId}/initiatives/{id}/metrics` | Add a metric to an objective (`objective`, `name`, `direction`, `target`; optional `baseline`, `guardrail`, `cadence`, `unit`, `definition`, `source`, `hypothesis`). **201**. |
+| POST | `/projects/{projectId}/initiatives/{id}/metrics/measure` | Measure `command`/`url` sources now -- one (`{"metric": "MET-2"}`) or all -- and record what they read. Commands run in the no-network check sandbox (never the host); url sources need `outcomes.allow_url_sources`. Synchronous. |
+| PATCH | `/projects/{projectId}/initiatives/{id}/metrics/{metricId}` | Edit the fields present; `clear_baseline` / `clear_guardrail` remove those values. |
+| GET | `/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations` | The metric's observations, oldest first, each with the change sets attributed to it. |
+| POST | `/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations` | Record a value (`value`, optional `note`, `observed_at`). Returns the observation and the metric's drift after it. Moving the metric into `off_track`/`regressed` emits the event the integration bus publishes as `outcome.drifted`. **201**. |
+| GET | `/projects/{projectId}/initiatives/{id}/outcomes` | The drift report: objectives, metrics with drift, "works but fails its objective" signals, the chain's gaps, and counts. What `idea status`, `idea next`, the Health page and MCP read. |
+
 ### Findings
 
 | Method | Path | Purpose |

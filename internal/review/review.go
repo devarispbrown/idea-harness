@@ -6,6 +6,7 @@ package review
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
@@ -184,4 +185,97 @@ func str(v any) string {
 		return s
 	}
 	return ""
+}
+
+// OutcomeCategory is the Finding.Category of every outcome-chain finding.
+const OutcomeCategory = "outcome"
+
+// OutcomeChecks are the deterministic outcome-chain checks on a PRD:
+//
+//   - with at least one active objective, every active requirement must serve
+//     one (high, targeted at -- and so citing -- the requirement): work with
+//     no stated outcome is exactly what verification cannot catch, since it
+//     can pass every test and still not matter;
+//   - every active objective must have at least one live metric (high,
+//     targeted at the objective): an objective nobody can measure is a
+//     promise nobody can check;
+//   - a PRD that defines no active objective at all gets one medium finding,
+//     not a block per requirement. It is a gap a human should see, and a
+//     PRD written before objectives existed (or by a model that ignored the
+//     field) must not wedge in review over it.
+//
+// They run with the other deterministic checks, before the adversarial
+// reviewer, so -- like a missing acceptance criterion -- they gate approval
+// at every rigor and the reviser is told about them by label (D1, D2, ...).
+// objectives and metrics are the LIVE (non-superseded) ones; requirements
+// carry ObjectiveIDs from the store.
+func OutcomeChecks(initiativeID string, reqs []domain.Requirement, objectives []domain.Objective, metrics []domain.OutcomeMetric) []domain.Finding {
+	active := map[string]domain.Objective{}
+	for _, o := range objectives {
+		if o.Active() {
+			active[o.ID] = o
+		}
+	}
+	if len(active) == 0 {
+		if len(reqs) == 0 {
+			return nil
+		}
+		return []domain.Finding{{
+			Severity: domain.SeverityMedium, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
+			Finding:        "the PRD defines no active objective, so no requirement can be traced to an outcome",
+			Evidence:       fmt.Sprintf("%d requirement(s), 0 active objectives", len(reqs)),
+			Impact:         "requirements can be verified as built but never checked against what they were for",
+			Recommendation: "state the objective(s) this initiative exists to move, each with a measurable metric, and link every requirement to one",
+			TargetType:     "prd", TargetID: initiativeID,
+		}}
+	}
+	var out []domain.Finding
+	for _, r := range reqs {
+		serves := false
+		for _, oid := range r.ObjectiveIDs {
+			if _, ok := active[oid]; ok {
+				serves = true
+				break
+			}
+		}
+		if serves {
+			continue
+		}
+		out = append(out, domain.Finding{
+			Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
+			Finding:        fmt.Sprintf("%s serves no objective", r.Code),
+			Evidence:       r.Statement,
+			Impact:         "the requirement can pass verification without anyone being able to say what outcome it was for",
+			Recommendation: "list the objective(s) it serves in its objectives field, or remove it if it serves none",
+			TargetType:     "requirement", TargetID: r.ID,
+		})
+	}
+	hasMetric := map[string]bool{}
+	for _, m := range metrics {
+		if m.SupersededBy == "" && m.Measurable() {
+			hasMetric[m.ObjectiveID] = true
+		}
+	}
+	codes := make([]string, 0, len(active))
+	byCode := map[string]domain.Objective{}
+	for _, o := range active {
+		codes = append(codes, o.Code)
+		byCode[o.Code] = o
+	}
+	sort.Strings(codes)
+	for _, c := range codes {
+		o := byCode[c]
+		if hasMetric[o.ID] {
+			continue
+		}
+		out = append(out, domain.Finding{
+			Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh, Category: OutcomeCategory,
+			Finding:        fmt.Sprintf("%s has no measurable metric", o.Code),
+			Evidence:       o.Statement,
+			Impact:         "nobody can tell whether the objective is being met, so drift cannot be detected",
+			Recommendation: "add a metric with a direction and a target (and a baseline, when known)",
+			TargetType:     "objective", TargetID: o.ID,
+		})
+	}
+	return out
 }

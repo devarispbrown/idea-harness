@@ -214,6 +214,15 @@ var harnessSchema = `{
       },
       "additionalProperties": false
     },
+    "outcomes": {
+      "type": "object",
+      "properties": {
+        "image":                   { "type": "string" },
+        "measure_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "allow_url_sources":       { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "integrations": {
       "type": "object",
       "properties": {

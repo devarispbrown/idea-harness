@@ -153,6 +153,44 @@ func TestTranslateWorkflowToDomainEvents(t *testing.T) {
 	}
 }
 
+// An observation that moves a metric into off_track publishes one
+// outcome.drifted; recording the metric and further readings that stay off
+// track publish nothing.
+func TestTranslateOutcomeDrift(t *testing.T) {
+	ctx := context.Background()
+	db := openDB(t, filepath.Join(t.TempDir(), "state.db"))
+	rec := &recorder{name: "rec", kinds: map[Kind]bool{KindOutcomeDrifted: true}}
+	d := NewDispatcher(db, "p1", []Subscriber{rec}, nil, Options{})
+	if err := d.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ini := newInitiative(t, db, "Onboarding")
+	obj := &domain.Objective{InitiativeID: ini.ID, Statement: "activation up"}
+	if err := db.CreateObjective(ctx, obj, store.HumanActor); err != nil {
+		t.Fatal(err)
+	}
+	base := 20.0
+	m := &domain.OutcomeMetric{InitiativeID: ini.ID, ObjectiveID: obj.ID, Name: "activation", Direction: domain.DirectionIncrease, Baseline: &base, Target: 30}
+	if err := db.CreateMetric(ctx, m, store.HumanActor); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []float64{25, 15, 14} {
+		if _, _, err := db.RecordObservation(ctx, &domain.MetricObservation{InitiativeID: ini.ID, MetricID: m.ID, Value: v, Source: domain.MetricSourceManual}, store.HumanActor, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Tick(ctx)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.got) != 1 {
+		t.Fatalf("want exactly one outcome.drifted, got %+v", rec.got)
+	}
+	ev := rec.got[0]
+	if ev.MetricCode != "MET-1" || ev.ObjectiveCode != "OBJ-1" || ev.Status != string(domain.DriftOffTrack) || ev.InitiativeID != ini.ID {
+		t.Fatalf("event = %+v", ev)
+	}
+}
+
 // Turning an integration on must not replay history into it.
 func TestInitStartsAtTheEndOfTheLog(t *testing.T) {
 	ctx := context.Background()

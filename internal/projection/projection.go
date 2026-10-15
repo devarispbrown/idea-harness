@@ -121,6 +121,14 @@ type Guidance struct {
 	// of every check output, too heavy for a page that polls guidance); `idea
 	// gaps` itself includes it. Same population note as NextTask.
 	GapSummary *domain.GapSummary `json:"gap_summary,omitempty"`
+
+	// Outcomes summarizes outcome drift (BuildOutcomes) when any metric is
+	// off track, regressed or stale, or a verified requirement's objective is
+	// failing -- omitted otherwise. Same population note as NextTask: the
+	// daemon handler composes it and appends OutcomeGuidance's sentence onto
+	// Why. It never replaces Action: drift is something to know while doing
+	// the next step, not a gate on it.
+	Outcomes *OutcomeSummary `json:"outcomes,omitempty"`
 }
 
 // ExecutorResolutionRef mirrors workflow.ExecutorResolution (projection does

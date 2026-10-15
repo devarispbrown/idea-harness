@@ -47,6 +47,17 @@ if this file has drifted.
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
 | `idea gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all]` | list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity) | `--all`, `--fail-on`, `--json`, `--kind` | yes |
 | `idea assumption <id> accept\|dispute\|retract` | judge an assumption or hypothesis (closes an unvalidated_assumption gap) | none | takes no flags |
+| `idea objectives [<initiative>]` | list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it | `--json` | yes |
+| `idea objective add\|edit\|link` | add, edit or link an objective (see the rows below) | `add --json`, `add --owner`, `add --rationale`, `edit --json`, `edit --owner`, `edit --rationale`, `edit --statement`, `edit --status`, `link --json`, `link --unlink` | takes no flags |
+| `idea objective add "<statement>"` | add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision | — | — |
+| `idea objective edit <OBJ>` | change --statement, --rationale, --owner or --status active\|achieved\|abandoned | — | — |
+| `idea objective link <REQ> <OBJ>` | record that a requirement serves an objective (--unlink removes it) | — | — |
+| `idea metrics [<initiative>]` | list outcome metrics with their drift: on track, off track, regressed, stale or no data | `--json` | yes |
+| `idea metric add\|edit\|record\|measure` | add, edit, record or measure an outcome metric (see the rows below) | `add --baseline`, `add --cadence`, `add --command`, `add --definition`, `add --direction`, `add --guardrail`, `add --hypothesis`, `add --json`, `add --manual`, `add --pointer`, `add --target`, `add --unit`, `add --url`, `edit --baseline`, `edit --cadence`, `edit --clear-baseline`, `edit --clear-guardrail`, `edit --command`, `edit --definition`, `edit --direction`, `edit --guardrail`, `edit --json`, `edit --manual`, `edit --name`, `edit --objective`, `edit --pointer`, `edit --target`, `edit --unit`, `edit --url`, `measure --json`, `record --at`, `record --json`, `record --note` | takes no flags |
+| `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective: --direction increase\|decrease\|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual | — | — |
+| `idea metric edit <MET>` | change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source | — | — |
+| `idea metric record <MET> <value>` | record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value | — | — |
+| `idea metric measure [<MET>]` | run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources | — | — |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
 | `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
@@ -332,6 +343,34 @@ Exit status is non-zero when a scripted case misses its scenario's expectation, 
 regresses against `--baseline`. A real-model run that merely stops for a human is a measurement,
 not a failure. CI runs the scripted suite as a Go test (`internal/eval`) against
 `internal/eval/testdata/baseline-scripted.json`.
+
+## Objectives and outcome metrics
+
+The PRD states objectives (`OBJ-n`) and the metrics that measure them (`MET-n`); these commands are
+the human side. All take an optional trailing initiative reference, like every initiative-scoped
+command, and `--json`.
+
+```bash
+idea objectives                                   # what each objective is, what serves and measures it
+idea objective add "Support load drops" --rationale "tickets cost us a day a week"
+idea objective edit OBJ-2 --status achieved       # or abandoned; --statement/--rationale/--owner
+idea objective link REQ-4 OBJ-2                   # REQ-4 serves OBJ-2 (--unlink removes it)
+
+idea metric add OBJ-2 "weekly tickets" --direction decrease --baseline 40 --target 15 --cadence weekly
+idea metric add OBJ-2 "error rate" --direction maintain --target 1 --guardrail 0.5 \
+    --command "go run ./cmd/errstats /repo/logs"   # the last number printed is the value
+idea metric edit MET-3 --clear-baseline           # the first observation stands in
+idea metric record MET-3 22 --note "Zendesk export"
+idea metric measure                               # every command/url source; or `idea metric measure MET-4`
+idea metrics                                      # each metric with its drift and the reasons
+```
+
+`metric record` prints the metric's drift after the value and how many change sets landed since the
+previous one (`idea trace metric MET-3` names them). `metric measure` runs a command source in the
+no-network check sandbox — never the host — and exits `9` (`run_failed`) when any measurement failed,
+after printing every result. The drift rules are in the README's
+[Objectives & outcomes](../README.md#objectives--outcomes) section; `idea status` and `idea next`
+add an outcome line whenever something drifts.
 
 ## Example
 

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
@@ -51,7 +52,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 				return nil, err
 			}
 			for _, ed := range edges {
-				if ed.ToType == "requirement" && !cache.isActiveRequirement(ed.ToID) {
+				if !cache.isLive(ed.ToType, ed.ToID) {
 					continue
 				}
 				out = append(out, TraceItem{
@@ -97,7 +98,7 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 				return nil, err
 			}
 			for _, ed := range edges {
-				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
+				if !cache.isLive(ed.FromType, ed.FromID) {
 					continue
 				}
 				out = append(out, ImpactItem{
@@ -130,6 +131,12 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 							},
 							Staleness: stalenessForNode(stale, "change_set", cs.ID, ""),
 						})
+						// Keep walking from the change set: the outcome
+						// metrics it was attributed to (metric
+						// --attributed_to--> change_set) are its dependents,
+						// which is how `impact requirement REQ-1` reaches
+						// the outcome the work moved.
+						next = append(next, [2]string{"change_set", cs.ID})
 					}
 				}
 			}
@@ -190,7 +197,7 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 				return 0, err
 			}
 			for _, ed := range edges {
-				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
+				if !cache.isLive(ed.FromType, ed.FromID) {
 					continue
 				}
 				dk := ed.FromType + ":" + ed.FromID
@@ -210,6 +217,7 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 							continue
 						}
 						dependents["change_set:"+cs.ID] = true
+						next = append(next, [2]string{"change_set", cs.ID})
 					}
 				}
 			}
@@ -269,11 +277,35 @@ type labelCache struct {
 	artifact    map[string]string
 	contextDoc  map[string]string
 	quality     map[string]string
+	// objective and metric hold only LIVE (not superseded) nodes, so -- like
+	// requirement -- they double as the live-set check: a PRD revision's
+	// dropped objective is not a dependent of anything any more.
+	objective map[string]string
+	metric    map[string]string
+	changeSet map[string]string
+	assertion map[string]string
 }
 
 func (c labelCache) isActiveRequirement(id string) bool {
 	_, ok := c.requirement[id]
 	return ok
+}
+
+// isLive reports whether a traversal may step onto typ:id. Requirements,
+// objectives and metrics are filtered to the live set; every other node type
+// has no superseded state the graph tracks.
+func (c labelCache) isLive(typ, id string) bool {
+	switch typ {
+	case "requirement":
+		return c.isActiveRequirement(id)
+	case "objective":
+		_, ok := c.objective[id]
+		return ok
+	case "metric":
+		_, ok := c.metric[id]
+		return ok
+	}
+	return true
 }
 
 func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) labelCache {
@@ -285,6 +317,32 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 		artifact:    map[string]string{},
 		contextDoc:  map[string]string{},
 		quality:     map[string]string{},
+		objective:   map[string]string{},
+		metric:      map[string]string{},
+		changeSet:   map[string]string{},
+		assertion:   map[string]string{},
+	}
+	if objs, err := e.db.ListObjectives(ctx, initiativeID); err == nil {
+		for _, o := range objs {
+			if o.SupersededBy == "" {
+				c.objective[o.ID] = o.Code + " " + o.Statement
+			}
+		}
+	}
+	if ms, err := e.db.ListMetrics(ctx, initiativeID, time.Now()); err == nil {
+		for _, m := range ms {
+			c.metric[m.ID] = m.Code + " " + m.Name
+		}
+	}
+	if cses, err := e.db.ListChangeSets(ctx, initiativeID); err == nil {
+		for _, cs := range cses {
+			c.changeSet[cs.ID] = cs.HumanID
+		}
+	}
+	if as, err := e.db.ListAssertions(ctx, initiativeID); err == nil {
+		for _, a := range as {
+			c.assertion[a.ID] = string(a.Type) + ": " + domain.TrimToWordBoundary(a.Statement, 80)
+		}
 	}
 	if tasks, err := e.db.ListTasks(ctx, initiativeID); err == nil {
 		for _, t := range tasks {
@@ -336,6 +394,7 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 // answering an empty traversal.
 var GraphNodeTypes = []string{
 	"task", "requirement", "decision", "question", "artifact", "context_doc", "run", "quality_result",
+	"objective", "metric", "assertion", "change_set",
 }
 
 // ValidNodeType reports whether typ names a node the graph can hold.
@@ -377,6 +436,22 @@ func (c labelCache) label(typ, id string) string {
 		}
 	case "context_doc":
 		if s, ok := c.contextDoc[id]; ok {
+			return s
+		}
+	case "objective":
+		if s, ok := c.objective[id]; ok {
+			return s
+		}
+	case "metric":
+		if s, ok := c.metric[id]; ok {
+			return s
+		}
+	case "change_set":
+		if s, ok := c.changeSet[id]; ok {
+			return s
+		}
+	case "assertion":
+		if s, ok := c.assertion[id]; ok {
 			return s
 		}
 	case "run":

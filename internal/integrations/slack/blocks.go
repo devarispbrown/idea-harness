@@ -164,6 +164,16 @@ func headline(ev integrations.Event) string {
 		return msg
 	case integrations.KindTaskStatusChanged:
 		return fmt.Sprintf(":arrow_right: %s: %s is now %s", escape(ev.TaskCode), escape(clip(ev.TaskTitle, 80)), escape(ev.Status))
+	case integrations.KindOutcomeDrifted:
+		what := "off track"
+		if ev.Status == "regressed" {
+			what = "regressed after a change set landed"
+		}
+		msg := ":chart_with_downwards_trend: " + escape(ev.MetricCode) + " " + escape(clip(ev.MetricName, 80)) + " is " + what
+		if ev.ObjectiveCode != "" {
+			msg += " (" + escape(ev.ObjectiveCode) + ")"
+		}
+		return msg + " for " + title
 	}
 	return escape(string(ev.Kind))
 }
@@ -187,6 +197,8 @@ func uiPhase(ev integrations.Event) string {
 		return "verify"
 	case integrations.KindInitiativeCreated, integrations.KindRunFailed:
 		return "explore"
+	case integrations.KindOutcomeDrifted:
+		return "health"
 	}
 	return "build"
 }

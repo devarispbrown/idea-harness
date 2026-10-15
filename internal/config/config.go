@@ -247,6 +247,25 @@ type CheckConfig struct {
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 }
 
+// OutcomesConfig configures how outcome metrics are measured
+// (`idea metric measure`). Nothing here runs on its own: a command or url
+// source is only ever measured when a human or an MCP client asks.
+type OutcomesConfig struct {
+	// Image is the sandbox image a command source runs in. Empty falls back
+	// to check.image, then to the image derived from the project's toolchain
+	// markers, then to the sandbox's minimal default -- the same no-network,
+	// read-only sandbox the build/test checks use either way.
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// MeasureTimeoutSeconds bounds one command source. Zero means 120s.
+	MeasureTimeoutSeconds int `json:"measure_timeout_seconds,omitempty" yaml:"measure_timeout_seconds,omitempty"`
+	// AllowURLSources opts into fetching url sources. Off by default: it is
+	// the one measurement path that reaches the network, so it is never
+	// implied -- not even by `network: enabled`, which governs the research
+	// pipeline. Fetches go through the SSRF-guarded fetcher either way
+	// (public http(s) addresses only).
+	AllowURLSources bool `json:"allow_url_sources,omitempty" yaml:"allow_url_sources,omitempty"`
+}
+
 // HarnessConfig is harness.yaml (portable, committable).
 type HarnessConfig struct {
 	Network      NetworkPolicy             `json:"network" yaml:"network"`
@@ -295,6 +314,8 @@ type HarnessConfig struct {
 	// Verify configures the quality dimensions `idea verify` measures beyond
 	// the acceptance tests (verify.go).
 	Verify VerifyConfig `json:"verify,omitempty" yaml:"verify,omitempty"`
+	// Outcomes configures outcome-metric measurement (OutcomesConfig).
+	Outcomes OutcomesConfig `json:"outcomes,omitempty" yaml:"outcomes,omitempty"`
 }
 
 // GitConfig configures git-native behavior beyond git_commit (review C4,
