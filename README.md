@@ -1,541 +1,226 @@
 # idea-harness
 
-A local-first AI product-development **control plane** that takes an idea from ambiguity to verified
-software.
-
-**Status:** pre-1.0; the whole pipeline runs end to end — a governed team of experts, provable
-provenance, byte-for-byte revert — and the Product Graph runs from the objectives an initiative
-exists to move to the outcome metrics that say whether it did. `idea execute` runs a real coding
-agent when Docker and a model key are present, and a placeholder it labels as such when they are
-not; see [Execution model](#execution-model).
+A local-first control plane for AI product development. It takes an idea to verified software:
+a reviewed PRD, an execution plan, change sets written by a real coding agent, and verification,
+with you deciding at every point that matters.
 
 ```text
-idea → reviewed PRD (objectives + requirements) → execution plan → change set → apply
-     → verify (evidence + quality dimensions) → complete → outcome metrics
+idea → reviewed PRD → execution plan → change set → apply → verify → outcome metrics
 ```
 
-## Why idea-harness
+**Status:** pre-1.0. The whole pipeline runs end to end. With no API key it runs on a built-in
+demo provider, so you can try everything before paying for a model call.
 
-Two properties make idea-harness trustworthy where a raw coding agent is not.
-
-**Provable provenance.** Every requirement, decision, plan, task, change set, test, and verification
-is a node in a **Product Graph**, with edges recording *why* it exists and *what depends on it*.
-When the model says something, you can trace the chain back to evidence — and see the blast radius
-before you change it:
-
-```bash
-idea why requirement REQ-1      # the evidence → assertions → decisions behind it
-idea impact requirement REQ-1   # what breaks or goes stale if you change it
-idea trace task TASK-1          # both directions (why + dependents)
-idea gaps                       # what the graph is missing: unbuilt or unverified requirements, stale evidence, unvalidated assumptions, drifting outcomes, …
-idea changed                    # What Changed since your last look
-```
-
-**Safe byte-for-byte revert.** Every applied change set is captured as a content-addressed patch, so
-any change can be rolled back to its exact pre-image — no guesswork about what the agent touched:
-
-```bash
-idea changes                    # list change sets
-idea apply CHG-1                # apply an approved change set
-idea revert CHG-1               # restore the previous files, byte-for-byte
-```
-
-## The governed pipeline
-
-idea-harness is not itself a coding agent — it drives one (Hermes, OMP, any Agent Client Protocol
-agent such as Claude Code or Codex, or an OpenHands Agent Server) inside its gates — and it is not a
-chatbot, Kanban, or project-management tool. It is a local-first product-development operating
-system: agents reason, the engine governs, experts challenge, and the human decides what matters.
-
-A coordinated team of Staff-level AI experts moves an initiative through the whole lifecycle —
-framing and research produce a reviewed PRD, design produces a dependency-ordered execution plan,
-the implementer produces change sets, and a reviewer role gates each one before the human
-approves, applies, and verifies it.
-
-The durable asset is the **Product Graph** (Objectives → Hypotheses → Requirements → Decisions →
-Plans → Tasks → ChangeSets → Tests → Verification → Outcome metrics, all traced back to Evidence)
-that powers provenance, impact analysis, requirement verification, and outcome drift.
-
-## What's in it
-
-| Area | What you get | Where it is explained |
-|---|---|---|
-| Idea → PRD → plan | framing, research, a PRD with objectives and requirements, an adversarial review that converges on principle, a reviewed execution plan | [quickstart](docs/quickstart.md), [configuration → review](docs/configuration.md#review-convergence) |
-| Build | a change set per task from the coding agent you choose (`auto`, Hermes, OMP, ACP agents, OpenHands), reviewed, then applied and revertible byte for byte | [agents](docs/agents.md) |
-| Watching a run | a live run panel: the agent's current action, tool calls, files changing, permissions, tokens and cost, streamed and resumable after a reload; send the running agent a note (ACP, OpenHands); download a run report | [ui → run panel](docs/ui.md#run-panel), [agents → steering](docs/agents.md#steering-a-running-agent) |
-| Verify | per-criterion evidence, plus seven quality dimensions scored with citations | [Verification beyond the tests](#verification-beyond-the-tests-quality-dimensions) |
-| Outcomes | objectives (`OBJ-n`), outcome metrics (`MET-n`), observations and deterministic drift | [Objectives & outcomes](#objectives--outcomes) |
-| Asking the graph | `idea why` / `impact` / `trace`, and `idea gaps` for everything missing or no longer true | [architecture → gaps](docs/architecture.md#asking-the-graph-gaps) |
-| Guardrails | system-deny conditions, protected auto-executing paths, credential and PII sweeps, redacted logs | [security](docs/security.md), [security model](docs/security-model.md) |
-| Surfaces | the CLI (stable exit codes, `--json` errors), the web UI, an MCP server, the HTTP API | [cli](docs/cli.md), [ui](docs/ui.md), [mcp](docs/mcp.md), [api](docs/api.md) |
-| Team tools | Slack notifications and approvals, Linear issue sync — no public URL | [integrations](docs/integrations.md) |
-| Spend and automations | per-initiative spending caps enforced before every model and agent call; scheduled metric measurement, scheduled evals and Linear polling, each off until enabled | [configuration → budget](docs/configuration.md#budget), [configuration → automations](docs/configuration.md#automations) |
-| From your phone | opt-in remote access (Tailscale recommended) with pairing-code sign-in, phone-friendly review and approval, browser push notifications, a project switcher | [configuration → remote access](docs/configuration.md#remote-access), [security model → remote access](docs/security-model.md#remote-access) |
-| Accessibility | keyboard-operable throughout (⌘K, `?`, ⌘/Ctrl+Enter), axe-checked in light and dark mode in CI | [ui → keyboard and accessibility](docs/ui.md#keyboard-and-accessibility) |
-| Measurement | `idea eval`: an end-to-end suite with a regression baseline | [Measured runs](#measured-runs-idea-eval) |
-
-## Execution model
-
-- **Serial per initiative.** Tasks run one at a time, in dependency order from the execution plan.
-  Multiple initiatives are supported; each advances independently, one task at a time.
-- **A real coding agent when it can, a loud placeholder when it cannot.** With `executor.kind`
-  unset (`auto`), `idea execute` runs the pinned Hermes agent when Docker is running and the coding
-  model's API key is set. Otherwise it falls back to the `internal` executor — deterministic and
-  hermetic, writing a placeholder file, not real code — and says so in red on every surface
-  (`idea execute`, `idea doctor`, the Build page, the run manifest). To choose an agent explicitly:
-  `idea executors setup --model <provider/model> --yes` (Hermes; OMP needs `--kind omp --image
-  <img>`; any Agent Client Protocol agent — Claude Code, Codex, Gemini CLI, OpenHands, OpenCode —
-  with `--kind acp --image <img> --acp-command <argv>`; a remote OpenHands Agent Server with
-  `--kind openhands --url <server>`, which `auto` never picks because the work root leaves the
-  machine). Add `--smoke` to run a trivial task through the agent and assert it produces a real
-  file change — see [`docs/agents.md`](docs/agents.md).
-- **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
-  and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
-  git history. To also get a git commit per applied change set, set `git_commit: true` in
-  `.idea-harness/harness.yaml` (opt-in, hooks-disabled, stages only the patch's files).
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Using the web UI](#using-the-web-ui)
+- [How it works](#how-it-works)
+- [Model providers](#model-providers)
+- [Other ways in](#other-ways-in)
+- [Documentation](#documentation)
+- [Development](#development)
 
 ## Install
 
-### Prerequisites
-
-- **Go 1.25.5 or newer** (`go version` — the module requires it).
-- **Node.js + pnpm** — *only needed to change the web UI*. Building and installing the binary does
-  not require them; `make build` rebuilds the UI and embeds it.
-- **macOS or Linux.** **Windows is not supported**: the CLI starts its daemon in a new session
-  (`internal/cli/detach.go`, `//go:build unix`), which has no Windows equivalent here yet.
-
-  Releases ship four binaries. What CI actually executes:
-
-  | Platform | Built | Tests run in CI |
-  |---|---|---|
-  | `darwin/arm64` | yes | yes (`macos-latest`) |
-  | `darwin/amd64` | yes | yes (`macos-15-intel`) |
-  | `linux/amd64` | yes | yes (`ubuntu-latest`) |
-  | `linux/arm64` | yes | **no** |
-
-  `linux/arm64` is the one gap, and it is the SQLite driver rather than first-party code: nothing
-  here branches on `GOARCH`, but `modernc.org/sqlite` vendors a machine-translated SQLite per
-  GOOS/GOARCH, so that binary's storage layer is compiled and never exercised. Hosted arm64 Linux
-  runners are not available on this repository's plan; on a public repository they are, and adding
-  the job is a two-line change to `.github/workflows/ci.yml`.
-
-### Build & put `idea` on your PATH
+You need **Go 1.25.5 or newer** on **macOS or Linux** (Windows is not supported). Node.js and pnpm
+are needed only to build the web UI.
 
 ```bash
 git clone git@github.com:devarispbrown/idea-harness.git
 cd idea-harness
-
-# Install into your Go bin directory. No Node toolchain required.
-go install ./cmd/idea
-export PATH="$PATH:$(go env GOPATH)/bin"     # add to your shell profile to persist
+make build                     # builds the web UI and the binary (needs Node.js + pnpm)
+export PATH="$PWD/bin:$PATH"   # add to your shell profile to keep it
+idea doctor                    # checks your setup
 ```
 
-That gives you the **complete CLI**. The **web UI** is built from `web/` and embedded at build
-time, and the checked-in copy is a placeholder — so a binary installed this way serves a page that
-says "web UI not built" at `http://127.0.0.1:8787/` until you build it:
+No Node? `go install ./cmd/idea` gives you the complete CLI, but the web UI then shows a "web UI
+not built" page. Release binaries have the UI built in. Once the repository is public, Homebrew
+will install them: `brew install devarispbrown/tap/idea-harness`.
 
-```bash
-make build                                   # needs Node.js + pnpm; embeds the real UI
-export PATH="$PWD/bin:$PATH"
-```
+**Upgrading:** the daemon runs in the background and outlives the binary that started it. After
+installing a new build, run `idea daemon stop`; the next command starts the new one. If you forget,
+`idea doctor` fails and names both builds.
 
-Release binaries ship with the UI already embedded, so a downloaded release needs neither Node nor
-this step. Generated bundles are deliberately not committed: the UI changes daily, and a 240 KB
-minified blob in git is a merge conflict on every change and a diff no reviewer can read.
-
-### Upgrading
-
-**Stop the daemon after replacing the binary.** It is detached and outlives the binary that
-started it, so after `go install`, `make build`, or downloading a new release, the *previous*
-version keeps serving every command while `idea version` reports the new one:
-
-```bash
-idea daemon stop      # the next command starts one from the new binary
-```
-
-`idea doctor` fails if you forget, naming both builds.
-
-Verify:
-
-```bash
-idea doctor
-```
-
-> No daemon setup is required. The CLI auto-starts a local daemon on first use; `idea dev`
-> runs it in the foreground and serves the web UI at `http://127.0.0.1:8787/` (see the note above
-> on which builds carry the UI). All runtime state lives under `~/.local/share/idea-harness/` —
-> never in your source tree.
+Supported platforms, and how to verify a signed release: [`RELEASING.md`](RELEASING.md).
 
 ## Quick start
 
-The complete loop, from idea to verified product:
+This runs the whole loop on the demo provider. No key, about two minutes.
 
 ```bash
 mkdir my-product && cd my-product
-
-# With a provider key — export it BEFORE idea init, which starts the daemon:
-export OPENAI_API_KEY=sk-…
-# Without a key — skip that line and the `idea model set` below. Everything runs
-# on the built-in demo provider; artifacts are synthetic and labeled as such.
-
-idea init                              # creates .idea-harness/ (works with no Git)
-idea model set openai/gpt-5.6-luna      # only with a key; or use the web UI Settings
-
-idea new "Build usage-based billing"   # M1: idea → reviewed PRD
-idea next --until-human                # M2–M3: design → plan → change set, then stops for you
-idea review CHG-1 approve              # human approves the change set
-idea apply CHG-1                       # M4: apply it to your workspace
-idea verify REQ-1 --pass               # record pass evidence; repeat per requirement
+idea init                              # creates .idea-harness/ and starts the daemon
+idea new "Build usage-based billing"   # idea → reviewed PRD
+idea next --until-human                # design → plan → change set, then stops for you
+idea review CHG-1 approve              # approve the change set
+idea apply CHG-1                       # write it to your workspace
+idea verify REQ-1 --pass               # record evidence; repeat per requirement
 idea next                              # → "✓ initiative complete"
 ```
 
-> **The block above is the demo-provider path. With a key it differs in three ways.** The numbers
-> below were measured on `openai/gpt-5.6-luna`, 2 of 2 hand-driven runs, ~7–9 minutes end to end —
-> **before** the review convergence rules (`review.convergence`, see
-> [configuration](docs/configuration.md#review-convergence)) existed, so they describe the old loop
-> and need re-measuring. No real-model run has been made since; the rules have only been verified
-> against the deterministic scripted provider. `idea eval --model <provider/model>` is how to
-> re-measure — see [Measured runs](#measured-runs-idea-eval).
->
-> 1. **It may stop for you before `idea review`.** In those runs the PRD review did not converge
->    (2/2) and the plan review raised blocking findings (2/2). The loop now shows the reviewer its
->    previous findings, requires blocking findings to cite a requirement, and stops early only when
->    the blocking count stops falling — but a genuine blocker still parks. `idea new` and
->    `idea next` each print the command that moves it on — `idea approve` or `idea revise` for the
->    PRD, `idea approve-plan` or `idea revise-plan` for the plan. Run what it names, then
->    `idea next --until-human` again.
-> 2. **`idea review CHG-1 approve` may refuse**, with an open critical finding. See the note below.
-> 3. **The requirement may not be `REQ-1`.** A revision that drops a requirement supersedes it and
->    mints new codes; in one of those measured runs the surviving requirements started at `REQ-23`
->    — 12 of them, 34 rows created, 22 superseded. `idea status` lists the live codes;
->    `idea verify REQ-1` on a superseded one answers
->    `requirement "REQ-1" in state "removed" cannot take a human judgment`.
->
-> None of this is a fault — an adversarial reviewer that never blocks is not doing anything. It is
-> the difference between a deterministic demo and a real model, and it is why the block is written
-> against the demo provider.
+`idea next` always runs the next automatic step and stops where a person has to decide, printing
+the command to run next. `idea new` waits for the run it starts (`--no-wait` returns at once, and
+`idea watch` follows a run live). `idea status` shows where things stand.
 
-> **If `idea review CHG-1 approve` refuses.** With a real model the adversarial reviewer can raise
-> a blocking finding on the change set, and approve then refuses rather than waving it through.
-> `idea reviews` lists what it found, and `idea review CHG-1 approve --accept-findings` signs off
-> the reviewer's own findings — the same judgment call `idea approve` makes on the PRD. A finding
-> from the credential sweep is not acceptable that way and still refuses.
+**With a real model:**
 
-> **Export before `idea init`, and set a model only if you have its key.** The daemon reads your
-> environment once, when it starts — and `idea init` starts it — so a key exported afterwards is
-> invisible to it. If you forget, `idea daemon stop` makes the next command restart it with the key.
->
-> Setting a model without its key is worse than setting none: `default_model` is resolved before the
-> demo fallback, so the first model call becomes a non-retryable `401` and the initiative goes to
-> `failed`, where doing nothing would have produced a complete synthetic run. `idea model set` warns
-> when it can tell, and `idea doctor` asks the **daemon** whether it has the key — which is the
-> process that makes the call, and the one that read your environment once at start. It fails,
-> naming the variable and whether the daemon or only your shell is missing it.
->
-> An initiative already in `failed` is recovered with **`idea retry`**, which re-runs the phase that
-> failed rather than starting over — `idea next` names it, and `--model <provider/model>` retries on
-> a different one. Fix the cause first: retrying into the same missing key just fails again.
+1. Export your key **before** `idea init`: `export OPENAI_API_KEY=sk-…`. The daemon reads the
+   environment once, when it starts. If you forgot, run `idea daemon stop` and continue.
+   `idea doctor` asks the **daemon** whether it has the key, so it catches this.
+2. Pick a model: `idea model set openai/gpt-5.6-luna`. Only set a model whose key you have.
+3. With Docker running too, `idea execute` uses a real coding agent automatically.
 
-Two guided walkthroughs of that block, with the output at each step and what to look at
-before approving anything: [a new project](docs/demo-greenfield.md), and
-[an existing codebase](docs/demo-existing-project.md).
+A real model's reviewer can push back, so the loop may stop earlier and ask you to `idea approve`
+or `idea revise` the PRD. If `idea review CHG-1 approve` refuses because of reviewer findings,
+`idea reviews` lists them and `idea review CHG-1 approve --accept-findings` signs them off.
+Requirement codes may not start at `REQ-1`; `idea status` lists the live ones. If an initiative
+fails, `idea retry` re-runs the phase that failed.
 
-`idea next` drives the loop: it runs the next automatable step (`advance` → `execute` → `verify`)
-and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
-and findings — printing exactly what to run next. Decisions and questions can be resolved from the
-CLI (`idea resolve`, `idea answer`, `idea reopen-decision`, `idea accept-recommendations`,
-`idea triage`). Dispositioning an individual review finding is still a web-UI action: the CLI
-lists them (`idea reviews`), and its one disposition is
-`idea review <CHG-n> approve --accept-findings`, which accepts a change set's reviewer findings
-together. `idea new` waits for the run it starts (`--no-wait` returns immediately and `idea watch`
-follows it), and `--until-human` keeps going through the automatable steps — waiting for each to
-finish — instead of stopping after one, which is why the block above is eight commands rather than thirteen.
-The judgment points stay yours either way: `idea new` never drives itself past them.
+Step-by-step walkthroughs, with the output at each step:
+[new project](docs/demo-greenfield.md), [existing codebase](docs/demo-existing-project.md), and
+the [annotated quickstart](docs/quickstart.md), which covers what a real model and agent cost.
 
-Look closer whenever you want:
+## Using the web UI
 
-```bash
-idea watch                             # follow a run live (Bubble Tea spinner)
-idea prd                               # read the reviewed PRD in your terminal (Glamour)
-idea plan                              # render the execution plan
-idea tasks                             # list the dependency-ordered tasks
-idea changes                           # list change sets (e.g. CHG-1)
-```
+The daemon serves the UI at **http://127.0.0.1:8787/**. It starts with your first `idea` command,
+so open that address in a browser once you have run `idea init`. `idea daemon status` prints the
+address if you are not sure. The UI and the CLI share the same state,
+so you can switch between them at any point.
 
-With a model key set and Docker running, `execute` runs a real coding agent with no further setup
-(`auto` resolves to Hermes); [`docs/agents.md`](docs/agents.md) covers choosing another agent and
-the security tradeoff of running one.
+![The Build page: a change set waiting for review](docs/images/ui-build.png)
 
-**Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc,
-market analysis, or a UI mockup image and it's content-addressed and injected into every downstream
-stage — design, planning, and PRD revisions among them — so the team works from your context. Text
-formats are extracted directly; images are described by a vision model, and only the description
-reaches the agents.
+**Getting around.** The sidebar holds the initiative's six phases (**Explore → Define → Design →
+Plan → Build → Verify**). Each shows a check when done and highlights the one in progress. Below
+them are the Product Graph views (**Gaps**, **Outcomes**, **Quality**), and at the bottom
+**Activity**, **Health**, **Automations**, **Remote runs** and **Settings**. Press **⌘K**
+(Ctrl+K) to jump anywhere, including typing a code like `REQ-3` to open its lineage. Press **?**
+for every shortcut.
+
+**A typical session:**
+
+1. **Home:** type an idea into "What are you thinking about building?" and press Enter.
+2. **Explore and Define:** read the brief, research and PRD (**Read** opens the document).
+   Answer open questions in place (**✨ Suggest** drafts an answer). Approve the PRD or send it
+   back.
+3. **Design and Plan:** review the architecture and the dependency-ordered tasks, then approve
+   the plan.
+4. **Build:** while the agent runs, the run panel streams what it is doing. You can stop it, and
+   ACP and OpenHands agents also take a note mid-run. When a change set is ready, open **View diff**, then **Approve**,
+   **Request changes…** or **Reject**, then **Apply**.
+5. **Verify:** mark each requirement **Pass** or **Fail** with evidence, and see the quality
+   scorecard.
+
+**Needs you** collects every open decision, question and review finding across initiatives,
+highest impact first. **Settings** is where you set the model, providers, coding agent, git,
+review rigor, spending caps and integrations, so you don't need to edit YAML.
+
+**From your phone.** Remote access is off by default. Turn it on (Tailscale is the recommended
+way), run `idea ui pair --qr` on your machine, and sign in on the phone with the pairing code. You
+can then review diffs, approve and get push notifications. Setup:
+[configuration → remote access](docs/configuration.md#remote-access).
+
+Every screen and route is described in [`docs/ui.md`](docs/ui.md).
+[`docs/ui-parity.md`](docs/ui-parity.md) lists which CLI commands have a UI equivalent.
+
+## How it works
+
+idea-harness is not a coding agent itself. It drives one (Hermes, OMP, any Agent Client Protocol
+agent such as Claude Code or Codex, or an OpenHands Agent Server) inside its gates. A team of AI
+roles (product manager, research analyst, architect, product designer, engineering lead,
+verification engineer, adversarial reviewer) moves each initiative through the phases. Every artifact is reviewed before it reaches you.
+
+**Product Graph.** Every objective, requirement, decision, task, change set, test and
+verification is a node, with edges recording why it exists and what depends on it.
 
 ```bash
-idea new "Build usage-based billing" --doc prd.md   # text files, ingested with the idea
-idea docs add spec.pdf      # .pdf / .docx / .xlsx / .jpg / .png — or `-` to paste
-idea docs                   # list uploaded context docs
+idea why requirement REQ-1      # the evidence and decisions behind it
+idea impact requirement REQ-1   # what goes stale if you change it
+idea gaps                       # unbuilt or unverified requirements, refuted assumptions, drifting metrics, …
+idea changed                    # what changed since you last looked
 ```
 
-`idea docs add` attaches to an existing initiative, so it runs *after* `idea new`; `--doc` is how
-text material goes in at the same time as the idea. **Text documents are credential-swept and
-redacted at ingest; images are not** — they are stored, served, and sent to the vision provider
-verbatim. See [`docs/security.md`](docs/security.md#context-docs-uploaded-source-material).
+**Byte-for-byte revert.** Each applied change set is stored as a content-addressed patch, so
+`idea revert CHG-1` restores the exact previous files. Revert works on files, not git history. For
+a git commit per change set as well, set `git_commit: true` in `.idea-harness/harness.yaml`.
 
-The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/` — from
-`make build` or a release binary; see [Install](#install).
+**Coding agents.** By default (`auto`), `idea execute` runs the pinned Hermes agent when Docker
+is running and the model's key is set. Otherwise it writes a clearly labelled placeholder instead
+of real code. Choose another agent with `idea executors setup`; see [`docs/agents.md`](docs/agents.md).
+Tasks run one at a time per initiative, in dependency order.
 
-**Learn more:** [`docs/quickstart.md`](docs/quickstart.md) is the annotated walkthrough; every other
-document is listed under [Documentation](#documentation).
+**Verification.** `idea verify` records evidence per requirement. It also scores seven quality
+dimensions: setup reproducibility, docs, API compatibility, API ergonomics, security, performance
+and operational readiness. Anything it could not check is reported as "not measured", never as a
+pass. See [configuration → quality dimensions](docs/configuration.md#quality-dimensions-verify).
 
-### Verification beyond the tests: quality dimensions
+**Objectives and outcomes.** The PRD states objectives (`OBJ-n`) and the outcome metrics that
+measure them (`MET-n`). Every requirement says which objective it serves. Record or measure
+metric values with `idea metric record` or `idea metric measure`. idea-harness flags a metric that
+is off track or regressed after a change landed, and a requirement that is verified but whose
+objective is failing. See [configuration → objectives & outcomes](docs/configuration.md#objectives--outcomes).
 
-`idea verify` also measures **quality dimensions** of the applied work and prints a scorecard
-(`--json` includes it as `quality`):
+**Guardrails.** Hard deny rules, protected paths, credential and PII sweeps, a no-network check
+sandbox, redacted logs and per-initiative spending caps. See [`docs/security.md`](docs/security.md)
+and [`docs/security-model.md`](docs/security-model.md).
 
-| dimension | how it is checked |
-|---|---|
-| `setup_reproducibility` | the README/Makefile's documented setup, build and test commands, run in a fresh copy of the workspace in the no-network sandbox |
-| `docs_completeness` | README present with install/usage sections; every added route, CLI flag and env var mentioned in the docs; doc comments on new exported Go API |
-| `api_compatibility` | an OpenAPI 3 before/after diff and a Go exported-API diff; a breaking change no requirement or decision names fails |
-| `api_ergonomics` | a verification_engineer model review of the public-surface diff (naming, error shapes, pagination, idempotency, examples); only findings citing a diff line count |
-| `security` | the applied files re-scanned for credentials, the deny checks summarized, configured scanners run |
-| `performance` | declared budgets (a command, a metric regex, a ceiling and/or allowed regression vs the last run) |
-| `operational_readiness` | health route, SIGTERM handling, structured logging, env config, Dockerfile `HEALTHCHECK`, migration safety |
-
-Each result cites file:line and the requirements it bears on, and is traceable from them
-(`idea impact requirement REQ-1`, `idea why quality_result docs_completeness`). Anything the
-harness could not look at — no Docker, no scanner, the demo model — is reported **not measured**,
-never as a pass. Each dimension is `off`, `advisory` or `gate`; only gated ones can hold the gate.
-The defaults follow the effective `review.rigor`: `quick` measures none, `standard` makes setup,
-docs and API compatibility advisory, `thorough` gates those three — so they must pass for the
-initiative to complete — and makes the rest advisory. `auto` (the default) calibrates from the
-project's size and the applied change, so a tiny demo project verifies at `quick` and prints no
-scorecard. Configure them
-under `verify:` in harness.yaml — see [configuration](docs/configuration.md#quality-dimensions-verify).
-
-### Measured runs: `idea eval`
-
-`idea eval` runs a fixed suite of seven small greenfield ideas (a todo CLI, a URL shortener, a
-Markdown site generator, …) end to end through a private in-process daemon — idea → PRD review →
-plan → change set → apply → verify — with an automatic judgment policy standing in for you, and
-reports per case and in aggregate: how far it got, whether the PRD and plan reviews converged and in
-how many cycles, every human-judgment stop and where, change sets produced and applied, whether
-verification passed, cost, tokens and wall time. It writes JSON and markdown and compares against a
-saved baseline to flag regressions.
-
-```bash
-idea eval                                        # scripted provider: deterministic, no key, ~5s
-idea eval --model openai/gpt-5.6-luna \
-          --json-out run.json --md-out run.md    # a real measurement (needs OPENAI_API_KEY)
-idea eval --model openai/gpt-5.6-luna --baseline run.json   # non-zero exit on a regression
-```
-
-Without `--model` it runs scripted reviewer scenarios — including one that reproduces the measured
-non-convergence (a reviewer re-raising rephrased findings) under both the old and the new loop, and
-one genuine blocker that must still park for a human — and CI runs exactly that against
-`internal/eval/testdata/baseline-scripted.json` on every push. With the built-in internal executor
-each case's acceptance checks are reported as skipped, never as passing; pass
-`--harness <file>` with an `executor:` block to run them against a real coding agent. Real-model
-numbers in this README are the 2-run measurement above until someone with a key re-runs the suite.
-
-## Objectives & outcomes
-
-Verification answers "did we build it right". It cannot answer "did building it matter": a
-requirement can pass every test and still not move what it was for. So the chain does not stop at
-verification — it runs **Objective → Hypothesis → Requirement → … → Evidence → product outcome**:
-
-- An **objective** (`OBJ-n`) is an outcome the initiative exists to move, stated as a change in the
-  world, not a feature. The PRD states them; every requirement names the objective(s) it serves.
-- An **outcome metric** (`MET-n`) is how anyone would know: a direction (`increase`, `decrease`,
-  `maintain`), a target, a baseline when one is known, an optional guardrail, a cadence, and a
-  source — `manual`, a `command` run in the no-network check sandbox, or a `url` read through the
-  SSRF-guarded fetcher ([configuration.md](docs/configuration.md#objectives--outcomes)).
-- A **hypothesis** ("we believe the checklist will move activation") is an assertion linked to the
-  metric it predicts.
-- An **observation** is one measured value. Recording one also records which change sets landed
-  since the previous value, so `idea impact requirement REQ-1` reaches the metric the work moved, and
-  `idea trace metric MET-2` names the change sets behind a regression.
-
-The PRD review enforces the chain deterministically: a requirement that serves no objective, and an
-objective with no measurable metric, are high findings (a PRD with no objectives at all gets one
-medium finding, so a PRD written without them is flagged but not wedged). The adversarial reviewer
-may cite `OBJ-n`/`MET-n` under the same citation rules as a requirement.
-
-```bash
-idea objectives                                  # OBJ-n, what serves each, what measures each
-idea objective add "New users reach a first sync on day one" --owner pm@example.com
-idea objective link REQ-3 OBJ-1                  # REQ-3 serves OBJ-1
-idea metric add OBJ-1 "day-one sync rate" --unit % --baseline 22 --target 40 --cadence weekly
-idea metric record MET-1 31 --note "dashboard, week 2"
-idea metric add OBJ-1 "signups" --target 500 --command "wc -l < /repo/data/signups.csv"
-idea metric measure                              # run command/url sources now
-idea metrics                                     # every metric with its drift
-```
-
-**Drift, exactly** (evaluated on every read, `domain.EvaluateMetricDrift`):
-
-| Status | When |
-|---|---|
-| `off_track` | the latest value is worse than the baseline — lower for `increase`, higher for `decrease`, farther from the target for `maintain` — or it breaches the guardrail (a floor for `increase`, a ceiling for `decrease`, the largest allowed distance from the target for `maintain`). With no declared baseline, the first observation is the baseline, so one reading can only be off track by its guardrail |
-| `stale` | a cadence is set and more than one cadence has passed since the last observation (or since the metric was defined, if never observed) |
-| `regressed` | the latest value is worse than the previous one by the same rule **and** at least one change set landed between the two. A drop with nothing landed is the world, not the work — it can still be `off_track` |
-| `no_data` | never observed |
-| `on_track` | none of the above |
-
-The most urgent one wins (`regressed` > `off_track` > `stale` > `no_data` > `on_track`); every signal
-is still reported. A requirement that is **verified** while an objective it serves has an
-off-track or regressed metric is flagged **"works, but fails its objective"** — on `idea status`,
-`idea next`, the Health page, the MCP `list_metrics` tool, and `GET …/outcomes`. An observation that
-moves a metric into `off_track` or `regressed` publishes `outcome.drifted` to Slack.
-
-`idea gaps` reports the same chain, from the same rule as the outcome report: `orphan_requirement`,
-`unmeasured_objective`, `unserved_objective`, `drifting_metric` and `ineffective_requirement`, each
-with the command that closes it (`idea objective link`, `idea metric add`, `idea metric record` or
-`measure`, `idea trace metric`). Exact triggers and severities:
-[architecture.md](docs/architecture.md#asking-the-graph-gaps).
+**Your own material.** Attach a PRD, spec or mockup and every later stage works from it:
+`idea new "…" --doc prd.md`, or `idea docs add spec.pdf` afterwards. Text is swept for credentials
+when it is uploaded; images are not
+([details](docs/security.md#context-docs-uploaded-source-material)).
 
 ## Model providers
 
-idea-harness ships six built-in presets — **OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter,
-and Ollama (local)** — plus any custom OpenAI-compatible endpoint (Groq, Together, LM Studio, …).
-Configure via the CLI or the web UI (Settings):
+Built-in presets: **OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter and Ollama** (local).
+Any OpenAI-compatible endpoint works too. Configure them in Settings or from the CLI:
 
 ```bash
-idea model                        # list providers + status
+idea model                        # list providers and whether each has its key
 idea model set gemini/gemini-3.6-flash
 idea model add groq --type openai --base-url https://api.groq.com/openai/v1 --key-env GROQ_API_KEY
 ```
 
-API keys are read from environment variables (never stored inline):
+Keys are always read from environment variables and never stored in config. With no provider
+configured, idea-harness runs in demo mode and labels its synthetic output everywhere. More:
+[`docs/configuration.md`](docs/configuration.md#supported-providers).
 
-```yaml
-# .idea-harness/harness.yaml
-default_model: openai/gpt-5.6-luna
-providers:
-  openai:    { api_key_env: OPENAI_API_KEY }
-  anthropic: { api_key_env: ANTHROPIC_API_KEY }
-  gemini:    { api_key_env: GOOGLE_API_KEY }
-  deepseek:  { api_key_env: DEEPSEEK_API_KEY }
-  openrouter: { api_key_env: OPENROUTER_API_KEY }
-  ollama:    {}                      # local, no key
-```
+## Other ways in
 
-Without a configured provider (or key), idea-harness runs in a **demo mode** that responds to your
-idea with clearly-synthetic placeholder output (labeled in the UI and CLI). To do real research and
-produce a real PRD, configure a provider and — optionally — research seed URLs (see
-`docs/configuration.md`).
-
-## Repository layout
-
-```text
-cmd/idea/        CLI + daemon entrypoint
-internal/        Go packages (domain, store, blob, model, workflow, review, daemon, …)
-web/             React + TypeScript UI (source; `make build` embeds it into the binary)
-docs/            guides and references (see Documentation below); docs/plans/ holds working records
-scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
-```
-
-## Versioning
-
-Pre-1.0: the CLI surface, HTTP API, and config schema may change in any release. Breaking changes
-and their migrations are recorded in [`CHANGELOG.md`](CHANGELOG.md).
-
-`idea version` prints the build — version, commit, and whether the tree was dirty — so a bug report
-can name one:
-
-```bash
-idea version        # v0.3.0 (a1b2c3d)  ·  dev (a1b2c3d, dirty) from a working tree
-```
-
-Tagged releases publish prebuilt binaries for macOS and Linux (amd64/arm64), built in CI; the
-table under [Install](#install) says which of the four are also tested there. Until the
-repository is public, the canonical install stays `git clone` + `go install ./cmd/idea`:
-`go install github.com/devarispbrown/idea-harness/cmd/idea@latest` additionally requires the module
-path to be publicly fetchable.
-
-Once it is public, Homebrew installs the release binary:
-
-```bash
-brew install devarispbrown/tap/idea-harness
-```
-
-Each release's `checksums.txt` is signed with keyless cosign, each archive ships an SPDX SBOM and,
-on a public repository, a GitHub build-provenance attestation. To check a download before running
-it:
-
-```bash
-cosign verify-blob --bundle checksums.txt.sigstore.json \
-  --certificate-identity "https://github.com/devarispbrown/idea-harness/.github/workflows/ci.yml@refs/tags/vX.Y.Z" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
-grep '_darwin_arm64.tar.gz' checksums.txt | shasum -a 256 -c
-```
-
-[`RELEASING.md`](RELEASING.md#verifying-a-release) has the full procedure, including
-`gh attestation verify`.
+- **MCP server:** `claude mcp add idea -- idea mcp` drives idea-harness from Claude Code, Cursor or
+  Codex ([`docs/mcp.md`](docs/mcp.md)).
+- **Slack and Linear:** notifications and approvals in Slack, two-way Linear issue sync, with no
+  public URL needed ([`docs/integrations.md`](docs/integrations.md)).
+- **HTTP API:** everything the UI does ([`docs/api.md`](docs/api.md)). A running daemon serves the
+  reference at http://127.0.0.1:8787/api-reference.
+- **Evals:** `idea eval` runs a fixed suite of ideas end to end and compares the results against a
+  saved baseline ([`docs/cli.md`](docs/cli.md#measuring-the-pipeline-idea-eval)).
 
 ## Documentation
 
-**Start here** — walkthroughs of the whole loop, no API key required:
+| Start here | Using it | Building on it and trusting it |
+|---|---|---|
+| [Greenfield demo](docs/demo-greenfield.md) | [Web UI](docs/ui.md) | [HTTP API](docs/api.md) and [OpenAPI spec](docs/openapi.yaml) |
+| [Existing-project demo](docs/demo-existing-project.md) | [CLI reference](docs/cli.md) | [Architecture](docs/architecture.md) |
+| [Quickstart](docs/quickstart.md) | [Configuration](docs/configuration.md) | [Security](docs/security.md) |
+| | [Coding agents](docs/agents.md) | [Security model](docs/security-model.md) |
+| | [MCP](docs/mcp.md) and [integrations](docs/integrations.md) | [Hosting the API reference](docs/api-reference-hosting.md) |
 
-- [`docs/demo-greenfield.md`](docs/demo-greenfield.md) — a new project, empty directory to verified
-  and complete, in about two minutes, with the output at each step.
-- [`docs/demo-existing-project.md`](docs/demo-existing-project.md) — the same loop on a repository
-  that already has code: what `apply` touches and how to confirm a revert left the tree pristine.
-- [`docs/quickstart.md`](docs/quickstart.md) — the annotated walkthrough, and what changes, and
-  what it costs, with a real model and a real agent.
-
-**Using it:**
-
-- [`docs/agents.md`](docs/agents.md) — executors: `auto`, Hermes, OMP, ACP agents (Claude Code,
-  Codex, Gemini CLI, …), an OpenHands Agent Server, MCP pass-through, and the security tradeoffs.
-- [`docs/configuration.md`](docs/configuration.md) — `.idea-harness/` reference: providers, review
-  rigor and convergence, quality dimensions (`verify:`), outcome measurement (`outcomes:`),
-  integrations.
-- [`docs/cli.md`](docs/cli.md) — every command and flag, exit codes, `--json` errors, `idea gaps`,
-  `idea eval`, objectives and metrics.
-- [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`, including the Product Graph
-  views (lineage, gaps, outcomes, quality, review convergence).
-- [`docs/ui-parity.md`](docs/ui-parity.md) — which CLI verbs the UI covers, and why the rest are
-  CLI-only.
-- [`docs/mcp.md`](docs/mcp.md) — `idea mcp`: drive idea-harness from Claude Code, Cursor or Codex
-  (`claude mcp add idea -- idea mcp`).
-- [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
-  sync; neither needs a public URL.
-
-**Building on it:**
-
-- [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, and a row per route
-  (`make api-docs-check` keeps it complete), with [`docs/openapi.yaml`](docs/openapi.yaml) as the
-  machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
-- [`docs/api-reference-hosting.md`](docs/api-reference-hosting.md) — building without the bundled
-  reference (3.7 MiB smaller) and hosting it on Cloudflare, AWS or Fastly instead.
-- [`docs/architecture.md`](docs/architecture.md) — system areas, the stage graph, packages,
-  invariants, and the exact trigger behind every `idea gaps` kind.
-
-**Trusting it:**
-
-- [`docs/security.md`](docs/security.md) — threat model, secrets, trust levels.
-- [`docs/security-model.md`](docs/security-model.md) — system-deny conditions, protected paths,
-  executor trust tiers, the execution gateway, the remote execution plane, and what none of it
-  protects against.
-
-**The project:** [`CHANGELOG.md`](CHANGELOG.md) (breaking changes and their migrations),
-[`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md) (including verifying a signed
-release), and [`docs/plans/`](docs/plans/) — milestone plans, adversarial reviews and
-[deferred items](docs/plans/deferred.md).
+Project records: [`CHANGELOG.md`](CHANGELOG.md) (breaking changes and migrations),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md), and
+[`docs/plans/`](docs/plans/), which includes the [deferred items](docs/plans/deferred.md).
 
 ## Development
 
 ```bash
-make test     # run the Go test suite
+make test     # Go tests
 make vet      # go vet
-make build    # build web UI + binary
+make build    # web UI + binary
+make e2e      # browser tests and accessibility checks
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the process (plans are adversarially reviewed before
-implementation; every ChangeSet gets a reviewer run before a human verdict).
+Layout: `cmd/idea/` (CLI and daemon), `internal/` (Go packages), `web/` (React UI), `docs/`,
+`scripts/`. Pre-1.0, the CLI, API and config may change in any release; `CHANGELOG.md` records
+each change. `idea version` prints the build to quote in a bug report. Process:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

@@ -160,6 +160,25 @@ export default function App() {
   const mainRef = useRef<HTMLElement>(null);
   useRouteFocus(JSON.stringify(route), mainRef);
 
+  // The demo banner sits above the shell, so a full-height sidebar would end
+  // that far below the screen and hide its footer (Settings) until the page
+  // scrolls. Its height, kept current, lets the sidebar subtract it.
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const [bannerHeight, setBannerHeight] = useState(0);
+  useEffect(() => {
+    const el = bannerRef.current;
+    if (!el) {
+      setBannerHeight(0);
+      return;
+    }
+    const measure = () => setBannerHeight(el.getBoundingClientRect().height);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [demo]);
+
   // M4: `daemonDown` used to be set independently by each of the four loaders
   // below, from just its own single request's outcome -- so whichever one
   // happened to resolve LAST in a given tick decided the flag, regardless of
@@ -558,7 +577,7 @@ export default function App() {
   const needsYou = attention.reduce((n, r) => n + attentionCount(r), 0);
 
   return (
-    <div className="app-root">
+    <div className="app-root" style={{ ["--app-banner-h" as string]: `${bannerHeight}px` }}>
       {/* The first Tab stop on every page: past the sidebar's dozen links
           straight to the page itself. Its click is handled here, because a
           real "#main-content" href would be read as a route by the hash
@@ -581,7 +600,7 @@ export default function App() {
         </div>
       )}
       {demo && (
-        <div className="banner banner-app">
+        <div className="banner banner-app" ref={bannerRef}>
           Demo mode — no model is selected for this project, so every document,
           review and change you see here is synthetic.{" "}
           <a

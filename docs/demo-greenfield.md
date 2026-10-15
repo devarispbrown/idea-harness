@@ -194,8 +194,8 @@ An unmet gate exits non-zero (`5`, `gate_unmet` — see [exit codes](cli.md#exit
 `idea verify` also measures the work's **quality dimensions** before the gate reads them, and
 prints their scorecard. Not here: on a project this small the effective rigor is `quick`, which
 measures none. On a larger project, or with `review.rigor: standard` or `thorough`, a `Quality`
-block follows the coverage — see the README's
-[quality dimensions](../README.md#verification-beyond-the-tests-quality-dimensions).
+block follows the coverage — see
+[quality dimensions](configuration.md#quality-dimensions-verify).
 
 After completion `idea gaps` still lists the three unvalidated assumptions from step 3: completing
 an initiative is about its requirements, and judging what it assumed is a separate call.

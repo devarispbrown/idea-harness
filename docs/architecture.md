@@ -68,7 +68,7 @@ than guess from which artifacts exist.
   **metrics** (`MET-n`), and links each requirement to the objectives it serves. Observations of
   those metrics close the loop after `verify`: drift is computed deterministically on read
   (`domain.EvaluateMetricDrift`), and an observation records which change sets landed since the
-  last one, so the graph runs from objective to outcome. See the README's "Objectives & outcomes".
+  last one, so the graph runs from objective to outcome. See [configuration.md](configuration.md#objectives--outcomes).
 - Review is **mandatory**: deterministic checks run first, then an adversarial
   reviewer. The approval bar is "no open critical/high findings" that cite what they are about.
   From cycle 2 the reviewer sees the previous cycle's findings and what the revision did about

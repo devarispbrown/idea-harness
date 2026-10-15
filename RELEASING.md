@@ -128,6 +128,29 @@ harmless, because it signs a checksum file nobody will publish.
 3. Republish the hosted API reference —
    `docs/api-reference-hosting.md` has the procedure. It does not update itself.
 
+## Platforms
+
+Releases ship four binaries, with the web UI built in. Windows is not supported: the CLI starts its
+daemon in a new session (`internal/cli/detach.go`, `//go:build unix`), which has no Windows
+equivalent here yet.
+
+| Platform | Built | Tests run in CI |
+|---|---|---|
+| `darwin/arm64` | yes | yes (`macos-latest`) |
+| `darwin/amd64` | yes | yes (`macos-15-intel`) |
+| `linux/amd64` | yes | yes (`ubuntu-latest`) |
+| `linux/arm64` | yes | **no** |
+
+`linux/arm64` is the one gap, and it is the SQLite driver rather than first-party code: nothing
+here branches on `GOARCH`, but `modernc.org/sqlite` vendors a machine-translated SQLite per
+GOOS/GOARCH, so that binary's storage layer is compiled and never exercised. Hosted arm64 Linux
+runners are not available on this repository's plan; on a public repository they are, and adding
+the job is a two-line change to `.github/workflows/ci.yml`.
+
+Until the repository is public, the canonical install is `git clone` and `make build` (or
+`go install ./cmd/idea`, without the UI). `go install …@latest` needs the module path to be
+publicly fetchable.
+
 ## Verifying a release
 
 With [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) and
