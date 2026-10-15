@@ -418,7 +418,9 @@ written code-first (`REQ-3`, `TASK-2`, `CHG-1`) and links to its own lineage pag
 at (derived from, implements, serves, produced by), followed up to its sources. **Impact** is the
 dependents tree — everything that points at it, through to the change sets built from its tasks
 and the metrics attributed to those change sets — with a count per staleness class (`stale`,
-`obsolete`, `to revalidate`); rows are badged only when stale or obsolete. A node reachable two ways
+`obsolete`, `to revalidate`); rows are badged only when stale or obsolete. A node resting on a
+retracted assertion is `obsolete` in that assertion's impact, and its Why lists the assertion's
+`invalidates` edge. A node reachable two ways
 is expanded once and marked "(shown above)" elsewhere. **Full trace** is every edge as a table. The
 `<ref>` resolves exactly as the CLI resolves it (id, code, kind or title; codes case-insensitively;
 a live row before a superseded one), plus an artifact's graph id and an unambiguous id prefix.

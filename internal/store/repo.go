@@ -1019,7 +1019,12 @@ func (db *DB) SetAssertionBasis(ctx context.Context, initiativeID, fromType, fro
 			}
 			edges = append(edges, EdgeToWrite{FromType: fromType, FromID: fromID, EdgeType: domain.EdgeDerivedFrom, ToType: "assertion", ToID: aid})
 		}
-		return db.wireEdges(tx, initiativeID, edges)
+		if err := db.wireEdges(tx, initiativeID, edges); err != nil {
+			return err
+		}
+		// A node now resting on a retracted assertion is invalidated by it;
+		// one whose revision dropped the citation no longer is.
+		return db.syncInvalidatesTx(tx, initiativeID, ActorOrchestrator)
 	})
 }
 
