@@ -99,7 +99,7 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `daemon status\|stop` | cli-only | CLI-only: process management of the daemon serving the UI | |
 | `dev` | cli-only | CLI-only: starts the daemon and opens the UI | |
 | `ui pair` | cli-only | CLI-only: by design — a pairing code is minted with the API token on the daemon's machine; a signed-in browser cannot mint one, so a stolen session cannot outlive its own revocation | |
-| `ui sessions` | ui | `#/settings` — Remote access: every browser session, Revoke on each, Sign out on this one | revoke-all is CLI-only (`idea ui sessions revoke --all`) |
+| `ui sessions` | ui | `#/settings` — Remote access: every browser session, Revoke on each, Sign out on this one, Sign out everywhere | |
 | `mcp` | cli-only | CLI-only: stdio server for MCP clients; no UI by design | |
 | `eval` | cli-only | CLI-only: runs a private in-process daemon over an eval suite; a developer tool | |
 | `version` | ui | `#/i/<id>/health` — daemon version in the Health footer | |

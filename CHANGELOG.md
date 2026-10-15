@@ -9,6 +9,34 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added — remote use, phones and notifications
+
+- **Use the UI from your phone or another computer, without the token leaving the machine.**
+  Opt-in, daemon-wide, in `<state root>/config.yaml` (`daemon:`) or `idea daemon` flags:
+  `allowed_hosts` for a proxy in front of loopback (`tailscale serve` is the recommended path),
+  or `listen` for a second listener — refused unless it is a Tailscale or private address or TLS
+  is configured (`tls_cert`/`tls_key`). Loopback behaves exactly as before. A remote browser signs
+  in with a one-time code from **`idea ui pair`** for an expiring, revocable session cookie;
+  **`idea ui sessions [revoke <id>|--all]`** and Settings → Remote access list and revoke them. The
+  model and its limits: [docs/security-model.md](docs/security-model.md#remote-access); setup:
+  [docs/configuration.md](docs/configuration.md#remote-access).
+- **Web Push notifications** for *needs your judgment*, *change set ready for review*,
+  *verification failed* and *outcome drifting*, chosen per browser in Settings → Notifications.
+  Each subscription is a subscriber on the integration bus, with Slack's outbox, retries and dead
+  letters; payloads are encrypted (RFC 8291) and VAPID-signed (RFC 8292) by a new stdlib-only
+  `internal/webpush`, tested against the RFC's own vector. VAPID keys live under the state root.
+- **Project switcher**, and **`#/p/<projectId>/…`** deep links: the address names its project,
+  and the last choice is remembered.
+- **Phone-first review**: wrapped, collapsible per-file diffs with `+/−` counts, a sticky
+  Approve / Request changes / Reject bar with **Reject with this note**, a **Needs you** entry in
+  the top bar.
+- **Installable app**: web manifest, icons, and a service worker that serves an offline page and
+  caches hashed assets only — never the HTML (which can carry the token) or `/api/`.
+- API: `POST /ui/pairing-codes`, `POST /ui/login`, `POST /ui/logout`, `GET /ui/session`,
+  `GET|DELETE /ui/sessions`, `DELETE /ui/sessions/{id}`, `GET /push/vapid-public-key`, and
+  `GET|POST /projects/{projectId}/push/subscriptions`, `PATCH|DELETE …/{id}`, `POST …/{id}/test`.
+  Migrations: global.db 2 (sessions, pairing codes), state.db 45 (push subscriptions).
+
 ### Changed — BREAKING
 
 | Was | Now |
