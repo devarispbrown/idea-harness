@@ -1,0 +1,4 @@
+# The suite's demo daemon state and Playwright's output (see playwright.config.ts).
+.work/
+.results/
+.report/

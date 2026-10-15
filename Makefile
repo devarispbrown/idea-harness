@@ -1,4 +1,4 @@
-.PHONY: build test lint vet web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check version-check
+.PHONY: build test lint vet e2e web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check version-check
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -126,6 +126,14 @@ api-docs-dist:
 
 test:
 	go test ./...
+
+# The browser suite (web/e2e): builds the binary with the real UI, starts a
+# hermetic demo daemon (isolated state dir, port $${IDEA_E2E_PORT:-19590}, no
+# provider keys, so no network beyond localhost), seeds an initiative and
+# drives the whole loop in Chromium with an axe check on every page. Needs
+# Playwright's Chromium once: `cd web && pnpm exec playwright install chromium`.
+e2e: build
+	cd web && pnpm exec playwright test
 
 vet:
 	go vet ./...

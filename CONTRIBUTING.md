@@ -32,7 +32,7 @@ make embed-web # rebuild web/dist and copy into internal/web/dist
 Go toolchain requires a workspace-local module cache in the sandboxed environment; the scripts
 honor `GOPATH`/`GOCACHE`/`GOMODCACHE` relative to the repo (the Makefile does not set them).
 
-**CI gates on nine more targets than those four**, and following the list above alone produces a
+**CI gates on ten more targets than those four**, and following the list above alone produces a
 red PR. Run them before pushing:
 
 ```bash
@@ -40,7 +40,13 @@ make check-embed docs-check api-check api-docs-check docs-lint
 make claims-check ledger-check enum-check version-check
 bash scripts/smoke.sh                                  # end-to-end; ~1 minute
 (cd web && pnpm install --frozen-lockfile && pnpm build && pnpm test)
+make e2e                                               # browser suite + axe; ~1 minute
 ```
+
+`make e2e` needs Playwright's Chromium once (`cd web && pnpm exec playwright install chromium`).
+It starts its own demo daemon on port 19590 with an isolated state dir under `web/e2e/.work` and
+every provider key unset, so it never touches your own daemon or the network beyond localhost.
+`web/src/components.test.tsx` holds the jsdom component tests; they run with `pnpm test`.
 
 The `web` line matters and is easy to miss: CI's `web` job runs `pnpm build` and `pnpm test`, and
 **no Makefile target reaches them** — `make web` starts a dev server and `web-build` is
