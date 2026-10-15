@@ -34,9 +34,9 @@ func (e *SystemDenyError) Error() string {
 // No executor kind selectExecutor can build today maps to a tier that lacks
 // write_file, so this never fires in a shipped configuration. It is the
 // fail-closed backstop for the day one does -- a new kind added to
-// selectExecutor without a TrustTierFor case lands in remote_external, which
-// allows nothing -- and that refusal now carries its code instead of being a
-// bare error.
+// selectExecutor without a TrustTierFor case gets no tier
+// (executor.TrustUnassigned), which allows nothing -- and that refusal now
+// carries its code instead of being a bare error.
 func authorizeExecutorWrite(kind string) error {
 	trust := executor.TrustTierFor(kind)
 	if executor.TrustAllows(trust, "write_file") {

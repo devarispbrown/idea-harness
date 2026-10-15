@@ -860,6 +860,41 @@ CREATE TABLE IF NOT EXISTS integration_links (
 );
 CREATE INDEX IF NOT EXISTS idx_integration_links_remote ON integration_links(integration, kind, remote_id);
 `,
+	// remote_runs: one row per agent run delegated to a remote execution
+	// plane (executor kind openhands -- an OpenHands Agent Server). The run
+	// outlives the Execute operation that started it: a daemon restart fails
+	// that operation, but the conversation keeps going on the server, and
+	// this row is how the next daemon re-attaches instead of starting a
+	// second one. idempotency_key is UNIQUE and deterministic per (task,
+	// attempt), so a retry after a crash between "row inserted" and
+	// "conversation created" finds the row rather than double-dispatching.
+	// last_event_id is the event-ingestion cursor; progress is the compact,
+	// already-redacted event log the live view reads.
+	`
+CREATE TABLE IF NOT EXISTS remote_runs (
+	id              TEXT PRIMARY KEY,
+	executor        TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL UNIQUE,
+	initiative_id   TEXT NOT NULL,
+	task_id         TEXT NOT NULL,
+	attempt         INTEGER NOT NULL,
+	server_url      TEXT NOT NULL,
+	conversation_id TEXT NOT NULL DEFAULT '',
+	remote_dir      TEXT NOT NULL DEFAULT '',
+	base_digest     TEXT NOT NULL DEFAULT '',
+	status          TEXT NOT NULL,
+	remote_status   TEXT NOT NULL DEFAULT '',
+	last_event_id   TEXT NOT NULL DEFAULT '',
+	event_count     INTEGER NOT NULL DEFAULT 0,
+	progress        TEXT NOT NULL DEFAULT '',
+	error           TEXT NOT NULL DEFAULT '',
+	created_at      INTEGER NOT NULL,
+	updated_at      INTEGER NOT NULL,
+	finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_remote_runs_task ON remote_runs(task_id, attempt);
+CREATE INDEX IF NOT EXISTS idx_remote_runs_status ON remote_runs(status);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

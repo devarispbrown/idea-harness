@@ -1,7 +1,7 @@
 # Wire a real coding agent
 
 This guide explains which executor `idea execute` uses by default, how to choose a real coding
-agent (Hermes, OMP, or any Agent Client Protocol agent), and — critically — the security tradeoff
+agent (Hermes, OMP, any Agent Client Protocol agent, or an OpenHands Agent Server), and — critically — the security tradeoff
 you accept when you do.
 
 ## The default: `auto`, with a loud placeholder fallback
@@ -175,6 +175,7 @@ since nobody has actually run it through `--smoke` yet.
 | `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
 | `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
 | `acp` | any | Warned | No ACP agent has been smoke-tested against a real model yet; run `--smoke` (with `--image` and `--acp-command`) first. |
+| `openhands` | any | Warned | No Agent Server run has been smoke-tested against a real model yet; run `--smoke` (with `--url`) first. |
 
 A row placed in the table stops `idea executors setup` and `idea execute` before anything runs,
 naming the model and why — reserved for a combination that turns out to be genuinely, unfixably
@@ -220,12 +221,13 @@ idea daemon stop        # then run any command — the daemon auto-starts and re
 
 | Field | Meaning | Default |
 |---|---|---|
-| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp` | `auto` (unset) |
+| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp` \| `openhands` | `auto` (unset) |
 | `executor.image` | Docker image containing the agent (`omp` / `hermes` / `acp`) | the pinned Hermes image for `hermes`; none for `omp`/`acp` (required) |
 | `executor.model` | Coding model for the agent, as `provider/model` | falls back to the default-model chain |
 | `executor.acp.command` | The ACP agent's argv inside the image; `{model}` / `{bare_model}` are substituted | none (required for `acp`) |
 | `executor.acp.key_env` | Name the provider key is exposed under inside an `acp` container | the provider's own variable |
 | `executor.acp.timeout_seconds` | Bound on one ACP prompt turn; then `session/cancel`, then kill | `840` |
+| `executor.openhands.*` | The Agent Server, its session-key variable and agent (see [OpenHands Agent Server](#openhands-agent-server-kind-openhands)) | none (`url` required for `openhands`) |
 | `executor.mcp_servers` | MCP servers handed to an `acp` agent (see [MCP servers](#mcp-servers-acp-only)) | none |
 
 The per-role model map `models.implementer` overrides `executor.model` if both are set.
@@ -372,6 +374,144 @@ run` argv and is never written to state.
 >
 > If the provider cannot be resolved at all, the run stops before the container starts, naming the
 > model it could not resolve — it never falls back to some other provider's key.
+
+## OpenHands Agent Server (`kind: openhands`)
+
+The `openhands` kind hands the agent run to an [OpenHands Agent
+Server](https://docs.openhands.dev/sdk) — a separate execution plane, usually on another machine —
+while idea-harness stays the control plane: the task, the change set, its review, approval and
+apply never leave here. It is **opt-in only**. `auto` never resolves to it, because the work root
+and (unless withheld) the provider key leave the machine; what exactly leaves, and what is checked
+on the way back, is in [`security-model.md`](security-model.md#the-remote-execution-plane-openhands).
+
+```bash
+export OPENHANDS_API_KEY=...          # the server's session key (or put it in .env)
+idea executors setup --kind openhands --url https://agents.example.com \
+  --model anthropic/claude-sonnet-5 --yes
+
+# an ACP agent the server's image carries (claude-agent-acp, codex-acp, gemini-cli)
+idea executors setup --kind openhands --url https://agents.example.com \
+  --agent acp --acp-command claude-agent-acp --model anthropic/claude-sonnet-5 --yes
+```
+
+Setup refuses a plain-http URL to another host, checks that `GET /server_info` answers and that
+the session key is accepted (an authenticated `GET /api/conversations/count`), prints what leaves the
+machine, and writes:
+
+```yaml
+executor:
+  kind: openhands
+  model: anthropic/claude-sonnet-5     # passed to the server's agent as its LiteLLM model
+  openhands:
+    url: https://agents.example.com
+    api_key_env: OPENHANDS_API_KEY     # the variable's NAME; default shown
+    agent: openhands                   # or acp, with acp_command
+    # workspace_dir: /workspace/idea-harness
+    # withhold_provider_key: true      # the server supplies its own model key
+    # max_iterations: 100
+    # timeout_seconds: 840
+```
+
+`--smoke` runs the shared trivial task on the server. `idea doctor` re-checks the server and key on
+every run (a warning, not a failure). Field reference: [configuration.md](configuration.md).
+
+**The model.** For the server's own agent, `executor.model` becomes the agent's LLM: the six
+built-in providers already use LiteLLM's prefixes (`anthropic/…`, `openai/…`, `gemini/…`,
+`deepseek/…`, `openrouter/…`, `ollama/…`), and a custom OpenAI-compatible provider goes through
+`openai/<model>` with its `base_url`. An Ollama at `localhost` only works when the server runs on
+this machine — the server's localhost is its own. An ACP agent on the server chooses its model its
+own way; its provider key reaches it as a conversation secret under the provider's variable name.
+
+### How a run works
+
+1. **Up.** The work root — the seeded copy of the workspace — is packed as one tar.gz of exactly
+   the files the engine's own snapshot sees, uploaded (`POST /api/file/upload`), and unpacked on
+   the server into `<workspace_dir>/<conversation-id>` with one `tar -xzf`
+   (`POST /api/bash/execute_bash_command`).
+2. **Run.** `POST /api/conversations` creates the conversation with that directory as its
+   workspace and the implementation brief as its initial message, which starts the agent. The
+   confirmation policy is left at the server's default, `NeverConfirm` — the same auto-approve the
+   local agent kinds run with.
+3. **Follow.** A watcher ingests events through `GET /api/conversations/{id}/events/search` from a
+   stored cursor, and the event websocket (`/sockets/events/{id}`) only wakes it up; without the
+   socket it polls every 2 s. Agent messages, tool calls, failing tool results and errors become
+   compact, redacted lines — the live view and the change set's agent output — and thoughts are not
+   kept. `finished` completes the run; `error`, `stuck`, a pause or a confirmation request nobody
+   here will answer fail it, with the agent's own error text.
+4. **Down.** `GET /api/file/archive?format=tar.gz` brings the directory back. It is unpacked into a
+   staging directory and validated before anything in the work root changes, then mirrored in: a
+   file is deleted locally only if it was uploaded and is gone on the server (a file the archive
+   route's default excludes leave out is fetched on its own, not read as deleted). From here the
+   pipeline is the one every agent uses: snapshot, diff, secret sweep, checks, review.
+
+Why a tarball: per-file transfer is thousands of requests and leaves a half-copied tree on a crash;
+the archive route's `git-delta` format needs a repository on the server (the work root has no
+`.git`, deliberately) and a patch applier here, when the engine computes its own diff anyway; and
+the bash route returns only the last 1 MiB of output, so it cannot carry files back.
+
+### Durable runs: idempotency, restarts, cancel
+
+Every run is a row in `remote_runs` (the project's `state.db`): local id, remote conversation id,
+server URL, status, event cursor, idempotency key, timestamps, and the compact progress log.
+
+- **Idempotent dispatch.** The key is a hash of (task, attempt), where the attempt number counts
+  the task's runs that are already over, so a retry after a crash computes the same key and finds
+  the same row. The conversation id is derived from the key, and the server treats a create with an
+  existing id as "return it" — so a crash between "create sent" and "id recorded" still cannot
+  start a second conversation. Every dispatch step is idempotent (the unpack starts with `rm -rf`).
+- **Daemon restart.** Stopping the daemon fails the Execute operation, as for any kind, but does
+  **not** stop the remote run: the daemon lets go of it first. The next daemon re-attaches to every
+  run not yet over (once per project, in the background), catches up on the events it missed from
+  the cursor — each exactly once — and follows it to the end. A finished run waits for the task's
+  next `idea execute`, which collects its files instead of starting again — as long as the freshly
+  seeded work root still matches what was uploaded; if the workspace changed meanwhile, the stale
+  run is retired (and interrupted on the server) and a new attempt starts.
+- **Vanished.** A conversation the server no longer has (deleted, or a server restarted without
+  persistence) fails the run with that reason; the next execute starts a new attempt.
+- **Cancel.** `idea cancel` / Stop marks the run cancelled, interrupts it on the server
+  (`/interrupt`, then `/pause` as the fallback), and brings back what the agent had written so
+  the next run can continue from it, as Stop does for a local agent.
+- **Retries.** Network errors, timeouts, 408/429 and 5xx are retried with exponential backoff
+  (up to 5 tries per call; a watcher keeps retrying until the run's timeout). 401/403 and 404 are
+  answers, not outages, and are never retried.
+- **Timeout.** `timeout_seconds` (default 840 s, under the engine's own 15-minute ceiling) is
+  measured from dispatch; past it the run is interrupted on the server and failed.
+- **The engine lock.** `idea execute` holds the engine's lock while it waits on its own run, as it
+  does for every kind. Reconciliation and the watchers never take it: they write only their own
+  `remote_runs` rows.
+
+### API version, and what is confirmed
+
+Written against **openhands-agent-server v1.54.0** (OpenHands/software-agent-sdk, released
+2026-10-09; image `ghcr.io/openhands/agent-server:1.54.0-python`), from the server's own routers
+(`openhands-agent-server/openhands/agent_server/*_router.py`, `sockets.py`) and the SDK's remote
+client. Setup and doctor report a server on another version as a warning, not a refusal.
+
+| Part | Status |
+|---|---|
+| `X-Session-API-Key`; websocket first-frame auth; 401 on a wrong key | Confirmed from source |
+| `GET /server_info`, `GET /api/conversations/count`, `GET /api/conversations/{id}`, `execution_status` values | Confirmed from source |
+| `POST /api/conversations` with a client-chosen `conversation_id` (201 new / 200 existing), `initial_message.run` starting the agent, default `NeverConfirm` | Confirmed from source |
+| `Agent` spec: `llm.model/api_key/base_url`, tools by registered name (`terminal`, `file_editor`, `task_tracker`); `ACPAgent` with `acp_command` | Confirmed from source |
+| `/interrupt`, `/pause`; `events/search` parameters and `{items, next_page_id}` shape | Confirmed from source |
+| `POST /api/file/upload?path=` (field `file`), `GET /api/file/download?path=`, `GET /api/file/archive?format=tar.gz`, `POST /api/bash/execute_bash_command` | Confirmed from source |
+| `events/search` `page_id` starts a page **at** that event (inclusive) | Confirmed against the real image |
+| Archive entries rooted under the directory's base name, plus an `archive_manifest.json` of metadata the route appends at the root (left out of the work root; a real file of that name is fetched on its own) | Confirmed against the real image |
+| `tar` present in the server image; a missing file answering 404 on download; `interrupt` on an unknown conversation answering 400, not 404 | Confirmed against the real image |
+| A wrong session key refused; a conversation with a bad model key settling as `error` with the provider's own message | Confirmed against the real image |
+| A conversation secret serialised as `{"kind": "StaticSecret", "value": …}` (only `agent: acp` sends one) | Assumed (`acpSecrets`) |
+
+**What is verified, and what is not.** The behaviour is tested against a fake Agent Server
+(`internal/executor/ohfake`, which mimics the real archive layout): the file round trip, idempotent
+re-dispatch, a restart with reconciliation, a stale base, a vanished conversation, cancel, 5xx
+retries, auth failure, plain-http refusal, timeout, redaction, archive safety, and an `idea execute`
+whose returned files go through the secret sweep. The protocol is also tested against the real
+`ghcr.io/openhands/agent-server:1.54.0-python` image with no LLM key
+(`TestOpenHandsAgainstRealAgentServer`, skipped unless the image is present locally): session-key
+auth, upload and unpack, idempotent create, event ingestion, the run settling on the provider's
+auth error, and the archive round trip. No run with a real model — an agent actually editing files
+on a real server — has been made, so every `openhands` combination is reported as untested; run
+`--smoke` before relying on one.
 
 ## Smoke test
 

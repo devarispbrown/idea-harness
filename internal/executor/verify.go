@@ -244,7 +244,10 @@ type smokeTarget interface {
 func runSmoke(ctx context.Context, kind string, e smokeTarget, provider AgentProvider, lookupKey func(string) string, workDir string) error {
 	// An ACP agent talks to its own vendor's API, not to an OpenAI-compatible
 	// base URL, so Validate's endpoint checks do not apply to it.
-	if kind != "acp" {
+	// An openhands agent's model calls are made by the server, which maps the
+	// provider itself (liteLLMModel), so the endpoint checks do not apply
+	// either.
+	if kind != "acp" && kind != openHandsName {
 		if err := provider.Validate(); err != nil {
 			return fmt.Errorf("executor: smoke: %w", err)
 		}
@@ -252,7 +255,9 @@ func runSmoke(ctx context.Context, kind string, e smokeTarget, provider AgentPro
 	if lookupKey == nil {
 		lookupKey = os.Getenv
 	}
-	if provider.KeyEnv != "" && lookupKey(provider.KeyEnv) == "" {
+	// openhands may withhold the key on purpose (the server has its own);
+	// its Start refuses a missing key itself when one is needed.
+	if kind != openHandsName && provider.KeyEnv != "" && lookupKey(provider.KeyEnv) == "" {
 		return fmt.Errorf("executor: smoke requires %s, in the environment or the project's .env", provider.KeyEnv)
 	}
 

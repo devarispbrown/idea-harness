@@ -61,8 +61,8 @@ if this file has drifted.
 | `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed | `--confirm-passing-tests`, `--fail`, `--json`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
-| `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --yes` | yes |
-| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp, default hermes (or --kind; acp needs --image and --acp-command) | — | — |
+| `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --agent`, `setup --api-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --url`, `setup --yes` | yes |
+| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp\|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands\|acp) | — | — |
 | `idea integrations [status]` | show Slack/Linear integration health: tokens present, deliveries, socket and poll state | `--json`, `status --json`, `test --json` | yes |
 | `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
 | `idea watch` | watch a run live | none | takes no flags |

@@ -46,7 +46,7 @@ Commands:
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
-  executors setup [<kind>] wire a coding agent: hermes|omp|acp, default hermes (or --kind; acp needs --image and --acp-command)
+  executors setup [<kind>] wire a coding agent: hermes|omp|acp|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands|acp)
   integrations [status] show Slack/Linear integration health: tokens present, deliveries, socket and poll state
   integrations test slack|linear post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   watch                watch a run live
