@@ -83,6 +83,9 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		"{reqId}":     "REQ-1",
 		"{staleId}":   "s-unused",
 		"{name}":      "slack",
+		// The demo PRD defines one objective with one metric.
+		"{objectiveId}": "OBJ-1",
+		"{metricId}":    "MET-1",
 	}
 
 	routes := idRoutes(t)
@@ -200,6 +203,10 @@ func expectedKind(path, wildcard string) string {
 		return "doc"
 	case "{reqId}":
 		return "requirement"
+	case "{objectiveId}":
+		return "objective"
+	case "{metricId}":
+		return "metric"
 	}
 	if wildcard != "{id}" {
 		// An unlisted wildcard (e.g. {staleId}) has no fixed expected noun here;

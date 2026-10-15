@@ -239,6 +239,17 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		g.ExecutorResolution = &projection.ExecutorResolutionRef{Requested: res.Requested, Resolved: res.Resolved,
 			Image: res.Image, Warning: res.Warning, Note: res.Note}
 	}
+	// Outcome drift: a sentence on Why and the counts for the UI, only when
+	// something is drifting -- composed here for the same reason as the
+	// rest (BuildGuidance has no store access).
+	if rep, err := projection.BuildOutcomes(r.Context(), pr.db, ini.ID, time.Now()); err == nil {
+		if msg, codes := projection.OutcomeGuidance(rep); msg != "" {
+			sum := rep.Summary
+			g.Outcomes = &sum
+			g.Why = strings.TrimSpace(g.Why + " " + msg)
+			g.Affected = append(g.Affected, codes...)
+		}
+	}
 	// Review A4 #5: "N items may be invalid since DEC-n changed", with the
 	// re-plan/review path named, plus the itemized list for the UI. Composed
 	// here for the same reason NextTask/RunBlockedReason/PartialWork are:
