@@ -324,6 +324,23 @@ export const listMetrics = (projectId: string, initiativeId: string) =>
 export const createMetric = (projectId: string, initiativeId: string, body: NewMetric) =>
   post<OutcomeMetric>(resource(projectId, initiativeId, "metrics"), body);
 
+// MetricEdit is the PATCH .../metrics/{id} body (docs/api.md): only the
+// fields being changed. clear_baseline / clear_guardrail remove a value,
+// which an omitted field cannot say.
+export interface MetricEdit {
+  name?: string;
+  direction?: MetricDirection;
+  target?: number;
+  baseline?: number;
+  clear_baseline?: boolean;
+  guardrail?: number;
+  clear_guardrail?: boolean;
+  unit?: string;
+}
+
+export const updateMetric = (projectId: string, initiativeId: string, metricId: string, body: MetricEdit) =>
+  patch<OutcomeMetric>(resource(projectId, initiativeId, `metrics/${seg(metricId)}`), body);
+
 export const recordObservation = (
   projectId: string,
   initiativeId: string,

@@ -62,11 +62,11 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `assumption` | ui | `#/i/<id>/gaps` — Accept / Dispute / Retract on unvalidated-assumption gaps | |
 | `objectives` | ui | `#/i/<id>/define` — Objectives section | |
 | `objective add` | ui | `#/i/<id>/define` — Objectives: add objective | |
-| `objective edit` | cli-only | CLI-only: gap — the Objectives section cannot edit statement/rationale/owner/status (`PATCH …/objectives/{id}`) | |
-| `objective link` | ui | `#/i/<id>/define` — Objectives: link a requirement | |
+| `objective edit` | ui | `#/i/<id>/define` — Objectives: Edit (statement, rationale, owner, status) | |
+| `objective link` | ui | `#/i/<id>/define` — Objectives: link a requirement; × unlinks one (`--unlink`) | |
 | `metrics` | ui | `#/i/<id>/define` — metrics under each objective; drift on `#/i/<id>/health` | |
 | `metric add` | ui | `#/i/<id>/define` — Objectives: add metric | |
-| `metric edit` | cli-only | CLI-only: gap — no UI control for `PATCH …/metrics/{id}` | |
+| `metric edit` | partial | `#/i/<id>/define` — Objectives: Edit on a metric (name, direction, baseline incl. clearing it, target, unit) | guardrail, cadence, definition, source (`--command`/`--url`/`--manual`) and moving it to another objective are CLI-only |
 | `metric record` | ui | `#/i/<id>/define` — Objectives: record a value | |
 | `metric measure` | ui | `#/i/<id>/outcomes` — Measure for command/url sources | |
 | `diff` | cli-only | CLI-only: gap — the structured requirement/decision diff (`GET …/diff`) is not shown; `#/i/<id>/diff/<from>/<to>` is the text diff of two artifact versions, a different thing | |
