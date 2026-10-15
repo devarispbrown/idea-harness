@@ -20,6 +20,7 @@ import {
 import { useEventStream, useProjectChanges } from "./useEventStream";
 import { announce, runStatusAnnouncement } from "./announce";
 import { isSubmitShortcut, modLabel } from "./shortcuts";
+import RemoteRuns from "./RemoteRuns";
 
 // CurrentRun mirrors GET .../initiatives/{id}/current-run.
 interface CurrentRun {
@@ -236,6 +237,8 @@ export default function RunPanel({
           <ReportButtons runPath={runPath} runId={runId} />
         </span>
       </div>
+
+      {run.executor === "openhands" && <RemoteRuns projectId={projectId} initiativeId={initiativeId} />}
 
       {errs.length > 0 && (
         <div className="run-errors" role="alert">

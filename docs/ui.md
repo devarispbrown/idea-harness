@@ -327,6 +327,9 @@ actions, notes and report. The panel shows:
   For an executor that cannot be steered the box says the note will apply to the next run, and
   notes held for the next run are listed. ⌘/Ctrl+Enter sends it.
 - **Open in OpenHands** (when `executor.openhands.ui_url` is set) and **Report** downloads.
+- **Remote runs** (when the run's executor is `openhands`): every dispatch of this initiative's
+  tasks to the Agent Server - status, attempt, server, conversation id, last event, error - read
+  when opened (`web/src/RemoteRuns.tsx`; `idea runs remote`).
 
 It reads the run's stored events first, so a reload or a second tab mid-run shows the whole run so
 far, then follows the run's SSE stream (`web/src/useEventStream.ts`). A dropped connection

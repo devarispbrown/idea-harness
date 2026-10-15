@@ -95,6 +95,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **List the OpenHands executor's remote runs.** `idea runs remote [<initiative>] [--all] [--json]`,
+  `GET …/initiatives/{id}/remote-runs` and `GET …/remote-runs` (project-wide, `?active=true` for the
+  runs not yet over) list every dispatch to an Agent Server, newest first: task, status, attempt,
+  server, conversation id, the progress log's last line, and the error. The run panel shows the same
+  rows under **Remote runs** when the run's executor is `openhands`. Until now they were readable
+  only from `state.db`.
 - **Requirements and decisions now say which assertions they rest on, so assumption gaps fire on
   real runs.** Assertions get initiative-scoped codes (`ASM-n`; migration 48 numbers existing rows
   in creation order, and `Assertion.code` is a new required field in the API). The PRD prompt lists
