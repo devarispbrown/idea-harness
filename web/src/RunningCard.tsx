@@ -39,6 +39,7 @@ const OP_LABEL: Record<string, string> = {
   revise_plan: "Revising the plan",
   approve_plan: "Approving the plan",
   suggest_answers: "Suggesting answers",
+  measure_quality: "Measuring quality",
 };
 
 function fmtElapsed(ms: number): string {
