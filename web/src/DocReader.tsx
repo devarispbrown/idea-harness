@@ -35,11 +35,13 @@ function renderMarkdown(text: string): ReactNode[] {
     }
     if (/^#{1,3}\s/.test(trimmed)) {
       flushList(`l${i}`);
+      // One level down: the page's h1 is the document's title (docTitle),
+      // so a document's own # headings must not be h1s too.
       const level = trimmed.match(/^#+/)![0].length;
       const text = trimmed.replace(/^#+\s*/, "");
-      if (level === 1) out.push(<h1 key={i}>{inline(text)}</h1>);
-      else if (level === 2) out.push(<h2 key={i}>{inline(text)}</h2>);
-      else out.push(<h3 key={i}>{inline(text)}</h3>);
+      if (level === 1) out.push(<h2 key={i}>{inline(text)}</h2>);
+      else if (level === 2) out.push(<h3 key={i}>{inline(text)}</h3>);
+      else out.push(<h4 key={i}>{inline(text)}</h4>);
       return;
     }
     if (/^[-*]\s/.test(trimmed)) {
@@ -51,6 +53,18 @@ function renderMarkdown(text: string): ReactNode[] {
   });
   flushList("lend");
   return out;
+}
+
+// docTitle splits a document into the page's title -- its first line when
+// that is a "# " heading -- and the rest. The title becomes the page's one
+// h1; a document without one is titled by its kind.
+export function docTitle(text: string): { title: string; rest: string } {
+  const lines = text.split("\n");
+  const first = lines.findIndex((l) => l.trim() !== "");
+  if (first >= 0 && /^#\s/.test(lines[first].trim())) {
+    return { title: lines[first].trim().replace(/^#\s*/, ""), rest: lines.slice(first + 1).join("\n") };
+  }
+  return { title: "", rest: text };
 }
 
 function inline(text: string): ReactNode[] {
@@ -121,6 +135,8 @@ export default function DocReader({
     }
   };
 
+  const doc = docTitle(stripSourceTagsInText(body));
+
   return (
     <div className="phase-page">
       <div className="doc-reader-head">
@@ -129,8 +145,11 @@ export default function DocReader({
         </button>
         {kind && <span className="code">{kind}</span>}
       </div>
-      <article className="doc-reader-body">
-        {notFound ? "Document not found." : body ? renderMarkdown(stripSourceTagsInText(body)) : "No content."}
+      <article className="doc-reader-body" aria-labelledby="doc-reader-title">
+        <h1 id="doc-reader-title" className="doc-reader-title">
+          {notFound ? "Document not found" : doc.title ? inline(doc.title) : kind || "Document"}
+        </h1>
+        {notFound ? null : doc.rest.trim() ? renderMarkdown(doc.rest) : <p className="muted">No content.</p>}
       </article>
 
       <section className="doc-comments">
