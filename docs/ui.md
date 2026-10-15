@@ -504,7 +504,10 @@ did when the only other sign is a chip changing colour: a change-set action land
 applied.", or its error), the plan approved, an objective or metric saved or (un)linked, an
 operation starting and finishing or stopping, an agent run starting. It is deliberately quiet — one
 message per completed action or state change, never per streamed run event; the run panel's
-current-action chip is not a live region. Errors that block (a failed run's banner, the run's own
+current-action chip is not a live region. An agent run's start and its operation's end share a
+topic: messages on one topic are held for 0.8s and only the most specific is said, and a less
+specific one arriving within 4s of it is dropped — so a run that starts and ends inside one poll,
+or a stopped run's panel catching up, is heard once, as "Executing the plan finished/stopped." Errors that block (a failed run's banner, the run's own
 errors) are `role="alert"`.
 
 ### Reduced motion

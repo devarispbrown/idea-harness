@@ -541,6 +541,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Fixed
 
+- **An agent run's end was announced twice.** A run that went live and ended inside one poll (the
+  demo executor's, or one failing on its first call), and a stopped run's panel catching up, put
+  "Agent run started." and "Executing the plan finished." (or "stopped.") into the live region
+  back to back. The two now share a topic in `announce.ts`: held briefly, only the more specific
+  operation message is said, and a late less-specific echo is dropped.
 - **Dark mode failed WCAG AA contrast on every page.** White text on the dark scheme's light indigo
   accent (the logo, primary buttons, the plan bar's action) was 3:1; done phases in the sidebar,
   the commit bar's explanation and several secondary lines used a hard-coded `#57534e` (2.1:1 on
