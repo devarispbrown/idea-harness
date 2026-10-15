@@ -135,27 +135,34 @@ log; `idea logs -f` follows the daemon log. When it settles, read the result:
 idea prd
 ```
 
-The reviewed PRD renders in your terminal. With a real model, expect a product summary, the core
-**requirements** (`REQ-1`, `REQ-2`, …) each with measurable acceptance criteria, **decisions**
-(`DEC-1`, …) the team asks you to confirm, and any **open questions** and **review findings** still
-needing your judgment.
+The reviewed PRD renders in your terminal. With a real model, expect a product summary, the
+**objectives** the initiative exists to move (`OBJ-1`, …) each with the **outcome metrics** that
+would show it moved (`MET-1`, …), the core **requirements** (`REQ-1`, `REQ-2`, …) each with
+measurable acceptance criteria and the objectives it serves, **decisions** (`DEC-1`, …) the team asks
+you to confirm, and any **open questions** and **review findings** still needing your judgment. The
+review checks that chain: a requirement serving no objective, or an objective nothing can measure, is
+a high finding (a PRD with no objectives at all gets one medium finding instead). `idea objectives` and `idea metrics` list them; the README's
+[Objectives & outcomes](../README.md#objectives--outcomes) has the drift rules.
 
 > **On the no-key path, most of that is empty by construction.** The demo provider emits exactly
-> one requirement (`REQ-1`), **no decisions**, **no review findings**, and two open questions
-> (`internal/model/fake.go`). So `idea decisions` prints "No decisions yet.", `idea reviews` is
+> one objective (`OBJ-1`) with one metric (`MET-1`), one requirement (`REQ-1`) serving it,
+> **no decisions**, **no review findings**, and two open questions (`internal/model/fake.go`). So `idea decisions` prints "No decisions yet.", `idea reviews` is
 > empty, and `DEC-1` does not exist — any command naming one will fail to resolve it. Downstream,
 > the plan is a single task (`TASK-1`) and execute produces a single change set (`CHG-1`).
 
 Run `idea status` any time to see where the initiative is, and `idea decisions` / `idea reviews`
-to inspect the judgment items the reviewer raised.
+to inspect the judgment items the reviewer raised. Its last line counts the Product Graph's gaps —
+`gaps: 5 low — idea gaps` on the no-key path, before anything is planned — and `idea gaps` lists
+each with the command that closes it.
 
 **Decisions and questions can be resolved from the CLI.** `idea resolve <decision> <option#>|"<text>"`
 resolves a decision (by option number or free text), `idea answer <question> "<answer>"` answers a
 question, `idea reopen-decision <decision>` returns a resolved one to open, and
 `idea accept-recommendations` resolves every open decision with its own recommendation in one call.
 `idea triage` ranks everything needing your judgment — open decisions, questions, and blocking
-findings — across all three. **Dispositioning a review finding is still a web-UI (or API) action,
-not a CLI one**: there is no CLI verb for it yet. Open `http://127.0.0.1:8787/` → the initiative's
+findings — across all three. **Dispositioning an individual review finding is still a web-UI (or API)
+action, not a CLI one**: the only CLI disposition is `idea review <CHG-n> approve --accept-findings`
+(step 4), which accepts a change set's reviewer findings together. Open `http://127.0.0.1:8787/` → the initiative's
 **Define** phase to accept a recommendation, pick another option, write your own, disposition a
 finding, or answer a question there instead; the PRD then revises. For a clean first run you can
 leave decisions and questions unresolved too: an undecided decision goes into the next revise
@@ -232,6 +239,13 @@ evidence readable later (`idea verify REQ-1 --pass --note "checked the applied f
 each requirement your PRD produced; on the no-key path `REQ-1` is the only one. Each pass lands in
 the Product Graph, so "done" is provable, not asserted. `idea verify` with no requirement prints the
 coverage table.
+
+Before the gate reads anything, `verify` also measures the work's **quality dimensions** — setup
+reproducibility, docs completeness, API compatibility and more — and prints a scorecard. Which ones
+it measures, and whether any of them can hold the gate, follows the effective review rigor: on the
+no-key path the project is tiny, the rigor is `quick`, and nothing is measured; at `thorough` the
+first three must pass for the initiative to complete. See the README's
+[quality dimensions](../README.md#verification-beyond-the-tests-quality-dimensions).
 
 ```bash
 idea next
@@ -311,6 +325,10 @@ idea executors setup --model anthropic/claude-sonnet-5 --yes
 idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anthropic/claude-sonnet-5 --yes
 ```
 
+Any Agent Client Protocol agent (Claude Code, Codex, Gemini CLI, …) is `--kind acp` with an image and
+its `--acp-command`, and an OpenHands Agent Server on another machine is `--kind openhands --url …`;
+both are in [`docs/agents.md`](agents.md). The rest of this section describes the container kinds.
+
 This verifies the agent CLI exists in the image, prints the security tradeoff, and writes
 `executor.kind/image/model` into `.idea-harness/harness.yaml`. It needs **Docker**, and it accepts
 a real security tradeoff: the agent container is filesystem- and process-isolated but **not**
@@ -368,6 +386,7 @@ Two components, and only one of them is countable from the source.
 | `idea new` | 4 — framing, research, PRD, adversarial review — plus 2 more (PRD + review) per blocked revise cycle, bounded by `review.max_cycles` (default 3). So 4–8. |
 | `idea advance` | 5 — architecture, product design, verification plan, execution plan, plan review — plus one convergence call per open decision that has preserved dissents. The plan review is a single pass; it does not loop. |
 | `idea execute` | 2 from the harness — implementation brief and change-set review — **plus the coding agent's own multi-turn run inside the container.** |
+| `idea verify` | none at the `quick` and `standard` rigor defaults; one per model-reviewed quality check when one is enabled — `api_ergonomics` (advisory at `thorough`), or a `verify.model_review` check. |
 
 **The agent's own loop is not countable from here**, and it dominates. Hermes and OMP each run
 their own agent loop, and the number of turns is a function of the task statement's size, the

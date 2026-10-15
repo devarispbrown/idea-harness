@@ -3,11 +3,12 @@
 The same loop as the [greenfield walkthrough](demo-greenfield.md), pointed at a repository
 that already has code in it. About three minutes.
 
-**Read this first.** With the default executor, this walkthrough does *not* modify your
+**Read this first.** With no model key configured, this walkthrough does *not* modify your
 source files. It runs the whole governed loop — grounding, PRD, plan, change set, review,
 apply, revert — against your real repository, and the change set it applies is a placeholder
-file. Generating real edits to your code needs a coding agent, which is
-[a separate opt-in step](agents.md) covered at the end.
+file. Generating real edits to your code needs a coding agent: the default executor (`auto`)
+runs one by itself once a model key is set and Docker is running, which is why that is
+[a deliberate step](agents.md) covered at the end, not something to do first.
 
 That is the honest shape of the tool today, and it is worth knowing before you point it at
 something you care about: **`idea apply` writes into your working directory.** Run this on a
@@ -27,6 +28,7 @@ idea init
 
 ```text
 ✓ initialized project 6afe47c87c721d5f0489bdf49ffa00e3 in /…/acme-api
+web UI: http://127.0.0.1:8787
 next: idea new "<describe your idea>"
 ```
 
@@ -115,7 +117,10 @@ idea next --until-human
 → advance …
 → execute …
 ⚠ NO REAL CODE WILL BE WRITTEN: executor.kind is unset (auto) and no coding model is configured (demo mode), so this run uses the internal placeholder executor. Fix: run `idea model set <provider>/<model>` and set that provider's API key. To keep the placeholder on purpose, set executor.kind: internal in .idea-harness/harness.yaml.
-Next: review CHG-1 — idea review CHG-1 approve
+Next: review CHG-1
+  idea review CHG-1 approve  review it, and approve if it passes
+  idea review CHG-1 approve --accept-findings  accept it, findings and all
+outcomes: 1 metric(s) · 1 no data
 ```
 
 Identical to greenfield from here. Inspect what it intends to change before approving:
@@ -193,14 +198,18 @@ This is the property worth testing on your own repository before you trust an ag
 ## Step 6 — generate real code
 
 Everything above ran without a model touching your source. For real edits you need a coding
-agent in a container:
+agent in a container. Once a model key is set (`idea model set`, with the key exported before the
+daemon starts) and Docker is running, the default `auto` executor already picks the pinned Hermes
+agent. Wire it explicitly, and prove it works, before you let it near this repository:
 
 ```bash
 idea executors setup --model anthropic/claude-sonnet-5 --yes --smoke
 ```
 
 That auto-downloads the pinned Hermes image and, with `--smoke`, runs a trivial task through
-it and asserts it produced a real file change before you trust it with anything else.
+it and asserts it produced a real file change before you trust it with anything else. Other
+agents — OMP, Claude Code or Codex over ACP, an OpenHands Agent Server — are `--kind` choices in
+[`agents.md`](agents.md).
 
 **Read [`agents.md`](agents.md) first.** The agent container is sandboxed for filesystem and
 process isolation but is deliberately *not* network-isolated — it needs egress to reach its

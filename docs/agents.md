@@ -680,8 +680,8 @@ Concretely, the agent container:
 **A compromised or malicious agent image, or a prompt-injection attack through the task content,
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
 network egress ([`security-model.md`](security-model.md) records this under what the execution
-gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
-trust, and prefer a scoped, rotatable API key you can revoke.
+gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire agent images (and, for
+`openhands`, Agent Servers) you trust, and prefer a scoped, rotatable API key you can revoke.
 
 The canonical statement of what each executor kind isolates, and what none of them do, is
 [`security-model.md`](security-model.md#what-this-does-not-protect-against). This page repeats the

@@ -3,12 +3,15 @@
 A local-first AI product-development **control plane** that takes an idea from ambiguity to verified
 software.
 
-**Status:** M1–M4 pipeline implemented end-to-end (governed team-of-experts + provable provenance +
-byte-for-byte revert). The build step uses a placeholder executor by default — wire OMP/Hermes for
-real code.
+**Status:** pre-1.0; the whole pipeline runs end to end — a governed team of experts, provable
+provenance, byte-for-byte revert — and the Product Graph runs from the objectives an initiative
+exists to move to the outcome metrics that say whether it did. `idea execute` runs a real coding
+agent when Docker and a model key are present, and a placeholder it labels as such when they are
+not; see [Execution model](#execution-model).
 
 ```text
-idea → reviewed PRD → execution plan → change set → apply → verify → complete
+idea → reviewed PRD (objectives + requirements) → execution plan → change set → apply
+     → verify (evidence + quality dimensions) → complete → outcome metrics
 ```
 
 ## Why idea-harness
@@ -39,9 +42,10 @@ idea revert CHG-1               # restore the previous files, byte-for-byte
 
 ## The governed pipeline
 
-idea-harness is **not** a coding agent, chatbot, Kanban, or project-management tool. It is a
-local-first product-development operating system: agents reason, the engine governs, experts
-challenge, and the human decides what matters.
+idea-harness is not itself a coding agent — it drives one (Hermes, OMP, any Agent Client Protocol
+agent such as Claude Code or Codex, or an OpenHands Agent Server) inside its gates — and it is not a
+chatbot, Kanban, or project-management tool. It is a local-first product-development operating
+system: agents reason, the engine governs, experts challenge, and the human decides what matters.
 
 A coordinated team of Staff-level AI experts moves an initiative through the whole lifecycle —
 framing and research produce a reviewed PRD, design produces a dependency-ordered execution plan,
@@ -51,6 +55,20 @@ approves, applies, and verifies it.
 The durable asset is the **Product Graph** (Objectives → Hypotheses → Requirements → Decisions →
 Plans → Tasks → ChangeSets → Tests → Verification → Outcome metrics, all traced back to Evidence)
 that powers provenance, impact analysis, requirement verification, and outcome drift.
+
+## What's in it
+
+| Area | What you get | Where it is explained |
+|---|---|---|
+| Idea → PRD → plan | framing, research, a PRD with objectives and requirements, an adversarial review that converges on principle, a reviewed execution plan | [quickstart](docs/quickstart.md), [configuration → review](docs/configuration.md#review-convergence) |
+| Build | a change set per task from the coding agent you choose (`auto`, Hermes, OMP, ACP agents, OpenHands), reviewed, then applied and revertible byte for byte | [agents](docs/agents.md) |
+| Verify | per-criterion evidence, plus seven quality dimensions scored with citations | [Verification beyond the tests](#verification-beyond-the-tests-quality-dimensions) |
+| Outcomes | objectives (`OBJ-n`), outcome metrics (`MET-n`), observations and deterministic drift | [Objectives & outcomes](#objectives--outcomes) |
+| Asking the graph | `idea why` / `impact` / `trace`, and `idea gaps` for everything missing or no longer true | [architecture → gaps](docs/architecture.md#asking-the-graph-gaps) |
+| Guardrails | system-deny conditions, protected auto-executing paths, credential and PII sweeps, redacted logs | [security](docs/security.md), [security model](docs/security-model.md) |
+| Surfaces | the CLI (stable exit codes, `--json` errors), the web UI, an MCP server, the HTTP API | [cli](docs/cli.md), [ui](docs/ui.md), [mcp](docs/mcp.md), [api](docs/api.md) |
+| Team tools | Slack notifications and approvals, Linear issue sync — no public URL | [integrations](docs/integrations.md) |
+| Measurement | `idea eval`: an end-to-end suite with a regression baseline | [Measured runs](#measured-runs-idea-eval) |
 
 ## Execution model
 
@@ -63,8 +81,10 @@ that powers provenance, impact analysis, requirement verification, and outcome d
   (`idea execute`, `idea doctor`, the Build page, the run manifest). To choose an agent explicitly:
   `idea executors setup --model <provider/model> --yes` (Hermes; OMP needs `--kind omp --image
   <img>`; any Agent Client Protocol agent — Claude Code, Codex, Gemini CLI, OpenHands, OpenCode —
-  with `--kind acp --image <img> --acp-command <argv>`). Add `--smoke` to run a trivial task through
-  the agent and assert it produces a real file change — see [`docs/agents.md`](docs/agents.md).
+  with `--kind acp --image <img> --acp-command <argv>`; a remote OpenHands Agent Server with
+  `--kind openhands --url <server>`, which `auto` never picks because the work root leaves the
+  machine). Add `--smoke` to run a trivial task through the agent and assert it produces a real
+  file change — see [`docs/agents.md`](docs/agents.md).
 - **Byte-for-byte apply/revert.** `idea apply CHG-1` writes the reviewed patch into your workspace
   and records its pre-image; `idea revert CHG-1` restores it exactly. Revert is **file-level**, not
   git history. To also get a git commit per applied change set, set `git_commit: true` in
@@ -212,12 +232,6 @@ idea next                              # → "✓ initiative complete"
 > failed rather than starting over — `idea next` names it, and `--model <provider/model>` retries on
 > a different one. Fix the cause first: retrying into the same missing key just fails again.
 
-> **With a real model, expect a stop the demo provider never produces.** The adversarial
-> reviewer is doing its job when it does not converge, so `idea next` parks the initiative and
-> names what to do: `idea reviews` lists the findings, `idea approve` accepts the PRD as it
-> stands, `idea revise` regenerates it. The same happens at the plan (`idea approve-plan`,
-> `idea revise-plan`). `idea status` says which one you are in.
-
 Two guided walkthroughs of that block, with the output at each step and what to look at
 before approving anything: [a new project](docs/demo-greenfield.md), and
 [an existing codebase](docs/demo-existing-project.md).
@@ -226,11 +240,12 @@ before approving anything: [a new project](docs/demo-greenfield.md), and
 and stops at each human judgment point — `review`, `apply`, or resolving open decisions, questions
 and findings — printing exactly what to run next. Decisions and questions can be resolved from the
 CLI (`idea resolve`, `idea answer`, `idea reopen-decision`, `idea accept-recommendations`,
-`idea triage`); dispositioning a review finding is still a web-UI action — the CLI only lists them
-(`idea reviews`). `idea new` waits for the run it starts (`--no-wait` returns immediately and
-`idea watch` follows it), and `--until-human` keeps going through the automatable steps —
-waiting for each to finish —
-instead of stopping after one, which is why the block above is eight commands rather than thirteen.
+`idea triage`). Dispositioning an individual review finding is still a web-UI action: the CLI
+lists them (`idea reviews`), and its one disposition is
+`idea review <CHG-n> approve --accept-findings`, which accepts a change set's reviewer findings
+together. `idea new` waits for the run it starts (`--no-wait` returns immediately and `idea watch`
+follows it), and `--until-human` keeps going through the automatable steps — waiting for each to
+finish — instead of stopping after one, which is why the block above is eight commands rather than thirteen.
 The judgment points stay yours either way: `idea new` never drives itself past them.
 
 Look closer whenever you want:
@@ -243,8 +258,9 @@ idea tasks                             # list the dependency-ordered tasks
 idea changes                           # list change sets (e.g. CHG-1)
 ```
 
-After you wire a real executor (see [`docs/agents.md`](docs/agents.md)), `execute` produces real
-file changes instead of a placeholder.
+With a model key set and Docker running, `execute` runs a real coding agent with no further setup
+(`auto` resolves to Hermes); [`docs/agents.md`](docs/agents.md) covers choosing another agent and
+the security tradeoff of running one.
 
 **Ground the agents in your own material (optional):** upload a PRD, design spec, tech doc,
 market analysis, or a UI mockup image and it's content-addressed and injected into every downstream
@@ -266,11 +282,8 @@ verbatim. See [`docs/security.md`](docs/security.md#context-docs-uploaded-source
 The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8787/` — from
 `make build` or a release binary; see [Install](#install).
 
-**Learn more:** [`docs/quickstart.md`](docs/quickstart.md) — the annotated end-to-end walkthrough
-· [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`
-· [`docs/mcp.md`](docs/mcp.md) — the same loop from Claude Code, Cursor or Codex via `idea mcp`
-· [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
-sync (no public URL needed).
+**Learn more:** [`docs/quickstart.md`](docs/quickstart.md) is the annotated walkthrough; every other
+document is listed under [Documentation](#documentation).
 
 ### Verification beyond the tests: quality dimensions
 
@@ -291,8 +304,11 @@ Each result cites file:line and the requirements it bears on, and is traceable f
 (`idea impact requirement REQ-1`, `idea why quality_result docs_completeness`). Anything the
 harness could not look at — no Docker, no scanner, the demo model — is reported **not measured**,
 never as a pass. Each dimension is `off`, `advisory` or `gate`; only gated ones can hold the gate.
-The defaults follow `review.rigor`: `quick` measures none, `standard` makes setup, docs and API
-compatibility advisory, `thorough` gates those three and makes the rest advisory. Configure them
+The defaults follow the effective `review.rigor`: `quick` measures none, `standard` makes setup,
+docs and API compatibility advisory, `thorough` gates those three — so they must pass for the
+initiative to complete — and makes the rest advisory. `auto` (the default) calibrates from the
+project's size and the applied change, so a tiny demo project verifies at `quick` and prints no
+scorecard. Configure them
 under `verify:` in harness.yaml — see [configuration](docs/configuration.md#quality-dimensions-verify).
 
 ### Measured runs: `idea eval`
@@ -413,7 +429,7 @@ produce a real PRD, configure a provider and — optionally — research seed UR
 cmd/idea/        CLI + daemon entrypoint
 internal/        Go packages (domain, store, blob, model, workflow, review, daemon, …)
 web/             React + TypeScript UI (source; `make build` embeds it into the binary)
-docs/            architecture, configuration, cli, security, agents, plans
+docs/            guides and references (see Documentation below); docs/plans/ holds working records
 scripts/         smoke tests (agent-smoke.sh exercises a real coding agent)
 ```
 
@@ -457,30 +473,54 @@ grep '_darwin_arm64.tar.gz' checksums.txt | shasum -a 256 -c
 
 ## Documentation
 
-**Start here — step-by-step walkthroughs of the whole loop, no API key required:**
+**Start here** — walkthroughs of the whole loop, no API key required:
 
-- [`docs/demo-greenfield.md`](docs/demo-greenfield.md) — a new project, empty directory to
-  verified and complete, in about two minutes.
-- [`docs/demo-existing-project.md`](docs/demo-existing-project.md) — the same loop pointed at a
-  repository that already has code, including what `apply` does and does not touch, and how to
-  confirm a revert left the tree pristine.
+- [`docs/demo-greenfield.md`](docs/demo-greenfield.md) — a new project, empty directory to verified
+  and complete, in about two minutes, with the output at each step.
+- [`docs/demo-existing-project.md`](docs/demo-existing-project.md) — the same loop on a repository
+  that already has code: what `apply` touches and how to confirm a revert left the tree pristine.
+- [`docs/quickstart.md`](docs/quickstart.md) — the annotated walkthrough, and what changes, and
+  what it costs, with a real model and a real agent.
 
-- [`docs/agents.md`](docs/agents.md) — wire a real coding agent (OMP/Hermes) and read the security tradeoffs.
-- [`docs/quickstart.md`](docs/quickstart.md) — annotated end-to-end walkthrough (recipe-sharing app).
-- [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`.
-- [`docs/architecture.md`](docs/architecture.md) — architecture and system areas.
-- [`docs/configuration.md`](docs/configuration.md) — `.idea-harness` config reference.
-- [`docs/cli.md`](docs/cli.md) — CLI reference.
+**Using it:**
+
+- [`docs/agents.md`](docs/agents.md) — executors: `auto`, Hermes, OMP, ACP agents (Claude Code,
+  Codex, Gemini CLI, …), an OpenHands Agent Server, MCP pass-through, and the security tradeoffs.
+- [`docs/configuration.md`](docs/configuration.md) — `.idea-harness/` reference: providers, review
+  rigor and convergence, quality dimensions (`verify:`), outcome measurement (`outcomes:`),
+  integrations.
+- [`docs/cli.md`](docs/cli.md) — every command and flag, exit codes, `--json` errors, `idea gaps`,
+  `idea eval`, objectives and metrics.
+- [`docs/ui.md`](docs/ui.md) — the web UI at `http://127.0.0.1:8787/`, including the Product Graph
+  views (lineage, gaps, outcomes, quality, review convergence).
+- [`docs/ui-parity.md`](docs/ui-parity.md) — which CLI verbs the UI covers, and why the rest are
+  CLI-only.
 - [`docs/mcp.md`](docs/mcp.md) — `idea mcp`: drive idea-harness from Claude Code, Cursor or Codex
-  over MCP (`claude mcp add idea -- idea mcp`).
+  (`claude mcp add idea -- idea mcp`).
+- [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
+  sync; neither needs a public URL.
+
+**Building on it:**
+
 - [`docs/api.md`](docs/api.md) — the daemon HTTP API: auth, error shape, and a row per route
   (`make api-docs-check` keeps it complete), with [`docs/openapi.yaml`](docs/openapi.yaml) as the
   machine-readable spec. A running daemon serves it rendered at `http://127.0.0.1:8787/api-reference`.
 - [`docs/api-reference-hosting.md`](docs/api-reference-hosting.md) — building without the bundled
   reference (3.7 MiB smaller) and hosting it on Cloudflare, AWS or Fastly instead.
+- [`docs/architecture.md`](docs/architecture.md) — system areas, the stage graph, packages,
+  invariants, and the exact trigger behind every `idea gaps` kind.
+
+**Trusting it:**
+
 - [`docs/security.md`](docs/security.md) — threat model, secrets, trust levels.
-- [`docs/security-model.md`](docs/security-model.md) — system-deny conditions, executor trust tiers, execution gateway.
-- [`docs/plans/`](docs/plans/) — approved milestone plans and adversarial reviews.
+- [`docs/security-model.md`](docs/security-model.md) — system-deny conditions, protected paths,
+  executor trust tiers, the execution gateway, the remote execution plane, and what none of it
+  protects against.
+
+**The project:** [`CHANGELOG.md`](CHANGELOG.md) (breaking changes and their migrations),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md) (including verifying a signed
+release), and [`docs/plans/`](docs/plans/) — milestone plans, adversarial reviews and
+[deferred items](docs/plans/deferred.md).
 
 ## Development
 

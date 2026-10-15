@@ -78,6 +78,11 @@ in your repository. Applying or reverting a change set does change files, so a m
 when whoever configured the server opted in with `--allow-apply`. A tool outside the server's tier
 is absent from `tools/list`; calling it anyway returns an error that names the flag that enables it.
 
+A judgment made through a tool is recorded exactly as one typed at the CLI — as the human's. The
+daemon cannot tell the two apart: both arrive with the same token. The server's instructions tell
+the model that the human is the reviewer of record and to read before it records anything, but
+that is a prompt, not a control; the tier you start the server with is.
+
 Tool annotations tell the host what each tool does: reads carry `readOnlyHint`; `review_change_set`,
 `apply_change_set` and `revert_change_set` carry `destructiveHint`, which hosts use to ask before
 running them.

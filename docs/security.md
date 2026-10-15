@@ -4,9 +4,10 @@ Security is enforced **outside the LLM** (§43). The control plane assumes model
 content, web content, prior agent output, skills, tools, and executors may all be malicious, and
 remains authoritative.
 
-## Threat model (Milestone 1)
+## Threat model
 
-M1 threats and mitigations:
+Threats and mitigations. The rows began with M1; the later surfaces — the MCP server, the chat
+integrations, a remote execution plane — have rows of their own and a deeper document each.
 
 | Threat | Mitigation |
 |---|---|
@@ -20,6 +21,9 @@ M1 threats and mitigations:
 | Stored XSS via artifact bodies | artifact bodies sanitized before serving; UI renders markdown without raw HTML |
 | Credential/prompt exfiltration via provider `base_url` | `base_url` must be https, or http on loopback; a built-in preset's endpoint may not be overridden (it would inherit that preset's `api_key_env`). Enforced on the write path (`PUT /providers`, `idea model set`) **and again when the provider registry is built**, so a `harness.yaml` arriving by any other route — a cloned repo, a hand edit, a restored backup — is subject to the same rule. A refused entry is not registered: a preset name falls back to its built-in endpoint, a custom name becomes unresolvable at first use, the project still opens, and the reason is logged, reported by `idea config validate` / `idea doctor` / `idea model ls`, returned as `problem` on `GET /providers`, and shown against that provider in the UI — which labels it **refused**, prints the reason, and displays the endpoint requests actually reach rather than the refused one |
 | SSRF via research web tool | public-address-only fetch (loopback/private/link-local/metadata blocked), 5-redirect cap, 2 MiB/30s limits, deterministic config-supplied URLs (§46) |
+| A model driving the daemon over MCP | `idea mcp` is a daemon client like the CLI, so every gate the daemon enforces applies to a tool call. Tiers bound what a host can do: `--read-only` exposes reads alone, apply and revert exist only with `--allow-apply`, and no tool records verification evidence. The daemon cannot tell a tool call from a typed command — both carry the same token — so a verdict recorded through MCP is recorded as the human's; the tier you grant is the control. [`mcp.md`](mcp.md#tiers) |
+| Acting from Slack; untrusted text from Linear | only users in `integrations.slack.allowed_users` may act (empty is notify-only), and every action goes through the daemon's own HTTP handlers, so it meets the same gates as the CLI; a labeled Linear issue becomes an initiative with its text attached as an untrusted context document, never as instructions. [`integrations.md`](integrations.md#security-trade-offs) |
+| A remote execution plane (`openhands`) | opt-in only, never chosen by `auto`; https unless loopback, the session key never stored or put in a URL, and the downloaded archive validated as untrusted input before anything reaches the work root. What leaves the machine: [`security-model.md`](security-model.md#the-remote-execution-plane-openhands) |
 <!-- claim:reviewer-separation -->
 | Agent self-approval (§14) | the approval verdict is human-only, and so is the `accepted_risk` disposition. **Nothing prevents the `implementer` and `adversarial_reviewer` roles resolving to the same model** — there is one actor identity for all automated writes, so the separation is a separate prompt and run, not a checked identity |
 <!-- /claim -->

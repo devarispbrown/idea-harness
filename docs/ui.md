@@ -17,8 +17,10 @@ Two things to know before reading the rest:
   anywhere in `web/src` — the daemon does serve `GET /projects/{id}/events`, but nothing in the UI
   opens it — so a change made elsewhere shows up within a few seconds, not instantly.
 
-  **Five screens do not poll at all** and go stale until you reload: Health, Decision, the doc
-  reader, the artifact diff, and Settings. Each loads once on mount.
+  **The other screens do not poll** and go stale until you reload: Health, What changed, Decision,
+  the doc reader, the artifact diff, and the Product Graph pages (lineage, Gaps, Outcomes,
+  Quality). Each loads once on mount. Settings loads once too, and polls only while a smoke test it
+  is showing is still running.
 - **The project is not selectable.** The app loads `GET /api/v1/projects` and uses the **first**
   entry (`App.tsx`). There is no project switcher. With no projects registered it renders "Run
   `idea init` in a project directory to get started"; when the daemon is unreachable it renders

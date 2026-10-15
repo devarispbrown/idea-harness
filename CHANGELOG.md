@@ -14,8 +14,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 | Was | Now |
 |---|---|
 | An unset `executor.kind` meant `internal`: `idea execute` wrote a placeholder file, with a one-line hint, whether or not a model key and Docker were available | An unset kind means **`auto`**: `hermes` on the digest-pinned image when Docker is reachable and the coding model's provider key is set (the first run pulls the multi-gigabyte image and makes paid model calls), otherwise `internal` with a `NO REAL CODE WILL BE WRITTEN` warning on `idea execute`/`idea next`, `idea doctor`, the Build page guidance, `GET /executors`, the change set's agent output and the run manifest. **Migration:** set `executor.kind: internal` to keep the placeholder. Projects created by an earlier `idea init` already have `kind: internal` written and are unaffected until that line is removed; a new `idea init` writes `kind: auto`. A keyless provider (Ollama) is never auto-picked. |
-| `ExecutorKind` (`harness.yaml` schema, OpenAPI) was `internal \| container \| omp \| hermes` | Adds `auto` and `acp`. `POST …/execute`'s `executor_kind` can now be `auto`; the kind that actually runs is in the new `executor_resolved`. A client switching on `executor_kind == "internal"` to warn about placeholders should read `executor_warning` / `executor_resolved` instead. |
+| `ExecutorKind` (`harness.yaml` schema, OpenAPI) was `internal \| container \| omp \| hermes` | Adds `auto`, `acp` and `openhands`. `POST …/execute`'s `executor_kind` can now be `auto`; the kind that actually runs is in the new `executor_resolved`. A client switching on `executor_kind == "internal"` to warn about placeholders should read `executor_warning` / `executor_resolved` instead. |
 | The default Hermes image was `nousresearch/hermes-agent:v2026.5.16` (tag only) | `nousresearch/hermes-agent:v2026.5.16@sha256:b6e41c15…` (same bytes, pinned by index digest). `harness.yaml` files that stored the tag-only default keep working, unverified; `idea executors setup` now writes the digest form. |
+| A plain `idea review <CHG-n> approve` approved any change set whose review raised no blocking finding | A change set touching an auto-executing path (CI definitions, tree-installed git hooks, `.envrc`, `.devcontainer/`, `.vscode/tasks.json`) gets a blocking `protected_path` finding, and one whose produced files hold a payment card number or a dashed US SSN gets a blocking `pii` finding; a plain approve refuses both (details under Security). **Migration:** a script that approves change sets must handle the refusal — `--accept-findings` signs off `protected_path`; a `pii` finding needs its own `accepted_risk` disposition (the web UI, or `POST …/findings/{id}/disposition`), which `--accept-findings` never covers. |
+| `idea verify` completed an initiative once every requirement had passing (or waived) evidence | It measures quality dimensions first, and at an effective `review.rigor` of `thorough` — set explicitly, or `auto` calibrating to it on a large project or change — `setup_reproducibility`, `docs_completeness` and `api_compatibility` are gates: each must pass (`not_measured` does not) before the initiative completes, and `idea verify` exits `5` until they do. `quick` and `standard` gate nothing. **Migration:** set `verify.dimensions.<dimension>: advisory` (or `off`) for any dimension that should not hold the gate. |
+| The PRD review loop ran up to `review.max_cycles` passes, every critical/high finding blocking | `review.convergence.mode: guarded` by default: an uncited finding, or a non-critical one first raised after cycle 1 about a requirement the revision did not change, is advisory; re-raises are de-duplicated; and the loop parks for a human as soon as the open blocking count stops falling — a persistent cited blocker now parks at cycle 2, not 3, and so does `demo.block_review_cycles` of 2 or more (details under Changed). **Migration:** `review.convergence.mode: legacy` restores the previous loop exactly. |
+| Initiatives had no objectives | The PRD states objectives and outcome metrics, and the chain is checked. An initiative with requirements and no active objective — every initiative created before this release — has one medium `objectives_missing` gap, so `idea gaps --fail-on medium` (or lower) fails on it, and a PRD review over a PRD with no objectives raises one medium finding; once objectives exist, a requirement serving none is a high finding, which blocks the PRD review. **Migration:** `idea objective add "<statement>"` and `idea objective link <REQ> <OBJ>` (or the Define page) where you want the chain; otherwise start a CI gate at `idea gaps --fail-on high`. |
 
 - **CLI exit codes now say what kind of failure it was** (deferred.md, audit 8 / E2). Every failure
   used to exit `1`. The taxonomy is in [docs/cli.md](docs/cli.md#exit-codes): `2` usage, `3` not
@@ -60,12 +64,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   detector, instead of running to `review.max_cycles`. The demo blocking finding cites the first
   listed requirement and justifies its re-raise, so it behaves as a genuine blocker under the new
   rules.
-- The `adversarial_reviewer` and `product_manager` role contracts are at 1.1.0: citation, severity,
-  re-raise and precise-revision behaviors.
-- The `product_manager` and `adversarial_reviewer` role contracts are at **1.2.0**: the product
-  manager states objectives with measurable metrics and links every requirement to the objective(s)
-  it serves; the reviewer challenges a requirement serving no objective and an objective with no
-  measurable metric, citing the `REQ`/`OBJ`/`MET` code.
+- The `product_manager` and `adversarial_reviewer` role contracts are at **1.2.0**. 1.1.0 added
+  citation, severity, re-raise and precise-revision behaviors; 1.2.0 has the product manager state
+  objectives with measurable metrics and link every requirement to the objective(s) it serves, and
+  the reviewer challenge a requirement serving no objective and an objective with no measurable
+  metric, citing the `REQ`/`OBJ`/`MET` code.
 - The PRD schema (`schema.PRD`) gains `objectives[]` (each with `metrics[]`) and a per-requirement
   `objectives[]`. Both are optional, so an older scripted response still validates. The PRD and
   review prompts are longer by the schema text and an objectives section; the scripted eval
@@ -136,7 +139,9 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `state` naming the trigger, a severity, the nodes (REQ-3, REQ-3/AC-2, TASK-2, CHG-4, DEC-1), a
   one-line why and the command that closes it. `--kind` filters, `--all` covers every initiative,
   `--json` is machine-readable, and `--fail-on <severity>` exits `5` (`gate_unmet`) so it can gate
-  CI; without it the command exits `0`. Exact triggers:
+  CI; without it the command exits `0`. An initiative created before objectives existed carries a
+  medium `objectives_missing` gap, so a new CI gate is best started at `--fail-on high` (see
+  Changed — BREAKING). Exact triggers:
   [architecture.md](docs/architecture.md#asking-the-graph-gaps). Also served as
   `GET …/initiatives/{id}/gaps` and `GET /projects/{projectId}/gaps`, the read-only MCP `gaps`
   tool, a **Product gaps** list on the web UI's Health page, and a `gap_summary` on `/guidance`
@@ -150,7 +155,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   execution plane; approval, workflow state, the change set and its review stay here. The work root
   is uploaded as one tarball and the result downloaded back into the local work root, validated in
   a staging directory first, so the snapshot → diff → secret sweep → review → apply pipeline is
-  unchanged. Runs are durable in a new `remote_runs` table: a deterministic idempotency key per
+  unchanged. Runs are durable in a new `remote_runs` table (migration 40): a deterministic idempotency key per
   (task, attempt) and a conversation id derived from it make a retry after a crash re-attach
   instead of starting twice; events are ingested from the stored cursor exactly once into a
   compact, redacted progress log for the live view; a daemon restart re-attaches to runs still
@@ -173,13 +178,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   when they cite a diff line), `security` (credential re-scan, deny-check summary, configured
   scanners), `performance` (declared budgets compared with the previous measurement) and
   `operational_readiness` — each a result of cited checks marked deterministic or model-reviewed,
-  recorded in the product record and linked to requirements with `verifies` edges (`idea why
+  recorded in the product record (`quality_results`, migration 41) and linked to requirements with `verifies` edges (`idea why
   quality_result …`, `idea impact requirement …`). Unmeasured is reported as `not_measured`, never as
   a pass. Policy is `verify.dimensions` in harness.yaml (`off` | `advisory` | `gate`); defaults
   follow `review.rigor` — **`quick` measures nothing; `standard` makes setup, docs and API
-  compatibility advisory; `thorough` gates those three**, so an initiative that calibrates to
-  `thorough` (`auto` on a large project or change) now needs them to pass, or a `verify.dimensions`
-  override, to complete. New `GET`/`POST /api/v1/projects/{projectId}/initiatives/{id}/quality`
+  compatibility advisory; `thorough` gates those three** (see Changed — BREAKING). New `GET`/`POST /api/v1/projects/{projectId}/initiatives/{id}/quality`
   (read; 202 measure), `quality` on the verify response, `idea verify --no-measure`, a scorecard on
   the Health and Build pages, and the opt-in `verify.setup.prepare` / scanner `network: true` —
   the only sandboxed commands ever given network ([security model](docs/security-model.md#execution-gateway)).
@@ -195,7 +198,7 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
     time, source, note, provenance, and the change sets attributed to it). New graph edges:
     `requirement --serves--> objective` (N:M), `metric --measures--> objective`,
     `assertion --predicts--> metric` for a hypothesis, and `metric --attributed_to--> change_set`.
-    One new migration (three tables).
+    Migration 42 (three tables: `objectives`, `outcome_metrics`, `metric_observations`).
   - **PRD stage.** The PRD states objectives and metrics; codes stay stable across revisions like
     `REQ` codes, and a human-added objective is never rewritten or superseded by a revision. The
     PRD review's deterministic checks raise a high finding for a requirement serving no objective
@@ -236,11 +239,12 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **`idea mcp`: an MCP server, so Claude Code, Cursor, Codex or any Model Context Protocol client
   can drive idea-harness.** A stdio server (`claude mcp add idea -- idea mcp`) that is a client of
   the daemon like every other command — it auto-starts the daemon, uses the CLI's token, never
-  opens the state database, and is subject to every gate the daemon enforces. Twenty-two tools:
+  opens the state database, and is subject to every gate the daemon enforces. Twenty-six tools:
   reads (`list_initiatives`, `status`, `next_step`, `show_prd`, `list_tasks`, `list_findings`,
-  `list_questions`, `list_decisions`, `why`, `impact`, `trace`, `changed`, `list_change_sets`,
-  `show_change_set`, `get_operation`), judgments (`new_initiative`, `answer_question`,
-  `resolve_decision`, `review_change_set`, `verify`) and, only with `--allow-apply`,
+  `list_questions`, `list_decisions`, `why`, `impact`, `trace`, `gaps`, `list_objectives`,
+  `list_metrics`, `changed`, `list_change_sets`, `show_change_set`, `get_operation`), judgments
+  (`new_initiative`, `answer_question`, `resolve_decision`, `review_change_set`, `record_metric`,
+  `verify`) and, only with `--allow-apply`,
   `apply_change_set` and `revert_change_set`. `--read-only` exposes the reads alone. Each tool has
   a JSON Schema for its arguments and `readOnlyHint`/`destructiveHint` annotations, and answers
   with concise text plus `structuredContent`. Artifacts are readable as
