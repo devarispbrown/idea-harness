@@ -172,7 +172,10 @@ func (e *Engine) recordAssertionBasis(ctx context.Context, initiativeID string, 
 			return err
 		}
 	}
-	return nil
+	// A node whose basis was unchanged skipped SetAssertionBasis, and with it
+	// the invalidates reconcile; a new requirement resting on an already
+	// retracted assertion must still be marked invalidated.
+	return e.db.SyncAssertionInvalidations(ctx, initiativeID)
 }
 
 // requirementBasis returns, for each live assertion some active requirement
