@@ -58,6 +58,11 @@ export default function DefinePage({
   const [acceptResult, setAcceptResult] = useState<{
     resolved: number;
     skipped: { code: string; reason: string }[];
+    // Open questions the call could not touch: a question carries no
+    // recommendation, so "accept all" never answers one. Said out loud
+    // because the button used to do nothing visible when questions were all
+    // that was open.
+    questionsLeft: number;
   } | null>(null);
   const [acceptError, setAcceptError] = useState("");
 
@@ -105,6 +110,7 @@ export default function DefinePage({
 
   const resolvedDecisions = prdDecisions.filter((d) => d.status !== "open");
   const resolvedFindings = prdFindings.filter((f) => !!f.disposition);
+  const answeredQuestions = questions.filter((q) => q.status !== "open");
 
   // B4 triage: cross-reference this phase's own open items (still scoped by
   // judgmentScope.ts above -- triage ranks the WHOLE initiative, so this
@@ -152,7 +158,10 @@ export default function DefinePage({
   const acceptAllRecommendations = async () => {
     if (
       !window.confirm(
-        `Accept the recommendation for every open decision on this initiative? This cannot be undone.`,
+        `Accept the recommendation for every open decision on this initiative? This cannot be undone.` +
+          (openQuestions.length > 0
+            ? `\n\nOpen questions are not included: a question has no recommendation to accept.`
+            : ""),
       )
     ) {
       return;
@@ -164,7 +173,11 @@ export default function DefinePage({
         resolved: string[];
         skipped: { code: string; reason: string }[];
       }>(resource(projectId, initiativeId, "decisions/accept-recommendations"), {});
-      setAcceptResult({ resolved: (res.resolved ?? []).length, skipped: res.skipped ?? [] });
+      setAcceptResult({
+        resolved: (res.resolved ?? []).length,
+        skipped: res.skipped ?? [],
+        questionsLeft: openQuestions.length,
+      });
       await load();
     } catch (e) {
       setAcceptError(e instanceof Error ? e.message : String(e));
@@ -247,17 +260,26 @@ export default function DefinePage({
       {/* B4: "53 things need your judgment", then 82. Repeated questions. No
           way to accept the recommendations." One call resolves every open
           decision on the initiative with its own recommendation. */}
-      {openCount > 0 && (
+      {openDecisions.length > 0 && (
         <div className="row" style={{ marginBottom: 12 }}>
           <button className="jc-secondary" onClick={acceptAllRecommendations}>
             Accept all recommendations
           </button>
         </div>
       )}
+      {/* Questions only: nothing for "accept all" to do, and the button used
+          to sit here anyway and do nothing visible when clicked. */}
+      {openDecisions.length === 0 && openQuestions.length > 0 && (
+        <p className="muted accept-recommendations-none">
+          Nothing to accept automatically: questions carry no recommendation. Answer them below, or
+          use ✨ Suggest for a drafted answer.
+        </p>
+      )}
       {acceptResult && (
-        <div className="ok-text">
+        <div className="ok-text" role="status">
           <p>
-            Resolved {acceptResult.resolved}, skipped {acceptResult.skipped.length}
+            Resolved {acceptResult.resolved} decision{acceptResult.resolved === 1 ? "" : "s"}, skipped{" "}
+            {acceptResult.skipped.length}
             {acceptResult.skipped.length > 0 ? ":" : "."}
           </p>
           {acceptResult.skipped.length > 0 && (
@@ -268,6 +290,12 @@ export default function DefinePage({
                 </li>
               ))}
             </ul>
+          )}
+          {acceptResult.questionsLeft > 0 && (
+            <p className="warn-text">
+              {acceptResult.questionsLeft} open question{acceptResult.questionsLeft === 1 ? " was" : "s were"} not
+              touched — questions have no recommendation. Answer {acceptResult.questionsLeft === 1 ? "it" : "them"} below.
+            </p>
           )}
         </div>
       )}
@@ -302,7 +330,7 @@ export default function DefinePage({
           </div>
         </details>
       )}
-      {(resolvedDecisions.length > 0 || resolvedFindings.length > 0) && (
+      {(resolvedDecisions.length > 0 || resolvedFindings.length > 0 || answeredQuestions.length > 0) && (
         <>
           <div className="judgment-head">
             <h2 className="section-title">Resolved</h2>
@@ -313,6 +341,9 @@ export default function DefinePage({
             ))}
             {resolvedFindings.map((f) => (
               <FindingCard key={f.id} f={f} onDisposition={() => {}} />
+            ))}
+            {answeredQuestions.map((q) => (
+              <QuestionCard key={q.id} q={q} onAnswer={() => {}} onSuggest={() => {}} />
             ))}
           </div>
         </>

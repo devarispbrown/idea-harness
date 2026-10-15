@@ -342,26 +342,6 @@ export function conflictCause(findings: { category: string }[]): ConflictCause {
   return findings.some((f) => f.category === "stale_base") ? "stale_base" : "other";
 }
 
-// appliedOutcomeLabel is G3: an applied change set from a placeholder
-// executor, or built under the demo model, never earned the word "SHIPPED" --
-// nothing real happened. Labeling it "Placeholder change (demo)" instead is
-// what stops a demo run from reading as a real deploy.
-//
-// `executor` must be the CHANGE SET's own executor (`cs.executor`, the kind
-// that actually produced it -- a backend contract addition), not the page's
-// currently-selected executor. The page-level value used to be passed here,
-// which relabeled every already-applied change set's history the moment
-// someone switched the dropdown, and read "internal" for everything before
-// the page's own executor fetch resolved. A change set predating that field
-// carries `executor: undefined`; the function falls back to the model check
-// alone for it rather than assuming "internal" (which would mislabel a real
-// SHIPPED change made under a real executor and a real model).
-export function appliedOutcomeLabel(executor: string | undefined, model: string | undefined): string {
-  if (executor === "internal") return "Placeholder change (demo)";
-  if (model === "demo") return "Placeholder change (demo)";
-  return "SHIPPED";
-}
-
 export interface ReviewStateLike {
   status: string;
   review_completed_at?: string;
@@ -379,28 +359,6 @@ export interface ReviewStateLike {
 // forward, surfaced here as "Re-run the review".
 export function reviewNeverCompleted(cs: ReviewStateLike): boolean {
   return cs.status === "review_required" && !cs.review_completed_at;
-}
-
-// appliedPillLabel (H8 fix) is the applied change set's status-pill text.
-// `noOp` is the backend's own authoritative signal (ChangeSet.no_op: fsdiff
-// found zero files to persist) and takes priority over both the
-// agent_output-finding heuristic (`noFilesChanged`, hasNoFilesChanged above)
-// and appliedOutcomeLabel's SHIPPED/demo split -- a change set that touched
-// nothing is never SHIPPED, whatever executor or model produced it, and
-// calling it "SHIPPED" (as the pill did before this fix) is exactly the
-// dishonest label the review flagged. Labelled "No file changes" rather than
-// reusing noFilesChanged's "No changes" so the two distinct signals (a real
-// no-op change set vs. an agent that produced no diff at all, e.g. a 401)
-// stay visibly different.
-export function appliedPillLabel(
-  noOp: boolean,
-  noFilesChanged: boolean,
-  executor: string | undefined,
-  model: string | undefined,
-): string {
-  if (noOp) return "No file changes";
-  if (noFilesChanged) return "No changes";
-  return appliedOutcomeLabel(executor, model);
 }
 
 // buildHeaderMeta is B4: "placeholder code" only belongs next to the executor
@@ -580,5 +538,44 @@ export function executeRequestBody(discardPartial: boolean, note: string): Recor
   if (discardPartial) body.fresh = true;
   const trimmed = note.trim();
   if (trimmed) body.note = trimmed;
+  return body;
+}
+
+// AcceptableFindingLike is the slice of a finding acceptableFindingCount reads.
+export interface AcceptableFindingLike {
+  severity: string;
+  disposition?: string;
+  code?: string;
+  advisory?: boolean;
+}
+
+// acceptableFindingCount is how many of a change set's findings "Approve,
+// accepting findings" would actually sign off: the reviewer's own open
+// blocking ones (critical/high, no disposition yet, no system-deny code --
+// a deny is not the human's to accept), never an advisory one. The button
+// used to render on every reviewable change set, including one whose only
+// findings were passing mechanical checks, offering to accept nothing.
+export function acceptableFindingCount(findings: AcceptableFindingLike[]): number {
+  return findings.filter(
+    (f) =>
+      !f.advisory &&
+      !f.disposition &&
+      !f.code &&
+      (f.severity === "critical" || f.severity === "high"),
+  ).length;
+}
+
+// reviewRequestBody is POST .../change-sets/{id}/review's body. The note --
+// what the human wants changed -- only rides with the two verdicts that send
+// the task back for another run (the daemon refuses it on any other).
+export function reviewRequestBody(
+  verdict: string,
+  acceptFindings: boolean,
+  note: string,
+): { verdict: string; accept_findings?: true; note?: string } {
+  const body: { verdict: string; accept_findings?: true; note?: string } = { verdict };
+  if (acceptFindings) body.accept_findings = true;
+  const trimmed = note.trim();
+  if (trimmed && (verdict === "changes_requested" || verdict === "rejected")) body.note = trimmed;
   return body;
 }

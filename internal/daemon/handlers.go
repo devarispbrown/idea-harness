@@ -1415,6 +1415,18 @@ func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// The answer text, from the REDACTED store -- where handleAnswerQuestion
+	// put it (see workflow.answerText for why it is never the raw store). A
+	// blob that cannot be read leaves the field empty rather than failing the
+	// whole list.
+	for i := range list {
+		if list[i].AnswerDigest == "" {
+			continue
+		}
+		if data, err := pr.blobs.Get(list[i].AnswerDigest); err == nil {
+			list[i].Answer = strings.TrimSpace(string(data))
+		}
+	}
 	writeJSON(w, http.StatusOK, list)
 }
 

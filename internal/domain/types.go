@@ -131,9 +131,14 @@ type Question struct {
 	Question     string         `json:"question"`
 	Status       QuestionStatus `json:"status"`
 	AnswerDigest string         `json:"answer_digest,omitempty"`
-	AnsweredBy   string         `json:"answered_by,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	ResolvedAt   *time.Time     `json:"resolved_at,omitempty"`
+	// Answer is the answer's text, filled at read time by the questions list
+	// (never stored on the row: the text lives in the blob store under
+	// AnswerDigest). The UI's Resolved section shows it; without it an
+	// answered question simply vanished from Define.
+	Answer     string     `json:"answer,omitempty"`
+	AnsweredBy string     `json:"answered_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
 // DocComment is a human comment anchored to a section of an artifact version.

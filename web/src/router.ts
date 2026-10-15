@@ -17,6 +17,10 @@ export type Route =
   // D-b: the cross-initiative "Needs you" queue (wave 3). Project-scoped,
   // not initiative-scoped -- there is no initiative id in this route.
   | { name: "queue" }
+  // Lineage of one node of the Product Graph -- what produced it and what
+  // depends on it (`idea trace <type> <ref>`). Explore's per-document "trace"
+  // links here; the view itself is LineageView.
+  | { name: "lineage"; id: string; type: string; ref: string }
   // Anything that doesn't match a known shape. Falling back to "home" here
   // used to send a mistyped or stale link silently to the initiative list --
   // indistinguishable from the user having clicked home on purpose (K).
@@ -40,6 +44,9 @@ export function parseRoute(hash: string): Route {
     if (rest === "decision" && segs.length === 4) return { name: "decision", id, decisionId: segs[3] };
     if (rest === "health" && segs.length === 3) return { name: "health", id };
     if (rest === "changed" && segs.length === 3) return { name: "changed", id };
+    if (rest === "lineage" && segs.length === 5) {
+      return { name: "lineage", id, type: decodeURIComponent(segs[3]), ref: decodeURIComponent(segs[4]) };
+    }
     if (rest === "doc" && (segs.length === 4 || segs.length === 5)) {
       return { name: "doc", id, artifact: segs[3], version: segs[4] ?? "latest" };
     }
@@ -65,4 +72,10 @@ export function navigate(to: string): void {
   if (window.location.hash !== to) {
     window.location.hash = to;
   }
+}
+
+// lineageHref is the one way to link to a node's lineage, so every caller
+// encodes the type and ref the same way parseRoute decodes them.
+export function lineageHref(id: string, type: string, ref: string): string {
+  return `#/i/${id}/lineage/${encodeURIComponent(type)}/${encodeURIComponent(ref)}`;
 }

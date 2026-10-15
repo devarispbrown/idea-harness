@@ -5,13 +5,17 @@ import {
   providerOptionSuffix,
   providerReadinessWarning,
   providerState,
-  providerStatusLabel,
+  providerListLabel,
   modelsLoadedMessage,
 } from "./providerStatus";
 import {
   executorImagePlaceholder,
+  executorResolutionLine,
   executorStatusLines,
+  hasExecutorStatusLines,
   isModelFieldError,
+  requestedExecutorKind,
+  type ExecutorResolution,
   type ExecutorStatusInput,
 } from "./executorStatus";
 import {
@@ -106,9 +110,13 @@ interface ExecutorInfo {
   // Added alongside this feature: image/key readiness and, when not ready,
   // the reason (C3). Optional so a daemon that predates it still renders.
   status?: ExecutorStatusInput;
+  // Present on the row the next run would actually use (requested vs
+  // resolved, and the placeholder warning when auto fell back).
+  resolution?: ExecutorResolution;
 }
 
-const EXECUTOR_KINDS = ["internal", "container", "omp", "hermes"];
+// "auto" first: it is what an unset kind means, and what `idea init` writes.
+const EXECUTOR_KINDS = ["auto", "internal", "container", "omp", "hermes"];
 
 // api.ts throws an Error whose .message is already the server's plain `error`
 // string (no JSON to parse here) — this just narrows the catch(e: unknown)
@@ -147,6 +155,12 @@ export default function Settings({ projectId }: { projectId: string }) {
   // (F4): saving a model/executor pointed at an unready provider still
   // succeeds — the daemon just can't call it yet.
   const [warning, setWarning] = useState("");
+  // What loading a provider's models found: the count, or why that provider
+  // cannot be called. Shown inside the Model card it is about. It used to go
+  // to the page-level lines at the very bottom, so opening Settings greeted
+  // you with "OPENAI_API_KEY is not set…" under Integrations, about a provider
+  // you had not touched.
+  const [modelNotice, setModelNotice] = useState<{ text: string; warn: boolean } | null>(null);
 
   // add-provider form state
   const [preset, setPreset] = useState("openai");
@@ -218,7 +232,7 @@ export default function Settings({ projectId }: { projectId: string }) {
     async (provider: string) => {
       setLoadingModels(true);
       setError("");
-      setWarning("");
+      setModelNotice(null);
       try {
         const v = await get<{ provider: string; models: string[] }>(
           `/projects/${projectId}/models?provider=${provider}`,
@@ -235,14 +249,14 @@ export default function Settings({ projectId }: { projectId: string }) {
         // modelsLoadedMessage's not-ready text was pushed through
         // `setSaved` here. Route it to `warning` (amber) instead.
         if (entry && providerState(entry) !== "ready") {
-          setSaved("");
-          setWarning(modelsLoadedMessage(entry, ordered.length));
+          setModelNotice({ text: modelsLoadedMessage(entry, ordered.length), warn: true });
         } else {
-          setSaved(
-            entry
+          setModelNotice({
+            text: entry
               ? modelsLoadedMessage(entry, ordered.length)
               : `Loaded ${ordered.length} models from ${provider}.`,
-          );
+            warn: false,
+          });
         }
       } catch (e) {
         setError(errorMessage(e));
@@ -273,7 +287,7 @@ export default function Settings({ projectId }: { projectId: string }) {
       // I1: this sets the provider whose models the effect below preloads;
       // Setting the provider starts the model fetch, in its own effect; load
       // itself never depends on the view, which is what looped.
-      setSelectedProvider(resolveInitialProvider(v.default_model || ""));
+      setSelectedProvider(resolveInitialProvider(v.default_model || "", v.providers ?? []));
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -284,6 +298,13 @@ export default function Settings({ projectId }: { projectId: string }) {
       const list = await get<ExecutorInfo[]>(`/projects/${projectId}/executors`);
       setExecutors(list);
       const selected = list.find((e) => e.selected);
+      // Under `auto` no row is selected; the kind shown is what harness.yaml
+      // asks for, never a default of this page's own.
+      const requested = requestedExecutorKind(list);
+      if (!selected && EXECUTOR_KINDS.includes(requested)) {
+        setExecutorKind(requested);
+        setInitialKind(requested);
+      }
       if (selected && EXECUTOR_KINDS.includes(selected.name)) {
         setExecutorKind(selected.name);
         setInitialKind(selected.name);
@@ -601,13 +622,16 @@ export default function Settings({ projectId }: { projectId: string }) {
   // The full executors list (one entry per kind, C3) so the Image
   // placeholder and status panel track whichever kind is selected in the
   // dropdown right now, not only the one already saved.
-  const executorEntry = executors.find((e) => e.name === executorKind);
+  // Under "auto" the status that matters is the kind it resolves to.
+  const resolvedRow = executors.find((e) => e.resolution);
+  const executorEntry =
+    executorKind === "auto" ? resolvedRow : executors.find((e) => e.name === executorKind);
   // S3: the smoke test runs against the SAVED executor, not the dropdown's
   // unsaved preview -- `last_smoke` is only ever populated on this row (the
   // daemon computes it for `selected` only), and the daemon's own
   // POST .../executors/smoke reads pr.cfg.Harness.Executor.Kind, not
   // anything pending in this form.
-  const selectedExecutor = executors.find((e) => e.selected);
+  const selectedExecutor = executors.find((e) => e.selected) ?? (initialKind === "auto" ? resolvedRow : undefined);
   // A smoke started before a reload (or in another tab) has no id here. Keep
   // refreshing the executors until its last_smoke leaves "running", so the
   // result appears instead of "A smoke test is running." forever.
@@ -624,18 +648,15 @@ export default function Settings({ projectId }: { projectId: string }) {
   // test something other than what the page shows.
   const executorUnsaved =
     !!selectedExecutor &&
-    (executorKind !== selectedExecutor.name ||
+    ((executorKind !== selectedExecutor.name && !(executorKind === "auto" && initialKind === "auto")) ||
       executorModel !== (selectedExecutor.model ?? "") ||
       executorImage !== (selectedExecutor.image ?? ""));
   const lastSmokeLine = lastSmokeMessage(selectedExecutor?.status?.last_smoke, smokeNow);
 
   return (
     <div className="settings-page">
-      {demo && (
-        <div className="banner">
-          Demo mode — synthetic output. Configure a model provider to run real agents.
-        </div>
-      )}
+      {/* No banner of its own: the app shell's demo banner is on this page
+          too, and the two said it twice. */}
       <section className="card">
         <h2>Model</h2>
 
@@ -712,6 +733,11 @@ export default function Settings({ projectId }: { projectId: string }) {
           Pick a provider, then a model from the live list — or type any{" "}
           <code>provider/model</code> id your provider supports. Leave blank to auto-select.
         </p>
+        {modelNotice && (
+          <p className={modelNotice.warn ? "warn-text" : "muted"} role="status">
+            {modelNotice.text}
+          </p>
+        )}
       </section>
 
       <section className="card">
@@ -733,7 +759,7 @@ export default function Settings({ projectId }: { projectId: string }) {
                   </div>
                 )}
               </div>
-              <span className="muted">{providerStatusLabel(p)}</span>
+              <span className="muted">{providerListLabel(p, demo)}</span>
             </li>
           ))}
         </ul>
@@ -741,8 +767,9 @@ export default function Settings({ projectId }: { projectId: string }) {
 
       <section className="card">
         <h2>Add provider</h2>
-        <label className="field-label">Provider</label>
+        <label className="field-label" htmlFor="add-provider-preset">Provider</label>
         <select
+          id="add-provider-preset"
           className="text-input"
           value={preset}
           onChange={(e) => applyPreset(e.target.value)}
@@ -753,15 +780,17 @@ export default function Settings({ projectId }: { projectId: string }) {
             </option>
           ))}
         </select>
-        <label className="field-label">Base URL</label>
+        <label className="field-label" htmlFor="add-provider-base-url">Base URL</label>
         <input
+          id="add-provider-base-url"
           className="text-input"
           value={baseUrl}
           placeholder="endpoint URL"
           onChange={(e) => setBaseUrl(e.target.value)}
         />
-        <label className="field-label">API key environment variable</label>
+        <label className="field-label" htmlFor="add-provider-key-env">API key environment variable</label>
         <input
+          id="add-provider-key-env"
           className="text-input"
           value={keyEnv}
           placeholder="e.g. OPENAI_API_KEY (leave empty for local)"
@@ -819,19 +848,31 @@ export default function Settings({ projectId }: { projectId: string }) {
             provider can't be used — shown next to the field it's about. */}
         {executorModelError && <p className="error">{executorModelError}</p>}
 
+        {/* Requested vs resolved: harness.yaml's `kind: auto` resolves to a
+            concrete kind per run, and the one that matters is what actually
+            runs -- `auto → internal` writes no real code. */}
+        {executorKind === "auto" && initialKind === "auto" && resolvedRow?.resolution && (
+          <div className="executor-resolution" role="status">
+            <p>{executorResolutionLine(resolvedRow.resolution)}</p>
+            {resolvedRow.resolution.warning && <p className="warn-text">{resolvedRow.resolution.warning}</p>}
+          </div>
+        )}
         {/* C3: image/key readiness for whichever kind is selected above, so
             switching kinds previews what would happen before Save is even
             clicked. */}
-        {executorEntry?.status && (
+        {executorEntry?.status &&
+          hasExecutorStatusLines(executorStatusLines(executorEntry.status, executorEntry.default_image ?? "")) && (
           <div className="executor-status">
             {(() => {
-              const lines = executorStatusLines(executorEntry.status!);
+              const lines = executorStatusLines(executorEntry.status!, executorEntry.default_image ?? "");
               return (
                 <>
-                  <div className={`executor-status-line ${lines.imageLine.ok ? "ok" : "warn"}`}>
-                    <span className="executor-status-dot" />
-                    {lines.imageLine.text}
-                  </div>
+                  {lines.imageLine && (
+                    <div className={`executor-status-line ${lines.imageLine.ok ? "ok" : "warn"}`}>
+                      <span className="executor-status-dot" />
+                      {lines.imageLine.text}
+                    </div>
+                  )}
                   {lines.keyLine && (
                     <div className={`executor-status-line ${lines.keyLine.ok ? "ok" : "warn"}`}>
                       <span className="executor-status-dot" />
@@ -854,7 +895,7 @@ export default function Settings({ projectId }: { projectId: string }) {
             API key. Only use an image you trust.
           </p>
         )}
-        {executorKind === "internal" && (
+        {(executorKind === "internal" || (executorKind === "auto" && resolvedRow?.name === "internal")) && (
           <p className="muted" style={{ marginTop: 12 }}>
             placeholder executor — writes no real code. Select hermes/omp for
             real code.
