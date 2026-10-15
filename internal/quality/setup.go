@@ -49,7 +49,7 @@ var knownTools = map[string]bool{
 }
 
 var (
-	fetchCmdRe = regexp.MustCompile(`^(?:(?:npm|pnpm|bun)\s+(?:install|i|ci|add)\b|yarn(?:\s+(?:install|add)\b|\s*$)|(?:pip3?|python3?\s+-m\s+pip)\s+install\b|poetry\s+install\b|uv\s+(?:sync|pip\s+install)\b|pipenv\s+install\b|go\s+(?:mod\s+download|get)\b|go\s+install\s+\S+@|cargo\s+(?:fetch|install)\b|bundle(?:\s+install)?\s*$|gem\s+install\b|brew\b|apt(?:-get)?\b|apk\b|curl\b|wget\b|git\s+(?:clone|submodule|pull|fetch)\b)`)
+	fetchCmdRe    = regexp.MustCompile(`^(?:(?:npm|pnpm|bun)\s+(?:install|i|ci|add)\b|yarn(?:\s+(?:install|add)\b|\s*$)|(?:pip3?|python3?\s+-m\s+pip)\s+install\b|poetry\s+install\b|uv\s+(?:sync|pip\s+install)\b|pipenv\s+install\b|go\s+(?:mod\s+download|get)\b|go\s+install\s+\S+@|cargo\s+(?:fetch|install)\b|bundle(?:\s+install)?\s*$|gem\s+install\b|brew\b|apt(?:-get)?\b|apk\b|curl\b|wget\b|git\s+(?:clone|submodule|pull|fetch)\b)`)
 	longRunningRe = regexp.MustCompile(`^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:start|dev|serve|watch)\b|go\s+run\b|flask\s+run\b|uvicorn\b|gunicorn\b|python3?\s+manage\.py\s+runserver\b|node\s+\S*(?:server|index|app|main)\S*\s*$|make\s+(?:run|dev|serve|start|watch)\b|docker(?:-compose)?\b|cargo\s+run\b|dotnet\s+run\b)`)
 	envAssignRe   = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+`)
 	promptRe      = regexp.MustCompile(`^(?:\$|%|>|#)\s+`)

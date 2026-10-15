@@ -109,7 +109,7 @@ func DefaultModes(rigor string) map[domain.QualityDimension]domain.QualityMode {
 
 // Policy is the resolved mode of every dimension and where it came from.
 type Policy struct {
-	Rigor string                                        `json:"rigor"`
+	Rigor string                                         `json:"rigor"`
 	Modes map[domain.QualityDimension]domain.QualityMode `json:"modes"`
 	// Overridden lists the dimensions whose mode verify.dimensions set
 	// explicitly (the rest are the rigor default).

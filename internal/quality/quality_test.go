@@ -7,7 +7,9 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
 
-func chk(s domain.QualityStatus) domain.QualityCheck { return domain.QualityCheck{Name: string(s), Status: s} }
+func chk(s domain.QualityStatus) domain.QualityCheck {
+	return domain.QualityCheck{Name: string(s), Status: s}
+}
 
 func TestRollupOrder(t *testing.T) {
 	cases := []struct {
