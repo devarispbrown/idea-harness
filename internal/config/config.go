@@ -292,6 +292,9 @@ type HarnessConfig struct {
 	// never read from here, only from the environment or the project's .env,
 	// named by the *_env fields.
 	Integrations IntegrationsConfig `json:"integrations,omitempty" yaml:"integrations,omitempty"`
+	// Verify configures the quality dimensions `idea verify` measures beyond
+	// the acceptance tests (verify.go).
+	Verify VerifyConfig `json:"verify,omitempty" yaml:"verify,omitempty"`
 }
 
 // GitConfig configures git-native behavior beyond git_commit (review C4,
@@ -436,6 +439,9 @@ func Load(dir string) (Config, error) {
 	}
 	if !ValidRigor(cfg.Harness.Review.Rigor) {
 		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
+	}
+	if err := validateVerify(cfg.Harness.Verify); err != nil {
+		return cfg, err
 	}
 	conv := cfg.Harness.Review.Convergence
 	if !oneOf(conv.Mode, ConvergenceModes) {

@@ -729,3 +729,116 @@ func (s RemoteRunStatus) Valid() bool {
 func (s RemoteRunStatus) Terminal() bool {
 	return s == RemoteRunCollected || s == RemoteRunFailed || s == RemoteRunCancelled
 }
+
+// QualityDimension is one quality dimension `idea verify` measures beyond the
+// acceptance tests (verify.dimensions in harness.yaml). Each produces a
+// QualityResult with pass/warn/fail -- or an explicit not_measured -- and
+// file/requirement citations, recorded as evidence in the Product Graph.
+type QualityDimension string
+
+const (
+	QualitySetupReproducibility QualityDimension = "setup_reproducibility"
+	QualityDocsCompleteness     QualityDimension = "docs_completeness"
+	QualityAPICompatibility     QualityDimension = "api_compatibility"
+	QualityAPIErgonomics        QualityDimension = "api_ergonomics"
+	QualitySecurity             QualityDimension = "security"
+	QualityPerformance          QualityDimension = "performance"
+	QualityOperationalReadiness QualityDimension = "operational_readiness"
+)
+
+// QualityDimensions is every dimension, in scorecard order. The order is the
+// order a reader meets them in -- "does it build from a clean checkout" first,
+// the judgment calls last -- not alphabetical.
+var QualityDimensions = []QualityDimension{
+	QualitySetupReproducibility,
+	QualityDocsCompleteness,
+	QualityAPICompatibility,
+	QualityAPIErgonomics,
+	QualitySecurity,
+	QualityPerformance,
+	QualityOperationalReadiness,
+}
+
+func (d QualityDimension) Valid() bool {
+	for _, v := range QualityDimensions {
+		if v == d {
+			return true
+		}
+	}
+	return false
+}
+
+// QualityStatus is a dimension's (or one of its checks') outcome.
+//
+// not_measured is not a softer pass: it is what a dimension reports when the
+// harness could not look -- no Docker, no toolchain image, a vulnerability
+// database that needs the network, a demo model that cannot review -- and a
+// gated dimension that was not measured does not satisfy the gate.
+// not_applicable is the opposite case: the harness looked and there was
+// nothing for the dimension to judge (no OpenAPI spec and no Go package
+// changed, say), which does satisfy it.
+type QualityStatus string
+
+const (
+	QualityPass          QualityStatus = "pass"
+	QualityWarn          QualityStatus = "warn"
+	QualityFail          QualityStatus = "fail"
+	QualityNotMeasured   QualityStatus = "not_measured"
+	QualityNotApplicable QualityStatus = "not_applicable"
+)
+
+func (s QualityStatus) Valid() bool {
+	switch s {
+	case QualityPass, QualityWarn, QualityFail, QualityNotMeasured, QualityNotApplicable:
+		return true
+	}
+	return false
+}
+
+// SatisfiesGate reports whether a gated dimension with this status lets the
+// verification gate pass. warn does (it is a note, not a failure); fail and
+// not_measured do not.
+func (s QualityStatus) SatisfiesGate() bool {
+	switch s {
+	case QualityPass, QualityWarn, QualityNotApplicable:
+		return true
+	}
+	return false
+}
+
+// QualityMode is a dimension's policy: off (not measured at all), advisory
+// (measured and reported, never blocks) or gate (a fail or not_measured
+// result keeps the verification gate from passing).
+type QualityMode string
+
+const (
+	QualityModeOff      QualityMode = "off"
+	QualityModeAdvisory QualityMode = "advisory"
+	QualityModeGate     QualityMode = "gate"
+)
+
+func (m QualityMode) Valid() bool {
+	switch m {
+	case QualityModeOff, QualityModeAdvisory, QualityModeGate:
+		return true
+	}
+	return false
+}
+
+// QualityMethod says how a quality check reached its result: a deterministic
+// check (a parser, a heuristic, a command run in the sandbox) or a model
+// review (the verification_engineer role, whose findings must cite lines).
+type QualityMethod string
+
+const (
+	QualityMethodDeterministic QualityMethod = "deterministic"
+	QualityMethodModel         QualityMethod = "model"
+)
+
+func (m QualityMethod) Valid() bool {
+	switch m {
+	case QualityMethodDeterministic, QualityMethodModel:
+		return true
+	}
+	return false
+}

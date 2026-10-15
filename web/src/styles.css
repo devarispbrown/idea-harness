@@ -2452,6 +2452,12 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .sev-critical, .sev-high { background: var(--failing-pill); color: var(--failing-fg); }
 .sev-medium { background: var(--needs-you-pill); color: var(--needs-you-fg); }
 .sev-low, .sev-observation { background: var(--inactive-pill); color: var(--inactive-fg); }
+/* Quality scorecard chips: not_measured/stale share the warning tone, never
+   the pass tone. */
+.quality-ok { background: var(--verified-pill); color: var(--verified-fg); }
+.quality-warn { background: var(--needs-you-pill); color: var(--needs-you-fg); }
+.quality-bad { background: var(--failing-pill); color: var(--failing-fg); }
+.quality-muted { background: var(--inactive-pill); color: var(--inactive-fg); }
 .health-body { flex: 1; min-width: 0; }
 .health-title { font-size: 13px; font-weight: 550; color: var(--text); }
 .health-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.55; }

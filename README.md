@@ -272,6 +272,29 @@ The daemon runs on `127.0.0.1:8787` and serves the web UI at `http://127.0.0.1:8
 · [`docs/integrations.md`](docs/integrations.md) — Slack notifications and approvals, Linear issue
 sync (no public URL needed).
 
+### Verification beyond the tests: quality dimensions
+
+`idea verify` also measures **quality dimensions** of the applied work and prints a scorecard
+(`--json` includes it as `quality`):
+
+| dimension | how it is checked |
+|---|---|
+| `setup_reproducibility` | the README/Makefile's documented setup, build and test commands, run in a fresh copy of the workspace in the no-network sandbox |
+| `docs_completeness` | README present with install/usage sections; every added route, CLI flag and env var mentioned in the docs; doc comments on new exported Go API |
+| `api_compatibility` | an OpenAPI 3 before/after diff and a Go exported-API diff; a breaking change no requirement or decision names fails |
+| `api_ergonomics` | a verification_engineer model review of the public-surface diff (naming, error shapes, pagination, idempotency, examples); only findings citing a diff line count |
+| `security` | the applied files re-scanned for credentials, the deny checks summarized, configured scanners run |
+| `performance` | declared budgets (a command, a metric regex, a ceiling and/or allowed regression vs the last run) |
+| `operational_readiness` | health route, SIGTERM handling, structured logging, env config, Dockerfile `HEALTHCHECK`, migration safety |
+
+Each result cites file:line and the requirements it bears on, and is traceable from them
+(`idea impact requirement REQ-1`, `idea why quality_result docs_completeness`). Anything the
+harness could not look at — no Docker, no scanner, the demo model — is reported **not measured**,
+never as a pass. Each dimension is `off`, `advisory` or `gate`; only gated ones can hold the gate.
+The defaults follow `review.rigor`: `quick` measures none, `standard` makes setup, docs and API
+compatibility advisory, `thorough` gates those three and makes the rest advisory. Configure them
+under `verify:` in harness.yaml — see [configuration](docs/configuration.md#quality-dimensions-verify).
+
 ### Measured runs: `idea eval`
 
 `idea eval` runs a fixed suite of seven small greenfield ideas (a todo CLI, a URL shortener, a

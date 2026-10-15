@@ -317,6 +317,38 @@ const Answers = `{
   "additionalProperties": true
 }`
 
+// QualityReview is the verification_engineer's model-reviewed quality check
+// (verify's api_ergonomics dimension, and docs_completeness/
+// operational_readiness when verify.model_review names them). Every finding
+// must cite a path and a line inside the diff it was shown; one that does not
+// is recorded but never affects the scorecard. unreviewed_reason is how a
+// provider that cannot actually review (the demo provider) says so, which
+// the dimension then reports as not_measured rather than a clean pass.
+const QualityReview = `{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {"enum": ["critical", "high", "medium", "low", "observation"]},
+          "category": {"type": "string"},
+          "finding": {"type": "string"},
+          "path": {"type": "string", "description": "The file the finding is about, exactly as shown in the diff header."},
+          "line": {"type": "integer", "description": "The line number in the NEW version of the file, inside one of the diff's hunks."},
+          "recommendation": {"type": "string"},
+          "requirement": {"type": "string", "description": "The requirement code this finding bears on, if any."}
+        },
+        "required": ["severity", "category", "finding", "path", "line"]
+      }
+    },
+    "unreviewed_reason": {"type": "string", "description": "Set only when you could not review the diff at all, saying why."}
+  },
+  "required": ["findings"],
+  "additionalProperties": true
+}`
+
 // Convergence is the orchestrator-synthesis output (§M2 tail): a single
 // synthesized recommendation reconciling a decision's dissenting positions.
 const Convergence = `{

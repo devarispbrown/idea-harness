@@ -3254,6 +3254,14 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"status": status, "coverage": coverage}
+	// quality is the dimension scorecard the gate just read: which gated
+	// dimensions held it (gate_unmet), and every dimension's latest result.
+	// A read, not a measurement -- POST .../quality measures.
+	if pr2, err := s.rt.EnsureProject(r.Context(), projectID); err == nil {
+		if sc, err := pr2.engine.QualityScorecard(r.Context(), initiativeID); err == nil {
+			resp["quality"] = sc
+		}
+	}
 	// confirmed/skipped (C3/H2, wire contract addition) are present only when
 	// confirm_passing_tests was requested -- an ordinary pass/fail/waive call
 	// never touches them, so its response shape is unchanged.
