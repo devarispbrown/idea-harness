@@ -23,16 +23,19 @@ info:
 
     **This is a local daemon, not a hosted service.**
 
-    - **Loopback-bound.** `Run` refuses to start on a non-loopback listener. The API token is
-      served to the web UI unauthenticated inside `index.html`, so a LAN-reachable daemon would
-      hand the token to anyone who loaded the page. The address is overridable through
-      `IDEA_HARNESS_ADDR`, still loopback-only; the default is `127.0.0.1:8787`.
+    - **Loopback-bound by default.** The main listener (`IDEA_HARNESS_ADDR`, default
+      `127.0.0.1:8787`) must be loopback, and only a page served to a browser provably on this
+      machine carries the API token. Remote use is opt-in — a second listener (`daemon.listen`) or a
+      proxy hostname (`daemon.allowed_hosts`) — and a remote browser never sees the token: it signs
+      in with a one-time pairing code for a session cookie (the `remote` tag, and
+      `docs/security-model.md` "Remote access").
     - **Token-authenticated.** One per-install token guards everything under `/api/`. See the
       security schemes for the header, the `Bearer` alternative, the `/api/v1/health` exemption and
       the SSE query-parameter exception.
     - **Host and Origin guarded.** Before authentication, a request whose `Host` is not exactly
-      `127.0.0.1`, `localhost` or `::1` is rejected `403 {"error": "invalid host"}`, and one
-      carrying an `Origin` that is not a loopback origin (or is the literal `null`) is rejected
+      `127.0.0.1`, `localhost` or `::1` — or a name in `daemon.allowed_hosts`, or the remote
+      listener's own address — is rejected `403 {"error": "invalid host"}`, and one carrying an
+      `Origin` outside that same set (or the literal `null`) is rejected
       `403 {"error": "invalid origin"}`. A missing `Origin` is allowed, which is how the CLI and
       `curl` reach the API. No CORS header is ever sent, so a page on another origin could not read
       a response even if it could make the request.
@@ -92,6 +95,7 @@ servers:
 security:
   - ideaToken: []
   - bearerToken: []
+  - sessionCookie: []
 
 tags:
   - name: daemon
@@ -122,6 +126,8 @@ tags:
     description: A coding agent's run, live - its normalized events (paged and streamed), steering, and its report.
   - name: outcomes
     description: Objectives, outcome metrics, observations and drift — the outcome end of the Product Graph.
+  - name: remote
+    description: Remote browser sign-in (pairing codes, sessions) and Web Push notification subscriptions.
 
 paths:
   /api/v1/health:
@@ -4596,6 +4602,395 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
 
+  /api/v1/ui/pairing-codes:
+    post:
+      tags: [remote]
+      operationId: createPairingCode
+      summary: Mint a one-time pairing code for a remote browser
+      description: |
+        What `idea ui pair` calls. Returns a 10-character code (`XXXXX-XXXXX`, 50 bits) good for one
+        sign-in within ten minutes; only its SHA-256 is stored. **Token only**: a request
+        authenticated by a session cookie is refused `403`, so a stolen session cannot mint the
+        next one and outlive its own revocation. `remote` says whether any other device can reach
+        this daemon at all (a `daemon.listen` listener, or `daemon.allowed_hosts` for a proxy), and
+        `urls` names where. See `docs/security-model.md` "Remote access".
+      security:
+        - ideaToken: []
+        - bearerToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, description: "A name for the device (shown in `idea ui sessions`); at most 80 bytes." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: The code. Shown once; not retrievable again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairingCode" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Authenticated by a session cookie rather than the API token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/login:
+    post:
+      tags: [remote]
+      operationId: uiLogin
+      summary: Exchange a pairing code for a browser session
+      description: |
+        The one unauthenticated write under `/api/`, so it carries its own checks: the body must be
+        `application/json` and the request must carry an `Origin` the host guard accepts (`403`
+        otherwise) — an HTML form on another site can send neither. A code is single use and expires
+        after ten minutes.
+
+        On success it sets the session cookie — `__Host-idea_session` with `Secure` when the browser
+        is on HTTPS (directly or through a TLS-terminating proxy), otherwise `idea_session`;
+        always `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age` the session lifetime
+        (`daemon.session_ttl`, default 30 days; a week unused also ends it) — and returns the
+        session's CSRF token, which every state-changing cookie-authenticated request must echo in
+        `X-Idea-CSRF`.
+
+        Ten failed attempts within fifteen minutes lock sign-in (`429`, `Retry-After: 900`) and
+        cancel every outstanding pairing code.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string, description: "The pairing code. Case, spaces and dashes do not matter; O/I/L read as 0/1/1." }
+                label: { type: string }
+              required: [code]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Signed in. `Set-Cookie` carries the session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UISessionView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`pairing code is invalid, expired or already used` — one message for all three."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not JSON, or no `Origin` header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: The failure budget is spent; every pairing code was cancelled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/logout:
+    post:
+      tags: [remote]
+      operationId: uiLogout
+      summary: Sign this browser out
+      description: Revokes the calling session (when cookie-authenticated) and clears the cookie. With the token it only clears cookies.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Signed out. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/session:
+    get:
+      tags: [remote]
+      operationId: getUISession
+      summary: How this request is authenticated
+      description: |
+        `auth` is `token` or `session`. For a session it also returns the session and its CSRF
+        token — how a reloaded page recovers the token it must send with writes. A cross-site page
+        cannot read this response (no CORS), which is what makes the CSRF token a secret.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The caller's authentication.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UISessionView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ui/sessions:
+    get:
+      tags: [remote]
+      operationId: listUISessions
+      summary: List browser sessions
+      description: Every session not yet pruned, newest first, including revoked ones. `current` is the caller's own session id when cookie-authenticated. Never a secret.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/UISession" }
+                  current: { type: string }
+                required: [sessions]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [remote]
+      operationId: revokeAllUISessions
+      summary: Revoke every browser session
+      description: What `idea ui sessions revoke --all` and the UI's "Sign out everywhere" call. Every remote browser must pair again.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: How many were revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: integer }
+                required: [revoked]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: A session id from `GET /api/v1/ui/sessions`.
+        schema: { type: string }
+    delete:
+      tags: [remote]
+      operationId: revokeUISession
+      summary: Revoke one browser session
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/push/vapid-public-key:
+    get:
+      tags: [remote]
+      operationId: getPushConfig
+      summary: The VAPID public key browsers subscribe with
+      description: |
+        The daemon's VAPID application-server key (RFC 8292), an uncompressed P-256 point in
+        base64url — the `applicationServerKey` for `PushManager.subscribe`. Generated on first use
+        and kept in `<state root>/push/vapid.json` (0600), never in a repository. `event_kinds` are
+        the kinds a subscription may ask for.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The key and the event kinds.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  public_key: { type: string }
+                  event_kinds:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushEventKind" }
+                required: [public_key, event_kinds]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [remote]
+      operationId: listPushSubscriptions
+      summary: List this project's push subscriptions
+      description: The endpoint's host only — never its path or the keys, which are what it takes to push to the browser.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushSubscription" }
+                  event_kinds:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushEventKind" }
+                required: [subscriptions, event_kinds]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [remote]
+      operationId: createPushSubscription
+      summary: Subscribe a browser to push notifications
+      description: |
+        The body is the browser's `PushSubscription.toJSON()` plus optional `events` (default: all
+        four kinds) and `label`. The endpoint must be `https`; keys must decode to a P-256 point and a
+        16-byte secret. Keyed by endpoint: the same browser subscribing again updates its row
+        (`200`) rather than creating a second (`201`). Each subscription becomes its own subscriber on
+        the project's integration bus (`webpush:<id>`), with Slack's delivery semantics: outbox,
+        idempotency key, retries with backoff, dead letters; a push service answering `404`/`410`
+        removes the subscription.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+                  required: [p256dh, auth]
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/PushEventKind" }
+                label: { type: string }
+              required: [endpoint, keys]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: An existing subscription for this endpoint, updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    patch:
+      tags: [remote]
+      operationId: updatePushSubscription
+      summary: Choose which events notify this browser
+      description: Replaces `events`. An empty list pauses the browser's notifications without unsubscribing it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/PushEventKind" }
+              required: [events]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [remote]
+      operationId: deletePushSubscription
+      summary: Unsubscribe a browser
+      description: Removes the subscription with its bus cursor and any pending deliveries.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    post:
+      tags: [remote]
+      operationId: testPushSubscription
+      summary: Send a test notification now
+      description: |
+        Sends one notification directly, outside the bus. A push service that reached and refused
+        answers `200` with `ok: false` and the (redacted) error; `gone: true` means the service
+        reported the subscription dead and it was removed.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The attempt ran.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+                  gone: { type: boolean }
+                required: [ok]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
   securitySchemes:
     ideaToken:
@@ -4621,6 +5016,18 @@ components:
       description: |
         The same token, accepted as `Authorization: Bearer <token>` for convenience. It is only
         consulted when `X-Idea-Token` is absent.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: idea_session
+      description: |
+        A remote browser's session (`docs/security-model.md` "Remote access"), set by
+        `POST /api/v1/ui/login` in exchange for a one-time pairing code. Named `__Host-idea_session`
+        (and `Secure`) when the browser is on HTTPS; always `HttpOnly` and `SameSite=Strict`.
+        Accepted on every operation that takes the token, except minting pairing codes. A
+        state-changing request authenticated by it must also send `X-Idea-CSRF` (from the login
+        response or `GET /api/v1/ui/session`) and an `Origin` the host guard accepts, or it is
+        refused `403`. A request that presents a token is judged by the token alone.
     sseQueryToken:
       type: apiKey
       in: query
@@ -4882,7 +5289,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 122 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 135 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -6953,6 +7360,64 @@ components:
           type: integer
           description: Linear issues linked to initiatives and tasks.
       required: [name, configured, active, problems]
+
+    PairingCode:
+      type: object
+      title: PairingCode
+      properties:
+        code: { type: string, description: "`XXXXX-XXXXX`." }
+        expires_at: { type: string, format: date-time }
+        remote: { type: boolean, description: Whether another device can reach this daemon at all. }
+        urls:
+          type: array
+          items: { type: string }
+          description: Where a remote browser reaches the UI.
+      required: [code, expires_at, remote, urls]
+
+    UISession:
+      type: object
+      title: UISession
+      description: A remote browser session. The session secret is never stored or returned; the database keeps its SHA-256.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        user_agent: { type: string }
+        remote_addr: { type: string, description: Display only. Behind a proxy, the first X-Forwarded-For hop. }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+      required: [id, created_at, last_seen_at, expires_at]
+
+    UISessionView:
+      type: object
+      title: UISessionView
+      properties:
+        auth: { type: string, enum: [token, session] }
+        csrf_token: { type: string, description: "Send as `X-Idea-CSRF` on every state-changing request. Present for `session`." }
+        session: { $ref: "#/components/schemas/UISession" }
+      required: [auth]
+
+    PushEventKind:
+      type: string
+      title: PushEventKind
+      description: The integration-bus kinds a browser can be notified about — the four that mean a person is needed.
+      enum: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
+
+    PushSubscription:
+      type: object
+      title: PushSubscription
+      properties:
+        id: { type: string }
+        label: { type: string }
+        endpoint_host: { type: string, description: The push service's host. The endpoint path is a capability and is never returned. }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/PushEventKind" }
+        created_at: { type: string, format: date-time }
+        last_delivered_at: { type: string, format: date-time }
+        last_error: { type: string }
+      required: [id, endpoint_host, events, created_at]
 
     IntegrationTestResult:
       type: object
