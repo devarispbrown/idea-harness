@@ -682,9 +682,23 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 		}
 		json.Unmarshal([]byte(ac), &r.AcceptanceCriteria)
 		json.Unmarshal([]byte(prov), &r.Provenance)
+		r.ObjectiveIDs = []string{}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	serves, err := db.requirementObjectives(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if ids := serves[out[i].ID]; len(ids) > 0 {
+			out[i].ObjectiveIDs = ids
+		}
+	}
+	return out, nil
 }
 
 // SupersedeRequirements marks every active requirement of an initiative as

@@ -62,6 +62,18 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   rules.
 - The `adversarial_reviewer` and `product_manager` role contracts are at 1.1.0: citation, severity,
   re-raise and precise-revision behaviors.
+- The `product_manager` and `adversarial_reviewer` role contracts are at **1.2.0**: the product
+  manager states objectives with measurable metrics and links every requirement to the objective(s)
+  it serves; the reviewer challenges a requirement serving no objective and an objective with no
+  measurable metric, citing the `REQ`/`OBJ`/`MET` code.
+- The PRD schema (`schema.PRD`) gains `objectives[]` (each with `metrics[]`) and a per-requirement
+  `objectives[]`. Both are optional, so an older scripted response still validates. The PRD and
+  review prompts are longer by the schema text and an objectives section; the scripted eval
+  baseline moved only in its nominal token counts.
+- `Requirement` (API) gains `objective_ids` (always an array); `Guidance` gains `outcomes` when
+  anything is drifting. `why`/`impact`/`trace` accept the node types `objective`, `metric`,
+  `assertion` and `change_set`, and `impact` now continues past a task's change sets to the outcome
+  metrics attributed to them.
 
 ### Added
 
@@ -124,6 +136,43 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   the Health and Build pages, and the opt-in `verify.setup.prepare` / scanner `network: true` —
   the only sandboxed commands ever given network ([security model](docs/security-model.md#execution-gateway)).
   See [configuration](docs/configuration.md#quality-dimensions-verify).
+
+- **Objectives & outcomes: the chain now runs Objective → Hypothesis → Requirement → … → Evidence →
+  product outcome.** Verification proves a requirement was built; it cannot say whether building it
+  mattered. The README's [Objectives & outcomes](README.md#objectives--outcomes) section has the
+  model and the exact drift rules.
+  - **Model.** `Objective` (`OBJ-n`; active/achieved/abandoned; optional owner) and
+    `OutcomeMetric` (`MET-n`; direction increase/decrease/maintain, optional baseline and guardrail,
+    target, cadence, and a `manual`, `command` or `url` source), and `MetricObservation` (value,
+    time, source, note, provenance, and the change sets attributed to it). New graph edges:
+    `requirement --serves--> objective` (N:M), `metric --measures--> objective`,
+    `assertion --predicts--> metric` for a hypothesis, and `metric --attributed_to--> change_set`.
+    One new migration (three tables).
+  - **PRD stage.** The PRD states objectives and metrics; codes stay stable across revisions like
+    `REQ` codes, and a human-added objective is never rewritten or superseded by a revision. The
+    PRD review's deterministic checks raise a high finding for a requirement serving no objective
+    and for an objective with no measurable metric (one medium finding when a PRD has no objectives
+    at all); the adversarial reviewer sees the objectives and may cite `OBJ-n`/`MET-n` under the
+    convergence citation rules.
+  - **Measurement.** `idea metric record` for a human's value; `idea metric measure` runs `command`
+    sources in the no-network check sandbox (workspace read-only at `/repo`, never the host) and
+    fetches `url` sources through the SSRF-guarded fetcher, only once the new
+    `outcomes.allow_url_sources` opts in. New `harness.yaml` section `outcomes:` (`image`,
+    `measure_timeout_seconds`, `allow_url_sources`).
+  - **Drift.** Deterministic `off_track` / `stale` / `regressed` / `no_data` / `on_track`, and the
+    "works, but fails its objective" signal for a verified requirement whose objective is failing —
+    on `idea status`, `idea next`, guidance, the Health page and the Define page. An observation
+    that moves a metric into `off_track` or `regressed` publishes the new integration event
+    `outcome.drifted` (Slack posts it by default).
+  - **Surfaces.** CLI: `idea objectives`, `idea objective add|edit|link`, `idea metrics`,
+    `idea metric add|edit|record|measure`. API: `…/objectives`, `…/objectives/{objectiveId}`,
+    `…/objectives/{objectiveId}/requirements`, `…/metrics`, `…/metrics/measure`,
+    `…/metrics/{metricId}`, `…/metrics/{metricId}/observations`, `…/outcomes`. MCP: read tools
+    `list_objectives` and `list_metrics`, judgment tool `record_metric`.
+  - **For graph-gap analysis.** Read-only store queries `ObjectivesWithoutMetrics`,
+    `ObjectivesWithoutRequirements`, `RequirementsWithoutObjectives`, `DriftingMetrics` and
+    `RequirementOutcomeDrift`.
+
 - **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
   K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's
   GitHub OIDC identity), records a GitHub build-provenance attestation for every archive, ships an

@@ -307,14 +307,20 @@ below is the actual `docker run` argv, not a summary of intent.
 | `openhands` | `OpenHandsExecutor` | **whatever the Agent Server allows** — no container here | a **copy** of the work root, uploaded to the server | **yes, sent to the server** in the conversation request, unless `withhold_provider_key` |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
 | (verify quality dimensions) | `ContainerSandbox` | `--network none`; **bridge only for `verify.setup.prepare` and scanners marked `network: true`** | `/work` (a fresh copy) | no |
+| (outcome metric `command` sources) | `ContainerSandbox` | `--network none` | empty `/work` + `/repo:ro` | no |
 
-**`ContainerSandbox` is not the executor.** It has two non-test callers — the
-deterministic build/test check in `internal/workflow/execute.go`, and `idea
+**`ContainerSandbox` is not the executor.** It has three non-test callers — the
+deterministic build/test check in `internal/workflow/execute.go`; `idea
 verify`'s quality dimensions (`internal/workflow/quality_dims.go`), which run the
 documented setup/build/test commands, performance budgets and security scanners
 against a private copy of the workspace's committable files (no `.env`, no
-`.idea-harness/`). Its `--network none` and read-only `/repo` mount are real, and
-they apply to `run_command`, not to the executors that run model-generated code.
+`.idea-harness/`); and a metric's `command` source in
+`internal/workflow/measure.go` (`idea metric measure`, never automatic). Its
+`--network none` and read-only `/repo` mount are real, and they apply to those
+commands, not to the executors that run model-generated code. A metric command
+never falls back to the host: no Docker, no measurement. A metric's `url` source
+is not a command at all — the daemon fetches it through the research fetcher's
+public-address guard, and only once `outcomes.allow_url_sources` is set.
 
 **The one network exception is opt-in and human-written.** `RunOptions.Network`
 swaps `--network none` for Docker's default bridge and keeps every other

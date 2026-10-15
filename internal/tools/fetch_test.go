@@ -44,6 +44,21 @@ func TestStripHTML(t *testing.T) {
 	}
 }
 
+// TestFetchJSONIsGuardedToo: an outcome metric's url source goes through the
+// same dial guard -- a loopback/metadata address is refused, and a non-http
+// scheme never reaches the client.
+func TestFetchJSONIsGuardedToo(t *testing.T) {
+	f := NewFetcher()
+	for _, u := range []string{"http://127.0.0.1:9/stats.json", "http://169.254.169.254/latest/meta-data"} {
+		if _, err := f.FetchJSON(t.Context(), u); err == nil {
+			t.Errorf("%s should be refused", u)
+		}
+	}
+	if _, err := f.FetchJSON(t.Context(), "file:///etc/passwd"); err == nil || !strings.Contains(err.Error(), "http(s)") {
+		t.Errorf("file:// should be refused before any request, got %v", err)
+	}
+}
+
 func TestFetchRefusesLoopback(t *testing.T) {
 	f := NewFetcher()
 	// Even if a server were listening, the dial guard rejects loopback first.

@@ -38,6 +38,9 @@ const (
 	KindVerifyFailed      Kind = "verify.failed"
 	KindRunFailed         Kind = "run.failed"
 	KindTaskStatusChanged Kind = "task.status_changed"
+	// KindOutcomeDrifted: an observation moved an outcome metric into
+	// off_track or regressed (Status carries which).
+	KindOutcomeDrifted Kind = "outcome.drifted"
 )
 
 // AllKinds lists every Kind, in the order config.IntegrationEventKinds does.
@@ -45,7 +48,7 @@ var AllKinds = []Kind{
 	KindInitiativeCreated, KindNeedsJudgment, KindPRDApproved, KindPlanApproved,
 	KindChangeSetCreated, KindChangeSetReady, KindChangeSetApproved, KindChangeSetRejected,
 	KindChangeSetApplied, KindChangeSetReverted, KindVerifyPassed, KindVerifyFailed,
-	KindRunFailed, KindTaskStatusChanged,
+	KindRunFailed, KindTaskStatusChanged, KindOutcomeDrifted,
 }
 
 // Event is one typed domain event. It is a SNAPSHOT taken when the bus
@@ -73,10 +76,17 @@ type Event struct {
 	TaskID    string `json:"task_id,omitempty"`
 	TaskCode  string `json:"task_code,omitempty"`
 	TaskTitle string `json:"task_title,omitempty"`
-	// Status is the new task status (task.status_changed).
+	// Status is the new task status (task.status_changed), or the metric's
+	// new drift status (outcome.drifted).
 	Status string `json:"status,omitempty"`
 
 	RequirementCode string `json:"requirement_code,omitempty"`
+
+	// MetricCode/MetricName/ObjectiveCode name the drifting metric
+	// (outcome.drifted); Status is its new drift status.
+	MetricCode    string `json:"metric_code,omitempty"`
+	MetricName    string `json:"metric_name,omitempty"`
+	ObjectiveCode string `json:"objective_code,omitempty"`
 }
 
 // IdempotencyKey is the outbox key for delivering ev to subscriber. The

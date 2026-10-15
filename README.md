@@ -48,9 +48,9 @@ framing and research produce a reviewed PRD, design produces a dependency-ordere
 the implementer produces change sets, and a reviewer role gates each one before the human
 approves, applies, and verifies it.
 
-The durable asset is the **Product Graph** (Evidence → Assertions → Requirements → Decisions →
-Plans → Tasks → ChangeSets → Tests → Verification) that powers provenance, impact analysis, and
-requirement verification.
+The durable asset is the **Product Graph** (Objectives → Hypotheses → Requirements → Decisions →
+Plans → Tasks → ChangeSets → Tests → Verification → Outcome metrics, all traced back to Evidence)
+that powers provenance, impact analysis, requirement verification, and outcome drift.
 
 ## Execution model
 
@@ -319,6 +319,56 @@ one genuine blocker that must still park for a human — and CI runs exactly tha
 each case's acceptance checks are reported as skipped, never as passing; pass
 `--harness <file>` with an `executor:` block to run them against a real coding agent. Real-model
 numbers in this README are the 2-run measurement above until someone with a key re-runs the suite.
+
+## Objectives & outcomes
+
+Verification answers "did we build it right". It cannot answer "did building it matter": a
+requirement can pass every test and still not move what it was for. So the chain does not stop at
+verification — it runs **Objective → Hypothesis → Requirement → … → Evidence → product outcome**:
+
+- An **objective** (`OBJ-n`) is an outcome the initiative exists to move, stated as a change in the
+  world, not a feature. The PRD states them; every requirement names the objective(s) it serves.
+- An **outcome metric** (`MET-n`) is how anyone would know: a direction (`increase`, `decrease`,
+  `maintain`), a target, a baseline when one is known, an optional guardrail, a cadence, and a
+  source — `manual`, a `command` run in the no-network check sandbox, or a `url` read through the
+  SSRF-guarded fetcher ([configuration.md](docs/configuration.md#objectives--outcomes)).
+- A **hypothesis** ("we believe the checklist will move activation") is an assertion linked to the
+  metric it predicts.
+- An **observation** is one measured value. Recording one also records which change sets landed
+  since the previous value, so `idea impact requirement REQ-1` reaches the metric the work moved, and
+  `idea trace metric MET-2` names the change sets behind a regression.
+
+The PRD review enforces the chain deterministically: a requirement that serves no objective, and an
+objective with no measurable metric, are high findings (a PRD with no objectives at all gets one
+medium finding, so a PRD written without them is flagged but not wedged). The adversarial reviewer
+may cite `OBJ-n`/`MET-n` under the same citation rules as a requirement.
+
+```bash
+idea objectives                                  # OBJ-n, what serves each, what measures each
+idea objective add "New users reach a first sync on day one" --owner pm@example.com
+idea objective link REQ-3 OBJ-1                  # REQ-3 serves OBJ-1
+idea metric add OBJ-1 "day-one sync rate" --unit % --baseline 22 --target 40 --cadence weekly
+idea metric record MET-1 31 --note "dashboard, week 2"
+idea metric add OBJ-1 "signups" --target 500 --command "wc -l < /repo/data/signups.csv"
+idea metric measure                              # run command/url sources now
+idea metrics                                     # every metric with its drift
+```
+
+**Drift, exactly** (evaluated on every read, `domain.EvaluateMetricDrift`):
+
+| Status | When |
+|---|---|
+| `off_track` | the latest value is worse than the baseline — lower for `increase`, higher for `decrease`, farther from the target for `maintain` — or it breaches the guardrail (a floor for `increase`, a ceiling for `decrease`, the largest allowed distance from the target for `maintain`). With no declared baseline, the first observation is the baseline, so one reading can only be off track by its guardrail |
+| `stale` | a cadence is set and more than one cadence has passed since the last observation (or since the metric was defined, if never observed) |
+| `regressed` | the latest value is worse than the previous one by the same rule **and** at least one change set landed between the two. A drop with nothing landed is the world, not the work — it can still be `off_track` |
+| `no_data` | never observed |
+| `on_track` | none of the above |
+
+The most urgent one wins (`regressed` > `off_track` > `stale` > `no_data` > `on_track`); every signal
+is still reported. A requirement that is **verified** while an objective it serves has an
+off-track or regressed metric is flagged **"works, but fails its objective"** — on `idea status`,
+`idea next`, the Health page, the MCP `list_metrics` tool, and `GET …/outcomes`. An observation that
+moves a metric into `off_track` or `regressed` publishes `outcome.drifted` to Slack.
 
 ## Model providers
 

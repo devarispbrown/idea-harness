@@ -124,6 +124,19 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/agent-output", s.handleAgentOutput)
 	m.HandleFunc("DELETE /api/v1/projects/{projectId}/initiatives/{id}/partial-work", s.handleDiscardPartialWork)
 
+	// Objectives & outcomes (outcomes.go).
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/objectives", s.handleListObjectives)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/objectives", s.handleCreateObjective)
+	m.HandleFunc("PATCH /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}", s.handleUpdateObjective)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}/requirements", s.handleLinkObjectiveRequirement)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/metrics", s.handleListMetrics)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/metrics", s.handleCreateMetric)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/metrics/measure", s.handleMeasureMetrics)
+	m.HandleFunc("PATCH /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}", s.handleUpdateMetric)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations", s.handleListObservations)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations", s.handleRecordObservation)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/outcomes", s.handleOutcomes)
+
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make
 	// the docs page fetch a 401 into a blank screen.

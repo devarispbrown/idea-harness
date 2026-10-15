@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 )
 
 type cliTask struct {
@@ -137,6 +138,8 @@ type idCode struct {
 	Code  string `json:"code"`
 	Kind  string `json:"kind"`
 	Title string `json:"title"`
+	// HumanID is a change set's CHG-n (change sets have no `code`).
+	HumanID string `json:"human_id"`
 }
 
 // resolveObjectID resolves an object reference (code or id) to its id.
@@ -169,6 +172,12 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 			}
 		}
 		return ref, nil
+	case "objective":
+		endpoint = initiativeResource(projectID, iniID, "objectives")
+	case "metric":
+		endpoint = initiativeResource(projectID, iniID, "metrics")
+	case "change_set":
+		endpoint = initiativeResource(projectID, iniID, "change-sets")
 	default:
 		return ref, nil // run/assertion/etc: treat ref as the id
 	}
@@ -177,7 +186,8 @@ func resolveObjectID(c *client, projectID, iniID, typ, ref string) (string, erro
 		return "", err
 	}
 	for _, o := range list {
-		if o.ID == ref || o.Code == ref || o.Kind == ref || o.Title == ref {
+		if o.ID == ref || o.Code == ref || o.Kind == ref || o.Title == ref ||
+			(o.Code != "" && strings.EqualFold(o.Code, ref)) || (o.HumanID != "" && strings.EqualFold(o.HumanID, ref)) {
 			return o.ID, nil
 		}
 	}
@@ -208,7 +218,7 @@ func cmdImpact(a cmdArgs, stdout, stderr io.Writer) error {
 func cmdTrace(a cmdArgs, stdout, stderr io.Writer) error {
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return usageErrorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc|quality_result> <code-or-id>")
+		return usageErrorf("usage: idea trace <requirement|task|decision|artifact|assertion|context_doc|quality_result|objective|metric|change_set> <code-or-id>")
 	}
 	// trace is two queries. Rendered for a human they are two sections; as JSON
 	// they have to be one document — printing why's array and then impact's
@@ -324,7 +334,7 @@ func runTraceCmd(mode string, a cmdArgs, stdout io.Writer) error {
 	// sliced by position.
 	positional, flags := a.positional, a.flags
 	if len(positional) < 2 {
-		return usageErrorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc|quality_result> <code-or-id>", mode)
+		return usageErrorf("usage: idea %s <requirement|task|decision|artifact|assertion|context_doc|quality_result|objective|metric|change_set> <code-or-id>", mode)
 	}
 	typ, ref := positional[0], positional[1]
 	c, projectID, err := connect()
