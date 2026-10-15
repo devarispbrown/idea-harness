@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
+import QualityScorecard from "./QualityScorecard";
 
 interface RiskProfile {
   tier: string;
@@ -83,6 +84,8 @@ export default function HealthPage({
         ))}
         {doctor.length === 0 && <div className="muted" style={{ padding: "13px 16px" }}>No gaps.</div>}
       </section>
+
+      <QualityScorecard projectId={projectId} initiativeId={initiativeId} />
 
       <div className="doc-eyebrow" style={{ margin: "24px 0 10px" }}>Daemon</div>
       <section className="health-daemon">

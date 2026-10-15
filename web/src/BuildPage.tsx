@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
+import QualityScorecard from "./QualityScorecard";
 import {
   advisoryBacklogLabel,
   appliedPillLabel,
@@ -1052,6 +1053,10 @@ export default function BuildPage({
       })}
 
       {changeSets.length === 0 && <p className="muted">No change sets yet.</p>}
+
+      {changeSets.some((c) => c.status === "applied") && (
+        <QualityScorecard projectId={projectId} initiativeId={initiativeId} />
+      )}
 
       {revertTarget && (
         <section className="revert-card">
