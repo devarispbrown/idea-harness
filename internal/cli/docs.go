@@ -75,10 +75,10 @@ func cmdDocsAdd(a cmdArgs, stdout, stderr io.Writer) error {
 	// and as a literal copy-paste line in docs/quickstart.md, never worked.
 	path, kind, title := a.arg(0), a.value("--kind"), a.value("--title")
 	if path == "" {
-		return fmt.Errorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
+		return usageErrorf("usage: idea docs add <path|-> [--kind <k>] [--title <t>]")
 	}
 	if len(a.positional) > 1 {
-		return fmt.Errorf("unexpected argument %q", a.positional[1])
+		return usageErrorf("unexpected argument %q", a.positional[1])
 	}
 
 	c, projectID, err := connect()
@@ -99,11 +99,11 @@ func cmdDocsAdd(a cmdArgs, stdout, stderr io.Writer) error {
 			return err
 		}
 		if len(data) > maxDocUploadBytes {
-			return fmt.Errorf("stdin exceeds the %d MiB limit", maxDocUploadBytes>>20)
+			return usageErrorf("stdin exceeds the %d MiB limit", maxDocUploadBytes>>20)
 		}
 		content := string(data)
 		if strings.TrimSpace(content) == "" {
-			return fmt.Errorf("stdin is empty")
+			return usageErrorf("stdin is empty")
 		}
 		if kind == "" {
 			kind = "other"
@@ -125,10 +125,10 @@ func cmdDocsAdd(a cmdArgs, stdout, stderr io.Writer) error {
 			return err
 		}
 		if len(data) > maxDocUploadBytes {
-			return fmt.Errorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
+			return usageErrorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
 		}
 		if len(data) == 0 {
-			return fmt.Errorf("document %q is empty", path)
+			return usageErrorf("document %q is empty", path)
 		}
 		if kind == "" {
 			kind = docparse.InferKind(path)

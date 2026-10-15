@@ -58,7 +58,7 @@ func cmdModel(a cmdArgs, stdout, stderr io.Writer) error {
 	case "set":
 		spec := a.arg(0)
 		if spec == "" {
-			return fmt.Errorf("usage: idea model set <provider/model> [--role <role>]")
+			return usageErrorf("usage: idea model set <provider/model> [--role <role>]")
 		}
 		return setModel(spec, a.value("--role"), stdout)
 	case "add":
@@ -140,7 +140,7 @@ func listModels(a cmdArgs, stdout io.Writer) error {
 			for _, p := range v.Providers {
 				names = append(names, p.Name)
 			}
-			return fmt.Errorf("no provider matching %q; configured: %s", filter, strings.Join(names, ", "))
+			return errorf(kindNotFound, "no provider matching %q; configured: %s", filter, strings.Join(names, ", "))
 		}
 		providers = kept
 	}
@@ -300,7 +300,7 @@ func warnIfDaemonMissedTheKey(c *client, projectID, spec string, stdout io.Write
 func addProvider(a cmdArgs, stdout io.Writer) error {
 	name := a.arg(0)
 	if name == "" {
-		return fmt.Errorf("usage: idea model add <name> [--type <type>] [--base-url <url>] [--key-env <ENV>]")
+		return usageErrorf("usage: idea model add <name> [--type <type>] [--base-url <url>] [--key-env <ENV>]")
 	}
 	pc := map[string]any{}
 	if v := a.value("--type"); v != "" {
@@ -317,7 +317,7 @@ func addProvider(a cmdArgs, stdout io.Writer) error {
 	// unusable entry and the first model call -- which is what the comment here
 	// used to say, and what made it a client-side fix for a server-side hole.
 	if pc["type"] == nil && pc["base_url"] == nil {
-		return fmt.Errorf("provider %q needs --type (a known preset) or --base-url (a custom endpoint)", name)
+		return usageErrorf("provider %q needs --type (a known preset) or --base-url (a custom endpoint)", name)
 	}
 	c, projectID, err := connect()
 	if err != nil {

@@ -73,8 +73,13 @@ func TestTrustAllowsPolicy(t *testing.T) {
 		{domain.ExecutorInternal, "run_command", true},
 		{domain.ExecutorLocalExternal, "write_file", true},
 		{domain.ExecutorLocalExternal, "run_command", false}, // no exec for local_external
-		{domain.ExecutorRemoteExternal, "write_file", false}, // fail-closed
-		{domain.ExecutorRemoteExternal, "read_file", false},  // fail-closed
+		// remote_external (openhands) reads and writes its own remote copy;
+		// it never runs commands on this host.
+		{domain.ExecutorRemoteExternal, "write_file", true},
+		{domain.ExecutorRemoteExternal, "read_file", true},
+		{domain.ExecutorRemoteExternal, "run_command", false},
+		{TrustUnassigned, "write_file", false}, // fail-closed
+		{TrustUnassigned, "read_file", false},  // fail-closed
 		{domain.ExecutorTrust("unknown"), "write_file", false},
 	}
 	for _, tc := range cases {
@@ -90,8 +95,10 @@ func TestTrustTierFor(t *testing.T) {
 		"container": domain.ExecutorLocalExternal,
 		"omp":       domain.ExecutorLocalExternal,
 		"hermes":    domain.ExecutorLocalExternal,
-		"bogus":     domain.ExecutorRemoteExternal, // fail-closed
-		"":          domain.ExecutorRemoteExternal,
+		"acp":       domain.ExecutorLocalExternal,
+		"openhands": domain.ExecutorRemoteExternal,
+		"bogus":     TrustUnassigned, // fail-closed
+		"":          TrustUnassigned,
 	}
 	for name, want := range cases {
 		if got := TrustTierFor(name); got != want {

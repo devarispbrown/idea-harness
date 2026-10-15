@@ -36,14 +36,33 @@ type FakeProvider struct {
 // with no disposition, and Blocking() is critical-or-high. The model cannot set
 // a disposition -- ParseFindings does not read one -- so an empty disposition is
 // the only possible state here.
+//
+// "requirement" and "justification" are what keep it blocking under the
+// review loop's convergence rules (review.convergence, guarded by default):
+// a finding that cites no active requirement is scope expansion and is made
+// advisory, and a finding that repeats an addressed prior-cycle finding without
+// saying why the revision did not resolve it is made advisory too. The
+// citation is DemoRequirementPlaceholder, which Complete replaces with the
+// first requirement code the request lists -- the code changes every cycle,
+// since each revision supersedes the requirement set, so no fixed code would
+// still be active by cycle 2.
 const DemoBlockingReviewJSON = `{"findings":[{` +
 	`"severity":"high",` +
 	`"confidence":"high",` +
 	`"category":"vague acceptance criteria",` +
 	`"finding":"The requirement states an outcome with no measurable acceptance criterion, ` +
 	`so nothing can verify it. This is synthetic demo output.",` +
-	`"recommendation":"State a metric, a target and the condition it is measured under."` +
+	`"recommendation":"State a metric, a target and the condition it is measured under.",` +
+	`"requirement":"` + DemoRequirementPlaceholder + `",` +
+	`"justification":"The revision restated the outcome but still names nothing a test could measure. This is synthetic demo output."` +
 	`}]}`
+
+// DemoRequirementPlaceholder, anywhere in a scripted or queued response, is
+// replaced by the first requirement code the request lists -- or, when it
+// lists none (the plan review lists tasks), the first task code -- and left
+// as is when it lists neither. It lets a fixed response cite a requirement whose code
+// is not known until the run has minted it.
+const DemoRequirementPlaceholder = "{{first_requirement}}"
 
 // DemoDanglingPlanJSON is an execution plan whose one task depends on a title no
 // task has, which is what produces errUnresolvedDependencies and parks the
@@ -165,6 +184,24 @@ func (f *FakeProvider) Complete(_ context.Context, req Request) (Response, error
 	}
 	f.mu.Unlock()
 
+	if strings.Contains(raw, DemoRequirementPlaceholder) {
+		// The listed requirements first; then a task code (the plan review
+		// lists tasks, not requirements, and a task code is what a plan
+		// finding cites); only then a requirement code from anywhere else.
+		code := ""
+		if m := requirementsSectionRe.FindStringSubmatch(req.System); m != nil {
+			code = requirementCodeRe.FindString(m[1])
+		}
+		if code == "" {
+			code = taskCodeRe.FindString(req.System)
+		}
+		if code == "" {
+			code = firstRequirementCode(req)
+		}
+		if code != "" {
+			raw = strings.ReplaceAll(raw, DemoRequirementPlaceholder, code)
+		}
+	}
 	if raw == "" {
 		raw = demoResponse(req.JSONSchemaName, userIdea(req))
 		// The demo plan and brief cite a requirement. They used to cite REQ-1
@@ -283,10 +320,27 @@ func demoResponse(schemaName, idea string) string {
 			"summary": "Synthetic demo PRD for: " + idea,
 			"requirements": []any{
 				map[string]any{
-					"statement": "Deliver: " + idea,
-					"priority":  "must",
+					"statement":  "Deliver: " + idea,
+					"priority":   "must",
+					"objectives": []string{"O1"},
 					"acceptance_criteria": []any{
 						map[string]any{"metric": "delivered outcome", "target": "1", "condition": "matching the described idea"},
+					},
+				},
+			},
+			// One objective with one manual metric, so the demo walks the
+			// whole outcome chain (requirement -> objective -> metric) and
+			// the PRD review's deterministic outcome check has nothing to
+			// report. No baseline: the demo does not know one, and an
+			// invented number would be worse than none.
+			"objectives": []any{
+				map[string]any{
+					"key":       "O1",
+					"statement": "Synthetic demo objective: people get the value of " + idea,
+					"rationale": "This is synthetic demo output — no model provider is configured.",
+					"metrics": []any{
+						map[string]any{"name": "synthetic demo outcome", "direction": "increase", "target": 1,
+							"definition": "count of people who got the described value (demo placeholder)"},
 					},
 				},
 			},
@@ -355,6 +409,14 @@ func demoResponse(schemaName, idea string) string {
 		m = map[string]any{
 			"summary": "Synthetic demo convergence: reconcile the dissenting positions around " + idea,
 		}
+	case "quality_review":
+		// Not an empty findings list: that would score the demo's "review" as
+		// a clean pass. The demo says it did not look, and the quality
+		// dimension reports not_measured.
+		m = map[string]any{
+			"findings":          []any{},
+			"unreviewed_reason": "demo provider: no model is configured, so nothing was reviewed",
+		}
 	default:
 		m = map[string]any{}
 	}
@@ -381,6 +443,8 @@ func shortTitle(idea string) string {
 }
 
 var requirementCodeRe = regexp.MustCompile(`\bREQ-\d+\b`)
+
+var taskCodeRe = regexp.MustCompile(`\bTASK-\d+\b`)
 
 // requirementsSectionRe locates the "--- requirements (trust: ...) ---" block
 // the deterministic context compiler emits (internal/context.Compile) inside

@@ -52,6 +52,103 @@ type ReviewConfig struct {
 	// cause: a 60-line toy app got the same review depth as an enterprise
 	// system, and the loop never converged.
 	Rigor string `json:"rigor,omitempty" yaml:"rigor,omitempty"`
+	// Convergence governs how the PRD review loop decides it has converged,
+	// and how the plan review gates (see ConvergenceConfig). Zero value is
+	// the guarded default.
+	Convergence ConvergenceConfig `json:"convergence,omitempty" yaml:"convergence,omitempty"`
+}
+
+// ConvergenceConfig is review.convergence: the rules that let an adversarial
+// review loop finish without lowering its bar for a genuine blocker.
+//
+// It exists because the PRD review did not converge in 2 of 2 measured
+// real-model runs, and reading the loop explained why: the reviewer was
+// memoryless (it never saw the previous cycle's findings or what the revision
+// did about them), so every cycle was a fresh review of a larger PRD; any one
+// critical/high finding anywhere -- new, rephrased, or about text that had not
+// changed -- blocked; and nothing measured whether the loop was making
+// progress, so it ran blind to max_cycles. See docs/configuration.md, "Review
+// convergence".
+type ConvergenceConfig struct {
+	// Mode is "guarded" (the default) or "legacy". Legacy is the pre-0.7
+	// loop exactly: no prior-cycle context, no demotions, no stall detector.
+	// It stays selectable so the difference is measurable and as an escape
+	// hatch.
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	// GateSeverity is the lowest adversarial severity that can block:
+	// "high" (the default -- critical and high block, as before) or
+	// "critical". Lower severities are recorded as advisory, never dropped.
+	// Deterministic checks are never affected.
+	GateSeverity string `json:"gate_severity,omitempty" yaml:"gate_severity,omitempty"`
+	// RequireCitation, when true (the default), makes an adversarial
+	// finding block only if it cites an active requirement code -- or, for
+	// a gap the PRD left out, the idea itself with evidence quoting it. An
+	// uncited finding is scope expansion by construction and is recorded as
+	// advisory. A pointer so an explicit false is distinguishable from unset.
+	RequireCitation *bool `json:"require_citation,omitempty" yaml:"require_citation,omitempty"`
+	// LaterFindings is the bar a finding that is NEW in cycle 2+ must clear
+	// to block: "changed" (the default -- it must be about a requirement
+	// the revision added or changed, or be critical), "critical" (it must be
+	// critical), or "any" (no extra bar). A new finding about text the
+	// reviewer already saw unchanged in the previous cycle is a goalpost
+	// moving, not a regression the revision introduced.
+	LaterFindings string `json:"later_findings,omitempty" yaml:"later_findings,omitempty"`
+	// StallCycles is how many consecutive cycles the open blocking count may
+	// fail to decrease before the loop stops early for a human (default 1).
+	// A loop that is not making progress will not start making it by
+	// spending the remaining max_cycles budget.
+	StallCycles int `json:"stall_cycles,omitempty" yaml:"stall_cycles,omitempty"`
+}
+
+// Convergence modes, gate severities and later-finding bars
+// (review.convergence).
+var (
+	ConvergenceModes     = []string{"guarded", "legacy"}
+	ConvergenceGates     = []string{"high", "critical"}
+	ConvergenceLaterBars = []string{"changed", "critical", "any"}
+)
+
+// Effective returns c with every unset field resolved to its default, which
+// is what the engine runs under. Kept here, beside the fields, so the
+// defaults are stated once (docs/configuration.md quotes them).
+func (c ConvergenceConfig) Effective() ConvergenceConfig {
+	if c.Mode == "" {
+		c.Mode = "guarded"
+	}
+	if c.GateSeverity == "" {
+		c.GateSeverity = "high"
+	}
+	if c.RequireCitation == nil {
+		t := true
+		c.RequireCitation = &t
+	}
+	if c.LaterFindings == "" {
+		c.LaterFindings = "changed"
+	}
+	if c.StallCycles <= 0 {
+		c.StallCycles = 1
+	}
+	return c
+}
+
+// Legacy reports whether the pre-0.7 loop was selected.
+func (c ConvergenceConfig) Legacy() bool { return c.Mode == "legacy" }
+
+// CitationRequired reports the effective require_citation.
+func (c ConvergenceConfig) CitationRequired() bool {
+	return c.RequireCitation == nil || *c.RequireCitation
+}
+
+func oneOf(s string, allowed []string) bool {
+	if s == "" {
+		return true
+	}
+	for _, a := range allowed {
+		if s == a {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveMaxCycles is MaxCycles as the engine actually enforces it: any
@@ -113,29 +210,60 @@ const (
 	ExecutorContainer ExecutorKind = "container"
 	ExecutorOMP       ExecutorKind = "omp"
 	ExecutorHermes    ExecutorKind = "hermes"
+	// ExecutorACP, ExecutorOpenHands and ExecutorAuto are documented in
+	// executor.go.
+	ExecutorACP       ExecutorKind = "acp"
+	ExecutorOpenHands ExecutorKind = "openhands"
+	ExecutorAuto      ExecutorKind = "auto"
 )
 
 func (k ExecutorKind) Valid() bool {
 	switch k {
-	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes:
+	case ExecutorInternal, ExecutorContainer, ExecutorOMP, ExecutorHermes, ExecutorACP, ExecutorOpenHands, ExecutorAuto:
 		return true
 	}
 	return false
 }
 
 // ExecutorConfig selects and configures the execute-pipeline executor. Image is
-// the container image for the container kind; Model is the coding model for the
-// OMP kind. Neither is read by the internal kind.
+// the container image for the container and agent kinds; Model is the coding
+// model for the agent kinds. Neither is read by the internal kind.
 type ExecutorConfig struct {
 	Kind  ExecutorKind `json:"kind" yaml:"kind"`
 	Image string       `json:"image,omitempty" yaml:"image,omitempty"`
 	Model string       `json:"model,omitempty" yaml:"model,omitempty"`
+	// ACP configures kind: acp (executor.go). Ignored by every other kind.
+	ACP ACPConfig `json:"acp,omitempty" yaml:"acp,omitempty"`
+	// OpenHands configures kind: openhands (executor.go). Ignored by every
+	// other kind.
+	OpenHands OpenHandsConfig `json:"openhands,omitempty" yaml:"openhands,omitempty"`
+	// MCPServers are handed to an ACP agent in session/new (executor.go).
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 }
 
 // CheckConfig configures the deterministic build/test check sandbox (review H3).
 // The image must contain the project's toolchain (e.g. golang:1.25, node:22).
 type CheckConfig struct {
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+}
+
+// OutcomesConfig configures how outcome metrics are measured
+// (`idea metric measure`). Nothing here runs on its own: a command or url
+// source is only ever measured when a human or an MCP client asks.
+type OutcomesConfig struct {
+	// Image is the sandbox image a command source runs in. Empty falls back
+	// to check.image, then to the image derived from the project's toolchain
+	// markers, then to the sandbox's minimal default -- the same no-network,
+	// read-only sandbox the build/test checks use either way.
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+	// MeasureTimeoutSeconds bounds one command source. Zero means 120s.
+	MeasureTimeoutSeconds int `json:"measure_timeout_seconds,omitempty" yaml:"measure_timeout_seconds,omitempty"`
+	// AllowURLSources opts into fetching url sources. Off by default: it is
+	// the one measurement path that reaches the network, so it is never
+	// implied -- not even by `network: enabled`, which governs the research
+	// pipeline. Fetches go through the SSRF-guarded fetcher either way
+	// (public http(s) addresses only).
+	AllowURLSources bool `json:"allow_url_sources,omitempty" yaml:"allow_url_sources,omitempty"`
 }
 
 // HarnessConfig is harness.yaml (portable, committable).
@@ -178,6 +306,16 @@ type HarnessConfig struct {
 	// Demo configures the built-in deterministic provider. It does nothing when
 	// a real provider is configured.
 	Demo DemoConfig `json:"demo,omitempty" yaml:"demo,omitempty"`
+	// Integrations configures the Slack and Linear integrations
+	// (integrations.go). Each is off unless its section is present; tokens are
+	// never read from here, only from the environment or the project's .env,
+	// named by the *_env fields.
+	Integrations IntegrationsConfig `json:"integrations,omitempty" yaml:"integrations,omitempty"`
+	// Verify configures the quality dimensions `idea verify` measures beyond
+	// the acceptance tests (verify.go).
+	Verify VerifyConfig `json:"verify,omitempty" yaml:"verify,omitempty"`
+	// Outcomes configures outcome-metric measurement (OutcomesConfig).
+	Outcomes OutcomesConfig `json:"outcomes,omitempty" yaml:"outcomes,omitempty"`
 }
 
 // GitConfig configures git-native behavior beyond git_commit (review C4,
@@ -254,14 +392,16 @@ type Config struct {
 
 // Default returns the default configuration. The network is disabled by
 // default so research never silently exfiltrates local content (§15). The
-// executor defaults to the deterministic internal executor.
+// executor defaults to auto: a real coding agent when Docker and the coding
+// model's key are both available, the placeholder internal executor -- with a
+// loud warning -- otherwise (executor.go).
 func Default() Config {
 	return Config{
 		Harness: HarnessConfig{
 			Network:   NetworkDisabled,
 			Review:    ReviewConfig{MaxCycles: 3, Rigor: "auto"},
 			Providers: map[string]ProviderConfig{},
-			Executor:  ExecutorConfig{Kind: ExecutorInternal},
+			Executor:  ExecutorConfig{Kind: ExecutorAuto},
 		},
 	}
 }
@@ -310,13 +450,35 @@ func Load(dir string) (Config, error) {
 		return cfg, fmt.Errorf("config: harness.network must be one of disabled|enabled, got %q", cfg.Harness.Network)
 	}
 	if !cfg.Harness.Executor.Kind.Valid() {
-		return cfg, fmt.Errorf("config: harness.executor.kind must be one of internal|container|omp|hermes, got %q", cfg.Harness.Executor.Kind)
+		return cfg, fmt.Errorf("config: harness.executor.kind must be one of auto|internal|container|omp|hermes|acp, got %q", cfg.Harness.Executor.Kind)
+	}
+	if err := validateExecutorExtras(cfg.Harness.Executor); err != nil {
+		return cfg, err
 	}
 	if cfg.Harness.Review.MaxCycles < 0 {
 		return cfg, fmt.Errorf("config: harness.review.max_cycles must be >= 0")
 	}
 	if !ValidRigor(cfg.Harness.Review.Rigor) {
 		return cfg, fmt.Errorf("config: harness.review.rigor must be one of %s, got %q", strings.Join(RigorLevels, "|"), cfg.Harness.Review.Rigor)
+	}
+	if err := validateVerify(cfg.Harness.Verify); err != nil {
+		return cfg, err
+	}
+	conv := cfg.Harness.Review.Convergence
+	if !oneOf(conv.Mode, ConvergenceModes) {
+		return cfg, fmt.Errorf("config: harness.review.convergence.mode must be one of %s, got %q", strings.Join(ConvergenceModes, "|"), conv.Mode)
+	}
+	if !oneOf(conv.GateSeverity, ConvergenceGates) {
+		return cfg, fmt.Errorf("config: harness.review.convergence.gate_severity must be one of %s, got %q", strings.Join(ConvergenceGates, "|"), conv.GateSeverity)
+	}
+	if !oneOf(conv.LaterFindings, ConvergenceLaterBars) {
+		return cfg, fmt.Errorf("config: harness.review.convergence.later_findings must be one of %s, got %q", strings.Join(ConvergenceLaterBars, "|"), conv.LaterFindings)
+	}
+	if conv.StallCycles < 0 {
+		return cfg, fmt.Errorf("config: harness.review.convergence.stall_cycles must be >= 0")
+	}
+	if err := cfg.Harness.Integrations.validate(); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
@@ -352,6 +514,6 @@ func (c *Config) applyDefaults() {
 		c.Harness.Review.Rigor = "auto"
 	}
 	if c.Harness.Executor.Kind == "" {
-		c.Harness.Executor.Kind = ExecutorInternal
+		c.Harness.Executor.Kind = ExecutorAuto
 	}
 }

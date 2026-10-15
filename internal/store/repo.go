@@ -682,9 +682,23 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 		}
 		json.Unmarshal([]byte(ac), &r.AcceptanceCriteria)
 		json.Unmarshal([]byte(prov), &r.Provenance)
+		r.ObjectiveIDs = []string{}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	serves, err := db.requirementObjectives(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if ids := serves[out[i].ID]; len(ids) > 0 {
+			out[i].ObjectiveIDs = ids
+		}
+	}
+	return out, nil
 }
 
 // SupersedeRequirements marks every active requirement of an initiative as
@@ -1254,6 +1268,70 @@ func (db *DB) AnswerQuestion(ctx context.Context, questionID, answerDigest, acto
 }
 
 // ---------- Artifact ----------
+
+// RecordArtifactVersion records a regenerated body as the next version of the
+// initiative's existing artifact of that kind, creating the family (at v1)
+// only when there is none yet. It returns whether a version was written.
+//
+// Every regeneration used to go through CreateArtifact, which always starts a
+// new family at v1: a revised plan was a second "execution plan v1", the UI
+// labelled the comparison "Diff v1 → v1", and the diff endpoint then refused
+// it because the two versions belonged to different artifacts. Appending to
+// the family is what makes "v2" mean the second version of the same document.
+//
+// skipIdentical makes a regeneration whose body is byte-identical to the
+// latest version a no-op (false, nil): a revision that changed nothing must
+// not mint a version that differs from its predecessor only in its number.
+func (db *DB) RecordArtifactVersion(ctx context.Context, initiativeID string, kind domain.ArtifactKind, v *domain.ArtifactVersion, skipIdentical bool) (bool, error) {
+	var latestID, artifactID, latestDigest string
+	var latestVersion int
+	err := db.SQL().QueryRowContext(ctx, `
+		SELECT av.id, av.artifact_id, av.version, av.body_digest
+		FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id
+		WHERE a.initiative_id = ? AND a.kind = ?
+		ORDER BY av.created_at DESC, av.version DESC LIMIT 1`, initiativeID, kind).
+		Scan(&latestID, &artifactID, &latestVersion, &latestDigest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, db.CreateArtifact(ctx, &domain.Artifact{InitiativeID: initiativeID, Kind: kind}, v)
+	}
+	if err != nil {
+		return false, err
+	}
+	if skipIdentical && latestDigest == v.BodyDigest {
+		return false, nil
+	}
+	if v.ID == "" {
+		v.ID = id.New()
+	}
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = time.Now().UTC()
+	}
+	if v.Status == "" {
+		v.Status = "draft"
+	}
+	v.ArtifactID = artifactID
+	v.Version = latestVersion + 1
+	return true, db.Apply(ctx, Event{
+		AggregateType: "artifact",
+		AggregateID:   artifactID,
+		Actor:         ActorOrchestrator,
+		EventType:     "artifact.version_created",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			INSERT INTO artifact_versions (id, artifact_id, version, status, body_digest, produced_by_run_id, superseded_by, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, '', ?)`,
+			v.ID, artifactID, v.Version, v.Status, v.BodyDigest, v.ProducedByRun, v.CreatedAt.UnixMilli()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE artifact_versions SET superseded_by = ? WHERE id = ?`, v.ID, latestID); err != nil {
+			return err
+		}
+		if v.ProducedByRun == "" {
+			return nil
+		}
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{FromType: "artifact", FromID: artifactID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: v.ProducedByRun}})
+	})
+}
 
 // CreateArtifact inserts an artifact family and its first version.
 func (db *DB) CreateArtifact(ctx context.Context, a *domain.Artifact, v *domain.ArtifactVersion) error {

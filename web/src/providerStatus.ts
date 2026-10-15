@@ -114,3 +114,15 @@ export type ProviderDotState = "ready" | "warn";
 export function providerDotState(p: ProviderStatusInput): ProviderDotState {
   return providerState(p) === "ready" ? "ready" : "warn";
 }
+
+// providerListLabel is the Providers list's right-hand status. A provider can
+// be perfectly ready -- a local Ollama needs no key -- while the project is
+// still in demo mode, because demo means "no model is selected", not "no
+// provider works". The list used to say "ready" beside a shell banner saying
+// demo mode, which read as a contradiction; a ready provider that the default
+// model does not use now says so.
+export function providerListLabel(p: ProviderStatusInput & { is_default?: boolean }, demo: boolean): string {
+  const base = providerStatusLabel(p);
+  if (providerState(p) === "ready" && demo && !p.is_default) return `${base} · not selected`;
+  return base;
+}

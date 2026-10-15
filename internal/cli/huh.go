@@ -55,7 +55,7 @@ func interactiveNew(stdout, stderr io.Writer) error {
 		return err
 	}
 	if strings.TrimSpace(idea) == "" {
-		return fmt.Errorf("idea is required")
+		return usageErrorf("idea is required")
 	}
 
 	// Persist a model choice if the user changed it.

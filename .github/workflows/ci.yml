@@ -7,7 +7,8 @@ on:
 
 # Least privilege by default. Every job here is read-only except `release`,
 # which declares `contents: write` for itself in order to create the GitHub
-# release. Job-level `permissions` REPLACES this default rather than merging
+# release, plus `id-token: write` and `attestations: write` to sign and attest
+# it. Job-level `permissions` REPLACES this default rather than merging
 # with it, and any scope a job block omits is set to `none` -- so the agent tier,
 # which runs a real coding agent with network egress, declares `contents: read`
 # explicitly and cannot inherit the release job's write token.
@@ -286,6 +287,71 @@ jobs:
         working-directory: web
         run: pnpm test
 
+  # The browser suite (web/e2e). Unit and component tests check pieces; this
+  # drives the built binary's real UI through the whole loop -- idea to verify
+  # -- and runs axe on every page, failing on serious/critical violations. A UI
+  # review found defects every other job here passed, all of them visible only
+  # in a browser against a running daemon. Hermetic: the demo provider, an
+  # isolated state dir and port, no provider secrets.
+  e2e:
+    name: Web (browser e2e + accessibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: "10"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      # Keyed on the lockfile, which pins the Playwright version and so the
+      # browser build it downloads.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      # The cache holds the browser, not the system libraries it links.
+      - name: Install Chromium's system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Browser suite
+        run: make e2e
+
+      - name: Keep the report and traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            web/e2e/.report
+            web/e2e/.results
+            web/e2e/.work/state/daemon.log
+          retention-days: 7
+
   # The release. It lives HERE, and not in a workflow of its own, because
   # `needs:` resolves job ids within a single workflow file and cannot reference
   # a job in another one. DX audit 7 found .github/workflows/release.yml gating a
@@ -304,7 +370,7 @@ jobs:
   # make that choice rather than have it made by omission.
   release:
     name: Publish release binaries
-    needs: [compile-no-node, macos, backend, web, agent-contract]
+    needs: [compile-no-node, macos, backend, web, e2e, agent-contract]
     # `github.event_name == 'push'` is load-bearing, not decoration: this
     # workflow accepts workflow_dispatch, a dispatch can select a tag ref, and a
     # ref test alone would open a publishing path release.yml never had.
@@ -312,6 +378,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and upload archives
+      # Keyless cosign signing of checksums.txt and the provenance attestation
+      # below both authenticate as this workflow through a GitHub OIDC token.
+      # Scoped to this job only: the agent tier must never be able to mint one.
+      id-token: write
+      attestations: write # store the build-provenance attestation
     # No cancel-in-progress, deliberately. Nothing races today, but this
     # workflow now runs on every push, which makes a workflow-level
     # `concurrency: { cancel-in-progress: true }` a tempting future addition --
@@ -365,12 +436,36 @@ jobs:
       # dirties the tree only AFTER goreleaser's own git validation, and nothing
       # runs afterward. compile-no-node checks the placeholder, and this job
       # needs it.
+      # goreleaser shells out to both: cosign for the `signs` block, syft for
+      # the `sboms` block. Neither is on the hosted runner.
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: anchore/sbom-action/download-syft@v0
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional. Absent, .goreleaser.yaml skips the cask push rather than
+          # failing the release (see homebrew_casks.skip_upload there).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # Build provenance for every archive, stored by GitHub and checkable with
+      # `gh attestation verify` (RELEASING.md). After goreleaser because it
+      # attests the files goreleaser wrote to dist/.
+      #
+      # Public repositories only. On GitHub Free, Pro and Team plans artifact
+      # attestations are unavailable for private repositories and the action
+      # fails -- which, this being the last step, would mark a release that
+      # did publish as failed. The cosign signature above does not have that
+      # limit, so a private-repository release is still signed.
+      - name: Attest build provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
 
   # The coding-agent path shipped broken twice over and nothing noticed: the
   # Hermes argv used a flag the image does not have, and the hardened container

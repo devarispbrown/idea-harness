@@ -134,6 +134,8 @@ func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, 
 			OR (e.aggregate_type = 'stale_item' AND e.aggregate_id IN (SELECT id FROM stale_marks WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'context_doc' AND e.aggregate_id IN (SELECT id FROM context_docs WHERE initiative_id = ?))
 			OR (e.aggregate_type = 'doc_comment' AND e.aggregate_id IN (SELECT id FROM doc_comments WHERE initiative_id = ?))
+			OR (e.aggregate_type = 'objective' AND (e.aggregate_id = ? OR e.aggregate_id IN (SELECT id FROM objectives WHERE initiative_id = ?)))
+			OR (e.aggregate_type = 'metric' AND e.aggregate_id IN (SELECT id FROM outcome_metrics WHERE initiative_id = ?))
 		)
 		ORDER BY e.seq ASC LIMIT ?`,
 		// M2, review fix: SupersedeRequirements/SupersedeAssertions record
@@ -156,6 +158,9 @@ func (db *DB) ListEventsForInitiative(ctx context.Context, initiativeID string, 
 		initiativeID, initiativeID,
 		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
 		initiativeID, initiativeID, initiativeID, initiativeID, initiativeID,
+		// objective (direct match for the bulk objectives.superseded event,
+		// keyed on the initiative like requirements.superseded) and metric.
+		initiativeID, initiativeID, initiativeID,
 		limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list events for initiative: %w", err)

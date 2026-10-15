@@ -790,6 +790,242 @@ WHERE initiative_id = '' AND EXISTS (
 	`
 ALTER TABLE change_sets ADD COLUMN review_unavailable_reason TEXT NOT NULL DEFAULT '';
 `,
+	// 37: executor provenance on the run manifest: which executor kind was
+	// requested and which actually ran (an unset kind is "auto" and can fall
+	// back to the placeholder executor -- the manifest has to say so), the
+	// image, the fallback warning, and an ACP agent's permission requests with
+	// the answers the harness gave on the operator's behalf.
+	`
+ALTER TABLE run_manifests ADD COLUMN executor_json TEXT NOT NULL DEFAULT '';
+`,
+	// 38: review convergence telemetry. review_json holds one review cycle's
+	// domain.ReviewTelemetry on the adversarial reviewer's own run manifest:
+	// findings raised/new/re-raised/resolved by severity, what the
+	// convergence rules demoted and why, the open blocking count and the
+	// outcome (converged, revise, stalled, max_cycles). '' for every manifest
+	// that is not a review cycle's, and for every one written before this
+	// migration -- there is nothing to backfill it from, since the per-cycle
+	// classification it records was never computed before.
+	`
+ALTER TABLE run_manifests ADD COLUMN review_json TEXT NOT NULL DEFAULT '';
+`,
+	// 39: integrations (Slack, Linear). Three tables of delivery bookkeeping,
+	// none of which is product state -- which is why none of their writes
+	// appends to `events` (see integration.go): the integration bus TAILS the
+	// event log, and a write that appended an event of its own would feed the
+	// bus its own exhaust.
+	//
+	// integration_cursors is the per-subscriber high-water mark into events.seq,
+	// so a restarted daemon resumes where it left off instead of replaying the
+	// whole log into Slack. integration_outbox holds one row per (subscriber,
+	// domain event); idempotency_key is UNIQUE, so re-ingesting the same event
+	// after a crash between "row inserted" and "cursor advanced" is a no-op,
+	// and a row already `delivered` is never sent again. integration_links maps
+	// a local object (an initiative's Slack thread, a task's Linear issue) to
+	// the remote one, so a retry finds the issue it already created rather
+	// than creating a second.
+	`
+CREATE TABLE IF NOT EXISTS integration_cursors (
+	subscriber TEXT PRIMARY KEY,
+	last_seq   INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS integration_outbox (
+	id              TEXT PRIMARY KEY,
+	subscriber      TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL UNIQUE,
+	event_seq       INTEGER NOT NULL,
+	kind            TEXT NOT NULL,
+	payload_json    TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	attempts        INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at INTEGER NOT NULL,
+	last_error      TEXT NOT NULL DEFAULT '',
+	created_at      INTEGER NOT NULL,
+	delivered_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_integration_outbox_due ON integration_outbox(subscriber, status, event_seq);
+CREATE TABLE IF NOT EXISTS integration_links (
+	integration  TEXT NOT NULL,
+	kind         TEXT NOT NULL,
+	local_id     TEXT NOT NULL,
+	remote_id    TEXT NOT NULL,
+	remote_key   TEXT NOT NULL DEFAULT '',
+	remote_url   TEXT NOT NULL DEFAULT '',
+	remote_state TEXT NOT NULL DEFAULT '',
+	note         TEXT NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL,
+	updated_at   INTEGER NOT NULL,
+	PRIMARY KEY (integration, kind, local_id)
+);
+CREATE INDEX IF NOT EXISTS idx_integration_links_remote ON integration_links(integration, kind, remote_id);
+`,
+	// 40: remote_runs: one row per agent run delegated to a remote execution
+	// plane (executor kind openhands -- an OpenHands Agent Server). The run
+	// outlives the Execute operation that started it: a daemon restart fails
+	// that operation, but the conversation keeps going on the server, and
+	// this row is how the next daemon re-attaches instead of starting a
+	// second one. idempotency_key is UNIQUE and deterministic per (task,
+	// attempt), so a retry after a crash between "row inserted" and
+	// "conversation created" finds the row rather than double-dispatching.
+	// last_event_id is the event-ingestion cursor; progress is the compact,
+	// already-redacted event log the live view reads.
+	`
+CREATE TABLE IF NOT EXISTS remote_runs (
+	id              TEXT PRIMARY KEY,
+	executor        TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL UNIQUE,
+	initiative_id   TEXT NOT NULL,
+	task_id         TEXT NOT NULL,
+	attempt         INTEGER NOT NULL,
+	server_url      TEXT NOT NULL,
+	conversation_id TEXT NOT NULL DEFAULT '',
+	remote_dir      TEXT NOT NULL DEFAULT '',
+	base_digest     TEXT NOT NULL DEFAULT '',
+	status          TEXT NOT NULL,
+	remote_status   TEXT NOT NULL DEFAULT '',
+	last_event_id   TEXT NOT NULL DEFAULT '',
+	event_count     INTEGER NOT NULL DEFAULT 0,
+	progress        TEXT NOT NULL DEFAULT '',
+	error           TEXT NOT NULL DEFAULT '',
+	created_at      INTEGER NOT NULL,
+	updated_at      INTEGER NOT NULL,
+	finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_remote_runs_task ON remote_runs(task_id, attempt);
+CREATE INDEX IF NOT EXISTS idx_remote_runs_status ON remote_runs(status);
+`,
+	// 41: quality_results: verify's quality dimensions (internal/quality). One row
+	// per dimension per measurement, append-only: the latest per dimension is
+	// the scorecard and the one before it is the performance baseline.
+	// checks_json is the []domain.QualityCheck with citations; metrics_json the
+	// named numbers a budget measured; input_digest names the applied change
+	// sets and verify policy measured, so a stale result reads as not
+	// measured at the gate. Each row's `verifies` edges to requirements are
+	// ordinary graph_edges rows (from_type 'quality_result').
+	`
+CREATE TABLE IF NOT EXISTS quality_results (
+	id             TEXT PRIMARY KEY,
+	initiative_id  TEXT NOT NULL,
+	measurement_id TEXT NOT NULL,
+	dimension      TEXT NOT NULL,
+	mode           TEXT NOT NULL,
+	status         TEXT NOT NULL,
+	summary        TEXT NOT NULL DEFAULT '',
+	checks_json    TEXT NOT NULL DEFAULT '[]',
+	metrics_json   TEXT NOT NULL DEFAULT '{}',
+	input_digest   TEXT NOT NULL DEFAULT '',
+	created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_results_dim ON quality_results(initiative_id, dimension, created_at);
+`,
+	// 42: objectives & outcomes: the product outcome end of the graph. An
+	// objective (OBJ-n) is what an initiative exists to move; an outcome
+	// metric (MET-n) is how anyone would know, with a direction, an optional
+	// baseline and guardrail, a target, a measurement source and a cadence; a
+	// metric observation is one measured value with its provenance.
+	//
+	// The links are graph edges, not columns, like task -> requirement:
+	// requirement --serves--> objective is N:M, and a hypothesis assertion
+	// --predicts--> metric and metric --attributed_to--> change_set are
+	// edges so why/impact/trace reach them with no special case.
+	//
+	// baseline and guardrail are nullable REALs because "no baseline" is a
+	// real state with its own drift rule (the first observation stands in);
+	// 0 would be a baseline. change_set_ids_json on an observation is the
+	// attribution as it was computed when the value was recorded -- which
+	// change sets were applied since the previous observation -- kept even if
+	// one is reverted later, because the observation happened under it.
+	`
+CREATE TABLE IF NOT EXISTS objectives (
+	id                 TEXT PRIMARY KEY,
+	initiative_id      TEXT NOT NULL,
+	code               TEXT NOT NULL,
+	statement          TEXT NOT NULL,
+	rationale          TEXT NOT NULL DEFAULT '',
+	status             TEXT NOT NULL,
+	owner              TEXT NOT NULL DEFAULT '',
+	produced_by_run_id TEXT NOT NULL DEFAULT '',
+	superseded_by      TEXT NOT NULL DEFAULT '',
+	created_at         INTEGER NOT NULL,
+	updated_at         INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_objectives_code ON objectives(initiative_id, code);
+CREATE TABLE IF NOT EXISTS outcome_metrics (
+	id                 TEXT PRIMARY KEY,
+	initiative_id      TEXT NOT NULL,
+	objective_id       TEXT NOT NULL,
+	code               TEXT NOT NULL,
+	name               TEXT NOT NULL,
+	definition         TEXT NOT NULL DEFAULT '',
+	unit               TEXT NOT NULL DEFAULT '',
+	direction          TEXT NOT NULL,
+	baseline           REAL,
+	target             REAL NOT NULL,
+	guardrail          REAL,
+	source_kind        TEXT NOT NULL DEFAULT 'manual',
+	source_command     TEXT NOT NULL DEFAULT '',
+	source_url         TEXT NOT NULL DEFAULT '',
+	source_pointer     TEXT NOT NULL DEFAULT '',
+	cadence            TEXT NOT NULL DEFAULT '',
+	produced_by_run_id TEXT NOT NULL DEFAULT '',
+	superseded_by      TEXT NOT NULL DEFAULT '',
+	created_at         INTEGER NOT NULL,
+	updated_at         INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_metrics_code ON outcome_metrics(initiative_id, code);
+CREATE INDEX IF NOT EXISTS idx_outcome_metrics_objective ON outcome_metrics(objective_id);
+CREATE TABLE IF NOT EXISTS metric_observations (
+	id                  TEXT PRIMARY KEY,
+	initiative_id       TEXT NOT NULL,
+	metric_id           TEXT NOT NULL,
+	value               REAL NOT NULL,
+	observed_at         INTEGER NOT NULL,
+	source              TEXT NOT NULL,
+	note                TEXT NOT NULL DEFAULT '',
+	recorded_by         TEXT NOT NULL,
+	provenance_json     TEXT NOT NULL DEFAULT '[]',
+	change_set_ids_json TEXT NOT NULL DEFAULT '[]',
+	created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_metric_observations_metric ON metric_observations(metric_id, observed_at);
+`,
+	// 43: review_note -- what the human asked for when they requested changes
+	// on (or rejected) a change set. "Request changes" used to record only the
+	// verdict: the next run of the task got no word of what to change, so the
+	// only way to steer it was to remember to type the same thing into a run
+	// note. Execute now appends the newest such note to the implementer's
+	// brief for the task's next run (see priorReviewNote in execute.go). '' for
+	// every change set reviewed without one, and every one written before this.
+	`
+ALTER TABLE change_sets ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+`,
+	// 44: run_events: the normalized, redacted, bounded event stream of a coding
+	// agent's run (domain.RunEvent), whichever executor ran it. A table of its
+	// own rather than remote_runs.progress: that column is one capped text
+	// blob per OpenHands run, with no per-event structure and no cursor a
+	// client can resume from, and the hermes/omp/acp/internal kinds have no
+	// remote_runs row at all. seq is monotonic per run (the client's resume
+	// cursor); id is monotonic across the project, which is what the
+	// project-wide SSE stream resumes from. body_json is the event itself.
+	//
+	// remote_runs.run_id ties an OpenHands run to the agent run whose events
+	// it feeds: its watcher outlives the Execute that started it (and the
+	// daemon), so it cannot be handed the run id in memory.
+	`
+CREATE TABLE IF NOT EXISTS run_events (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	run_id        TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	initiative_id TEXT NOT NULL DEFAULT '',
+	kind          TEXT NOT NULL,
+	at            INTEGER NOT NULL,
+	body_json     TEXT NOT NULL,
+	UNIQUE (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_run_events_initiative ON run_events(initiative_id, id);
+ALTER TABLE remote_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

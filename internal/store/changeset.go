@@ -13,7 +13,7 @@ import (
 )
 
 // changeSetColumns is the shared column list for scanning change_sets rows.
-const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, review_completed_at, no_op, review_unavailable_reason`
+const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id, status, patch_digest, review_id, git_commit_sha, created_by_run_id, model, executor, agent_output, git_commit_warning, created_at, review_completed_at, no_op, review_unavailable_reason, review_note`
 
 // scanChangeSet scans one change_sets row into cs. createdMS receives the raw
 // unix-ms timestamp so the caller can convert it; reviewCompletedMS receives
@@ -24,7 +24,7 @@ const changeSetColumns = `id, human_id, initiative_id, task_id, base_snapshot_id
 // track.
 func scanChangeSet(row interface{ Scan(...any) error }, cs *domain.ChangeSet, createdMS *int64, reviewCompletedMS *sql.NullInt64) error {
 	return row.Scan(&cs.ID, &cs.HumanID, &cs.InitiativeID, &cs.TaskID, &cs.BaseSnapshotID,
-		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS, reviewCompletedMS, &cs.NoOp, &cs.ReviewUnavailableReason)
+		&cs.Status, &cs.PatchDigest, &cs.ReviewID, &cs.GitCommitSHA, &cs.CreatedByRunID, &cs.Model, &cs.Executor, &cs.AgentOutput, &cs.GitCommitWarning, createdMS, reviewCompletedMS, &cs.NoOp, &cs.ReviewUnavailableReason, &cs.ReviewNote)
 }
 
 // applyReviewCompletedAt converts the nullable review_completed_at scan
@@ -178,6 +178,14 @@ func legalChangeSetTransition(from, to domain.ChangeSetStatus) bool {
 // current-state precondition are checked; an illegal or stale transition fails
 // with a clear error and mutates nothing.
 func (db *DB) TransitionChangeSet(ctx context.Context, changeSetID string, from, to domain.ChangeSetStatus, actor string) error {
+	return db.TransitionChangeSetWithNote(ctx, changeSetID, from, to, actor, "")
+}
+
+// TransitionChangeSetWithNote is TransitionChangeSet that also records the
+// human's review note (migration 43) in the same transaction, so a verdict and
+// what it asked for are never stored apart. An empty note leaves any existing
+// review_note untouched.
+func (db *DB) TransitionChangeSetWithNote(ctx context.Context, changeSetID string, from, to domain.ChangeSetStatus, actor, note string) error {
 	if actor == "" {
 		actor = ActorOrchestrator
 	}
@@ -201,6 +209,11 @@ func (db *DB) TransitionChangeSet(ctx context.Context, changeSetID string, from,
 		}
 		if n != 1 {
 			return fmt.Errorf("store: change set %q not in state %q", changeSetID, from)
+		}
+		if note = strings.TrimSpace(note); note != "" {
+			if _, err := tx.Exec(`UPDATE change_sets SET review_note = ? WHERE id = ?`, note, changeSetID); err != nil {
+				return err
+			}
 		}
 		if to == domain.ChangeSetRejected {
 			// review MEDIUM: stale-mark garbage collection -- a rejected

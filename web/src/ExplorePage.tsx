@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiBlob, get, post, resource, uploadDoc } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import type { StatusPill } from "./PhaseHeader";
-import { navigate } from "./router";
+import { lineageHref, navigate } from "./router";
 
 interface ContextDoc {
   id: string;
@@ -159,7 +159,11 @@ export default function ExplorePage({
                 <div className="grounding-title">{d.title}</div>
                 {d.preview && <div className="grounding-meta">{d.preview}</div>}
               </div>
-              <button className="grounding-trace" onClick={() => navigate(`#/i/${initiativeId}/health`)}>
+              <button
+                className="grounding-trace"
+                aria-label={`Trace ${d.title}`}
+                onClick={() => navigate(lineageHref(initiativeId, "context_doc", d.id))}
+              >
                 trace
               </button>
               <button className="grounding-download" onClick={() => download(d)}>

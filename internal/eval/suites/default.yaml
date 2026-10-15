@@ -1,0 +1,113 @@
+# The default `idea eval` suite: small greenfield ideas, each with acceptance
+# checks a real coding agent's output can be verified against.
+#
+# `scenario` is what the scripted provider does when the suite runs WITHOUT
+# --model (CI, and anyone without a key); `expect` is what that scripted run
+# must produce. Against a real model both are ignored -- the model's behaviour
+# is the measurement. See internal/eval/scenario.go for the scenarios.
+#
+# Checks run in the case's project directory after every change set has been
+# applied, under `sh -c`, and must exit 0. They are skipped (and reported as
+# skipped, never as passing) when the executor is the built-in internal one,
+# which writes a placeholder file rather than code.
+name: default
+description: Small greenfield ideas, end to end, with verifiable acceptance checks.
+cases:
+  - name: todo-cli
+    title: Todo CLI
+    idea: >-
+      A command-line todo list written in Go. `todo add "text"` appends an item,
+      `todo list` prints the items numbered from 1, and `todo done N` marks item N
+      done. Items persist in todo.json in the current directory.
+    scenario: typical
+    checks:
+      - name: builds
+        run: go build ./...
+      - name: add then list
+        run: go run . add "buy milk" && go run . list | grep -q "buy milk"
+      - name: done marks the item
+        run: go run . done 1 && go run . list | grep -qi "done\|\[x\]"
+    expect: {prd_converged: true, prd_cycles: 2, plan_converged: true, human_stops: 0, reached: complete}
+
+  - name: url-shortener
+    title: URL shortener
+    idea: >-
+      A tiny HTTP URL shortener in Go with no external dependencies. POST /shorten
+      with a JSON body {"url": "..."} returns a short code; GET /{code} redirects
+      with 302 to the original URL; unknown codes return 404. Storage is in memory.
+    scenario: typical
+    checks:
+      - name: builds
+        run: go build ./...
+      - name: tests pass
+        run: go test ./...
+    expect: {prd_converged: true, prd_cycles: 2, plan_converged: true, human_stops: 0, reached: complete}
+
+  - name: markdown-site
+    title: Markdown site generator
+    idea: >-
+      A static site generator in Python: given a directory of Markdown files it
+      writes one HTML file per page into ./site and an index.html linking every
+      page by its first heading. Invalid Markdown files are reported and skipped.
+    scenario: rephrasing_reviewer
+    checks:
+      - name: generates the index
+        run: mkdir -p pages && printf '# Hello\n' > pages/hello.md && python3 -m sitegen pages && test -f site/index.html
+    expect: {prd_converged: true, prd_cycles: 2, plan_converged: true, human_stops: 0, reached: complete}
+
+  # The same scenario under the pre-0.7 loop: the reproduction of the measured
+  # non-convergence. It must park; the case above must not.
+  - name: markdown-site-legacy
+    title: Markdown site generator (legacy review loop)
+    idea: >-
+      A static site generator in Python: given a directory of Markdown files it
+      writes one HTML file per page into ./site and an index.html linking every
+      page by its first heading. Invalid Markdown files are reported and skipped.
+    scenario: rephrasing_reviewer
+    harness: |
+      review:
+        convergence:
+          mode: legacy
+    checks:
+      - name: generates the index
+        run: mkdir -p pages && printf '# Hello\n' > pages/hello.md && python3 -m sitegen pages && test -f site/index.html
+    expect: {prd_converged: false, prd_cycles: 3, plan_converged: true, human_stops: 1, reached: complete}
+
+  - name: expense-splitter
+    title: Expense splitter
+    idea: >-
+      A Node.js CLI that reads a CSV of shared expenses (payer, amount, participants)
+      and prints who owes whom, minimising the number of payments. Amounts are in
+      cents to avoid rounding errors.
+    scenario: scope_creep
+    checks:
+      - name: tests pass
+        run: npm test
+    expect: {prd_converged: true, prd_cycles: 1, plan_converged: true, human_stops: 0, reached: complete}
+
+  - name: pomodoro
+    title: Pomodoro timer
+    idea: >-
+      A single-page Pomodoro timer in plain HTML and JavaScript: 25-minute work and
+      5-minute break intervals, start/pause/reset buttons, and a count of completed
+      work intervals that survives a page reload via localStorage.
+    scenario: demo
+    checks:
+      - name: page exists
+        run: test -f index.html && grep -qi "localStorage" -r .
+    expect: {prd_converged: true, prd_cycles: 1, plan_converged: true, human_stops: 0, reached: complete}
+
+  # A genuine blocker: the idea contradicts itself, and no revision can fix
+  # that. Human gating is warranted here, and the loop must still park -- by
+  # the stall detector at cycle 2, not at max_cycles.
+  - name: habit-tracker
+    title: Habit tracker
+    idea: >-
+      A habit tracker API in Go that stores all data only on the local device and
+      never sends it anywhere, and that keeps every user's habits in real-time sync
+      across all of their devices.
+    scenario: genuine_blocker
+    checks:
+      - name: builds
+        run: go build ./...
+    expect: {prd_converged: false, prd_cycles: 2, plan_converged: true, human_stops: 1, reached: complete}

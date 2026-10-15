@@ -83,6 +83,7 @@ func (c Config) ProblemsWithEnv(dotEnv map[string]string) []Problem {
 		field := fmt.Sprintf("harness.models.%s", role)
 		problems = append(problems, modelSpecProblems(field, h.Models[role], known, h.Providers, dotEnv, hasDefaultProvider)...)
 	}
+	problems = append(problems, executorProblems(h.Executor, dotEnv)...)
 	return problems
 }
 

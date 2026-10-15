@@ -231,6 +231,25 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		st := s.rt.executorStatus(pr, string(pr.cfg.Harness.Executor.Kind), true)
 		g.RunBlockedReason = st.Problem
 	}
+	// Build page readiness: which executor the next run uses, and -- when an
+	// unset kind would fall back to the placeholder -- the warning saying no
+	// real code will be written and how to fix it.
+	if g.NextTask != nil {
+		res := s.rt.executorResolution(r.Context(), pr)
+		g.ExecutorResolution = &projection.ExecutorResolutionRef{Requested: res.Requested, Resolved: res.Resolved,
+			Image: res.Image, Warning: res.Warning, Note: res.Note}
+	}
+	// Outcome drift: a sentence on Why and the counts for the UI, only when
+	// something is drifting -- composed here for the same reason as the
+	// rest (BuildGuidance has no store access).
+	if rep, err := projection.BuildOutcomes(r.Context(), pr.db, ini.ID, time.Now()); err == nil {
+		if msg, codes := projection.OutcomeGuidance(rep); msg != "" {
+			sum := rep.Summary
+			g.Outcomes = &sum
+			g.Why = strings.TrimSpace(g.Why + " " + msg)
+			g.Affected = append(g.Affected, codes...)
+		}
+	}
 	// Review A4 #5: "N items may be invalid since DEC-n changed", with the
 	// re-plan/review path named, plus the itemized list for the UI. Composed
 	// here for the same reason NextTask/RunBlockedReason/PartialWork are:
@@ -281,6 +300,12 @@ func (s *Server) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		}
 		g.Why = fmt.Sprintf("%s %d item(s) may be invalid since %s changed. %s",
 			g.Why, len(items), strings.Join(codes, ", "), advice)
+	}
+	// Gap counts (`idea gaps`), best-effort: a failure here must not turn the
+	// recommended next move into a 500, so it is simply omitted.
+	if gaps, err := projection.BuildGaps(r.Context(), pr.db, ini, projection.GapOptions{}); err == nil && len(gaps) > 0 {
+		sum := domain.Summarize(gaps)
+		g.GapSummary = &sum
 	}
 	// ICP re-run defect #5: changeSetFailureWhy (BuildGuidance, no store
 	// access) can only say "a check or the review found a problem it would
@@ -632,7 +657,17 @@ func (s *Server) handleReopenPhase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRevisePlan(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	initiativeID := r.PathValue("id")
-	opID, err := s.rt.RevisePlanInitiative(r.Context(), projectID, initiativeID)
+	// Optional {"note": "..."}: what the human wants changed, joined to the
+	// planner's inputs for this revision. Decoded leniently, like execute's
+	// and retry's: this route has always ignored its body, and a caller that
+	// sends none must keep working unchanged.
+	var body struct {
+		Note string `json:"note"`
+	}
+	if raw, _ := io.ReadAll(io.LimitReader(r.Body, 4096)); len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &body)
+	}
+	opID, err := s.rt.RevisePlanInitiativeWithNote(r.Context(), projectID, initiativeID, body.Note)
 	if err != nil {
 		s.writeErr(w, http.StatusConflict, err)
 		return
@@ -668,6 +703,14 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	all := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(all) > n {
 		all = all[len(all)-n:]
+	}
+	// Redacted on the way out as well as on the way in (the slog handler).
+	// Defense in depth for what the handler never saw: lines written before
+	// it existed, and anything that reached the file as raw stderr rather
+	// than through slog (a panic trace, the auto-started daemon's own
+	// startup failure).
+	for i, line := range all {
+		all[i] = s.rt.logRedact.RedactString(line)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":  filepath.Join(s.rt.StateRoot(), "daemon.log"),
@@ -1371,6 +1414,18 @@ func (s *Server) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	// The answer text, from the REDACTED store -- where handleAnswerQuestion
+	// put it (see workflow.answerText for why it is never the raw store). A
+	// blob that cannot be read leaves the field empty rather than failing the
+	// whole list.
+	for i := range list {
+		if list[i].AnswerDigest == "" {
+			continue
+		}
+		if data, err := pr.blobs.Get(list[i].AnswerDigest); err == nil {
+			list[i].Answer = strings.TrimSpace(string(data))
+		}
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -3160,10 +3215,20 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"operation_id":  opID,
-		"executor_kind": string(pr.cfg.Harness.Executor.Kind),
-	})
+	// executor_kind is what harness.yaml asked for (auto when unset);
+	// executor_resolved is what this run uses. executor_warning is set when
+	// auto fell back to the placeholder: a client must show it, because this
+	// run writes no real code.
+	res := s.rt.executorResolution(r.Context(), pr)
+	out := map[string]string{
+		"operation_id":      opID,
+		"executor_kind":     string(pr.cfg.Harness.Executor.Kind),
+		"executor_resolved": res.Resolved,
+	}
+	if res.Warning != "" {
+		out["executor_warning"] = res.Warning
+	}
+	writeJSON(w, http.StatusAccepted, out)
 }
 
 // handleVerify runs the verification gate and, when a requirement + disposition
@@ -3222,6 +3287,14 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"status": status, "coverage": coverage}
+	// quality is the dimension scorecard the gate just read: which gated
+	// dimensions held it (gate_unmet), and every dimension's latest result.
+	// A read, not a measurement -- POST .../quality measures.
+	if pr2, err := s.rt.EnsureProject(r.Context(), projectID); err == nil {
+		if sc, err := pr2.engine.QualityScorecard(r.Context(), initiativeID); err == nil {
+			resp["quality"] = sc
+		}
+	}
 	// confirmed/skipped (C3/H2, wire contract addition) are present only when
 	// confirm_passing_tests was requested -- an ordinary pass/fail/waive call
 	// never touches them, so its response shape is unchanged.
@@ -3426,6 +3499,11 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		// set and approves without re-reviewing. Only the reviewer's: a finding
 		// carrying a deny code is untouched and still refuses.
 		AcceptFindings bool `json:"accept_findings"`
+		// Note is what the human wants changed, with changes_requested or
+		// rejected: recorded on the change set and carried into the task's
+		// next run. "Request changes" used to take no input at all, so the
+		// rerun had nothing to go on but the same brief that produced this.
+		Note string `json:"note"`
 	}
 	// decodeStrict, so a NEW CLI against an OLD daemon gets
 	// `400 json: unknown field "accept_findings"` rather than having the flag
@@ -3462,6 +3540,10 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "accept_findings does not apply to rerun")
 			return
 		}
+		if strings.TrimSpace(body.Note) != "" {
+			writeError(w, http.StatusBadRequest, "note does not apply to rerun; it goes with changes_requested or rejected")
+			return
+		}
 		opID, err := s.rt.RerunChangeSetReviewInitiative(r.Context(), projectID, cs.InitiativeID, cs.ID)
 		if err != nil {
 			s.writeErr(w, http.StatusBadRequest, err)
@@ -3470,9 +3552,8 @@ func (s *Server) handleReviewChangeSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]string{"operation_id": opID})
 		return
 	}
-	review := pr.engine.ReviewChangeSet
-	if body.AcceptFindings {
-		review = pr.engine.ReviewChangeSetAccepting
+	review := func(ctx context.Context, initiativeID, changeSetID, verdict string) error {
+		return pr.engine.ReviewChangeSetWithNote(ctx, initiativeID, changeSetID, verdict, body.AcceptFindings, body.Note)
 	}
 	// E1: an "approved" verdict used to run the adversarial reviewer
 	// synchronously, inside this request, and shared the request's own
@@ -3698,8 +3779,14 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		// credential and endpoint are deliberately empty rather than resolved.
 		executor.NewOMPExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
 		executor.NewHermesExecutor(pr.blobs, pr.cfg.Harness.Executor.Model, pr.cfg.Harness.Executor.Image, executor.AgentProvider{}),
+		executor.NewACPExecutor(executor.ACPOptionsFrom(pr.cfg.Harness.Executor, pr.cfg.Harness.Executor.Model), executor.AgentProvider{}),
+		executor.NewOpenHandsExecutor(executor.OpenHandsOptionsFrom(pr.cfg.Harness.Executor, pr.cfg.Harness.Executor.Model), executor.AgentProvider{}, nil, nil),
 	}
 	list := make([]map[string]any, 0, len(execs))
+	// The row the next run would actually use carries the resolution: for an
+	// unset kind (auto) no row is `selected`, and this is how a client -- `idea
+	// doctor` -- learns that auto fell back to the placeholder, and why.
+	resolution := s.rt.executorResolution(r.Context(), pr)
 	for _, exec := range execs {
 		caps := exec.Capabilities(r.Context())
 		// C3: status is only meaningful for hermes/omp; executorStatus reports
@@ -3709,7 +3796,7 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 		if selected {
 			status.LastSmoke = lastSmoke(r.Context(), pr, r.PathValue("projectId"))
 		}
-		list = append(list, map[string]any{
+		row := map[string]any{
 			"name":          exec.Name(),
 			"trust":         caps.Trust,
 			"sandbox_mode":  caps.SandboxMode,
@@ -3720,7 +3807,11 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 			"model":         pr.cfg.Harness.Executor.Model,
 			"default_image": executor.DefaultAgentImage(exec.Name()),
 			"status":        status,
-		})
+		}
+		if exec.Name() == resolution.Resolved {
+			row["resolution"] = resolution
+		}
+		list = append(list, row)
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -3738,6 +3829,15 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		Kind  string  `json:"kind"`
 		Image *string `json:"image"`
 		Model *string `json:"model"`
+		// ACPCommand and ACPKeyEnv set executor.acp.command/key_env.
+		ACPCommand *[]string `json:"acp_command"`
+		ACPKeyEnv  *string   `json:"acp_key_env"`
+		// The openhands_* fields set executor.openhands.*. The session key
+		// itself is never accepted here, only the NAME of its variable.
+		OpenHandsURL        *string   `json:"openhands_url"`
+		OpenHandsAPIKeyEnv  *string   `json:"openhands_api_key_env"`
+		OpenHandsAgent      *string   `json:"openhands_agent"`
+		OpenHandsACPCommand *[]string `json:"openhands_acp_command"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -3768,15 +3868,58 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	if body.Model != nil {
 		cfg.Harness.Executor.Model = *body.Model // empty clears
 	}
+	if body.ACPCommand != nil {
+		cfg.Harness.Executor.ACP.Command = *body.ACPCommand // empty clears
+	}
+	if body.ACPKeyEnv != nil {
+		cfg.Harness.Executor.ACP.KeyEnv = *body.ACPKeyEnv
+	}
+	if body.OpenHandsURL != nil {
+		cfg.Harness.Executor.OpenHands.URL = strings.TrimSpace(*body.OpenHandsURL)
+	}
+	if body.OpenHandsAPIKeyEnv != nil {
+		cfg.Harness.Executor.OpenHands.APIKeyEnv = *body.OpenHandsAPIKeyEnv
+	}
+	if body.OpenHandsAgent != nil {
+		cfg.Harness.Executor.OpenHands.Agent = *body.OpenHandsAgent
+	}
+	if body.OpenHandsACPCommand != nil {
+		cfg.Harness.Executor.OpenHands.ACPCommand = *body.OpenHandsACPCommand
+	}
+	// openhands without a server would save a configuration every run then
+	// refuses, and an unsafe URL (plain http off-machine) is refused before
+	// it is written, not at the next config load.
+	if cfg.Harness.Executor.Kind == config.ExecutorOpenHands {
+		if cfg.Harness.Executor.OpenHands.URL == "" {
+			writeError(w, http.StatusBadRequest, "executor kind openhands needs openhands_url, the Agent Server to run on")
+			return
+		}
+	}
+	if err := config.ValidateExecutor(cfg.Harness.Executor); err != nil {
+		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "config: "))
+		return
+	}
+	// acp has no canonical image or command, so selecting it without both
+	// would save a configuration every run then refuses.
+	if cfg.Harness.Executor.Kind == config.ExecutorACP {
+		if strings.TrimSpace(cfg.Harness.Executor.Image) == "" {
+			writeError(w, http.StatusBadRequest, "executor kind acp needs an image; there is no canonical ACP image")
+			return
+		}
+		if len(cfg.Harness.Executor.ACP.Command) == 0 {
+			writeError(w, http.StatusBadRequest, "executor kind acp needs acp_command, the agent's argv inside the image (e.g. [\"claude-code-acp\"])")
+			return
+		}
+	}
 
-	// C2: for hermes/omp, a configured model must actually resolve to a
+	// C2: for hermes/omp/acp, a configured model must actually resolve to a
 	// provider before it is saved. Without this, a typo or an unconfigured
 	// provider name was written to harness.yaml, forwarded into the agent
 	// container at execute time, and failed there -- minutes later, nowhere
 	// near the settings page that caused it, with `selectExecutor`'s own
 	// fail-closed check as the only thing standing between the typo and a
 	// leaked credential.
-	if cfg.Harness.Executor.Kind == config.ExecutorHermes || cfg.Harness.Executor.Kind == config.ExecutorOMP {
+	if k := cfg.Harness.Executor.Kind; k == config.ExecutorHermes || k == config.ExecutorOMP || k == config.ExecutorACP || k == config.ExecutorOpenHands {
 		if cfg.Harness.Executor.Model != "" {
 			if _, err := executor.ResolveAgentProvider(cfg.Harness.Executor.Model, cfg.Harness.DefaultModel, cfg.Harness.Providers); err != nil {
 				writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "executor: "))

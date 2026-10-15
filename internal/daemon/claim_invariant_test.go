@@ -50,9 +50,9 @@ var asyncEntryPoints = map[string]entryPoint{
 		"the engine reaches a terminal status; failOperation on error. " +
 			"RetryInitiative is a thin wrapper around this one (D-a, wave 3 " +
 			"contract: the optional rerun note), so this is the row the AST scan finds"},
-	"ReopenPhaseInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
-	"RevisePlanInitiative":  {true, "the engine reaches a terminal status; failOperation on error"},
-	"ApprovePlanInitiative": {true, "the engine reaches a terminal status; failOperation on error"},
+	"ReopenPhaseInitiative":        {true, "the engine reaches a terminal status; failOperation on error"},
+	"RevisePlanInitiativeWithNote": {true, "the engine reaches a terminal status; failOperation on error"},
+	"ApprovePlanInitiative":        {true, "the engine reaches a terminal status; failOperation on error"},
 	"RerunChangeSetReviewInitiative": {true,
 		"claims from every non-running state (ICP re-run D2: the adversarial review this runs is a real model call, now async rather than synchronous inside the request); explicit release on both exits"},
 	"SuggestAnswersInitiative": {false,

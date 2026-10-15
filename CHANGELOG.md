@@ -9,6 +9,469 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+| Was | Now |
+|---|---|
+| An unset `executor.kind` meant `internal`: `idea execute` wrote a placeholder file, with a one-line hint, whether or not a model key and Docker were available | An unset kind means **`auto`**: `hermes` on the digest-pinned image when Docker is reachable and the coding model's provider key is set (the first run pulls the multi-gigabyte image and makes paid model calls), otherwise `internal` with a `NO REAL CODE WILL BE WRITTEN` warning on `idea execute`/`idea next`, `idea doctor`, the Build page guidance, `GET /executors`, the change set's agent output and the run manifest. **Migration:** set `executor.kind: internal` to keep the placeholder. Projects created by an earlier `idea init` already have `kind: internal` written and are unaffected until that line is removed; a new `idea init` writes `kind: auto`. A keyless provider (Ollama) is never auto-picked. |
+| `ExecutorKind` (`harness.yaml` schema, OpenAPI) was `internal \| container \| omp \| hermes` | Adds `auto`, `acp` and `openhands`. `POST …/execute`'s `executor_kind` can now be `auto`; the kind that actually runs is in the new `executor_resolved`. A client switching on `executor_kind == "internal"` to warn about placeholders should read `executor_warning` / `executor_resolved` instead. |
+| The default Hermes image was `nousresearch/hermes-agent:v2026.5.16` (tag only) | `nousresearch/hermes-agent:v2026.5.16@sha256:b6e41c15…` (same bytes, pinned by index digest). `harness.yaml` files that stored the tag-only default keep working, unverified; `idea executors setup` now writes the digest form. |
+| A plain `idea review <CHG-n> approve` approved any change set whose review raised no blocking finding | A change set touching an auto-executing path (CI definitions, tree-installed git hooks, `.envrc`, `.devcontainer/`, `.vscode/tasks.json`) gets a blocking `protected_path` finding, and one whose produced files hold a payment card number or a dashed US SSN gets a blocking `pii` finding; a plain approve refuses both (details under Security). **Migration:** a script that approves change sets must handle the refusal — `--accept-findings` signs off `protected_path`; a `pii` finding needs its own `accepted_risk` disposition (the web UI, or `POST …/findings/{id}/disposition`), which `--accept-findings` never covers. |
+| `idea verify` completed an initiative once every requirement had passing (or waived) evidence | It measures quality dimensions first, and at an effective `review.rigor` of `thorough` — set explicitly, or `auto` calibrating to it on a large project or change — `setup_reproducibility`, `docs_completeness` and `api_compatibility` are gates: each must pass (`not_measured` does not) before the initiative completes, and `idea verify` exits `5` until they do. `quick` and `standard` gate nothing. **Migration:** set `verify.dimensions.<dimension>: advisory` (or `off`) for any dimension that should not hold the gate. |
+| The PRD review loop ran up to `review.max_cycles` passes, every critical/high finding blocking | `review.convergence.mode: guarded` by default: an uncited finding, or a non-critical one first raised after cycle 1 about a requirement the revision did not change, is advisory; re-raises are de-duplicated; and the loop parks for a human as soon as the open blocking count stops falling — a persistent cited blocker now parks at cycle 2, not 3, and so does `demo.block_review_cycles` of 2 or more (details under Changed). **Migration:** `review.convergence.mode: legacy` restores the previous loop exactly. |
+| Initiatives had no objectives | The PRD states objectives and outcome metrics, and the chain is checked. An initiative with requirements and no active objective — every initiative created before this release — has one medium `objectives_missing` gap, so `idea gaps --fail-on medium` (or lower) fails on it, and a PRD review over a PRD with no objectives raises one medium finding; once objectives exist, a requirement serving none is a high finding, which blocks the PRD review. **Migration:** `idea objective add "<statement>"` and `idea objective link <REQ> <OBJ>` (or the Define page) where you want the chain; otherwise start a CI gate at `idea gaps --fail-on high`. |
+
+- **CLI exit codes now say what kind of failure it was** (deferred.md, audit 8 / E2). Every failure
+  used to exit `1`. The taxonomy is in [docs/cli.md](docs/cli.md#exit-codes): `2` usage, `3` not
+  found, `4` conflict, `5` gate unmet, `6` daemon unavailable, `7` unauthorized, `8` config invalid,
+  `9` a run failed; `1` remains for anything not classified. A script that tested `$? -eq 1` must
+  test `$? -ne 0` (or the specific code); one that tested for non-zero is unaffected.
+
+  | | Was | Now |
+  |---|---|---|
+  | Unknown command, subcommand or flag; missing or extra argument; daemon `400`/`405`/`413` | exit `1` | exit `2` (`usage`) |
+  | A reference that matches nothing; daemon `404` | exit `1` | exit `3` (`not_found`) |
+  | Daemon `409` (state does not allow it); `idea revise` under an approved plan | exit `1` | exit `4` (`conflict`) |
+  | `idea verify` / `idea verify --json` over an unmet gate | exit `1` | exit `5` (`gate_unmet`) |
+  | The daemon cannot be reached, started, or is not initialized; `idea daemon status` when it is down | exit `1` | exit `6` (`daemon_unavailable`) |
+  | Daemon `401`/`403`; `idea doctor` finding the token rejected | exit `1` | exit `7` (`unauthorized`) |
+  | Daemon `422`; `idea config validate` with errors; no model or API key configured | exit `1` | exit `8` (`config_invalid`) |
+  | `idea status` over a failed initiative; a waited-on operation failing or cancelled; `idea next` reaching a failed initiative; `executors setup --smoke` failing | exit `1` | exit `9` (`run_failed`) |
+  | Any failure under `--json` | the `idea: …` line on stderr, nothing on stdout | `{"error":{"kind","message","hint","exit_code","http_status"}}` on stdout — or on stderr when the command already printed its payload, so stdout always holds exactly one JSON document |
+
+### Changed
+
+- The project event stream's SSE id is now `<event seq>.<run event id>`. A client that stored a bare
+  `<event seq>` still resumes correctly (run events start at now); one that parsed the id as an
+  integer must split on `.`.
+- `?token=` is accepted only on the two SSE streams' exact paths; it was accepted on any path ending
+  in `/events`.
+- The README's real-model numbers (PRD review did not converge in 2 of 2 runs) are now labelled as
+  measured before the convergence rules existed; they need re-measuring with `idea eval --model`.
+- **The PRD review loop converges on principle instead of by exhaustion** (`review.convergence`,
+  `guarded` by default). In 2 of 2 measured real-model runs the PRD review never converged, and the
+  causes were in the loop, not the model: the reviewer never saw the previous cycle's findings or
+  what the revision did about them; one critical/high finding anywhere blocked, cited or not, new or
+  rephrased; re-raises had no identity across cycles; the reviser got every finding ever raised as
+  bare "[severity] text"; and nothing measured progress. Now the reviewer receives the previous
+  cycle's blocking findings by label with the reviser's response to each, must justify re-raising
+  an addressed one, and must cite the requirement (or task, or quoted idea text) a blocking finding
+  is about; a finding first raised after cycle 1 blocks only if it is about a requirement the
+  revision changed, or is critical; re-raises are matched with the existing near-duplicate
+  similarity and the superseded finding is dispositioned `duplicate`; the reviser gets a precise,
+  labelled brief and answers it in `review_responses`; and the loop stops for a human as soon as the
+  open blocking count fails to fall (`stall_cycles`, default 1). Demoted findings are kept, marked
+  advisory, with the rule on their note. Deterministic checks are untouched, and a cited blocker
+  that persists with a reason still parks the initiative — now at cycle 2 rather than 3. The plan
+  review applies the per-finding rules (severity floor, citation). `review.convergence.mode: legacy`
+  restores the previous loop exactly.
+- **`demo.block_review_cycles` now parks at cycle 2** for any value of 2 or more, by the stall
+  detector, instead of running to `review.max_cycles`. The demo blocking finding cites the first
+  listed requirement and justifies its re-raise, so it behaves as a genuine blocker under the new
+  rules.
+- The `product_manager` and `adversarial_reviewer` role contracts are at **1.2.0**. 1.1.0 added
+  citation, severity, re-raise and precise-revision behaviors; 1.2.0 has the product manager state
+  objectives with measurable metrics and link every requirement to the objective(s) it serves, and
+  the reviewer challenge a requirement serving no objective and an objective with no measurable
+  metric, citing the `REQ`/`OBJ`/`MET` code.
+- The PRD schema (`schema.PRD`) gains `objectives[]` (each with `metrics[]`) and a per-requirement
+  `objectives[]`. Both are optional, so an older scripted response still validates. The PRD and
+  review prompts are longer by the schema text and an objectives section; the scripted eval
+  baseline moved only in its nominal token counts.
+- `Requirement` (API) gains `objective_ids` (always an array); `Guidance` gains `outcomes` when
+  anything is drifting. `why`/`impact`/`trace` accept the node types `objective`, `metric`,
+  `assertion` and `change_set`, and `impact` now continues past a task's change sets to the outcome
+  metrics attributed to them.
+
+### Added
+
+- **The web UI shows the Product Graph** ([docs/ui.md](docs/ui.md#product-graph-views)). A lineage
+  page per node (`#/i/<id>/lineage/<type>/<ref>`: provenance tree, dependents with staleness, full
+  edge trace — what `idea why/impact/trace` print), and a lazy **Why / Impact** panel on
+  requirements (Define), tasks (Plan), change sets (Build), decisions, objectives and metrics. A
+  sidebar **Product graph** group opens three new pages: **Gaps** (the whole `idea gaps` report,
+  grouped and filterable, each gap with its closing action — assumption judgments in place, links to
+  the page that closes it, the CLI command to copy otherwise), **Outcomes** (per objective, each
+  metric's progress, drift with reasons, an inline-SVG sparkline, observation history with the change
+  sets that landed between readings, record and measure) and **Quality** (every dimension's checks,
+  methods, citations, linked requirements and measurement history). Define and Plan gain a review
+  convergence timeline; Graph health gains a chain diagram and a **See all** link to Gaps.
+- **`GET …/initiatives/{id}/review-telemetry`** (`?review=prd|execution_plan`): every review
+  cycle's convergence record — findings raised, new, re-raised and resolved by severity, demotions by
+  rule, open blocking count, outcome — read from the reviewer runs' manifests, oldest first.
+- **`GET …/initiatives/{id}/quality/history`** (`?dimension=`): every recorded quality result,
+  oldest first, with its linked requirement codes; an unknown dimension is a 400.
+
+- **A browser suite with an accessibility gate: `make e2e`** (`web/e2e`, Playwright + Chromium), and a
+  CI job that gates the release. It starts a hermetic demo daemon (isolated state dir and port, every
+  provider key unset), seeds an initiative, and drives idea → PRD → answer → plan and a no-op
+  revision → run with a note → diff → request changes with a note → approve → apply → verify →
+  activity and health, with an axe check (WCAG 2 A/AA) on every page that fails on serious or
+  critical violations. Fixing what it found raised `--text-faint`, `--text-muted`, `--inactive-fg`
+  and the primary green button to AA contrast and labelled Settings' Add-provider fields.
+- **Component tests** in jsdom (`web/src/components.test.tsx`, `@testing-library/react`) against a
+  stubbed daemon, for the note inputs, the change-set chip, NotFound, the decision page and
+  Settings' executor display.
+- **CLI/UI parity ledger** ([docs/ui-parity.md](docs/ui-parity.md)): every CLI verb with its UI
+  surface or the reason it is CLI-only (47 ui, 10 partial, 17 CLI-only today).
+  `TestUIParityLedger` fails when a verb is added without a row.
+- `GET …/questions` returns an answered question's `answer` text.
+
+- **Request changes says what to change.** `idea review <CHG> changes_requested --note "..."` (and
+  `reject --note`), `POST …/change-sets/{id}/review {"note"}`, and a note field behind Build's
+  **Request changes…**: the note is stored on the change set (`review_note`, migration 43) and
+  appended to the implementer's brief on the task's next run, labelled with the change set it came
+  from — that run only. Before, the verdict was all that was recorded and the rerun had the same
+  brief that produced the rejected work. A note with `approve` or `rerun` is a 400.
+- **`idea revise-plan --note "..."`, `POST …/revise-plan {"note"}`**, and a note field behind Plan's
+  **Ask for a revision**: the note joins the planner's inputs for that revision and is recorded on
+  its run.
+
+- **Live run view.** Every executor now narrates a coding agent's run as normalized **run events**
+  (`action`, `tool_call`, `tool_result`, `file_change`, `permission`, `message`, `thought`, `cost`,
+  `status`, `error`): ACP from its `session/update` notifications, fs writes and permission
+  answers; OpenHands from the Agent Server's events (exactly once, across daemon restarts); hermes,
+  omp and container from their output and a work-root scan; internal from a few synthetic events.
+  Events are redacted, bounded (per event, 5000 per run, 50 runs per project) and stored in a new
+  `run_events` table (migration 44, which also adds `remote_runs.run_id`) with a per-run `seq`.
+  The Build page's running card shows them in a run panel:
+  the current action, grouped tool calls, files with +/- counts, permissions answered, tokens, cost
+  and elapsed time, errors. See [docs/ui.md](docs/ui.md#run-panel) and
+  [docs/api.md](docs/api.md#run-events).
+- **Streaming that resumes.** `GET …/runs/{runId}/events` (paged) and
+  `GET …/runs/{runId}/events/stream` (SSE, resumes from `Last-Event-ID` or `?after=` - only what
+  was missed, never the whole run - and ends with `event: end`); `GET …/initiatives/{id}/current-run`.
+  The project stream `GET …/events` now also carries `run_event` messages, sends heartbeats and
+  proxy-friendly headers, and accepts `?after=` (including `now`). The UI follows the streams
+  instead of polling, with backoff, visibility awareness and a polling fallback.
+- **Steering.** `POST …/runs/{runId}/steer` sends a note to a running agent: ACP as its next prompt
+  turn (or at once, ending the current turn, with `interrupt`), OpenHands as a message into the
+  conversation; other executors answer `steering not supported by <kind>` and the note rides on the
+  task's next run. Notes are recorded on the run's events and manifest. See
+  [docs/agents.md](docs/agents.md#steering-a-running-agent).
+- **Open in OpenHands.** Optional `executor.openhands.ui_url` links each OpenHands run to its
+  conversation in that UI.
+- **Run report.** `GET …/runs/{runId}/report?format=json|md|zip`: events, files with line counts,
+  findings, cost and steering notes, from the run panel's Report buttons.
+- **`idea gaps`: a deterministic gap analysis over the Product Graph.** One command answers "what is
+  missing or no longer holds" — no model call, every trigger a comparison of recorded state:
+  `unimplemented_requirement` (no task / no applied change set), `unverified_requirement` (evidence
+  failed, evidence **stale** because the code changed after the pass was recorded, or no acceptance
+  criteria at all), `untested_acceptance_criterion`, `unvalidated_assumption` (ranked by how many
+  live nodes rest on it), `invalidated_decision` (dependents stale since it changed, a citing
+  requirement revised after it was decided, a refuted basis, or every citing requirement removed),
+  `orphan_task`, `orphan_change_set` and `stale_artifact` — and the outcome chain:
+  `orphan_requirement` (a requirement serving no active objective, high; or, when no objective is
+  defined at all, one medium `objectives_missing` gap, matching the PRD review), `unmeasured_objective`
+  (no measurable metric, high), `unserved_objective` (no requirement serves it, medium),
+  `drifting_metric` (`regressed` high, `off_track` medium or high on a guardrail breach, `stale`
+  low; `no_data` is not a gap) and `ineffective_requirement` (verified, but an objective it serves
+  has an off-track or regressed metric: "works, but fails its objective", high). Each gap carries a stable `kind`, a
+  `state` naming the trigger, a severity, the nodes (REQ-3, REQ-3/AC-2, TASK-2, CHG-4, DEC-1), a
+  one-line why and the command that closes it. `--kind` filters, `--all` covers every initiative,
+  `--json` is machine-readable, and `--fail-on <severity>` exits `5` (`gate_unmet`) so it can gate
+  CI; without it the command exits `0`. An initiative created before objectives existed carries a
+  medium `objectives_missing` gap, so a new CI gate is best started at `--fail-on high` (see
+  Changed — BREAKING). Exact triggers:
+  [architecture.md](docs/architecture.md#asking-the-graph-gaps). Also served as
+  `GET …/initiatives/{id}/gaps` and `GET /projects/{projectId}/gaps`, the read-only MCP `gaps`
+  tool, a **Product gaps** list on the web UI's Health page, and a `gap_summary` on `/guidance`
+  that `idea status` prints as one line.
+- **`idea assumption <id> accept|dispute|retract`** (`POST /projects/{projectId}/assertions/{id}/status`)
+  records a human judgment on an assumption or hypothesis. Nothing moved an assertion out of
+  `candidate` before, so an unvalidated assumption could be reported but never closed.
+
+- **`executor.kind: openhands` delegates the agent run to an OpenHands Agent Server**
+  ([docs/agents.md](docs/agents.md#openhands-agent-server-kind-openhands)). The server is the
+  execution plane; approval, workflow state, the change set and its review stay here. The work root
+  is uploaded as one tarball and the result downloaded back into the local work root, validated in
+  a staging directory first, so the snapshot → diff → secret sweep → review → apply pipeline is
+  unchanged. Runs are durable in a new `remote_runs` table (migration 40): a deterministic idempotency key per
+  (task, attempt) and a conversation id derived from it make a retry after a crash re-attach
+  instead of starting twice; events are ingested from the stored cursor exactly once into a
+  compact, redacted progress log for the live view; a daemon restart re-attaches to runs still
+  going (shutdown no longer stops them), catches up and follows them to the end; a finished run is
+  collected by the task's next `idea execute`; a vanished conversation fails with that reason;
+  `idea cancel` interrupts the run on the server and keeps what the agent wrote. Transient errors
+  retry with backoff. Configured with `idea executors setup --kind openhands --url … [--agent acp
+  --acp-command …] [--smoke] --yes` (probes the server and session key), checked by `idea doctor`,
+  listed by `GET /executors`, writable through `PUT /executors` (`openhands_url`,
+  `openhands_api_key_env`, `openhands_agent`, `openhands_acp_command`) and smoke-testable from
+  Settings. `auto` never picks it. Targets openhands-agent-server v1.54.0; tested against a fake
+  Agent Server and, for the protocol, against the real image with no LLM key — no real model has
+  edited files through it yet, so every combination is reported untested until `--smoke` passes.
+
+- **Verification beyond unit tests: quality dimensions with evidence.** `idea verify` now measures
+  seven dimensions of the applied work — `setup_reproducibility` (the documented setup/build/test
+  commands run in a fresh copy in the no-network sandbox), `docs_completeness`,
+  `api_compatibility` (a focused OpenAPI 3 diff and a Go exported-API diff; unacknowledged breaking
+  changes fail), `api_ergonomics` (a verification_engineer model review whose findings count only
+  when they cite a diff line), `security` (credential re-scan, deny-check summary, configured
+  scanners), `performance` (declared budgets compared with the previous measurement) and
+  `operational_readiness` — each a result of cited checks marked deterministic or model-reviewed,
+  recorded in the product record (`quality_results`, migration 41) and linked to requirements with `verifies` edges (`idea why
+  quality_result …`, `idea impact requirement …`). Unmeasured is reported as `not_measured`, never as
+  a pass. Policy is `verify.dimensions` in harness.yaml (`off` | `advisory` | `gate`); defaults
+  follow `review.rigor` — **`quick` measures nothing; `standard` makes setup, docs and API
+  compatibility advisory; `thorough` gates those three** (see Changed — BREAKING). New `GET`/`POST /api/v1/projects/{projectId}/initiatives/{id}/quality`
+  (read; 202 measure), `quality` on the verify response, `idea verify --no-measure`, a scorecard on
+  the Health and Build pages, and the opt-in `verify.setup.prepare` / scanner `network: true` —
+  the only sandboxed commands ever given network ([security model](docs/security-model.md#execution-gateway)).
+  See [configuration](docs/configuration.md#quality-dimensions-verify).
+
+- **Objectives & outcomes: the chain now runs Objective → Hypothesis → Requirement → … → Evidence →
+  product outcome.** Verification proves a requirement was built; it cannot say whether building it
+  mattered. The README's [Objectives & outcomes](README.md#objectives--outcomes) section has the
+  model and the exact drift rules.
+  - **Model.** `Objective` (`OBJ-n`; active/achieved/abandoned; optional owner) and
+    `OutcomeMetric` (`MET-n`; direction increase/decrease/maintain, optional baseline and guardrail,
+    target, cadence, and a `manual`, `command` or `url` source), and `MetricObservation` (value,
+    time, source, note, provenance, and the change sets attributed to it). New graph edges:
+    `requirement --serves--> objective` (N:M), `metric --measures--> objective`,
+    `assertion --predicts--> metric` for a hypothesis, and `metric --attributed_to--> change_set`.
+    Migration 42 (three tables: `objectives`, `outcome_metrics`, `metric_observations`).
+  - **PRD stage.** The PRD states objectives and metrics; codes stay stable across revisions like
+    `REQ` codes, and a human-added objective is never rewritten or superseded by a revision. The
+    PRD review's deterministic checks raise a high finding for a requirement serving no objective
+    and for an objective with no measurable metric (one medium finding when a PRD has no objectives
+    at all); the adversarial reviewer sees the objectives and may cite `OBJ-n`/`MET-n` under the
+    convergence citation rules.
+  - **Measurement.** `idea metric record` for a human's value; `idea metric measure` runs `command`
+    sources in the no-network check sandbox (workspace read-only at `/repo`, never the host) and
+    fetches `url` sources through the SSRF-guarded fetcher, only once the new
+    `outcomes.allow_url_sources` opts in. New `harness.yaml` section `outcomes:` (`image`,
+    `measure_timeout_seconds`, `allow_url_sources`).
+  - **Drift.** Deterministic `off_track` / `stale` / `regressed` / `no_data` / `on_track`, and the
+    "works, but fails its objective" signal for a verified requirement whose objective is failing —
+    on `idea status`, `idea next`, guidance, the Health page and the Define page. An observation
+    that moves a metric into `off_track` or `regressed` publishes the new integration event
+    `outcome.drifted` (Slack posts it by default).
+  - **Surfaces.** CLI: `idea objectives`, `idea objective add|edit|link`, `idea metrics`,
+    `idea metric add|edit|record|measure`. API: `…/objectives`, `…/objectives/{objectiveId}`,
+    `…/objectives/{objectiveId}/requirements`, `…/metrics`, `…/metrics/measure`,
+    `…/metrics/{metricId}`, `…/metrics/{metricId}/observations`, `…/outcomes`. MCP: read tools
+    `list_objectives` and `list_metrics`, judgment tool `record_metric`.
+  - **For graph-gap analysis.** Read-only store queries `ObjectivesWithoutMetrics`,
+    `ObjectivesWithoutRequirements`, `RequirementsWithoutObjectives`, `DriftingMetrics` and
+    `RequirementOutcomeDrift` — all views of one rule, `domain.AnalyzeOutcomeChain`, which the
+    outcome report (`GET …/outcomes`, the Health page), `idea gaps` and the PRD review's outcome
+    checks now share. A requirement counts as serving an objective only if that objective is
+    *active* (not achieved or abandoned), as the review already required; the outcome report's
+    `requirements_without_objectives` is now gated on an active objective existing (it was any
+    non-superseded one), and `objectives_without_metrics` counts only measurable metrics.
+
+- **Signed, attested release artifacts with SBOMs and a Homebrew cask** (deferred.md, audit 7 /
+  K4). The release job now signs `checksums.txt` with keyless cosign (Sigstore, the workflow's
+  GitHub OIDC identity), records a GitHub build-provenance attestation for every archive, ships an
+  SPDX SBOM per archive generated by syft, and publishes a cask to `devarispbrown/homebrew-tap` so
+  `brew install devarispbrown/tap/idea-harness` works once the repository is public.
+  [RELEASING.md](RELEASING.md) has the verification commands.
+
+- **`idea mcp`: an MCP server, so Claude Code, Cursor, Codex or any Model Context Protocol client
+  can drive idea-harness.** A stdio server (`claude mcp add idea -- idea mcp`) that is a client of
+  the daemon like every other command — it auto-starts the daemon, uses the CLI's token, never
+  opens the state database, and is subject to every gate the daemon enforces. Twenty-six tools:
+  reads (`list_initiatives`, `status`, `next_step`, `show_prd`, `list_tasks`, `list_findings`,
+  `list_questions`, `list_decisions`, `why`, `impact`, `trace`, `gaps`, `list_objectives`,
+  `list_metrics`, `changed`, `list_change_sets`, `show_change_set`, `get_operation`), judgments
+  (`new_initiative`, `answer_question`, `resolve_decision`, `review_change_set`, `record_metric`,
+  `verify`) and, only with `--allow-apply`,
+  `apply_change_set` and `revert_change_set`. `--read-only` exposes the reads alone. Each tool has
+  a JSON Schema for its arguments and `readOnlyHint`/`destructiveHint` annotations, and answers
+  with concise text plus `structuredContent`. Artifacts are readable as
+  `idea://initiative/{id}/{kind}` resources. Daemon refusals come back as `isError` tool results
+  carrying the daemon's message; malformed requests are JSON-RPC errors. Speaks the `2026-07-28`
+  protocol revision and the `initialize`-handshake revisions back to `2024-11-05`. See
+  [`docs/mcp.md`](docs/mcp.md).
+
+- **`acp` executor kind: any Agent Client Protocol agent as the coding agent.** Claude Code
+  (`claude-code-acp`), Codex (`codex-acp`), Gemini CLI (`gemini --experimental-acp`), OpenHands
+  (`openhands acp`), OpenCode — anything speaking ACP's JSON-RPC over stdio. The agent runs in
+  the same hardened container as hermes/omp (`docker run -i`), and idea-harness is its ACP client:
+  `initialize` advertising only `fs.readTextFile`/`fs.writeTextFile` (never `terminal`),
+  `session/new` with `cwd: /work`, `session/prompt` with the brief, success on `end_turn`. File
+  reads/writes are confined to the work root (cleaned and symlink-resolved; escapes answer
+  `-32602`). Permission requests are auto-answered `allow_once` — the container is the boundary —
+  and each is recorded on the run manifest. A prompt turn is bounded by
+  `executor.acp.timeout_seconds` (default 840 s) and ends with `session/cancel`, then a kill.
+  Configure with `executor.image`, `executor.acp.command` (argv inside the image; `{model}` and
+  `{bare_model}` substituted), optionally `executor.acp.key_env`; or
+  `idea executors setup --kind acp --image <img> --acp-command <argv> [--acp-key-env NAME]`, which
+  verifies the image with a keyless, network-less ACP `initialize` handshake. `--smoke`, the
+  Build page smoke test and `PUT /executors` (`acp_command`, `acp_key_env`) support it; the compat
+  table reports every `acp` combination as untested until one is smoke-verified.
+- **`executor.mcp_servers`: MCP pass-through for ACP agents**, in ACP's `McpServer` shape (stdio
+  `command`/`args`/`env`, or `type: http|sse` with `url`/`headers`). Values are a literal `value`
+  or a `value_env` naming a variable resolved like provider keys (daemon environment, then `.env`);
+  a literal that looks like a secret is refused at load, a `value_env` set nowhere stops the run
+  before the container starts, and resolved values are redacted from agent output. See
+  `docs/agents.md` for the trust tradeoff (stdio servers run inside the agent's container).
+- **Executor provenance on the run manifest**: `executor.requested`/`resolved`/`image`/`warning`
+  and, for ACP, `executor.permissions` (new `run_manifests.executor_json` column, migration 37).
+- **`executor_resolution` on the Build page guidance and `GET /executors`**, and
+  `executor_resolved`/`executor_warning` on `POST …/execute`, so every client can say which
+  executor a run uses and when it writes no real code. `idea doctor` prints it (`⚠ executor: …` for
+  the fallback, as a warning that does not fail the command).
+
+- **`idea eval`** — the first measurement this project has. It runs a fixed suite of seven small
+  greenfield ideas end to end on a private in-process daemon (idea → PRD review → plan → change set
+  → apply → verify) with an automatic judgment policy (`--policy approve|stop`), and reports per
+  case and in aggregate: stage reached, PRD/plan review convergence and cycles, human-judgment stops
+  and where, change sets produced and applied, verification, cost, tokens, wall time, and every
+  review cycle's convergence record — as markdown, and as JSON with `--json-out`. `--baseline`
+  compares against a saved report and exits non-zero on a regression. Without `--model` it runs a
+  deterministic scripted provider whose scenarios include the measured non-convergence (a reviewer
+  re-raising rephrased findings, run under both the guarded and the legacy loop) and a genuine
+  blocker that must still park for a human; that run is a Go test, so CI gates on it against
+  `internal/eval/testdata/baseline-scripted.json`. With `--model` it measures a real provider.
+  Acceptance checks are skipped (and reported as skipped) under the placeholder internal executor.
+- `daemon.Runtime.RegisterProvider` and `daemon.Runtime.InitiativeRunStats` (Go-only, no HTTP
+  route): the hooks `idea eval` uses to put a scripted provider behind the real registry and to read
+  token usage and review telemetry. `store.SumRunUsage` sums an initiative's run usage.
+- **Convergence telemetry on the run manifest.** Each adversarial review run's manifest records the
+  cycle: findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
+  blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
+  `blocked`). Stored in `run_manifests.review_json` (migration 38); `store.ListReviewTelemetry`
+  reads an initiative's history.
+- `schema.Review` findings accept optional `requirement`, `reraises` and `justification`;
+  `schema.PRD` accepts optional `review_responses`.
+
+- **Slack and Linear integrations** ([docs/integrations.md](docs/integrations.md)), configured under
+  `integrations:` in `harness.yaml`, tokens from the environment or `.env` only. Neither needs a
+  public URL.
+  - **An integration event bus.** A per-project dispatcher tails the event log (the source the SSE
+    endpoint streams) into typed events — initiative created, needs judgment with its reason,
+    PRD/plan approved, change set started/ready/approved/rejected/applied/reverted, verify
+    passed/failed, run failed, task status — and delivers them through a SQLite outbox
+    (migration 39): per-subscriber cursor, unique idempotency key, in-order delivery, exponential
+    backoff honouring `Retry-After`, and dead-lettering after 8 attempts. A restart resumes without
+    re-posting; enabling an integration does not post history; the engine never waits on it.
+  - **Slack.** Block Kit notifications threaded per initiative, `needs_judgment` broadcast with
+    configurable mentions; over Socket Mode, **Approve/Reject** buttons on change sets ready for
+    review, **Accept recommendations** and per-question **Answer** on judgment items, and
+    `/idea new <idea>` / `/idea status`. Every action goes through the daemon's own HTTP handler, so
+    it meets the same gates and gets the same refusals as the CLI, and only users in
+    `integrations.slack.allowed_users` may act (empty, the default, is notify-only). App manifest:
+    [docs/integrations/slack-manifest.yaml](docs/integrations/slack-manifest.yaml).
+  - **Linear.** An approved execution plan becomes a parent issue plus one sub-issue per task
+    (requirement codes, why-chain), kept in step with change sets and task status, with comments
+    for reviews, applies, reverts and verification. Issues carrying the inbound label (default
+    `idea`) become initiatives, with the issue text attached as an untrusted context document, never
+    as the description. A Linear-side cancellation records an `initiative.external_note` and changes
+    nothing.
+  - `idea integrations [status]`, `idea integrations test slack|linear`, an integrations summary in
+    `idea doctor` (reported, not failing), `GET /projects/{projectId}/integrations`,
+    `POST /projects/{projectId}/integrations/{name}/test`, and **Settings → Integrations** in the UI.
+- The redactor's catalog now covers Slack app-level tokens (`xapp-…`) and Linear API keys
+  (`lin_api_…`), and integration tokens are fed to it by their configured env names.
+
+### Security
+
+- **A remote execution plane is a trust boundary, and the harness treats it as one.** For
+  `openhands`, the server URL must be `https` unless loopback and carry no credentials (refused at
+  config load, by `PUT /executors`, by setup and before every dispatch); the session key is read
+  from the variable `executor.openhands.api_key_env` names, never stored, and sent in a header or
+  the websocket's first frame, never a URL; both keys are stripped from everything stored from the
+  server's events. What leaves the machine — the seeded work root, the brief, the provider key
+  unless `withhold_provider_key` — is listed in
+  [docs/security-model.md](docs/security-model.md#the-remote-execution-plane-openhands). The
+  downloaded archive is untrusted input: escaping paths, links, devices and control-plane entries
+  are skipped and size caps apply before anything is mirrored into the work root. The trust tier
+  `remote_external` now grants `read_file`/`write_file` to that kind; an unknown executor kind no
+  longer borrows `remote_external` but gets no tier at all, so it stays fail-closed. `GET
+  /executors` reports the new `sandbox_mode: remote`.
+
+- **The daemon log is redacted.** It was the one persisted surface the redaction
+  choke point did not reach, and `GET /api/v1/logs` served it verbatim (deferred
+  since audit 3 / S4). The daemon's `slog` handler is now wrapped so the message
+  and every attribute value — errors, nested groups, attributes bound with
+  `With`, and a value whose key names a credential (`"password", "…"`) — pass
+  through the credential catalog plus every loaded project's secret values and
+  the daemon's API token before reaching `daemon.log`. The handler is also the
+  process default, so `slog.Default()` callers and `net/http`'s error log go
+  through it. `GET /api/v1/logs` redacts each line again on read, which covers
+  log files written before this release and raw stderr (a panic trace).
+- **`raw-blobs/` stays unredacted, and is now documented and locked down as
+  such.** Apply writes from it and revert restores from it, both keyed on the
+  digest of the real bytes, so masking it would write `[REDACTED]` into source
+  files. `docs/security-model.md` now states exactly what it holds, what can be
+  unmasked in it, and every reader (all API surfaces over it redact, except the
+  image-doc download). `blob.New` re-tightens an existing store directory to
+  `0700`; blobs were already `0600`.
+- **A vision description is redacted even with no redactor wired.** It already
+  went through the project redactor and the redacting blob store; an engine
+  built without a redactor now falls back to the pattern catalog instead of
+  relying on which store is wired. New tests pin that an OCR'd key never
+  reaches the stored description or a prompt, that a `.docx` carrying a key is
+  rejected on its extracted text, and that a key in an image's filename is
+  masked in its title.
+- **`pii`, `path_escape` and `trust_deny` are produced.** All three were
+  declared in `DenyCode` with no code path emitting them.
+  - `pii`: Execute scans produced files for payment card numbers (issuer
+    prefix and length, printed grouping, Luhn, published test numbers
+    excluded) and dashed US SSNs (issued ranges, published examples excluded).
+    A match raises a coded, blocking finding with a masked preview — not a
+    reject — that `--accept-findings` never covers; a human dispositions it
+    `accepted_risk` individually. Advisory in test/fixture paths. Emails and
+    phone numbers are deliberately not detected.
+  - `path_escape`: apply refuses, before writing anything, a change whose path
+    is absolute, unclean, or resolves outside the workspace or into
+    `.git/`/`.idea-harness/` through a symlink. The change set is rejected and
+    its task reopened. A symlink into the control plane previously passed the
+    lexical control-plane check.
+  - `trust_deny`: the executor `write_file` trust gate now refuses with a
+    `workflow.SystemDenyError` carrying the code. No shipped executor kind
+    trips it; it is the fail-closed backstop for a kind with no trust mapping.
+- **Changes to auto-executing files need an explicit sign-off.** A change set
+  touching CI definitions (`.github/workflows/`, `.gitlab-ci.yml`,
+  `.circleci/`, `Jenkinsfile`, …), tree-installed git hooks (`.husky/`,
+  `.pre-commit-config.yaml`, …) or `.envrc`/`.devcontainer/`/
+  `.vscode/tasks.json` gets one blocking `protected_path` finding. It is not a
+  deny, since an initiative may be about CI: a plain `approve` is refused and
+  `idea review <CHG-n> approve --accept-findings` records the human sign-off.
+  Build files (`Makefile`, `package.json`, …) are deliberately left off.
+
+- **The default Hermes image is pinned by digest**, and `executor.PullImage` refuses a pulled
+  image whose `RepoDigests` do not contain the pinned digest for that repository — for the default
+  and for any `--image` given as `repo[:tag]@sha256:…`. Signature verification is still not done
+  (recorded in `docs/plans/deferred.md`).
+- **The `acp` kind forwards secrets without an env-file**: the provider key and MCP `value_env`
+  values are passed as `-e NAME` with the value in the docker CLI's own environment, never in argv;
+  MCP values reach the agent in `session/new` on its stdin.
+
+### Fixed
+
+- **Web UI review fixes.** Build: the change-set chip reads the status (an applied demo change set is
+  `APPLIED` with a `DEMO` marker, not "PLACEHOLDER CHANGE (DEMO)"); "Approve, accepting *n*
+  findings" appears only when the reviewer left open blocking findings; "Starting TASK-1…" no longer
+  outlives the change set; the run note is a labelled field and the failed-run banner's Retry takes
+  a note too. Plan: the pill says "approved" on every viewport and the bar stays (pointing at Build)
+  once a change set exists. Verify: Pass/Fail are not shown under the note saying they are locked.
+  Settings: the executor kind shows what `harness.yaml` asks for (`auto`) and what it resolves to;
+  no "pinned default image is pulled" for `internal`; a ready provider in demo mode reads "ready ·
+  not selected"; the model-list status stays in the Model card instead of an unprompted key error
+  at the bottom; one demo banner, not two. Navigation: **Activity** opens the What changed
+  timeline, Explore's **trace** opens the document's lineage route, and Health has its own link.
+  Define: "Accept all recommendations" says what it did and that questions are never answered for
+  you (and is not offered when only questions are open); answered questions stay, with their
+  answer, under Resolved. Every initiative route renders "Initiative not found" for an unknown id,
+  and a bad decision id renders "Decision not found" instead of an empty thread with a Send box.
+
+- **A plan revision that changed nothing minted "v2" and renumbered every task.** Every regenerated
+  document started a new artifact family at v1, so Plan offered "Diff v1 → v1" (which the diff
+  endpoint then refused: different artifacts), and revise-plan recreated every task through the
+  monotonic task counter, turning TASK-1 into TASK-2. A regenerated design document or plan is now
+  the next version of the same artifact and an identical one records nothing; a regenerated task
+  that kept its title keeps its code. A revised PRD is likewise v2 of the PRD, not a second v1.
+- **The What changed panel showed raw event names** (`stale.cleared`, `tasks.deleted`,
+  `change_set.status_changed`, category `Change_set`). Every event type now narrates as words.
+
+- **Answered questions reached the model as "(answer not found)".** The answer
+  text is written to the redacted store and was read back from the raw one,
+  which in the daemon is a different directory; tests wired one store as both.
+  Found auditing every `raw-blobs/` read path.
+
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed — BREAKING

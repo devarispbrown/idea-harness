@@ -375,16 +375,122 @@ const (
 	EdgeInvalidates EdgeType = "invalidates"
 	EdgeProducedBy  EdgeType = "produced_by"
 	EdgeConsumes    EdgeType = "consumes"
+	// The outcome chain (Objective -> Hypothesis -> Requirement -> ... ->
+	// Evidence -> outcome). Each points from the dependent node to the node it
+	// exists for, like implements and derived_from, so `why` walks toward the
+	// objective and `impact` walks away from it:
+	//
+	//   requirement --serves--> objective        (N:M, the PRD or a human links it)
+	//   metric      --measures--> objective      (a metric belongs to one objective)
+	//   assertion   --predicts--> metric         ("we believe X will move MET-2")
+	//   metric      --attributed_to--> change_set (CHG-n landed between two observations)
+	//
+	// attributed_to points from the metric to the change set so that `impact
+	// requirement REQ-1` -- which already reaches a task's change sets --
+	// continues on to the outcome metrics those change sets moved.
+	EdgeServes       EdgeType = "serves"
+	EdgeMeasures     EdgeType = "measures"
+	EdgePredicts     EdgeType = "predicts"
+	EdgeAttributedTo EdgeType = "attributed_to"
 )
 
 func (e EdgeType) Valid() bool {
 	switch e {
 	case EdgeSupports, EdgeContradicts, EdgeDerivedFrom, EdgeDependsOn, EdgeImplements,
 		EdgeAddresses, EdgeTests, EdgeVerifies, EdgeReviews, EdgeSupersedes,
-		EdgeInvalidates, EdgeProducedBy, EdgeConsumes:
+		EdgeInvalidates, EdgeProducedBy, EdgeConsumes,
+		EdgeServes, EdgeMeasures, EdgePredicts, EdgeAttributedTo:
 		return true
 	}
 	return false
+}
+
+// ObjectiveStatus is the lifecycle of a product Objective. Only an active
+// objective is checked for drift or required to have a metric: an achieved or
+// abandoned one is kept as a record, not as a live promise.
+type ObjectiveStatus string
+
+const (
+	ObjectiveActive    ObjectiveStatus = "active"
+	ObjectiveAchieved  ObjectiveStatus = "achieved"
+	ObjectiveAbandoned ObjectiveStatus = "abandoned"
+)
+
+func (s ObjectiveStatus) Valid() bool {
+	switch s {
+	case ObjectiveActive, ObjectiveAchieved, ObjectiveAbandoned:
+		return true
+	}
+	return false
+}
+
+// MetricDirection is which way an OutcomeMetric is supposed to move. maintain
+// means "hold it at the target": the value should not move away from it.
+type MetricDirection string
+
+const (
+	DirectionIncrease MetricDirection = "increase"
+	DirectionDecrease MetricDirection = "decrease"
+	DirectionMaintain MetricDirection = "maintain"
+)
+
+func (d MetricDirection) Valid() bool {
+	switch d {
+	case DirectionIncrease, DirectionDecrease, DirectionMaintain:
+		return true
+	}
+	return false
+}
+
+// MetricSourceKind is where an OutcomeMetric's observations come from.
+// manual is recorded by a human (`idea metric record`); command runs a shell
+// command in the no-network check sandbox and reads the number it prints;
+// url fetches a JSON document through the SSRF-guarded fetcher and reads the
+// number at a JSON pointer. Neither command nor url ever runs on its own: a
+// human (or an MCP client) asks for `idea metric measure`.
+type MetricSourceKind string
+
+const (
+	MetricSourceManual  MetricSourceKind = "manual"
+	MetricSourceCommand MetricSourceKind = "command"
+	MetricSourceURL     MetricSourceKind = "url"
+)
+
+func (k MetricSourceKind) Valid() bool {
+	switch k {
+	case MetricSourceManual, MetricSourceCommand, MetricSourceURL:
+		return true
+	}
+	return false
+}
+
+// MetricDrift is the deterministic outcome status of a metric
+// (EvaluateMetricDrift). One primary value is reported, by precedence
+// regressed > off_track > stale > no_data > on_track; the individual signals
+// are carried alongside it on MetricStatus, so a metric that is both stale and
+// off track says so.
+type MetricDrift string
+
+const (
+	DriftOnTrack   MetricDrift = "on_track"
+	DriftOffTrack  MetricDrift = "off_track"
+	DriftStale     MetricDrift = "stale"
+	DriftRegressed MetricDrift = "regressed"
+	DriftNoData    MetricDrift = "no_data"
+)
+
+func (d MetricDrift) Valid() bool {
+	switch d {
+	case DriftOnTrack, DriftOffTrack, DriftStale, DriftRegressed, DriftNoData:
+		return true
+	}
+	return false
+}
+
+// Drifting reports whether d is a status a human should hear about: the
+// metric is going the wrong way, or nobody has looked at it in time.
+func (d MetricDrift) Drifting() bool {
+	return d == DriftOffTrack || d == DriftRegressed || d == DriftStale
 }
 
 // TaskStatus is the lifecycle of an execution-plan Task.
@@ -588,11 +694,325 @@ const (
 	SandboxContainer       SandboxMode = "container"
 	SandboxLocalRestricted SandboxMode = "local_restricted"
 	SandboxHostApproved    SandboxMode = "host_approved"
+	// SandboxRemote: the agent runs on another machine (the openhands kind's
+	// Agent Server), inside whatever sandbox that server provides. The
+	// harness cannot inspect or enforce it, so it does not claim "container"
+	// for it -- what it does enforce is on the way back: the returned files
+	// go through the same snapshot, diff, secret sweep and review as any
+	// local agent's (docs/security-model.md).
+	SandboxRemote SandboxMode = "remote"
 )
 
 func (m SandboxMode) Valid() bool {
 	switch m {
-	case SandboxContainer, SandboxLocalRestricted, SandboxHostApproved:
+	case SandboxContainer, SandboxLocalRestricted, SandboxHostApproved, SandboxRemote:
+		return true
+	}
+	return false
+}
+
+// GapKind names one class of hole `idea gaps` finds in the Product Graph. The
+// values are a public contract (the `kind` field of every gap, the --kind
+// filter, the MCP `gaps` tool): add new ones, never rename one.
+//
+// The set is deliberately open-ended. Each kind is one analyzer in
+// projection.BuildGaps' table; a new kind is a new
+// constant here, its spec enum entry, and one more analyzer -- nothing that
+// renders or filters gaps switches on the kind.
+type GapKind string
+
+const (
+	GapUnimplementedRequirement    GapKind = "unimplemented_requirement"
+	GapUnverifiedRequirement       GapKind = "unverified_requirement"
+	GapUntestedAcceptanceCriterion GapKind = "untested_acceptance_criterion"
+	GapUnvalidatedAssumption       GapKind = "unvalidated_assumption"
+	GapInvalidatedDecision         GapKind = "invalidated_decision"
+	GapOrphanTask                  GapKind = "orphan_task"
+	GapOrphanChangeSet             GapKind = "orphan_change_set"
+	GapStaleArtifact               GapKind = "stale_artifact"
+	// The outcome chain (domain.AnalyzeOutcomeChain): work with no stated
+	// outcome, outcomes nobody measures or aims at, metrics drifting, and
+	// verified work whose objective is failing.
+	GapOrphanRequirement      GapKind = "orphan_requirement"
+	GapUnmeasuredObjective    GapKind = "unmeasured_objective"
+	GapUnservedObjective      GapKind = "unserved_objective"
+	GapDriftingMetric         GapKind = "drifting_metric"
+	GapIneffectiveRequirement GapKind = "ineffective_requirement"
+)
+
+// GapKinds is every kind in report order: the order human output groups
+// them in, and the order --kind's error lists them in.
+var GapKinds = []GapKind{
+	GapUnimplementedRequirement, GapUnverifiedRequirement, GapUntestedAcceptanceCriterion,
+	GapUnvalidatedAssumption, GapInvalidatedDecision,
+	GapOrphanTask, GapOrphanChangeSet, GapStaleArtifact,
+	GapOrphanRequirement, GapUnmeasuredObjective, GapUnservedObjective,
+	GapDriftingMetric, GapIneffectiveRequirement,
+}
+
+func (k GapKind) Valid() bool {
+	for _, v := range GapKinds {
+		if v == k {
+			return true
+		}
+	}
+	return false
+}
+
+// GapState says which trigger of a kind fired, so a client can tell "no
+// evidence" from "evidence failed" from "evidence stale" without parsing the
+// sentence. Each kind uses a fixed subset; docs/architecture.md ("Asking the
+// graph: gaps") lists which and exactly what fires each.
+type GapState string
+
+const (
+	// unimplemented_requirement
+	GapStateNoTask     GapState = "no_task"
+	GapStateNotApplied GapState = "not_applied"
+	// unverified_requirement / untested_acceptance_criterion
+	GapStateNoCriteria     GapState = "no_criteria"
+	GapStateNoEvidence     GapState = "no_evidence"
+	GapStateEvidenceFailed GapState = "evidence_failed"
+	GapStateEvidenceStale  GapState = "evidence_stale"
+	// unvalidated_assumption
+	GapStateUnvalidated GapState = "unvalidated"
+	GapStateDisputed    GapState = "disputed"
+	GapStateRefuted     GapState = "refuted"
+	// invalidated_decision
+	GapStateDependentsStale     GapState = "dependents_stale"
+	GapStateRequirementRevised  GapState = "requirement_revised"
+	GapStateRequirementsRemoved GapState = "requirements_removed"
+	GapStateBasisRefuted        GapState = "basis_refuted"
+	// orphan_task / orphan_change_set
+	GapStateNoRequirement GapState = "no_requirement"
+	GapStateTaskMissing   GapState = "task_missing"
+	GapStateTaskOrphaned  GapState = "task_orphaned"
+	// stale_artifact
+	GapStateUpstreamNewer GapState = "upstream_newer"
+	// orphan_requirement
+	GapStateNoObjective       GapState = "no_objective"
+	GapStateObjectivesMissing GapState = "objectives_missing"
+	// unmeasured_objective (unserved_objective reuses no_requirement)
+	GapStateNoMetric GapState = "no_metric"
+	// drifting_metric (the MetricDrift values that count as drifting)
+	GapStateOffTrack  GapState = "off_track"
+	GapStateRegressed GapState = "regressed"
+	GapStateStale     GapState = "stale"
+	// ineffective_requirement
+	GapStateWorksButFailsObjective GapState = "works_but_fails_objective"
+)
+
+func (s GapState) Valid() bool {
+	switch s {
+	case GapStateNoTask, GapStateNotApplied, GapStateNoCriteria, GapStateNoEvidence,
+		GapStateEvidenceFailed, GapStateEvidenceStale, GapStateUnvalidated, GapStateDisputed,
+		GapStateRefuted, GapStateDependentsStale, GapStateRequirementRevised,
+		GapStateRequirementsRemoved, GapStateBasisRefuted, GapStateNoRequirement,
+		GapStateTaskMissing, GapStateTaskOrphaned, GapStateUpstreamNewer,
+		GapStateNoObjective, GapStateObjectivesMissing, GapStateNoMetric,
+		GapStateOffTrack, GapStateRegressed, GapStateStale, GapStateWorksButFailsObjective:
+		return true
+	}
+	return false
+}
+
+// RemoteRunStatus is where a run delegated to a remote execution plane (the
+// openhands executor's Agent Server) stands, as the harness last recorded it.
+// The harness stays authoritative: the remote server's own status is an input
+// to this, never a substitute for it.
+type RemoteRunStatus string
+
+const (
+	// RemoteRunDispatching: the record exists, the remote conversation may or
+	// may not. A crash here is resolved by re-dispatching under the same
+	// idempotency key, which finds the conversation if it was created.
+	RemoteRunDispatching RemoteRunStatus = "dispatching"
+	// RemoteRunRunning: the remote conversation exists and has not finished.
+	RemoteRunRunning RemoteRunStatus = "running"
+	// RemoteRunFinished: the remote agent finished successfully, and its
+	// files have not been brought back yet (the daemon restarted, or
+	// reconciliation saw it finish). The next execute of the same task
+	// collects it instead of starting again.
+	RemoteRunFinished RemoteRunStatus = "finished"
+	// RemoteRunCollected: the files were brought back into the local work
+	// root and the change-set pipeline took over. Terminal.
+	RemoteRunCollected RemoteRunStatus = "collected"
+	// RemoteRunFailed: the remote agent errored, the conversation vanished,
+	// or the result could not be used. Terminal; Error says why.
+	RemoteRunFailed RemoteRunStatus = "failed"
+	// RemoteRunCancelled: stopped by the operator (idea cancel / Stop).
+	// Terminal.
+	RemoteRunCancelled RemoteRunStatus = "cancelled"
+)
+
+func (s RemoteRunStatus) Valid() bool {
+	switch s {
+	case RemoteRunDispatching, RemoteRunRunning, RemoteRunFinished, RemoteRunCollected, RemoteRunFailed, RemoteRunCancelled:
+		return true
+	}
+	return false
+}
+
+// Terminal reports whether nothing further will happen to the run: a new
+// attempt of the same task starts a new remote run rather than re-attaching.
+func (s RemoteRunStatus) Terminal() bool {
+	return s == RemoteRunCollected || s == RemoteRunFailed || s == RemoteRunCancelled
+}
+
+// QualityDimension is one quality dimension `idea verify` measures beyond the
+// acceptance tests (verify.dimensions in harness.yaml). Each produces a
+// QualityResult with pass/warn/fail -- or an explicit not_measured -- and
+// file/requirement citations, recorded as evidence in the Product Graph.
+type QualityDimension string
+
+const (
+	QualitySetupReproducibility QualityDimension = "setup_reproducibility"
+	QualityDocsCompleteness     QualityDimension = "docs_completeness"
+	QualityAPICompatibility     QualityDimension = "api_compatibility"
+	QualityAPIErgonomics        QualityDimension = "api_ergonomics"
+	QualitySecurity             QualityDimension = "security"
+	QualityPerformance          QualityDimension = "performance"
+	QualityOperationalReadiness QualityDimension = "operational_readiness"
+)
+
+// QualityDimensions is every dimension, in scorecard order. The order is the
+// order a reader meets them in -- "does it build from a clean checkout" first,
+// the judgment calls last -- not alphabetical.
+var QualityDimensions = []QualityDimension{
+	QualitySetupReproducibility,
+	QualityDocsCompleteness,
+	QualityAPICompatibility,
+	QualityAPIErgonomics,
+	QualitySecurity,
+	QualityPerformance,
+	QualityOperationalReadiness,
+}
+
+func (d QualityDimension) Valid() bool {
+	for _, v := range QualityDimensions {
+		if v == d {
+			return true
+		}
+	}
+	return false
+}
+
+// QualityStatus is a dimension's (or one of its checks') outcome.
+//
+// not_measured is not a softer pass: it is what a dimension reports when the
+// harness could not look -- no Docker, no toolchain image, a vulnerability
+// database that needs the network, a demo model that cannot review -- and a
+// gated dimension that was not measured does not satisfy the gate.
+// not_applicable is the opposite case: the harness looked and there was
+// nothing for the dimension to judge (no OpenAPI spec and no Go package
+// changed, say), which does satisfy it.
+type QualityStatus string
+
+const (
+	QualityPass          QualityStatus = "pass"
+	QualityWarn          QualityStatus = "warn"
+	QualityFail          QualityStatus = "fail"
+	QualityNotMeasured   QualityStatus = "not_measured"
+	QualityNotApplicable QualityStatus = "not_applicable"
+)
+
+func (s QualityStatus) Valid() bool {
+	switch s {
+	case QualityPass, QualityWarn, QualityFail, QualityNotMeasured, QualityNotApplicable:
+		return true
+	}
+	return false
+}
+
+// SatisfiesGate reports whether a gated dimension with this status lets the
+// verification gate pass. warn does (it is a note, not a failure); fail and
+// not_measured do not.
+func (s QualityStatus) SatisfiesGate() bool {
+	switch s {
+	case QualityPass, QualityWarn, QualityNotApplicable:
+		return true
+	}
+	return false
+}
+
+// QualityMode is a dimension's policy: off (not measured at all), advisory
+// (measured and reported, never blocks) or gate (a fail or not_measured
+// result keeps the verification gate from passing).
+type QualityMode string
+
+const (
+	QualityModeOff      QualityMode = "off"
+	QualityModeAdvisory QualityMode = "advisory"
+	QualityModeGate     QualityMode = "gate"
+)
+
+func (m QualityMode) Valid() bool {
+	switch m {
+	case QualityModeOff, QualityModeAdvisory, QualityModeGate:
+		return true
+	}
+	return false
+}
+
+// QualityMethod says how a quality check reached its result: a deterministic
+// check (a parser, a heuristic, a command run in the sandbox) or a model
+// review (the verification_engineer role, whose findings must cite lines).
+type QualityMethod string
+
+const (
+	QualityMethodDeterministic QualityMethod = "deterministic"
+	QualityMethodModel         QualityMethod = "model"
+)
+
+func (m QualityMethod) Valid() bool {
+	switch m {
+	case QualityMethodDeterministic, QualityMethodModel:
+		return true
+	}
+	return false
+}
+
+// RunEventKind is the vocabulary of a normalized run event (RunEvent): what
+// one step of a running coding agent was, independent of which executor
+// produced it. Clients switch on it to group tool calls, list files, show the
+// current action and surface errors.
+type RunEventKind string
+
+const (
+	// RunEventAction is a coarse step with no finer structure: a line of a
+	// CLI agent's output, an executor phase.
+	RunEventAction RunEventKind = "action"
+	// RunEventToolCall is the agent starting a tool call (ACP tool_call, an
+	// OpenHands ActionEvent). Its ToolCallID groups the later results.
+	RunEventToolCall RunEventKind = "tool_call"
+	// RunEventToolResult is a tool call's progress or outcome (ACP
+	// tool_call_update, an OpenHands ObservationEvent).
+	RunEventToolResult RunEventKind = "tool_result"
+	// RunEventFileChange is a file the agent wrote: live from an fs write, a
+	// file-editing tool or a work-root scan, and authoritative (with line
+	// counts) from the orchestrator's own diff once the agent has finished.
+	RunEventFileChange RunEventKind = "file_change"
+	// RunEventPermission is a permission request an ACP agent made and the
+	// answer the harness gave on the operator's behalf.
+	RunEventPermission RunEventKind = "permission"
+	// RunEventMessage is text: the agent's own message, or a steering note
+	// from the human (Source "user").
+	RunEventMessage RunEventKind = "message"
+	// RunEventThought marks that the agent is reasoning. The content is never
+	// kept (§50: chain-of-thought is not exposed) -- only the fact.
+	RunEventThought RunEventKind = "thought"
+	// RunEventCost is a token/cost delta the agent or server reported.
+	RunEventCost RunEventKind = "cost"
+	// RunEventStatus is a lifecycle change: started, a phase, finished.
+	RunEventStatus RunEventKind = "status"
+	// RunEventError is a failure the agent or the executor reported.
+	RunEventError RunEventKind = "error"
+)
+
+func (k RunEventKind) Valid() bool {
+	switch k {
+	case RunEventAction, RunEventToolCall, RunEventToolResult, RunEventFileChange, RunEventPermission,
+		RunEventMessage, RunEventThought, RunEventCost, RunEventStatus, RunEventError:
 		return true
 	}
 	return false
