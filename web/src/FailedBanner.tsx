@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { errMessage, isOperationInFlight, shouldResetRetryBusy } from "./buildLogic";
 import { get, post } from "./api";
+import NoteField from "./NoteField";
 
 interface OperationRef {
   id: string;
@@ -26,9 +27,15 @@ export default function FailedBanner({
   reason?: string;
   defaultModel?: string;
   title?: string;
-  onRetry?: () => Promise<string>;
+  // Receives the banner's note (possibly empty) so the caller's own retry
+  // carries it.
+  onRetry?: (note: string) => Promise<string>;
 }) {
   const [model, setModel] = useState(defaultModel ?? "");
+  // A note steering the retry -- `idea retry --note` / `idea execute --note`
+  // had it; this banner's Retry did not, so a retry from the UI re-ran with
+  // exactly the inputs that had just failed.
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // The operation id our own retry started, so we can tell when IT settles
@@ -83,15 +90,17 @@ export default function FailedBanner({
     setBusy(true);
     setError("");
     try {
+      const trimmed = note.trim();
       const opId = onRetry
-        ? await onRetry()
+        ? await onRetry(trimmed)
         : (
             await post<{ operation_id: string }>(
               `/projects/${projectId}/initiatives/${initiativeId}/retry`,
-              { model: model.trim() },
+              trimmed ? { model: model.trim(), note: trimmed } : { model: model.trim() },
             )
           ).operation_id;
       setPendingOpId(opId);
+      setNote("");
     } catch (e) {
       setError(errMessage(e));
       setBusy(false);
@@ -117,6 +126,20 @@ export default function FailedBanner({
       <button className="cs-secondary" onClick={retry} disabled={busy}>
         {busy ? "Retrying…" : "Retry"}
       </button>
+      <div className="failed-note">
+        <NoteField
+          id={`retry-note-${initiativeId}`}
+          label="Note for the retry (optional)"
+          placeholder={onRetry ? "Appended to the implementer's brief for this run" : "Joins the framing prompt for this retry"}
+          value={note}
+          onChange={setNote}
+          rows={1}
+          onSubmit={() => {
+            if (!busy) retry();
+          }}
+          submitLabel="retry"
+        />
+      </div>
       {error && <div className="failed-error">{error}</div>}
     </section>
   );

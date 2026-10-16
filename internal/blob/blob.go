@@ -27,9 +27,22 @@ type Store struct {
 }
 
 // New creates a Store rooted at dir (which is created if absent).
+//
+// The store's directories are owner-only (0700) and every blob is 0600 (Put).
+// MkdirAll only applies a mode to directories it creates, so a store directory
+// that already existed with a wider mode -- created by hand, by an older
+// build, or under a permissive umask -- is tightened here on every open. It
+// matters most for raw-blobs/, which by design holds file content and image
+// bytes unredacted (docs/security-model.md); the redacted store gets the same
+// treatment because nothing about it needs to be readable by anyone else.
 func New(root string, redact Redactor) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(root, "sha256"), 0o700); err != nil {
 		return nil, fmt.Errorf("blob: mkdir: %w", err)
+	}
+	for _, dir := range []string{root, filepath.Join(root, "sha256"), filepath.Join(root, "tmp")} {
+		if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("blob: chmod %s: %w", dir, err)
+		}
 	}
 	return &Store{root: root, redact: redact}, nil
 }

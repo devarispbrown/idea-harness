@@ -23,6 +23,7 @@ idea init
 
 ```text
 ✓ initialized project 4c1629f3382af9cd4a2de6dd5529c25a in /…/recipes
+web UI: http://127.0.0.1:8787
 next: idea new "<describe your idea>"
 ```
 
@@ -63,14 +64,44 @@ demo mode — synthetic output. Configure a model with: idea model set <provider
 
 A recipe sharing app for home cooks  ● approved
   requirements: 1 · decisions: 0 · questions: 2
+  spend: $0.0000 · time: 0s
+  outcomes: 1 metric(s) · 1 no data
   → Proceed to design & execution plan
-    The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan.
+    The reviewed PRD is ready. Advance to architecture, product design, verification, and an execution plan. Note: 2 question(s) still open and were not required to proceed (quick rigor does not block on them) -- resolve them if they affect this work.
+  gaps: 5 low — idea gaps
 ```
 
 `approved` means the PRD passed adversarial review. Two questions are open — the reviewer
-noted things a human should answer. They do not block progress.
+noted things a human should answer. At this project's size the review runs at `quick` rigor,
+which does not block on them.
 
-Read the PRD itself with `idea prd`, and the open questions with `idea decisions`.
+Read the PRD itself with `idea prd`, and the open questions with `idea questions`.
+
+The PRD states what the idea is *for* as well as what to build: one objective (`OBJ-1`), measured
+by one outcome metric (`MET-1`), which `REQ-1` serves. `idea objectives` and `idea metrics` list
+them; the metric has `no data` until someone records a value (`idea metric record MET-1 <value>`).
+
+The last line counts what the Product Graph is missing. `idea gaps` lists each gap with the command
+that closes it:
+
+```text
+Gaps · 5 (5 low)
+
+unimplemented_requirement · 1
+  low    REQ-1  REQ-1 has no task yet: no execution plan has been generated
+         → idea advance
+
+untested_acceptance_criterion · 1
+  low    REQ-1/AC-1  REQ-1/AC-1 has no pass or fail evidence; nothing implementing REQ-1 is applied yet
+         → idea verify REQ-1 --pass|--fail|--waive
+
+unvalidated_assumption · 3
+  low    50303779  assumption 50303779 was never validated
+  …
+```
+
+Most of these close as the loop runs. The three unvalidated assumptions come from framing and
+research and stay until you judge them (`idea assumption <id> accept|dispute|retract`).
 
 ## Step 4 — drive to a change set
 
@@ -81,8 +112,11 @@ idea next --until-human
 ```text
 → advance …
 → execute …
-⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code.
-Next: review CHG-1 — idea review CHG-1 approve
+⚠ NO REAL CODE WILL BE WRITTEN: executor.kind is unset (auto) and no coding model is configured (demo mode), so this run uses the internal placeholder executor. Fix: run `idea model set <provider>/<model>` and set that provider's API key. To keep the placeholder on purpose, set executor.kind: internal in .idea-harness/harness.yaml.
+Next: review CHG-1
+  idea review CHG-1 approve  review it, and approve if it passes
+  idea review CHG-1 approve --accept-findings  accept it, findings and all
+outcomes: 1 metric(s) · 1 no data
 ```
 
 `idea next` runs the next automatable step and stops at each point that needs your judgment.
@@ -92,9 +126,10 @@ Two steps ran here: **advance** (M2 — architecture, product design, verificati
 execution plan, plan review) and **execute** (M3 — the next ready task becomes a change set).
 It stopped at `review`, because approving a change set is a human decision.
 
-That warning is honest: the default `internal` executor is deterministic and hermetic. It
-writes a placeholder file, not real code. [Wiring a real coding
-agent](agents.md) is a separate opt-in step.
+That warning is honest. With no model configured, the run falls back to the `internal`
+executor, which is deterministic and hermetic. It writes a placeholder file, not real code.
+Once a model and its key are set and Docker is running, the same unset `executor.kind` runs a
+real coding agent instead (see [Wire a real coding agent](agents.md)).
 
 ## Step 5 — trace where a requirement came from
 
@@ -107,6 +142,8 @@ idea why requirement REQ-1
 ```text
 Why REQ-1
   REQ-1 —produced_by→ run 6d3b7326
+  REQ-1 —serves→ OBJ-1 Synthetic demo objective: people get the value of A recipe sharing app for home cooks
+  OBJ-1 Synthetic demo objective: people get the value of A recipe sharing app for home cooks —produced_by→ run 6d3b7326
 ```
 
 `idea impact requirement REQ-1` answers the other direction — what breaks or goes stale if
@@ -152,7 +189,16 @@ idea next
 
 `idea verify` runs the verification gate. `--pass` records your judgment against every
 acceptance criterion of that requirement; `--fail` and `--waive` are the other two verdicts.
-An unmet gate exits non-zero, so `idea verify` is usable in a script.
+An unmet gate exits non-zero (`5`, `gate_unmet` — see [exit codes](cli.md#exit-codes)), so `idea verify` is usable in a script.
+
+`idea verify` also measures the work's **quality dimensions** before the gate reads them, and
+prints their scorecard. Not here: on a project this small the effective rigor is `quick`, which
+measures none. On a larger project, or with `review.rigor: standard` or `thorough`, a `Quality`
+block follows the coverage — see
+[quality dimensions](configuration.md#quality-dimensions-verify).
+
+After completion `idea gaps` still lists the three unvalidated assumptions from step 3: completing
+an initiative is about its requirements, and judging what it assumed is a separate call.
 
 ## Step 8 — point it at a real model
 

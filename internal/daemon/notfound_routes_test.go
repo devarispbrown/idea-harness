@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -36,6 +37,7 @@ var routeBodies = map[string]string{
 	"POST /api/v1/projects/{projectId}/decisions/{id}/reopen":            `{}`,
 	"POST /api/v1/projects/{projectId}/decisions/{id}/discuss":           `{"message":"hi"}`,
 	"POST /api/v1/projects/{projectId}/questions/{id}/answer":            `{"answer":"x"}`,
+	"POST /api/v1/projects/{projectId}/assertions/{id}/status":           `{"status":"accepted"}`,
 	"POST /api/v1/projects/{projectId}/findings/{id}/note":               `{"note":"n"}`,
 	"POST /api/v1/projects/{projectId}/findings/{id}/disposition":        `{"disposition":"accepted_risk"}`,
 	"POST /api/v1/projects/{projectId}/artifacts/{id}/comments":          `{"text":"t"}`,
@@ -61,6 +63,11 @@ var wantStatus = map[string]int{
 	// this too -- a bogus id now reaches the real lookup and gets a real 404.
 	"POST /api/v1/projects/{projectId}/initiatives":                   http.StatusBadRequest,
 	"POST /api/v1/projects/{projectId}/initiatives/{id}/reopen-phase": http.StatusBadRequest,
+	// The service worker's unauthenticated renewal checks its request shape
+	// (JSON plus an Origin, which this walk does not send) before anything
+	// else, and then answers every unknown id with the same 401 as a wrong
+	// token, so it reveals no ids. TestPushRenewalRefusals covers both.
+	"POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew": http.StatusForbidden,
 }
 
 // TestEveryIDRouteAnswers404 walks the route table rather than a hand-written
@@ -74,6 +81,16 @@ var wantStatus = map[string]int{
 func TestEveryIDRouteAnswers404(t *testing.T) {
 	rt, ts, token := newTestServer(t)
 	projectID, iniID, csID := appliedChangeSet(t, rt, ts, token)
+	// The agent run that produced the change set has events (the internal
+	// executor's), so it is a real {runId}.
+	prt, err := rt.EnsureProject(context.Background(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := prt.db.LatestEventRunForInitiative(context.Background(), iniID)
+	if err != nil || runID == "" {
+		t.Fatalf("no run with events for the executed initiative (%v)", err)
+	}
 
 	real := map[string]string{
 		"{projectId}": projectID,
@@ -82,6 +99,11 @@ func TestEveryIDRouteAnswers404(t *testing.T) {
 		"{docId}":     "d-unused",
 		"{reqId}":     "REQ-1",
 		"{staleId}":   "s-unused",
+		"{name}":      "slack",
+		// The demo PRD defines one objective with one metric.
+		"{objectiveId}": "OBJ-1",
+		"{metricId}":    "MET-1",
+		"{runId}":       runID,
 	}
 
 	routes := idRoutes(t)
@@ -199,6 +221,10 @@ func expectedKind(path, wildcard string) string {
 		return "doc"
 	case "{reqId}":
 		return "requirement"
+	case "{objectiveId}":
+		return "objective"
+	case "{metricId}":
+		return "metric"
 	}
 	if wildcard != "{id}" {
 		// An unlisted wildcard (e.g. {staleId}) has no fixed expected noun here;

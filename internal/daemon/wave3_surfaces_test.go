@@ -313,6 +313,17 @@ func TestRetryAcceptsNoteWithoutModel(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("retry with note, no model: status = %d, body = %s", resp.StatusCode, readError(t, resp))
 	}
+	// The retry runs as an operation that keeps writing under the project
+	// directory -- itself under t.TempDir() -- after the 202. Wait for it, or
+	// it races t.TempDir()'s RemoveAll and fails with "directory not empty".
+	var out struct {
+		OperationID string `json:"operation_id"`
+	}
+	decode(t, resp, &out)
+	if out.OperationID == "" {
+		t.Fatal("retry returned no operation_id")
+	}
+	waitForOperation(t, ts, token, out.OperationID)
 }
 
 // TestConfirmPassingTestsRequiresAnAppliedChangeSet pins C3's explicit

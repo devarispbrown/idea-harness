@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,11 +13,12 @@ import (
 
 // ContainerSandbox runs a command inside an isolated Docker container: no
 // network, read-only root filesystem, dropped capabilities, bounded memory/pids,
-// and the daemon's own UID/GID -- which is not the same as non-root. If the
-// daemon runs as root the container does too, and nothing refuses to start or
-// warns (docs/security-model.md records this under what the gateway does not
-// protect against). Only the work root (mounted at /work) and a /tmp tmpfs
-// are writable; an optional project root is mounted read-only at /repo. This is
+// and a non-root user. The daemon's own UID/GID is not the same as non-root (a
+// root daemon's is 0), so it is used only when the daemon is not root; a root
+// daemon passes the fixed unprivileged ContainerUID:ContainerGID instead, with
+// the work root handed to it for the run (containeruser.go). Only the work
+// root (mounted at /work) and a /tmp tmpfs are writable; an optional project
+// root is mounted read-only at /repo. This is
 // the OS-isolation boundary for external coding agents and deterministic checks
 // (§52, review B2/H3).
 //
@@ -49,15 +50,42 @@ type RunOptions struct {
 	WorkRoot string   // writable, mounted at /work
 	RepoRoot string   // optional, mounted read-only at /repo (the canonical workspace)
 	Cmd      []string // command + args (run with work dir /work)
+	// Network gives the container Docker's default bridge network instead
+	// of --network none. Every other restriction stays. Only verify's
+	// explicitly configured prepare and scanner commands set it -- never a
+	// build/test check, never an agent -- and docs/security-model.md says so.
+	Network bool
+	// Env adds environment variables (NAME=value) after the defaults, so a
+	// caller can move a cache into the work root to survive between two
+	// containers (a network prepare phase, then the offline run).
+	Env []string
+	// ProjectRoot is the project the check works for. Under a root daemon
+	// the container runs as its owner (containeruser.go). Defaults to
+	// RepoRoot; set it when the run mounts no /repo.
+	ProjectRoot string
+}
+
+// projectRoot is whose files this run works on, for containerUser.
+func (o RunOptions) projectRoot() string {
+	if o.ProjectRoot != "" {
+		return o.ProjectRoot
+	}
+	return o.RepoRoot
 }
 
 // isolatedArgs builds the `docker run` args (after the leading "run") for an
-// isolated container running as the daemon's UID/GID, with writable tmpfs
-// caches under /tmp. See the type comment on why that is not "non-root".
+// isolated container running as containerUser, with writable tmpfs
+// caches under /tmp. Labelled like an agent container, so a check a killed
+// daemon left running is found and removed by SweepAgentLeftovers.
 func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
-	uid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	uid := containerUser(opts.projectRoot())
+	network := "none"
+	if opts.Network {
+		network = "bridge"
+	}
 	args := []string{
-		"--network", "none",
+		"--label", agentLabel + "=" + filepath.Dir(opts.WorkRoot),
+		"--network", network,
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -85,6 +113,9 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 		"-e", "NPM_CONFIG_CACHE=/tmp/cache/npm",
 		"-v", opts.WorkRoot + ":/work",
 	}
+	for _, e := range opts.Env {
+		args = append(args, "-e", e)
+	}
 	if opts.RepoRoot != "" {
 		args = append(args, "-v", opts.RepoRoot+":/repo:ro")
 	}
@@ -99,6 +130,17 @@ func (s *ContainerSandbox) isolatedArgs(opts RunOptions) []string {
 // Docker is.
 func (s *ContainerSandbox) Run(ctx context.Context, opts RunOptions) (stdout, stderr string, exitCode int, err error) {
 	name := fmt.Sprintf("idea-harness-check-%d", time.Now().UnixNano())
+
+	// Under a root daemon the container is not root, so the work root is
+	// handed to its user for the run. Deferred BEFORE the removal below, so
+	// it runs after it: the walk must not race a live container
+	// (containeruser.go). RepoRoot is the user's workspace and is never
+	// chowned; it is mounted read-only.
+	grant, err := grantMounts(containerIdentity(opts.projectRoot()), opts.WorkRoot)
+	if err != nil {
+		return "", "", -1, err
+	}
+	defer func() { _ = grant.Restore() }()
 
 	// Start detached and capture the container name (we already know it).
 	startArgs := append([]string{"run", "-d", "--name", name}, s.isolatedArgs(opts)...)

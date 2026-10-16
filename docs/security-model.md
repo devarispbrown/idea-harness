@@ -14,19 +14,45 @@ conditions. Everything else is ordinary policy that a human may override.
 | DenyCode | Where enforced | Description |
 |----------|----------------|-------------|
 | `secret_sweep` | Execute (pre-persist) + Apply (re-sweep) + the deterministic-check output sweep (review M2) | A real credential value — a known key/token format (`security.FindCredential`), or one of the project's own resolved secret values — appears in produced file content, or in the raw output of a build/test check. The content is never written to the redaction-free store. The raised `Finding` names `path:line` and the kind of secret (e.g. "src/keys.js:14: looks like an OpenAI API key"), or `"in the output of <check>"` when found in check output, never the value; `Finding.Evidence` carries a masked preview of the source line instead (see below). **Conditionally overridable** (review changes #1, ICP round; hardened by review H3): a human may disposition the raised finding `not_a_secret`, which allowlists its fingerprint scoped to the path it was found at — never the value — for the project, with the actor and time recorded. The sweep ignores an allowlisted (fingerprint, path) pair from then on, at Execute, Apply, and the check-output sweep. The override is scoped to a pattern-shaped match; a value drawn from the project's own configured secrets is never eligible for it, and the store refuses the disposition outright (not merely re-denying it on the next sweep) when `Finding.SecretOverridable` is `false`. |
-| `pii` | **declared, never produced** | Reserved for a hard-rejected PII signal. A bare vocabulary marker (below) no longer hard-rejects anything, so no code path emits this today. |
-| `path_escape` | **declared, never produced** | Reserved for a diff path escaping the workspace. The path guard rejects that case, but it returns its own error rather than this code, so no `Finding` ever carries it. |
+| `pii` | Execute (produced content), blocking at ReviewChangeSet (approve) | A payment card number or a US Social Security number appears in produced file content (`security.FindPIIInFile`). Card numbers need a known issuer prefix at that issuer's length, the issuer's own grouping or none, and a valid Luhn checksum, and the issuers' published test numbers are excluded; SSNs must be dashed and inside the ranges ever issued, and the published example numbers are excluded. Email addresses and phone numbers are **not** detected — they are in most codebases' ordinary content, and a finding on every change set trains a reviewer to dismiss it. One finding per match names `path:line` and the kind, with a masked preview (a card keeps its last four digits; an SSN keeps nothing). It does not reject the change set, because the detector is a checksum and a range rule, not proof: it blocks approval. **Conditionally overridable:** `--accept-findings` never signs it off; a human dispositions that one finding `accepted_risk` ("this is synthetic data") after reading it. In a test/fixture path (the same rule as the credential sweep's generic patterns) the finding is advisory instead: shown, never blocking, and carrying no code. The raw bytes are persisted like any other change-set content (see the raw blob store below). |
+| `path_escape` | ApplyChangeSet (before any write) | A change's path is absolute, not a clean relative path (`..`, `a//b`), or — against the workspace as it is at apply time — resolves outside the workspace or into `.git/`/`.idea-harness/` through a symlink (`fsdiff.Escapes`). A path cannot be made to escape at Execute: the orchestrator's snapshot never follows symlinks. What can change is the workspace by apply time, which is where this runs — before the change set is marked `applying` and before the stale-base check, so nothing is written. One finding per offending path; the change set is rejected and its task reopened, as for an apply-time secret, and the error is a `workflow.SystemDenyError` carrying the code. `security.ResolveWithin` still guards every `Prepare`/`Commit`/`Restore` write independently. |
 | `host_exec` | checkCommand | Build/test runs only inside the container sandbox; no `check.image` or an unavailable sandbox fails closed. |
 | `blob_digest_mismatch` | blob.Store.Get / checkPatchApplies | Stored content hash ≠ requested digest. |
-| `trust_deny` | **declared, never produced** | Reserved for the engine-assigned trust tier refusing a required action. No code path emits it today. |
-| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. The adversarial review that raises these findings runs exactly once, inside `Execute` right after checks pass (ICP re-run defect A) — not again on `approve` — so a plain `approve` only ever evaluates findings already on the change set plus whatever a human has since dispositioned; it makes no model call. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies, whatever disposition it carries. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
+| `trust_deny` | Execute and ExecutePrecondition | The selected executor's engine-assigned trust tier (below) does not allow `write_file`. Refused before any spend with a `workflow.SystemDenyError` carrying the code. Every kind `selectExecutor` can build today maps to a tier that allows it, so no shipped configuration trips this: it is the fail-closed backstop for an executor kind added without a trust-tier mapping, which gets no tier at all (`executor.TrustUnassigned`) and may do nothing. |
+| `review_open_blocking` | ReviewChangeSet (approve) | An undisposed critical/high finding targets the change set; approve is denied. The adversarial review that raises these findings runs exactly once, inside `Execute` right after checks pass (ICP re-run defect A) — not again on `approve` — so a plain `approve` only ever evaluates findings already on the change set plus whatever a human has since dispositioned; it makes no model call. **Conditionally overridable — one of the two conditions above** (with `secret_sweep`'s `not_a_secret` disposition). `idea review <CHG-n> approve --accept-findings` signs off findings that carry no deny code — the adversarial reviewer's own judgment, which a human is entitled to overrule, as they already can on the PRD (`idea approve`) and the plan (`idea approve-plan`). A finding carrying any of the codes above is left untouched and still denies. For every code but `pii` the change set carrying it was already rejected, so no disposition reopens it; a `pii` finding blocks a change set that is still awaiting review, and only that finding's own human `accepted_risk` (or `fixed`) disposition clears it. A finding with NO deny code (a reviewer's own judgment call) resolves the block the same way whether a human disposition it `fixed`, `accepted_risk`, or `rejected` (`Finding.ResolvesBlocking`, ICP re-run defect #2) — `rejected` there means "the human judged this finding wrong," not a system deny, and used to deadlock approval permanently (`--accept-findings` kept failing and recommending itself). It is unaffected for a SYSTEM-set `rejected` — a failing build/test check, or a rejected change set's own findings closed via `rejected` (review M5) — which keeps blocking exactly as before: only fixing the underlying problem clears those. The gate is re-run after the sign-off, so what the accept declined to touch still blocks. |
 
 Each deny produces either a persisted `Finding` (with a machine-readable
-`Finding.Code`) or a fail-closed error mapped to the same `DenyCode` — except the
-three marked **declared, never produced**, which exist in the `DenyCode` enum and
-in `Valid()` but have no producer. They are listed rather than deleted because a
-client switching on `DenyCode` should know the full set it may one day see; do
-not treat any of them as evidence that the condition is enforced.
+`Finding.Code`) or a fail-closed error mapped to the same `DenyCode`. Until the
+release after 0.6.0, `pii`, `path_escape` and `trust_deny` were declared, never
+produced — present in the `DenyCode` enum with no code path emitting them. Each
+now has the producer named in its row; none was deleted, because each has a
+condition it can soundly enforce.
+
+### Protected paths: auto-executing files need an explicit sign-off
+
+Separate from the control-plane deny (`.idea-harness/` and `.git/` never enter a
+change set at all), a change set that adds, edits or deletes a file that **runs
+without anyone invoking it** gets one blocking `protected_path` finding at
+Execute (`fsdiff.AutoExecutingPath`; severity `high`, no deny code). The list:
+CI definitions (`.github/workflows/`, `.github/actions/`, `.gitlab-ci.yml`,
+`.circleci/`, `Jenkinsfile`, `.travis.yml`, `azure-pipelines.yml`,
+`bitbucket-pipelines.yml`, `.buildkite/`, `.drone.yml`), git hooks installed
+from the tree (`.husky/`, `.githooks/`, `.pre-commit-config.yaml`,
+`lefthook.yml`), and files the developer's tools run on entry (`.envrc`,
+`.devcontainer/`, `.vscode/tasks.json`). Matched case-insensitively at the
+workspace root.
+
+The false-positive policy is that this is **not a deny**: an initiative may
+legitimately be about CI. A plain `approve` is refused, and the human signs it
+off explicitly — `idea review <CHG-n> approve --accept-findings` records
+`accepted_risk` against it under the human actor, or the finding is
+dispositioned on its own. What it removes is the silent path: a workflow edit
+riding along in a change set about something else.
+
+Deliberately not on the list: `Makefile`, `package.json` (npm lifecycle
+scripts), `setup.py`, `build.gradle`, `Dockerfile` and other build definitions.
+They run code too, but only when someone builds, and a large share of ordinary
+tasks edit them; a finding on every one would teach the reviewer to dismiss it.
 
 ### Vocabulary markers are advisory, not a deny code
 
@@ -249,7 +275,17 @@ from the executor's self-declared capabilities:
 | container | `local_external` | allow | allow | deny |
 | omp | `local_external` | allow | allow | deny |
 | hermes | `local_external` | allow | allow | deny |
-| unknown | `remote_external` | deny | deny | deny (fail-closed) |
+| acp | `local_external` | allow | allow | deny |
+| openhands | `remote_external` | allow | allow | deny |
+| unknown | none (`TrustUnassigned`) | deny | deny | deny (fail-closed) |
+
+`remote_external` is an agent on another machine. Its read and write are of its
+own remote copy of the work root; what it wrote reaches this machine only through
+the executor's own download into the local work root, and from there through the
+same snapshot, diff, secret sweep and review as any local agent's. An unknown
+kind used to land in `remote_external`, which then had to allow nothing; it now
+gets no tier, so a real remote kind could be granted read/write without opening
+the fail-closed backstop.
 
 Note: `run_command` on the host is separately gated by the deterministic-check
 sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
@@ -257,26 +293,85 @@ sandbox (`check.image` + `ContainerSandbox`), not by the trust tier.
 <!-- claim:executor-isolation -->
 ## Execution gateway
 
-There is no single "the executor sandbox". Four executor kinds are selectable via
-`harness.executor.kind`, and they do not share an isolation posture. Every row
+There is no single "the executor sandbox". Six executor kinds are selectable via
+`harness.executor.kind` (plus `auto`, the unset default, which resolves per run to
+`hermes` or `internal`), and they do not share an isolation posture. Every row
 below is the actual `docker run` argv, not a summary of intent.
 
 | kind | type | network | workspace mount | provider key inside |
 |---|---|---|---|---|
-| `internal` (default) | `InternalExecutor` | n/a — **no container at all** | runs in the daemon process | n/a |
+| `internal` | `InternalExecutor` | n/a — **no container at all** | runs in the daemon process | n/a |
 | `container` | `ContainerExecutor` | `--network none` | `/work` | no |
 | `omp`, `hermes` | `SandboxedAgentExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `--env-file` |
+| `acp` | `ACPExecutor` | **unrestricted** | `/work`, **read-write** | **yes**, via `-e NAME` (value from the docker CLI's environment) |
+| `openhands` | `OpenHandsExecutor` | **whatever the Agent Server allows** — no container here | a **copy** of the work root, uploaded to the server | **yes, sent to the server** in the conversation request, unless `withhold_provider_key` |
 | (deterministic checks) | `ContainerSandbox` | `--network none` | `/work` + `/repo:ro` | no |
+| (verify quality dimensions) | `ContainerSandbox` | `--network none`; **bridge only for `verify.setup.prepare` and scanners marked `network: true`** | `/work` (a fresh copy) | no |
+| (outcome metric `command` sources) | `ContainerSandbox` | `--network none` | empty `/work` + `/repo:ro` | no |
 
-**`ContainerSandbox` is not the executor.** It has exactly one non-test caller —
-the deterministic build/test check in `internal/workflow/execute.go`. Its
-`--network none` and read-only `/repo` mount are real, and they apply to
-`run_command`, not to the executors that run model-generated code.
+**`ContainerSandbox` is not the executor.** It has three non-test callers — the
+deterministic build/test check in `internal/workflow/execute.go`; `idea
+verify`'s quality dimensions (`internal/workflow/quality_dims.go`), which run the
+documented setup/build/test commands, performance budgets and security scanners
+against a private copy of the workspace's committable files (no `.env`, no
+`.idea-harness/`); and a metric's `command` source in
+`internal/workflow/measure.go` (`idea metric measure`, never automatic). Its
+`--network none` and read-only `/repo` mount are real, and they apply to those
+commands, not to the executors that run model-generated code. A metric command
+never falls back to the host: no Docker, no measurement. A metric's `url` source
+is not a command at all — the daemon fetches it through the research fetcher's
+public-address guard, and only once `outcomes.allow_url_sources` is set.
+
+**The one network exception is opt-in and human-written.** `RunOptions.Network`
+swaps `--network none` for Docker's default bridge and keeps every other
+restriction (read-only root, dropped capabilities, `no-new-privileges`, the
+container user, memory and pid limits). Only two things set it: each command a
+human lists under `verify.setup.prepare` in harness.yaml, and each
+`verify.security.scanners` entry marked `network: true`. A dependency-fetch
+command found in the README is never promoted to it -- it is skipped and
+recorded. Be clear about what the opt-in buys: a prepare command such as `npm ci`
+runs the project's install hooks, which the agent may have written, with network
+egress and the fresh copy of the workspace mounted. That is exfiltration-capable
+by construction; list a prepare command only for a project whose dependency
+manifests you would install on your own machine.
 
 **Coding agents (`omp`, `hermes`) get filesystem and process isolation only.**
 `--read-only` root, `--cap-drop ALL`, `--security-opt no-new-privileges`,
 `--user`, `--memory 2g`, `--pids-limit 256`, a `/tmp` tmpfs. A timeout or cancel
 genuinely kills the container. The agent never runs code on the host.
+
+**No container runs as root.** Every `docker run` here (agents of every kind, the `container`
+executor, `ContainerSandbox`, and the setup probes) passes `--user`, and which user depends on the
+daemon (`internal/executor/containeruser.go`):
+
+- **A non-root daemon** passes its own `uid:gid`, so what a container writes into `/work` is the
+  daemon's to read, diff and delete.
+- **A root daemon** passes the `uid:gid` that owns the project root (it `stat`s it), so a
+  container runs as the user whose files these are. A check reads a `0600` file in the read-only
+  `/repo` mount as that user would, and nothing a container leaves behind is owned by root. When
+  the project root is owned by root, cannot be read, or the container has no project (the setup
+  probes), it passes a fixed unprivileged `65532:65532` (the `nonroot` user of distroless images)
+  instead. A root group is never passed on: an owner whose gid is `0` runs with gid `65532`.
+
+  The writable mounts — the work root and the agent home — are handed to that user before the run
+  (`chown`, symlinks chowned as links and never followed) and handed back once the container has
+  been removed: every path to the owner it had, anything the container created to the daemon, so
+  the engine's diff, apply and cleanup see ordinary daemon-owned files. A file the ACP client
+  writes for the agent is handed over as it is written, so the agent can still edit it. `/repo` is
+  never chowned.
+
+  A root daemon killed mid-run cannot hand the mounts back. The next one does, at startup, once
+  its sweep has removed every leftover container (`RecoverWorkRoots`): each work root under
+  `<state>/projects/*/work/` is chowned back to the daemon wherever a path is owned by someone
+  else, and leftover quality-dimension copies (`<state>/projects/*/quality-*`) and metric-command
+  scratch roots (`<state>/projects/*/metric-*`) are deleted. Nothing outside those directories is
+  touched, and no symlink is followed. If Docker cannot be reached, recovery waits for the next
+  start. Metric commands wait for the startup sweep before they run, so recovery never deletes a
+  live one's scratch root. Check containers carry the same label as agent containers, so the sweep
+  finds one a killed daemon left running.
+
+Refusing to run as root was considered and rejected: root-only CI and Docker-in-Docker setups
+would have had no way forward.
 
 But `internal/executor/agent.go` says the rest plainly, and this page previously
 did not:
@@ -320,9 +415,222 @@ So for `omp` and `hermes` specifically:
   On Linux this is a route the agent did not otherwise have; on Docker Desktop
   the name already exists. No other provider gets it.
 
+**`acp` gets the same hardening and the same exposure**, with these differences
+(`internal/executor/acp.go`, `ACPExecutor.containerArgs`):
+
+- It runs **attached** (`docker run -i --rm`): the harness speaks JSON-RPC over
+  the container's stdin/stdout. `--rm` is safe here because nothing polls a
+  finished container. Cancel, timeout and collection still `docker rm -f` it by
+  name, and the agent home and container label are the same, so a crashed
+  daemon's leftovers are swept the same way.
+- The provider key (and any MCP `value_env` value) is passed as `-e NAME` with
+  **no value** in the argv; docker reads it from its own process environment.
+  It is not written to an env-file. MCP values travel in the `session/new`
+  message on the agent's stdin.
+- The agent home is mounted as `$HOME` for every ACP agent, holding nothing
+  idea-harness wrote.
+- The harness is the agent's ACP client and answers on the host: file reads and
+  writes are confined to the work root (cleaned and symlink-resolved; anything
+  outside is refused), `terminal/*` is not offered, and every permission request
+  is auto-answered `allow_once` and recorded on the run manifest. A stdio MCP
+  server configured in `executor.mcp_servers` runs inside the agent's container
+  with all of the above.
+
+**The default Hermes image is pinned by digest** (`repo:tag@sha256:…`), and the
+pulled image's `RepoDigests` must contain that digest or `idea executors setup`
+refuses it. That fixes the bytes, not their trustworthiness: there is still no
+signature verification.
+
 <!-- /claim -->
 
 <!-- claim:redaction -->
+### The remote execution plane (`openhands`)
+
+The `openhands` kind runs no container on this machine: it hands the run to an
+OpenHands Agent Server, which is a **trust boundary** — a separate machine, run by
+whoever runs it. What leaves this machine, per run:
+
+- **The work root**: the seeded copy of the workspace, which is already stripped
+  of `.env` files, files the credential check flags, symbolic links, `.git/` and
+  `.idea-harness/` (see `seed.go`), uploaded as one tarball.
+- **The implementation brief** for the task.
+- **The coding model's provider key**, in the conversation request (`llm.api_key`,
+  or a conversation secret for an ACP agent on the server) — unless
+  `executor.openhands.withhold_provider_key` is set, in which case the server
+  must have its own.
+- **The server's session key**, in the `X-Session-API-Key` header and the
+  websocket's first frame (never in a URL).
+
+What the harness enforces at that boundary:
+
+- **Transport**: `executor.openhands.url` must be `https` unless the host is
+  loopback (`localhost`, `127.0.0.0/8`, `::1` — a server on this machine or an
+  SSH tunnel); a plain-http URL to another host, or one carrying credentials, is
+  refused when the config loads, by `PUT /executors`, by setup, and again before
+  every dispatch.
+- **Secrets stay named, not stored**: the session key is read from the variable
+  `api_key_env` names (default `OPENHANDS_API_KEY`), from the daemon's
+  environment then `.env`, like a provider key. Both keys are removed from
+  everything stored or shown from the server's events, which also pass through
+  the project's redactor before they are written to `remote_runs.progress`.
+- **The way back is untrusted input**: the downloaded tarball is unpacked into a
+  staging directory first, entry by entry — absolute paths, `..`, symlinks,
+  hard links, devices, `.git/` and `.idea-harness/` entries are skipped, and the
+  archive is refused outright past 100,000 files or 1 GiB unpacked — and only
+  then mirrored into the work root, never writing through a symlink. A file is
+  deleted locally only if it was uploaded and the server no longer has it.
+- **The same gates as any agent**: the engine then snapshots the work root and
+  computes the diff itself, so the returned files go through the secret sweep
+  (`secret_sweep`), the PII and protected-path findings, the deterministic
+  checks and review exactly as a local agent's do. The server decides nothing
+  about approval or workflow state.
+
+What it does not: anything about the server itself. The Agent Server's own
+sandbox, who can read the uploaded work root and the keys on it, how long it
+keeps the conversation and its workspace (idea-harness does not delete either
+after a run, so they are there for inspection) — those are the server
+operator's. `executor.kind: auto` never resolves to `openhands`.
+
+## Remote access
+
+<!-- claim:remote-access -->
+The daemon is a loopback service that can, opt-in, be used from another device — a phone
+answering the "Needs you" queue, say. This section is the one statement of what that changes.
+Setup is in [`configuration.md`](configuration.md#remote-access).
+
+**Loopback is unchanged.** The main listener (`IDEA_HARNESS_ADDR`) must be loopback or the daemon
+refuses to start, and a page served to a browser on this machine carries the API token exactly as
+before. "On this machine" is decided per request (`isLocalRequest`, `internal/daemon/remote.go`):
+the connection arrived on a loopback socket, the `Host` is a loopback name, and no proxy header
+(`X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`, `X-Real-IP`,
+`Tailscale-User-Login`) is present. Anything else gets the same page with an empty token.
+
+**Two ways in, both opt-in** (`<state root>/config.yaml`, section `daemon:`, or `idea daemon`
+flags):
+
+- `allowed_hosts` names hostnames the Host/Origin guard accepts besides loopback — the name a
+  TLS-terminating proxy in front of loopback answers to. **`tailscale serve` is the recommended
+  path**: HTTPS with a real certificate, reachable only from your tailnet, nothing listening
+  beyond loopback.
+- `listen` adds a second listener on a non-loopback IP. The policy (`planRemoteListen`) is checked
+  before anything binds, and a refused address stops the daemon rather than leaving it quietly
+  loopback-only:
+
+  | `daemon.listen` | without `tls_cert`/`tls_key` | with them |
+  |---|---|---|
+  | a hostname, or no port | refused | refused |
+  | loopback | refused (already served) | refused |
+  | a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) | allowed, warning logged | allowed |
+  | a private address (RFC 1918, `fc00::/7`) | allowed, **loud** warning logged | allowed |
+  | public, link-local, or every interface (`0.0.0.0`, `::`) | refused | allowed (every interface: warning) |
+
+**A remote browser never sees the token.** It signs in with a **pairing code** that
+`idea ui pair` mints — which needs the token, so only someone already holding it on the daemon's
+machine can let a device in. A code is 10 characters from a 32-letter alphabet (50 bits), good for
+one sign-in within ten minutes, stored as a SHA-256 only, and typed into the page rather than put
+in a URL. The master token was considered and rejected as the thing to type
+in: it cannot be rotated without re-configuring every CLI and MCP client, and a browser that has
+seen it once has it for good.
+
+**Guessing codes.** Wrong codes are counted twice (`internal/daemon/loginlimit.go`), and neither
+count refuses anyone but the guesser. Sign-in is never paused daemon-wide.
+
+- **Per client: 10 failures in 15 minutes** refuse *that client* (`429`, with `Retry-After`) for
+  the rest of the window. Nobody else is affected. A success clears the client's count. This
+  slows one guesser; it is not the bound.
+- **Per code: 100 failures.** A wrong code is a guess at every code outstanding at that moment, so
+  each of them counts it. A code that has absorbed 100 wrong guesses is **burned**: it can never be
+  redeemed, and typing it gets a `401` saying so. Nothing else changes. The owner runs
+  `idea ui pair` on the daemon's machine; the new code starts at zero and works at once. The
+  counts are in `global.db`, so a daemon restart does not reset them.
+
+The bound: a code is 50 bits and faces at most 100 wrong guesses in its life, so one code is
+guessed with probability at most 100/2⁵⁰ ≈ 8.9×10⁻¹⁴. Over every code ever minted it is at most
+that times the number of codes: below 10⁻⁸ for a hundred thousand codes. That is the same
+per-code exposure the old 100-per-15-minutes global ceiling gave (a code lives ten minutes), with
+no lock-out. Guessing while no code is outstanding wins nothing.
+`TestPairingCodeSpaceArithmetic` keeps these numbers true.
+
+**Burned codes are reported.** `idea ui pair`, `idea ui sessions` and Settings → Remote access say
+how many codes burned in the last 7 days and when; the daemon log has a warning for each. A burn
+means someone who can reach the sign-in page is guessing.
+
+Local requests (a browser on this machine, which is handed the token anyway) are never charged or
+refused. A signed-in session is never affected by any of this.
+
+A *client* is the connection's peer address — an IPv6 address counted by its /64, which one host
+can otherwise walk through. Proxy headers are believed only for a request that arrived on a
+loopback connection **and** whose `Host` is an `allowed_hosts` name, i.e. through the proxy you
+configured; then the client is the `Tailscale-User-Login` identity if present (`tailscale serve`
+sets it and drops any copy the browser sent), otherwise the **rightmost** `X-Forwarded-For` entry —
+the address the proxy itself saw, not one the browser wrote. Everywhere else (the remote
+listener, a loopback `Host`) those headers are ignored, so they cannot buy a fresh budget. The
+same rule decides the address shown in the session list and a session's default label.
+
+**The session.** A successful sign-in sets one cookie holding a 256-bit random secret:
+`HttpOnly`, `SameSite=Strict`, `Path=/`, and — whenever the browser is on HTTPS, directly or
+through a TLS-terminating proxy — `Secure` with the `__Host-` prefix. The database keeps the
+secret's SHA-256 only. A session ends at `daemon.session_ttl` (default 30 days), after a week
+unused, on sign-out, or when revoked (`idea ui sessions revoke <id>|--all`, or Settings → Remote
+access). A session can do everything the UI can, except mint pairing codes: a stolen session must
+not be able to outlive its own revocation.
+
+**CSRF.** A request that presents the token is judged by the token alone — a header no cross-site
+page can attach — and a wrong token is refused even alongside a valid cookie. A request
+authenticated by the cookie that changes state (anything but `GET`/`HEAD`/`OPTIONS`) must also
+carry `X-Idea-CSRF`, an HMAC of the session secret that page script obtains from the sign-in
+response or `GET /api/v1/ui/session` and a cross-site page cannot read (no CORS is ever sent), **and**
+an `Origin` header — which the Host/Origin guard has already required to be loopback, an
+`allowed_hosts` name, or the remote listener's own address. `SameSite=Strict` means a cross-site
+request should not carry the cookie at all; the token and the Origin check are the locks for when
+that does not hold. The unauthenticated `POST /api/v1/ui/login` requires a JSON body and an allowed
+`Origin`, which an HTML form on another site cannot produce.
+
+**Push.** Web Push payloads are encrypted end to end to the subscribing browser (RFC 8291) and
+signed with the daemon's VAPID key (RFC 8292), which lives in `<state root>/push/vapid.json`
+(0600) and never in a repository. A notification's text — initiative title, change-set id, a
+short reason — passes through the redactor, but it is shown on a lock screen. A subscription's
+endpoint must be `https`, and the daemon's push client refuses non-public addresses and redirects.
+The endpoint path and keys are never returned by the API.
+
+**Push renewal.** A push service can replace a browser's subscription at any time and tells only the
+service worker (`pushsubscriptionchange`), which holds no API token and may have no live session —
+so the cookie-and-CSRF route is not available to it. Instead, subscribing returns a
+**per-subscription renewal token** (256 bits; the daemon keeps its SHA-256), which the page stores
+in IndexedDB for the worker. `POST …/push/subscriptions/{id}/renew` is outside the token/cookie
+check and authorised by that token alone, in the JSON body (never the URL), with an allowed
+`Origin` required as for sign-in. It can do exactly one thing: point that one subscription at a new
+endpoint and keys, which must pass the subscribe validation (https, public address). It cannot read
+anything, change which events are sent, or touch another subscription; each use rotates it, and
+every refusal is the same `401`. What a stolen token buys: redirecting that subscription's
+notifications — the redacted lines above — to a browser of the thief's choosing, until the owner
+notices them stop or removes the subscription in Settings. Taking it needs this browser's own
+storage, which also holds the session cookie.
+
+What this does **not** cover:
+
+- **Plain HTTP on a private network is readable by that network.** The cookie and every diff
+  cross it in clear; the startup warning says so. Use TLS or Tailscale.
+- **A proxy that rewrites `Host` to loopback and strips every proxy header** is
+  indistinguishable from a local browser, and is handed the token. `tailscale serve`, Caddy and
+  nginx's defaults all add `X-Forwarded-For`; a hand-rolled proxy must too.
+- **Anyone who can reach the sign-in page can try codes, and can burn yours.** The per-code
+  budget bounds guessing against any number of addresses, and no one is ever locked out of the
+  endpoint. But someone with many addresses can burn a code before you type it. They cannot see
+  when a code exists, so they must spray: each address gets 10 tries per 15 minutes, and burning
+  a code takes 100 failures while it is outstanding — about 15 addresses spraying steadily to burn
+  it within its ten minutes, about 150 to burn it within the minute you take to type it (or a
+  timed burst from 10 that happens to land in that minute). Each burn is reported. Mint a new code
+  and, if burns keep coming, restrict who can reach the daemon.
+- **Clients behind one shared address share a budget.** Everyone behind the same NAT, and every
+  request through a proxy the daemon does not trust (a proxy that rewrites `Host` to loopback,
+  or a chain of proxies — only the last hop is read), counts as one client.
+- **A pairing code read off your screen** before you use it signs its reader in. It is single use
+  and short-lived, and `idea ui sessions` shows every session that exists.
+- **A signed-in phone is as powerful as the local UI.** It can approve and apply change sets.
+  Revoke it if it is lost.
+<!-- /claim -->
+
 ## What this does not protect against
 
 Kept as a section so the negative space has somewhere to live. The failure this
@@ -337,11 +645,41 @@ page had was an unscoped generalisation, not a typo.
   `host.docker.internal`, not only to Ollama. The daemon's own API requires a
   token the container never sees, but anything on the host that trusts local
   connections without authentication is reachable.
-- **The raw blob store is deliberately redaction-free.** For *that* store — the
-  one holding file content and uploaded bytes, which must round-trip
-  byte-for-byte — redaction happens at the read/display surface rather than at
-  write time: `RenderPatch` and the structured diff redact what they return, and
-  the bytes underneath stay as written.
+- **An `openhands` Agent Server sees everything it is sent** — the work root,
+  the brief, the provider key unless withheld — and runs the agent in a sandbox
+  this harness neither inspects nor enforces. Only the way back is checked
+  (above).
+- **The raw blob store is deliberately redaction-free.** For *that* store —
+  `raw-blobs/`, the one holding file content and uploaded bytes, which must
+  round-trip byte-for-byte — redaction happens at the read/display surface
+  rather than at write time: `RenderPatch` and the structured diff redact what
+  they return, and the bytes underneath stay as written.
+
+  Why it cannot be redacted at write: apply writes a change set's files from it
+  (`fsdiff.Commit`), revert restores the workspace pre-image from it
+  (`fsdiff.Restore`), and both are keyed on the SHA-256 of the real bytes — the
+  same digest `StaleBase`/`StalePost` compare against the workspace. A masked
+  copy would apply `[REDACTED]` into the user's source tree and never match a
+  digest again.
+
+  What is in it, exactly: the post-image of every file a change set adds or
+  modifies (only once the secret sweep passed it — a denied change set's raw
+  bytes are never written, only a masked copy for the diff view); the
+  pre-image of every path apply touches, read from the user's own workspace;
+  patch and snapshot manifests (paths and digests); and uploaded image bytes.
+  Uploaded *text* documents and question answers are not in it — they go to
+  `blobs/`. What can therefore be unmasked in it: a value a human
+  dispositioned `not_a_secret`, a generic credential match downgraded to
+  advisory in a test path, a secret the catalog does not recognise, and
+  whatever the user's own files already held before apply.
+
+  Who reads it: apply, revert, the diff renderers above (which redact), the
+  test-name extraction for verification evidence (which returns only
+  `Test…` function names), and `GET …/docs/{docId}` for an **image** doc only,
+  which serves the uploaded bytes as uploaded (see the next bullet). No route
+  serves a change-set blob by digest. The store's directories are `0700` and
+  every blob is `0600`; `blob.New` re-tightens a directory that already existed
+  with a wider mode.
 
   This is not the rule for the whole system, and an earlier version of this
   sentence read as if it were. The *other* store, `blobs/`, is constructed with
@@ -354,16 +692,43 @@ page had was an unscoped generalisation, not a typo.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
-- **`--user` passes the daemon's own UID/GID.** If the daemon runs as root, the
-  container runs as root inside its capability-dropped, read-only namespace.
-  Nothing refuses to start or warns.
-- **The agent image is pinned by tag, not digest**, and no signature is verified.
-  A re-pushed tag is not detected. `omp` has no default image at all, so the
-  operator supplies one.
+- **A root daemon's containers run as the project's owner.** That uid is
+  unprivileged, but it owns your files, so a container escape lands as you, as it
+  does under a daemon you run yourself. Only projects owned by root, and the
+  setup probes, run as the shared `65532`; those share no writable mount, so the
+  shared uid matters only to something that judges by uid outside the
+  containers. Between a root daemon being killed mid-run and its next start, its
+  work roots stay owned by the container user.
+- **A daemon run as an ordinary user passes that user's uid.** That is
+  unprivileged on the host, but it is the same uid that owns your files, so a
+  container escape lands as you. Run the daemon as a dedicated user if that
+  matters.
+- **No agent image signature is verified.** The default Hermes image is pinned
+  by digest, so a re-pushed tag no longer changes what is pulled — but an
+  operator-supplied tag-only `--image` is used as given, and `omp` and `acp`
+  have no default image at all, so the operator supplies one.
 - **The control-plane deny covers `.idea-harness/` and `.git/` only.** A change
-  set may touch `.github/workflows/`, `.envrc` or similar auto-executing files;
-  the defence there is the human review gate, not the deny.
-- **Daemon logs are not redacted**, and `GET /api/v1/logs` returns them.
+  set may still touch `.github/workflows/`, `.envrc` or a similar auto-executing
+  file. It is not denied; it raises a blocking `protected_path` finding that a
+  human must sign off (above). A file outside the list — a `Makefile`, an npm
+  `postinstall` script — gets no such finding, and the defence there is the
+  ordinary human review gate.
+- **Daemon logs are redacted twice, by pattern and by known value — not by
+  anything smarter.** The daemon's `slog` handler is wrapped
+  (`security.NewRedactingHandler`, installed in `daemon.NewRuntime`) so the
+  message and every attribute value — strings, errors, `fmt.Stringer`s,
+  arbitrary values, nested groups, and attributes bound with `With` — pass
+  through the credential catalog and the known-value list before reaching
+  `daemon.log`. An attribute's key is re-joined to its value for that check, so
+  `"password", "…"` is masked the way `password=…` in a message would be. The
+  known values are every loaded project's resolved secrets plus the daemon's
+  own API token; the set only grows while the daemon runs. `GET /api/v1/logs`
+  redacts each line again on the way out, which is what covers lines written
+  before this handler existed and anything that reached the file as raw stderr
+  rather than through `slog` (a panic trace). A secret that is neither
+  pattern-shaped nor configured is not recognised by either pass, the same
+  limit the blob-store redactor has. `idea logs` reads the file directly, as the
+  user who owns it, and does not re-redact.
 
 ## Defense in depth
 

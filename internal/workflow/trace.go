@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/domain"
 )
@@ -31,8 +32,14 @@ type ImpactItem struct {
 // Why returns the provenance chain for a node: it follows outgoing edges
 // (implements / derived_from / produced_by / depends_on) from the node to its
 // sources, bounded.
+//
+// invalidates is the exception both ways. An assertion's outgoing invalidates
+// edge is not provenance and is not followed; a node's incoming one is listed
+// (A --invalidates--> node, not walked further), so the chain for a
+// requirement resting on a retracted assertion says the basis was refuted.
 func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string) ([]TraceItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
+	inv := e.invalidations(ctx, initiativeID)
 	// Non-nil so an empty chain marshals as [] rather than null: a node with no
 	// provenance is a normal answer, and a client should not have to null-check it.
 	out := []TraceItem{}
@@ -51,7 +58,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 				return nil, err
 			}
 			for _, ed := range edges {
-				if ed.ToType == "requirement" && !cache.isActiveRequirement(ed.ToID) {
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.ToType, ed.ToID) {
 					continue
 				}
 				out = append(out, TraceItem{
@@ -59,6 +66,15 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 					FromLabel: cache.label(n[0], n[1]), ToType: ed.ToType, ToID: ed.ToID, ToLabel: cache.label(ed.ToType, ed.ToID),
 				})
 				next = append(next, [2]string{ed.ToType, ed.ToID})
+			}
+			for _, ed := range inv.by[key] {
+				if !cache.isLive(ed.FromType, ed.FromID) {
+					continue
+				}
+				out = append(out, TraceItem{
+					EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
+					FromLabel: cache.label(ed.FromType, ed.FromID), ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
+				})
 			}
 		}
 		queue = next
@@ -72,6 +88,12 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 // Impact returns the dependents of a node: it follows incoming edges (from
 // nodes that point to this node) with a staleness classification.
 //
+// An incoming invalidates edge is not followed: the assertion that
+// invalidates a node undercuts it, it does not depend on it. A dependent that
+// something invalidates is classed "obsolete" instead -- so `impact assertion
+// ASM-3` on a retracted assertion reads the requirements and decisions
+// resting on it as obsolete, not merely to revalidate.
+//
 // A task's change sets are not wired as graph edges (review A4 #4: a change
 // set is linked to its task via ChangeSet.TaskID, not an edge), so when the
 // frontier reaches a task node, its change sets are pulled in by query and
@@ -81,6 +103,7 @@ func (e *Engine) Why(ctx context.Context, initiativeID, nodeType, nodeID string)
 func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID string) ([]ImpactItem, error) {
 	cache := e.buildLabelCache(ctx, initiativeID)
 	stale := e.staleTargetSet(ctx, initiativeID)
+	inv := e.invalidations(ctx, initiativeID)
 	out := []ImpactItem{} // non-nil: see Why
 	visited := map[string]bool{}
 	queue := [][2]string{{nodeType, nodeID}}
@@ -97,15 +120,19 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 				return nil, err
 			}
 			for _, ed := range edges {
-				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.FromType, ed.FromID) {
 					continue
+				}
+				staleness := stalenessForNode(stale, ed.FromType, ed.FromID, ed.EdgeType)
+				if staleness != "stale" && inv.invalidated(ed.FromType, ed.FromID, cache) {
+					staleness = "obsolete"
 				}
 				out = append(out, ImpactItem{
 					TraceItem: TraceItem{
 						EdgeType: string(ed.EdgeType), FromType: ed.FromType, FromID: ed.FromID,
 						FromLabel: cache.label(ed.FromType, ed.FromID), ToType: n[0], ToID: n[1], ToLabel: cache.label(n[0], n[1]),
 					},
-					Staleness: stalenessForNode(stale, ed.FromType, ed.FromID, ed.EdgeType),
+					Staleness: staleness,
 				})
 				next = append(next, [2]string{ed.FromType, ed.FromID})
 			}
@@ -130,6 +157,12 @@ func (e *Engine) Impact(ctx context.Context, initiativeID, nodeType, nodeID stri
 							},
 							Staleness: stalenessForNode(stale, "change_set", cs.ID, ""),
 						})
+						// Keep walking from the change set: the outcome
+						// metrics it was attributed to (metric
+						// --attributed_to--> change_set) are its dependents,
+						// which is how `impact requirement REQ-1` reaches
+						// the outcome the work moved.
+						next = append(next, [2]string{"change_set", cs.ID})
 					}
 				}
 			}
@@ -190,8 +223,8 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 				return 0, err
 			}
 			for _, ed := range edges {
-				if ed.FromType == "requirement" && !cache.isActiveRequirement(ed.FromID) {
-					continue
+				if ed.EdgeType == domain.EdgeInvalidates || !cache.isLive(ed.FromType, ed.FromID) {
+					continue // see Impact
 				}
 				dk := ed.FromType + ":" + ed.FromID
 				if !dependents[dk] {
@@ -210,6 +243,7 @@ func (e *Engine) impactNodeCount(ctx context.Context, initiativeID, nodeType, no
 							continue
 						}
 						dependents["change_set:"+cs.ID] = true
+						next = append(next, [2]string{"change_set", cs.ID})
 					}
 				}
 			}
@@ -249,9 +283,11 @@ func stalenessForNode(stale map[string]bool, targetType, targetID string, edgeTy
 }
 
 // stalenessFor classifies a dependent based on the edge type (§26). Deterministic.
+// invalidates is not here: Impact never follows it, and classes an
+// invalidated dependent obsolete itself.
 func stalenessFor(edgeType domain.EdgeType) string {
 	switch edgeType {
-	case domain.EdgeSupersedes, domain.EdgeInvalidates:
+	case domain.EdgeSupersedes:
 		return "obsolete"
 	default:
 		return "revalidate"
@@ -268,11 +304,36 @@ type labelCache struct {
 	question    map[string]string
 	artifact    map[string]string
 	contextDoc  map[string]string
+	quality     map[string]string
+	// objective and metric hold only LIVE (not superseded) nodes, so -- like
+	// requirement -- they double as the live-set check: a PRD revision's
+	// dropped objective is not a dependent of anything any more.
+	objective map[string]string
+	metric    map[string]string
+	changeSet map[string]string
+	assertion map[string]string
 }
 
 func (c labelCache) isActiveRequirement(id string) bool {
 	_, ok := c.requirement[id]
 	return ok
+}
+
+// isLive reports whether a traversal may step onto typ:id. Requirements,
+// objectives and metrics are filtered to the live set; every other node type
+// has no superseded state the graph tracks.
+func (c labelCache) isLive(typ, id string) bool {
+	switch typ {
+	case "requirement":
+		return c.isActiveRequirement(id)
+	case "objective":
+		_, ok := c.objective[id]
+		return ok
+	case "metric":
+		_, ok := c.metric[id]
+		return ok
+	}
+	return true
 }
 
 func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) labelCache {
@@ -283,6 +344,33 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 		question:    map[string]string{},
 		artifact:    map[string]string{},
 		contextDoc:  map[string]string{},
+		quality:     map[string]string{},
+		objective:   map[string]string{},
+		metric:      map[string]string{},
+		changeSet:   map[string]string{},
+		assertion:   map[string]string{},
+	}
+	if objs, err := e.db.ListObjectives(ctx, initiativeID); err == nil {
+		for _, o := range objs {
+			if o.SupersededBy == "" {
+				c.objective[o.ID] = o.Code + " " + o.Statement
+			}
+		}
+	}
+	if ms, err := e.db.ListMetrics(ctx, initiativeID, time.Now()); err == nil {
+		for _, m := range ms {
+			c.metric[m.ID] = m.Code + " " + m.Name
+		}
+	}
+	if cses, err := e.db.ListChangeSets(ctx, initiativeID); err == nil {
+		for _, cs := range cses {
+			c.changeSet[cs.ID] = cs.HumanID
+		}
+	}
+	if as, err := e.db.ListAssertions(ctx, initiativeID); err == nil {
+		for _, a := range as {
+			c.assertion[a.ID] = string(a.Type) + ": " + domain.TrimToWordBoundary(a.Statement, 80)
+		}
 	}
 	if tasks, err := e.db.ListTasks(ctx, initiativeID); err == nil {
 		for _, t := range tasks {
@@ -312,6 +400,11 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 			c.artifact[a.ArtifactID] = string(a.Kind)
 		}
 	}
+	if results, err := e.db.ListQualityResults(ctx, initiativeID); err == nil {
+		for _, r := range results {
+			c.quality[r.ID] = "quality " + string(r.Dimension) + ": " + string(r.Status)
+		}
+	}
 	if docs, err := e.db.ListContextDocs(ctx, initiativeID); err == nil {
 		for _, d := range docs {
 			if d.Title != "" {
@@ -328,7 +421,8 @@ func (e *Engine) buildLabelCache(ctx context.Context, initiativeID string) label
 // Exported so the daemon can reject an unknown one at the edge rather than
 // answering an empty traversal.
 var GraphNodeTypes = []string{
-	"task", "requirement", "decision", "question", "artifact", "context_doc", "run",
+	"task", "requirement", "decision", "question", "artifact", "context_doc", "run", "quality_result",
+	"objective", "metric", "assertion", "change_set",
 }
 
 // ValidNodeType reports whether typ names a node the graph can hold.
@@ -372,10 +466,61 @@ func (c labelCache) label(typ, id string) string {
 		if s, ok := c.contextDoc[id]; ok {
 			return s
 		}
+	case "objective":
+		if s, ok := c.objective[id]; ok {
+			return s
+		}
+	case "metric":
+		if s, ok := c.metric[id]; ok {
+			return s
+		}
+	case "change_set":
+		if s, ok := c.changeSet[id]; ok {
+			return s
+		}
+	case "assertion":
+		if s, ok := c.assertion[id]; ok {
+			return s
+		}
 	case "run":
 		if len(id) >= 8 {
 			return "run " + id[:8]
 		}
+	case "quality_result":
+		if s, ok := c.quality[id]; ok {
+			return s
+		}
 	}
 	return typ + " " + id
+}
+
+// invalidationIndex is the initiative's invalidates edges keyed by target
+// ("type:id"), loaded once per Why/Impact call.
+type invalidationIndex struct {
+	by map[string][]domain.GraphEdge
+}
+
+func (e *Engine) invalidations(ctx context.Context, initiativeID string) invalidationIndex {
+	idx := invalidationIndex{by: map[string][]domain.GraphEdge{}}
+	edges, err := e.db.ListGraphEdges(ctx, initiativeID)
+	if err != nil {
+		return idx
+	}
+	for _, ed := range edges {
+		if ed.EdgeType == domain.EdgeInvalidates {
+			k := ed.ToType + ":" + ed.ToID
+			idx.by[k] = append(idx.by[k], ed)
+		}
+	}
+	return idx
+}
+
+// invalidated reports whether a live node invalidates typ:id.
+func (x invalidationIndex) invalidated(typ, id string, cache labelCache) bool {
+	for _, ed := range x.by[typ+":"+id] {
+		if cache.isLive(ed.FromType, ed.FromID) {
+			return true
+		}
+	}
+	return false
 }

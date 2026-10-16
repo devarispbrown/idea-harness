@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,16 +69,25 @@ func (s *Server) handleExecutorSmoke(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID := r.PathValue("projectId")
 	kind := string(pr.cfg.Harness.Executor.Kind)
-	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) {
+	isOH := kind == string(config.ExecutorOpenHands)
+	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) && kind != string(config.ExecutorACP) && !isOH {
 		writeError(w, http.StatusBadRequest,
-			"the smoke test runs the coding agent; select the hermes or omp executor first")
+			"the smoke test runs the coding agent; select the hermes, omp, acp or openhands executor first")
+		return
+	}
+	if isOH && pr.cfg.Harness.Executor.OpenHands.URL == "" {
+		writeError(w, http.StatusBadRequest, "openhands has no executor.openhands.url; set the Agent Server first")
+		return
+	}
+	if kind == string(config.ExecutorACP) && len(pr.cfg.Harness.Executor.ACP.Command) == 0 {
+		writeError(w, http.StatusBadRequest, "acp has no executor.acp.command; set the agent's argv first")
 		return
 	}
 	image := pr.cfg.Harness.Executor.Image
 	if image == "" {
 		image = executor.DefaultAgentImage(kind)
 	}
-	if image == "" {
+	if image == "" && !isOH {
 		writeError(w, http.StatusBadRequest, kind+" has no default image; set one first")
 		return
 	}
@@ -97,18 +107,29 @@ func (s *Server) handleExecutorSmoke(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	signature := smokeSignature(kind, image, model)
+	signature := smokeSignature(kind, smokeImageKey(pr, kind, image), model)
 	// Under the daemon's state root, which Docker can see; the system temp
 	// directory is not visible to snap-installed Docker or Colima.
 	workDir := filepath.Join(s.rt.stateRoot, "projects", projectID, "smoke")
 	dotEnv := pr.dotEnv
 	lookup := func(name string) string { return lookupEnv(name, dotEnv) }
+	acpOpts := executor.ACPOptionsFrom(pr.cfg.Harness.Executor, model)
+	ohOpts := executor.OpenHandsOptionsFrom(pr.cfg.Harness.Executor, model)
 	s.rt.launchOperation(opID, func(ctx context.Context) {
 		defer s.rt.smokes.release(projectID)
 		sctx, cancel := context.WithTimeout(ctx, smokeTimeout)
 		defer cancel()
 		bg := context.WithoutCancel(ctx)
-		if err := executor.SmokeAgent(sctx, kind, image, model, provider, lookup, workDir); err != nil {
+		smoke := func() error {
+			if isOH {
+				return executor.SmokeOpenHands(sctx, ohOpts, provider, lookup, workDir)
+			}
+			if kind == string(config.ExecutorACP) {
+				return executor.SmokeACPAgent(sctx, acpOpts, provider, lookup, workDir)
+			}
+			return executor.SmokeAgent(sctx, kind, image, model, provider, lookup, workDir)
+		}
+		if err := smoke(); err != nil {
 			status := domain.OperationFailed
 			if ctx.Err() != nil {
 				status = domain.OperationCancelled
@@ -127,6 +148,23 @@ func smokeSignature(kind, image, model string) string {
 	return kind + "|" + image + "|" + model
 }
 
+// smokeImageKey is the image half of a smoke signature. For acp the agent's
+// argv is as much a part of "what was tested" as the image: the same image
+// started with a different command is a different agent.
+//
+// For openhands there is no image: what was tested is the server and the
+// agent it ran.
+func smokeImageKey(pr *projectRuntime, kind, image string) string {
+	if kind == string(config.ExecutorOpenHands) {
+		oh := pr.cfg.Harness.Executor.OpenHands
+		return oh.URL + " " + oh.EffectiveAgent() + " " + strings.Join(oh.ACPCommand, " ")
+	}
+	if kind == string(config.ExecutorACP) {
+		return image + " " + strings.Join(pr.cfg.Harness.Executor.ACP.Command, " ")
+	}
+	return image
+}
+
 // lastSmoke is the project's newest smoke test, or nil -- and nil too when it
 // tested something other than the current setup. "Passed 5 min ago" after the
 // model or image changed described a configuration that no longer runs.
@@ -141,7 +179,7 @@ func lastSmoke(ctx context.Context, pr *projectRuntime, projectID string) *smoke
 		if image == "" {
 			image = executor.DefaultAgentImage(kind)
 		}
-		if op.ResultRef != smokeSignature(kind, image, workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry)) {
+		if op.ResultRef != smokeSignature(kind, smokeImageKey(pr, kind, image), workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry)) {
 			return nil
 		}
 	}

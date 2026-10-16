@@ -9,6 +9,9 @@ import {
   stoppedMessage,
 } from "./buildLogic";
 import { shouldStickToBottom } from "./agentOutput";
+import RunPanel from "./RunPanel";
+import { useProjectChanges } from "./useEventStream";
+import { announce, operationAnnouncement, RUN_RANK, runTopic } from "./announce";
 
 interface Operation {
   id: string;
@@ -39,6 +42,7 @@ const OP_LABEL: Record<string, string> = {
   revise_plan: "Revising the plan",
   approve_plan: "Approving the plan",
   suggest_answers: "Suggesting answers",
+  measure_quality: "Measuring quality",
 };
 
 function fmtElapsed(ms: number): string {
@@ -79,7 +83,9 @@ export default function RunningCard({
   // L3: the running agent's live output and whether the user has scrolled
   // away from the bottom (in which case new output must not yank them back).
   const [agentOutput, setAgentOutput] = useState<{ state?: string; running: boolean; output: string } | null>(null);
-  const [outputOpen, setOutputOpen] = useState(true);
+  // Closed by default: the run panel above it is the live view now; the raw
+  // output stays one click away.
+  const [outputOpen, setOutputOpen] = useState(false);
   const preRef = useRef<HTMLPreElement | null>(null);
   const stickRef = useRef(true);
   // A generation counter guards against a stale poll response from a previous
@@ -148,14 +154,38 @@ export default function RunningCard({
     }
   }, [projectId, initiativeId]);
 
+  // Refetch when the project's event stream says something changed; the
+  // timer is only a backstop while the stream is live, and the usual 2.5s
+  // poll when it is not (no EventSource, or a proxy that will not pass it).
+  const streamLive = useProjectChanges(projectId, load);
   useEffect(() => {
     genRef.current++;
     setStopped(null);
     stoppedRef.current = null;
     load();
-    const poll = setInterval(load, 2500);
-    return () => clearInterval(poll);
   }, [load]);
+  useEffect(() => {
+    const poll = setInterval(load, streamLive ? 15000 : 2500);
+    return () => clearInterval(poll);
+  }, [load, streamLive]);
+
+  // Say when an operation starts and when it is over (announce.ts): the card
+  // appearing and vanishing is otherwise silent to a screen reader. One
+  // message each, on the transition -- never on a poll that changed nothing.
+  const announcedOp = useRef<Operation | null>(null);
+  useEffect(() => {
+    const msg = operationAnnouncement(
+      announcedOp.current,
+      op,
+      (t) => OP_LABEL[t] ?? "The operation",
+      !!stoppedRef.current,
+    );
+    // An agent run's end shares the run topic with the panel's "Agent run
+    // started.", and outranks it (announce.ts): one message per completion.
+    const runEnded = !op && announcedOp.current?.type === "execute_initiative";
+    if (msg) announce(msg, runEnded ? { topic: runTopic(initiativeId), rank: RUN_RANK.operationEnded } : {});
+    announcedOp.current = op;
+  }, [op?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tick the elapsed timer only while an operation is running (and reset its
   // baseline when a new op appears), so a hidden card never re-renders.
@@ -240,6 +270,7 @@ export default function RunningCard({
             <div className="running-title">{stoppedMessage(partialWork)}</div>
           </div>
         </div>
+        <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} />
         {agentOutput?.output && (
           <details className="agent-output">
             <summary>Agent output before it stopped</summary>
@@ -278,6 +309,9 @@ export default function RunningCard({
           {stopBusy ? "Stopping…" : "Stop"}
         </button>
       </div>
+      {op.type === "execute_initiative" && (
+        <RunPanel projectId={projectId} initiativeId={initiativeId} active={isOperationInFlight(op.status)} />
+      )}
       {/* L3: live output of the coding agent while it's actually running --
           text only (never dangerouslySetInnerHTML), open by default so it's
           not one more thing to discover. `running:false` while the operation

@@ -175,7 +175,20 @@ type executorReadiness struct {
 // (workflow.ImplementerProvider), so the Build page's "can this run" never
 // disagrees with what Execute then does.
 func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool) executorReadiness {
-	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) {
+	// An unset kind (auto) is judged as whatever it resolves to right now:
+	// hermes when it would run hermes, ready-as-placeholder otherwise -- the
+	// fallback is a warning (executorResolution), not a reason to block.
+	if kind == string(config.ExecutorAuto) {
+		res := r.executorResolution(context.Background(), pr)
+		if res.Resolved != string(config.ExecutorHermes) {
+			return executorReadiness{ImagePresent: true, KeySet: true}
+		}
+		kind = res.Resolved
+	}
+	if kind == string(config.ExecutorOpenHands) {
+		return r.openHandsStatus(pr, selected)
+	}
+	if kind != string(config.ExecutorHermes) && kind != string(config.ExecutorOMP) && kind != string(config.ExecutorACP) {
 		return executorReadiness{ImagePresent: true, KeySet: true}
 	}
 	image := ""
@@ -188,6 +201,10 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 	st := executorReadiness{Image: image}
 	modelHint := workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry)
 	switch {
+	case image == "" && kind == string(config.ExecutorACP):
+		st.Problem = fmt.Sprintf("acp has no default image; run: idea executors setup --kind acp --image <image> --acp-command <argv> --model %s --yes", modelHint)
+	case kind == string(config.ExecutorACP) && selected && len(pr.cfg.Harness.Executor.ACP.Command) == 0:
+		st.Problem = fmt.Sprintf("acp needs executor.acp.command (the agent's argv inside %s); run: idea executors setup --kind acp --image %s --acp-command <argv> --yes", image, image)
 	case image == "":
 		st.Problem = fmt.Sprintf("%s has no default image; run: idea executors setup --kind %s --image <image> --model %s --yes",
 			kind, kind, modelHint)
@@ -237,4 +254,58 @@ func (r *Runtime) executorStatus(pr *projectRuntime, kind string, selected bool)
 		}
 	}
 	return st
+}
+
+// openHandsStatus is executorStatus for kind openhands. There is no image and
+// no Docker; what blocks a run is a missing or unsafe server URL, or a
+// provider key that is to be sent and is set nowhere. KeyEnv/KeySet describe
+// the server's session key. Reachability is not probed here -- this answers
+// on every Build page poll -- `idea doctor` and `idea executors setup` do.
+func (r *Runtime) openHandsStatus(pr *projectRuntime, selected bool) executorReadiness {
+	oh := pr.cfg.Harness.Executor.OpenHands
+	st := executorReadiness{ImagePresent: true, KeyEnv: oh.EffectiveAPIKeyEnv()}
+	st.KeySet = lookupEnv(st.KeyEnv, pr.dotEnv) != ""
+	if !selected {
+		return st
+	}
+	switch {
+	case oh.URL == "":
+		st.Problem = "openhands needs executor.openhands.url, the Agent Server to run on; run: idea executors setup --kind openhands --url <agent-server-url> --yes"
+		return st
+	case config.ValidateOpenHandsURL(oh.URL) != nil:
+		st.Problem = config.ValidateOpenHandsURL(oh.URL).Error()
+		return st
+	case oh.EffectiveAgent() == "acp" && len(oh.ACPCommand) == 0:
+		st.Problem = "openhands agent acp needs executor.openhands.acp_command, the ACP agent's argv on the server"
+		return st
+	}
+	if !st.KeySet {
+		st.Note = fmt.Sprintf("%s (the Agent Server's session key) is not set; that only works against a server started without one", st.KeyEnv)
+	}
+	if !oh.WithholdProviderKey {
+		if provider, err := workflow.ImplementerProvider(pr.cfg.Harness, pr.registry); err != nil {
+			st.Problem = strings.TrimPrefix(err.Error(), "executor: ")
+		} else if provider.KeyEnv != "" && lookupEnv(provider.KeyEnv, pr.dotEnv) == "" {
+			st.Problem = fmt.Sprintf("%s is not set in the daemon's environment or the project's .env, and openhands sends it to the Agent Server; "+
+				"set it and restart the daemon with idea daemon stop, or set executor.openhands.withhold_provider_key: true if the server has its own.", provider.KeyEnv)
+		}
+	}
+	if modelHint := workflow.ImplementerModelSpec(pr.cfg.Harness, pr.registry); st.Problem == "" && modelHint != "" {
+		if compat := executor.CheckModelCompat(string(config.ExecutorOpenHands), modelHint); compat.Message != "" {
+			if compat.Blocked {
+				st.Problem = compat.Message
+			} else if st.Note == "" {
+				st.Note = compat.Message
+			}
+		}
+	}
+	return st
+}
+
+// executorResolution is which executor a run of this project would use right
+// now, and why -- the same answer Execute reaches (workflow.ResolveExecutor),
+// with the daemon's own key lookup.
+func (r *Runtime) executorResolution(ctx context.Context, pr *projectRuntime) workflow.ExecutorResolution {
+	dotEnv := pr.dotEnv
+	return workflow.ResolveExecutor(ctx, pr.cfg.Harness, pr.registry, func(name string) string { return lookupEnv(name, dotEnv) })
 }

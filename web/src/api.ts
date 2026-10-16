@@ -7,6 +7,38 @@ export const token =
     ? (document.querySelector('meta[name="idea-token"]')?.getAttribute("content") ?? "")
     : "";
 
+// A page served to a browser that is not on the daemon's machine carries no
+// token (docs/security-model.md "Remote access"): it signs in with a pairing
+// code and is authenticated by a session cookie the browser attaches on its
+// own. Every state-changing request it makes must then carry the session's
+// CSRF token, which the sign-in response and GET /ui/session hand to page
+// script -- and which lives only here, in memory.
+let csrfToken = "";
+
+export function setCsrfToken(v: string): void {
+  csrfToken = v;
+}
+
+// authHeaders is what every request carries: the token when the page has
+// one, otherwise (a signed-in remote browser) the CSRF token on writes.
+export function authHeaders(method: string): Record<string, string> {
+  if (token) return { "X-Idea-Token": token };
+  const m = method.toUpperCase();
+  if (csrfToken && m !== "GET" && m !== "HEAD" && m !== "OPTIONS") return { "X-Idea-CSRF": csrfToken };
+  return {};
+}
+
+// UNAUTHORIZED_EVENT is dispatched on window when a request is answered 401
+// on a page that has no token: the session expired or was revoked, and the
+// shell swaps to the sign-in page rather than showing a column of errors.
+export const UNAUTHORIZED_EVENT = "idea:unauthorized";
+
+function noteUnauthorized(res: Response): void {
+  if (res.status === 401 && !token && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+}
+
 // unwrapError turns a non-OK response body into the message the UI should
 // show. The daemon's error responses are `{"error": "..."}`; without this,
 // every failed call surfaced as `Error: {"error":"...<provider>..."}` because
@@ -63,6 +95,7 @@ async function callFetch(input: string, init?: RequestInit): Promise<Response> {
 
 async function throwOnError(res: Response): Promise<void> {
   if (!res.ok) {
+    noteUnauthorized(res);
     const text = await res.text();
     throw new Error(unwrapError(text, res.status, res.statusText));
   }
@@ -77,7 +110,7 @@ export async function api<T>(
     method,
     headers: {
       "Content-Type": "application/json",
-      "X-Idea-Token": token,
+      ...authHeaders(method),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -90,7 +123,7 @@ export async function api<T>(
 export async function apiRaw(method: string, path: string): Promise<string> {
   const res = await callFetch("/api/v1" + path, {
     method,
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders(method),
   });
   await throwOnError(res);
   return res.text();
@@ -130,7 +163,7 @@ export const del = <T>(path: string) => api<T>("DELETE", path);
 // apiBlob fetches a binary/text response as a Blob (context-doc download).
 export async function apiBlob(path: string): Promise<Blob> {
   const res = await callFetch("/api/v1" + path, {
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders("GET"),
   });
   await throwOnError(res);
   return res.blob();
@@ -150,9 +183,223 @@ export async function uploadDoc<T>(
   }
   const res = await callFetch("/api/v1" + path, {
     method: "POST",
-    headers: { "X-Idea-Token": token },
+    headers: authHeaders("POST"),
     body: form,
   });
   await throwOnError(res);
   return (await res.json()) as T;
 }
+
+// patch mirrors get/post/put for the PATCH routes (objectives, metrics).
+export const patch = <T>(path: string, body: unknown) =>
+  api<T>("PATCH", path, body);
+
+// --- Objectives and outcomes -------------------------------------------------
+// The outcome end of the Product Graph (docs/api.md "Objectives and
+// outcomes"): objectives (OBJ-n), the metrics that measure them (MET-n), and
+// their observations. Every write here is a human edit.
+
+export type ObjectiveStatus = "active" | "achieved" | "abandoned";
+
+export interface Objective {
+  id: string;
+  code: string;
+  statement: string;
+  rationale?: string;
+  status: ObjectiveStatus;
+  owner?: string;
+  requirement_ids: string[];
+  metric_ids: string[];
+}
+
+export type MetricDirection = "increase" | "decrease" | "maintain";
+export type MetricDrift = "on_track" | "off_track" | "stale" | "regressed" | "no_data";
+
+export interface MetricStatus {
+  drift: MetricDrift;
+  off_track: boolean;
+  stale: boolean;
+  regressed: boolean;
+  guardrail_breached: boolean;
+  achieved: boolean;
+  observations: number;
+  latest?: number;
+  latest_at?: string;
+  previous?: number;
+  effective_baseline?: number;
+  baseline_source?: string;
+  regressed_by?: string[];
+  next_due_at?: string;
+  reasons?: string[];
+}
+
+export type MetricSourceKind = "manual" | "command" | "url";
+
+// MetricSource is how a metric is measured (domain.MetricSource): typed in
+// by hand, the last number a sandboxed shell command prints, or a number at
+// a JSON pointer in a fetched http(s) document.
+export interface MetricSource {
+  kind: MetricSourceKind;
+  command?: string;
+  url?: string;
+  pointer?: string;
+}
+
+export interface OutcomeMetric {
+  id: string;
+  code: string;
+  objective_id: string;
+  objective_code: string;
+  name: string;
+  definition?: string;
+  unit?: string;
+  direction: MetricDirection;
+  baseline?: number;
+  target: number;
+  guardrail?: number;
+  cadence?: string;
+  source: MetricSource;
+  status: MetricStatus;
+}
+
+export interface RequirementOutcomeDrift {
+  requirement_code: string;
+  objective_code: string;
+  metric_codes: string[];
+  signal: "works_but_fails_objective";
+  detail: string;
+}
+
+export interface OutcomeSummary {
+  objectives: number;
+  metrics: number;
+  on_track: number;
+  off_track: number;
+  regressed: number;
+  stale: number;
+  no_data: number;
+  drifting: number;
+  works_but_fails: number;
+}
+
+export interface OutcomeGaps {
+  objectives_without_metrics?: string[];
+  objectives_without_requirements?: string[];
+  requirements_without_objectives?: string[];
+}
+
+export interface OutcomeReport {
+  objectives: Objective[];
+  metrics: OutcomeMetric[];
+  requirement_drift?: RequirementOutcomeDrift[];
+  gaps?: OutcomeGaps;
+  summary: OutcomeSummary;
+}
+
+export interface NewObjective {
+  statement: string;
+  rationale?: string;
+  owner?: string;
+}
+
+export interface ObjectiveEdit {
+  statement?: string;
+  rationale?: string;
+  owner?: string;
+  status?: ObjectiveStatus;
+}
+
+export interface NewMetric {
+  objective: string;
+  name: string;
+  direction: MetricDirection;
+  target: number;
+  baseline?: number;
+  guardrail?: number;
+  unit?: string;
+  cadence?: string;
+  definition?: string;
+  source?: MetricSource;
+  hypothesis?: string;
+}
+
+export interface MetricObservation {
+  id: string;
+  metric_id: string;
+  value: number;
+  observed_at: string;
+  note?: string;
+  recorded_by: string;
+  change_set_ids: string[];
+}
+
+// Objective and metric ids in paths accept the code (OBJ-1, MET-2) or the id.
+const seg = (id: string) => encodeURIComponent(id);
+
+export const listObjectives = (projectId: string, initiativeId: string) =>
+  get<Objective[]>(resource(projectId, initiativeId, "objectives"));
+
+export const createObjective = (projectId: string, initiativeId: string, body: NewObjective) =>
+  post<Objective>(resource(projectId, initiativeId, "objectives"), body);
+
+export const updateObjective = (
+  projectId: string,
+  initiativeId: string,
+  objectiveId: string,
+  body: ObjectiveEdit,
+) => patch<Objective>(resource(projectId, initiativeId, `objectives/${seg(objectiveId)}`), body);
+
+export const linkObjectiveRequirement = (
+  projectId: string,
+  initiativeId: string,
+  objectiveId: string,
+  requirement: string,
+  unlink = false,
+) =>
+  post<Objective>(
+    resource(projectId, initiativeId, `objectives/${seg(objectiveId)}/requirements`),
+    unlink ? { requirement, unlink } : { requirement },
+  );
+
+export const listMetrics = (projectId: string, initiativeId: string) =>
+  get<OutcomeMetric[]>(resource(projectId, initiativeId, "metrics"));
+
+export const createMetric = (projectId: string, initiativeId: string, body: NewMetric) =>
+  post<OutcomeMetric>(resource(projectId, initiativeId, "metrics"), body);
+
+// MetricEdit is the PATCH .../metrics/{id} body (docs/api.md): only the
+// fields being changed. clear_baseline / clear_guardrail remove a value,
+// which an omitted field cannot say. objective (a code) moves the metric to
+// another objective; source replaces the whole source.
+export interface MetricEdit {
+  objective?: string;
+  name?: string;
+  definition?: string;
+  direction?: MetricDirection;
+  target?: number;
+  baseline?: number;
+  clear_baseline?: boolean;
+  guardrail?: number;
+  clear_guardrail?: boolean;
+  unit?: string;
+  cadence?: string;
+  source?: MetricSource;
+}
+
+export const updateMetric = (projectId: string, initiativeId: string, metricId: string, body: MetricEdit) =>
+  patch<OutcomeMetric>(resource(projectId, initiativeId, `metrics/${seg(metricId)}`), body);
+
+export const recordObservation = (
+  projectId: string,
+  initiativeId: string,
+  metricId: string,
+  value: number,
+  note?: string,
+) =>
+  post<{ observation: MetricObservation; status: MetricStatus }>(
+    resource(projectId, initiativeId, `metrics/${seg(metricId)}/observations`),
+    note ? { value, note } : { value },
+  );
+
+export const getOutcomes = (projectId: string, initiativeId: string) =>
+  get<OutcomeReport>(resource(projectId, initiativeId, "outcomes"));

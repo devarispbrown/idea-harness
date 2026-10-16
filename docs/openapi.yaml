@@ -23,16 +23,19 @@ info:
 
     **This is a local daemon, not a hosted service.**
 
-    - **Loopback-bound.** `Run` refuses to start on a non-loopback listener. The API token is
-      served to the web UI unauthenticated inside `index.html`, so a LAN-reachable daemon would
-      hand the token to anyone who loaded the page. The address is overridable through
-      `IDEA_HARNESS_ADDR`, still loopback-only; the default is `127.0.0.1:8787`.
+    - **Loopback-bound by default.** The main listener (`IDEA_HARNESS_ADDR`, default
+      `127.0.0.1:8787`) must be loopback, and only a page served to a browser provably on this
+      machine carries the API token. Remote use is opt-in — a second listener (`daemon.listen`) or a
+      proxy hostname (`daemon.allowed_hosts`) — and a remote browser never sees the token: it signs
+      in with a one-time pairing code for a session cookie (the `remote` tag, and
+      `docs/security-model.md` "Remote access").
     - **Token-authenticated.** One per-install token guards everything under `/api/`. See the
       security schemes for the header, the `Bearer` alternative, the `/api/v1/health` exemption and
       the SSE query-parameter exception.
     - **Host and Origin guarded.** Before authentication, a request whose `Host` is not exactly
-      `127.0.0.1`, `localhost` or `::1` is rejected `403 {"error": "invalid host"}`, and one
-      carrying an `Origin` that is not a loopback origin (or is the literal `null`) is rejected
+      `127.0.0.1`, `localhost` or `::1` — or a name in `daemon.allowed_hosts`, or the remote
+      listener's own address — is rejected `403 {"error": "invalid host"}`, and one carrying an
+      `Origin` outside that same set (or the literal `null`) is rejected
       `403 {"error": "invalid origin"}`. A missing `Origin` is allowed, which is how the CLI and
       `curl` reach the API. No CORS header is ever sent, so a page on another origin could not read
       a response even if it could make the request.
@@ -92,6 +95,7 @@ servers:
 security:
   - ideaToken: []
   - bearerToken: []
+  - sessionCookie: []
 
 tags:
   - name: daemon
@@ -118,6 +122,14 @@ tags:
     description: Providers, models and executors, backed by harness.yaml.
   - name: events
     description: The event timeline and its SSE stream.
+  - name: runs
+    description: A coding agent's run, live - its normalized events (paged and streamed), steering, and its report.
+  - name: outcomes
+    description: Objectives, outcome metrics, observations and drift — the outcome end of the Product Graph.
+  - name: remote
+    description: Remote browser sign-in (pairing codes, sessions) and Web Push notification subscriptions.
+  - name: automations
+    description: Scheduled background jobs - Linear inbound polling, metric measurement, eval - each off until enabled.
 
 paths:
   /api/v1/health:
@@ -165,7 +177,9 @@ paths:
       summary: Tail the daemon log
       description: |
         Global, not project-scoped. Answers 200 with an empty `lines` array and an empty `path`
-        rather than an error when the log file does not exist yet.
+        rather than an error when the log file does not exist yet. Each line is credential-redacted
+        on read (pattern catalog plus every loaded project's secret values), in addition to the
+        redacting log handler that wrote it; see docs/security-model.md.
       parameters:
         - name: n
           in: query
@@ -492,6 +506,366 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: listObjectives
+      summary: The initiative's live objectives
+      description: |
+        Every objective not superseded by a PRD revision, any status, each with the active
+        requirements serving it and its live metrics. The PRD stage writes objectives; a human adds,
+        edits and links them here.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The objectives, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Objective" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: createObjective
+      summary: Add an objective
+      description: A human-added objective is never rewritten or superseded by a PRD revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                statement: { type: string, description: "The outcome, stated as a change in the world." }
+                rationale: { type: string }
+                owner: { type: string }
+                status: { $ref: "#/components/schemas/ObjectiveStatus" }
+              required: [statement]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: Created; `code` is the next `OBJ-n`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/ObjectiveId"
+    patch:
+      tags: [outcomes]
+      operationId: updateObjective
+      summary: Edit an objective
+      description: Changes only the fields present. `status` moves it to `achieved` or `abandoned` (or back).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                statement: { type: string }
+                rationale: { type: string }
+                owner: { type: string }
+                status: { $ref: "#/components/schemas/ObjectiveStatus" }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The updated objective.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/objectives/{objectiveId}/requirements:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/ObjectiveId"
+    post:
+      tags: [outcomes]
+      operationId: linkObjectiveRequirement
+      summary: Link (or unlink) a requirement to an objective
+      description: |
+        Records `requirement --serves--> objective` (N:M; linking twice is one edge). `unlink: true`
+        removes it. A superseded requirement cannot be linked (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requirement: { type: string, description: "Code (`REQ-1`) or id." }
+                unlink: { type: boolean }
+              required: [requirement]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The objective with its updated `requirement_ids`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Objective" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: listMetrics
+      summary: The initiative's live outcome metrics, with drift
+      description: Each metric carries `status`, its deterministic drift evaluation at request time.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The metrics, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OutcomeMetric" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: createMetric
+      summary: Add an outcome metric to an objective
+      description: |
+        `source` defaults to `manual`. A `hypothesis` ("we believe X will move this") is recorded as
+        a hypothesis assertion linked to the metric (`assertion --predicts--> metric`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objective: { type: string, description: "Code (`OBJ-1`) or id." }
+                name: { type: string }
+                definition: { type: string }
+                unit: { type: string }
+                direction: { $ref: "#/components/schemas/MetricDirection" }
+                baseline: { type: number }
+                target: { type: number }
+                guardrail: { type: number }
+                cadence: { type: string }
+                source: { $ref: "#/components/schemas/MetricSource" }
+                hypothesis: { type: string }
+              required: [objective, name, direction, target]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: Created; `code` is the next `MET-n`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeMetric" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/measure:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    post:
+      tags: [outcomes]
+      operationId: measureMetrics
+      summary: Measure command and url sources now
+      description: |
+        Measures one metric (`metric`) or, with no body, every live metric with a `command` or `url`
+        source, and records each value read. A command runs in the no-network check sandbox with
+        the workspace read-only at `/repo` (never on the host; no Docker, no measurement) and the
+        last number it prints is the value. A url is fetched through the SSRF-guarded fetcher and
+        read at its JSON pointer, only when `outcomes.allow_url_sources` is on. Synchronous: each
+        command is bounded by `outcomes.measure_timeout_seconds`. One source failing does not stop
+        the rest; naming a manual metric is a 400.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                metric: { type: string, description: "Code (`MET-1`) or id; omit for all." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: One result per metric.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/MeasureResult" }
+                required: [results]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/MetricId"
+    patch:
+      tags: [outcomes]
+      operationId: updateMetric
+      summary: Edit an outcome metric
+      description: |
+        Changes only the fields present. `clear_baseline` / `clear_guardrail` remove those values
+        (with no baseline, the first observation stands in). Its observations are untouched: a
+        changed target re-evaluates the same history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objective: { type: string }
+                name: { type: string }
+                definition: { type: string }
+                unit: { type: string }
+                direction: { $ref: "#/components/schemas/MetricDirection" }
+                baseline: { type: number }
+                clear_baseline: { type: boolean }
+                target: { type: number }
+                guardrail: { type: number }
+                clear_guardrail: { type: boolean }
+                cadence: { type: string }
+                source: { $ref: "#/components/schemas/MetricSource" }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The updated metric, re-evaluated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeMetric" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/metrics/{metricId}/observations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/MetricId"
+    get:
+      tags: [outcomes]
+      operationId: listObservations
+      summary: A metric's observations, oldest first
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The observations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MetricObservation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [outcomes]
+      operationId: recordObservation
+      summary: Record a measured value
+      description: |
+        Records a human-supplied value (source `manual`). In the same transaction the store
+        attributes the change sets applied since the previous observation (and wires
+        `metric --attributed_to--> change_set`), and, when the value moves the metric into
+        `off_track` or `regressed`, appends the `metric.drifted` event the integration bus
+        publishes as `outcome.drifted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value: { type: number }
+                note: { type: string }
+                observed_at: { type: string, format: date-time, description: "RFC 3339; defaults to now; not in the future." }
+              required: [value]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: The observation and the metric's drift after it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  observation: { $ref: "#/components/schemas/MetricObservation" }
+                  status: { $ref: "#/components/schemas/MetricStatus" }
+                required: [observation, status]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/outcomes:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [outcomes]
+      operationId: getOutcomes
+      summary: Outcome drift report
+      description: |
+        Live objectives, live metrics with drift, the "works but fails its objective" signals
+        (a verified requirement whose objective has an off-track or regressed metric), the outcome
+        chain's gaps, and counts. The one shape `idea status`, `idea next`, the Health page and the
+        MCP `outcomes` tool read.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutcomeReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/initiatives/{id}/next:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -511,8 +885,9 @@ paths:
         `resolve plan-dependencies` (the plan has unsatisfied task dependencies - **only**
         regenerate; approving locks in an incomplete graph and leaves a blocking finding that
         wedges completion), `resolve plan` (the plan review raised blocking findings - approve or
-        regenerate) and `resolve verification` (a requirement was failed after completion -
-        re-verify). A bare `resolve`, with no reason, is what an initiative parked before the reason was
+        regenerate), `resolve verification` (a requirement was failed after completion -
+        re-verify) and `resolve budget` (the initiative reached its spending cap - raise it with
+        `PUT .../budget`, which returns the initiative to where it stopped). A bare `resolve`, with no reason, is what an initiative parked before the reason was
         recorded reports - every initiative parked in 0.3.0 or earlier included; clients should
         render it as "see `idea status`" rather than guessing.
 
@@ -821,7 +1196,26 @@ paths:
       tags: [initiatives]
       operationId: revisePlan
       summary: Regenerate the execution plan and its review
-      description: Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
+      description: |
+        Keeps the PRD and the design. An initiative state that cannot be revised answers 409.
+
+        A regenerated plan is the next version of the same execution-plan artifact. One identical
+        to the current plan records no new version, and a regenerated task with the title of a
+        task it replaced keeps that task's code, so a revision that changes nothing leaves the plan
+        at its version with TASK-1 still TASK-1.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                  description: |
+                    What to change. Joins the planner's inputs for this revision only and is
+                    recorded on its run. Optional; the body is decoded leniently, so a caller that
+                    sends none keeps working unchanged.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
@@ -872,7 +1266,20 @@ paths:
                 type: object
                 properties:
                   operation_id: { type: string }
-                  executor_kind: { $ref: "#/components/schemas/ExecutorKind" }
+                  executor_kind:
+                    allOf: [{ $ref: "#/components/schemas/ExecutorKind" }]
+                    description: What harness.yaml's `executor.kind` asks for; `auto` when it is unset.
+                  executor_resolved:
+                    allOf: [{ $ref: "#/components/schemas/ExecutorKind" }]
+                    description: |
+                      The executor this run uses. Differs from `executor_kind` only for `auto`, which
+                      resolves to `hermes` (Docker reachable and the coding model's key set) or to
+                      `internal`.
+                  executor_warning:
+                    type: string
+                    description: |
+                      Present when `auto` fell back to the placeholder `internal` executor. This run
+                      writes no real code; the text says why and how to fix it. A client must show it.
                 required: [operation_id, executor_kind]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
@@ -1011,6 +1418,12 @@ paths:
                         requirement: { type: string }
                         reason: { type: string }
                       required: [requirement, reason]
+                  quality:
+                    $ref: "#/components/schemas/QualityScorecard"
+                    description: >-
+                      The quality-dimension scorecard the gate read (a read -- `POST .../quality`
+                      measures). Only `gate_unmet` held the gate; advisory dimensions never do.
+                      Absent only when the scorecard could not be read.
                 required: [status, coverage]
         "400":
           description: "`invalid body`, or the domain error from recording evidence or running the gate."
@@ -1021,6 +1434,125 @@ paths:
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/quality:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [initiatives]
+      operationId: getQualityScorecard
+      summary: Read the quality-dimension scorecard
+      description: |
+        Every quality dimension (`verify.dimensions` in harness.yaml) with its mode under the current
+        policy, its latest recorded result, and whether that result is stale -- measured against
+        different applied change sets or a different policy than the initiative has now. Nothing is
+        measured. `gate_unmet` names each GATED dimension that failed, was not measured, or is stale;
+        the verification gate does not complete the initiative while it is non-empty.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The scorecard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QualityScorecard" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [initiatives]
+      operationId: measureQuality
+      summary: Measure the enabled quality dimensions
+      description: |
+        Starts a `measure_quality` operation that measures every dimension whose mode is not `off`
+        against the initiative's applied work and records one result per dimension, each linked to
+        the requirements it bears on with a `verifies` graph edge. Asynchronous because the setup
+        reproducibility run executes the documented commands in the sandbox. It does not claim the
+        initiative. Read the outcome back from `GET .../quality`. No request body.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "202": { $ref: "#/components/responses/OperationAccepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/quality/history:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - name: dimension
+        in: query
+        required: false
+        description: Narrow the history to one quality dimension.
+        schema: { $ref: "#/components/schemas/QualityDimension" }
+    get:
+      tags: [initiatives]
+      operationId: getQualityHistory
+      summary: Every recorded quality measurement
+      description: |
+        Every quality result ever recorded for the initiative, oldest first, each with its checks,
+        citations and the codes of the requirements it is linked to by a `verifies` edge. The
+        scorecard (`GET .../quality`) is the latest of each dimension; this is the series behind it,
+        which the web UI's Quality page shows as each dimension's history. A read; nothing is
+        measured.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The results, oldest first. Empty when nothing has been measured.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/QualityResult" }
+        "400":
+          description: "`dimension` named an unknown dimension; the message lists the known ones."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/review-telemetry:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - name: review
+        in: query
+        required: false
+        description: Narrow to one review loop.
+        schema: { type: string, enum: [prd, execution_plan] }
+    get:
+      tags: [initiatives]
+      operationId: getReviewTelemetry
+      summary: Review convergence telemetry, one record per review cycle
+      description: |
+        Every review cycle's convergence record, read from the adversarial reviewer's run manifests,
+        oldest first: findings raised, new, re-raised and resolved per severity, findings demoted to
+        advisory by a convergence rule (keyed by rule), the open blocking count after the cycle and
+        before it, and what the loop did next. A human revise starts a new loop at cycle 1, so
+        `cycle` alone does not order the list -- the response order does. Empty when no review ran.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The cycles, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ReviewTelemetry" }
+        "400":
+          description: "`review` is neither `prd` nor `execution_plan`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/projects/{projectId}/initiatives/{id}/suggest-answers:
@@ -1052,8 +1584,9 @@ paths:
       operationId: getWhy
       summary: Provenance chain behind one graph node
       description: |
-        Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`) from the
-        node towards its sources, bounded in depth. Both `type` and `id` are required.
+        Follows outgoing edges (`implements`, `derived_from`, `produced_by`, `depends_on`, and the
+        outcome chain's `serves`, `measures`, `predicts`, `attributed_to`) from the node towards its
+        sources, bounded in depth. Both `type` and `id` are required.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -1083,7 +1616,9 @@ paths:
         A task's change sets are not graph edges (`ChangeSet.TaskID` links them instead), so when the
         walk reaches a task, its change sets are added as synthetic dependents (`edge_type:
         "change_set"`) -- otherwise impact on a requirement or decision could reach the task and stop
-        there (review A4 #4/#5).
+        there (review A4 #4/#5). The walk continues from each such change set, so an outcome metric
+        an observation attributed to it (`metric --attributed_to--> change_set`) is reached too:
+        impact on a requirement includes the outcomes its work moved.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -2277,6 +2812,125 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectId}/initiatives/{id}/gaps:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+      - $ref: "#/components/parameters/GapKindFilter"
+    get:
+      tags: [understanding]
+      operationId: listGaps
+      summary: Product Graph gaps (`idea gaps`)
+      description: |
+        A deterministic gap analysis over one initiative's Product Graph -- no model call: requirements
+        nothing implements, acceptance criteria nothing verified, verification evidence that failed or
+        predates the code it verified, unvalidated assumptions the plan rests on, decisions whose basis
+        moved, orphan tasks and change sets, and artifacts older than what they were generated from.
+        Each gap names its kind, which trigger fired (`state`), a severity, the nodes involved, a
+        one-line why, and the command that closes it. Most severe first. The exact trigger of every
+        kind and state is documented in docs/architecture.md, "Asking the graph: gaps".
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapReport" }
+        "400":
+          description: "`kind` named an unknown gap kind; the message lists the known ones."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/gaps:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/GapKindFilter"
+    get:
+      tags: [projects]
+      operationId: listProjectGaps
+      summary: Product Graph gaps across every initiative
+      description: |
+        The same analysis as `GET .../initiatives/{id}/gaps`, run over every initiative of the
+        project and merged into one report (`initiative_id` omitted at the top level; every gap
+        carries its own). What `idea gaps --all` reads, so a CI gate over a project is one request.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapReport" }
+        "400":
+          description: "`kind` named an unknown gap kind; the message lists the known ones."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/assertions/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: Assertion id.
+        schema: { type: string }
+    post:
+      tags: [graph]
+      operationId: setAssertionStatus
+      summary: Record a human judgment on an assumption or hypothesis
+      description: |
+        Moves an assertion out of `candidate`: `accepted` (validated), `disputed` (contested, still
+        unvalidated) or `retracted` (refuted). The only path that does -- framing and research record
+        every assumption as a candidate -- and what closes an `unvalidated_assumption` gap
+        (`idea assumption <id> accept|dispute|retract`). A retracted assertion that live nodes still
+        rest on becomes an `unvalidated_assumption` gap in state `refuted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [accepted, disputed, retracted]
+              required: [status]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  status: { type: string }
+                required: [id, status]
+        "400":
+          description: The body is not JSON, or `status` is not one of the three judgments.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The assertion is superseded (a retry replaced it); its replacement is the live claim.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/projects/{projectId}/initiatives/{id}/triage:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -3028,8 +3682,10 @@ paths:
                     its findings are persisted and every later attempt is refused by the
                     `review_open_blocking` deny before the review runs, with no route out.
 
-                    Only the reviewer's findings. A finding carrying a deny code — `secret_sweep`,
-                    `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
+                    Only findings with no deny code: the reviewer's own, and the `protected_path`
+                    finding a change to an auto-executing file raises (signing that off is the
+                    explicit approval it exists to require). A finding carrying a deny code —
+                    `secret_sweep`, `pii`, `host_exec`, `blob_digest_mismatch` — is untouched, and so is one already
                     dispositioned (a failing build check is `rejected`, not a judgment to accept
                     away). The deny gate is re-run afterwards, so anything left alone still refuses
                     — except a finding a HUMAN already dispositioned `rejected` on their own, with
@@ -3038,6 +3694,14 @@ paths:
 
                     Ignored without `approved`. A 400 with `rerun`: there is nothing to sign off
                     before rerun's review has even produced findings.
+                note:
+                  type: string
+                  description: |
+                    What the human wants changed, with `changes_requested` or `rejected` — the two
+                    verdicts that send the task back for another run. Recorded on the change set
+                    (`review_note`) and appended to the implementer's brief on the task's next
+                    `execute`, labelled with this change set's id; only the next run, never one
+                    after it. A 400 with `approved` or `rerun`: there is no next run for it to steer.
               required: [verdict]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
@@ -3056,7 +3720,8 @@ paths:
           description: |
             `verdict is required`, the engine's rejection of the verdict or the change set's
             state, `accept_findings: true` with `rerun` (nothing to sign off before rerun's review
-            has even produced findings), or `json: unknown field "..."`. The body is closed: this
+            has even produced findings), a `note` with `approved` or `rerun`, or
+            `json: unknown field "..."`. The body is closed: this
             operation decodes strictly and rejects any key it does not declare, so `acceptFindings`
             (camelCase) is a 400 rather than a silently-dropped field. Closed only up to Go's
             ASCII-case-insensitive field matching — `Verdict` is accepted as `verdict`.
@@ -3450,11 +4115,11 @@ paths:
       operationId: updateExecutors
       summary: Merge executor settings into harness.yaml
       description: |
-        **`GET /executors` is not the read side of this.** It returns a catalog of all four
-        executor kinds with their capabilities, not a projection of the config, so there is no
+        **`GET /executors` is not the read side of this.** It returns a catalog of all six
+        concrete executor kinds with their capabilities, not a projection of the config, so there is no
         round trip to perform: its per-item key is `name`, this takes `kind`, and echoing an entry
-        back answers `400 json: unknown field "capabilities"`. The writable set is the three
-        properties below.
+        back answers `400 json: unknown field "capabilities"`. `GET /executors/config` is the read
+        side: the executor block exactly as harness.yaml holds it.
 
         Field-level merge of `kind`, `image` and `model`, validated, written, then reloaded. The
         config is re-read from disk first so a hand-edited `harness.yaml` is not clobbered. `image`
@@ -3482,6 +4147,64 @@ paths:
                 model:
                   type: string
                   description: Model spec for agent executors. Empty clears it.
+                acp_command:
+                  type: array
+                  items: { type: string }
+                  description: |
+                    `executor.acp.command`, the ACP agent's argv inside the image (e.g.
+                    `["claude-code-acp"]`). Required, with a non-empty `image`, when the resulting
+                    kind is `acp` - there is no canonical ACP image - otherwise `400`.
+                acp_key_env:
+                  type: string
+                  description: "`executor.acp.key_env`: the name the provider key is exposed under inside an ACP agent's container."
+                openhands_url:
+                  type: string
+                  description: |
+                    `executor.openhands.url`, the OpenHands Agent Server the `openhands` kind runs on.
+                    Required when the resulting kind is `openhands`. Must be `https` unless the host is
+                    loopback, and carry no credentials; otherwise `400` before anything is written.
+                openhands_api_key_env:
+                  type: string
+                  description: |
+                    `executor.openhands.api_key_env`: the NAME of the variable holding the server's
+                    session key (default `OPENHANDS_API_KEY`). The key itself is never accepted here.
+                openhands_agent:
+                  type: string
+                  enum: [openhands, acp]
+                  description: "`executor.openhands.agent`: the server's own agent, or an ACP agent its image carries."
+                openhands_acp_command:
+                  type: array
+                  items: { type: string }
+                  description: "`executor.openhands.acp_command`, the ACP agent's argv on the server, for `openhands_agent: acp`."
+                acp_timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.acp.timeout_seconds`: one prompt turn's bound (0: the default, 840)."
+                openhands_withhold_provider_key:
+                  type: boolean
+                  description: "`executor.openhands.withhold_provider_key`: keep the coding model's key on this machine; the server supplies its own."
+                openhands_ui_url:
+                  type: string
+                  description: "`executor.openhands.ui_url`: an OpenHands web UI for \"Open in OpenHands\" links; absolute http(s), no credentials."
+                openhands_workspace_dir:
+                  type: string
+                  description: "`executor.openhands.workspace_dir` on the server."
+                openhands_max_iterations:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.openhands.max_iterations` (0: the default, 100)."
+                openhands_timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: "`executor.openhands.timeout_seconds` (0: the default, 840)."
+                mcp_servers:
+                  type: array
+                  description: |
+                    `executor.mcp_servers`, replaced whole (`[]` removes them all): stdio servers
+                    (`command`, `args`, `env`) or `http`/`sse` servers (`url`, `headers`). Each `env`
+                    or `headers` entry gives exactly one of `value` (a literal, refused when its name or
+                    content looks like a credential) or `value_env` (the NAME of a variable).
+                  items: { type: object }
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3531,11 +4254,14 @@ paths:
         The operation carries no `initiative_id`. It fails with the smoke's own error, which
         includes the agent's output (redacted). The latest result is reported as
         `status.last_smoke` on `GET /executors`. One smoke runs per project at a time.
+
+        For `openhands` the task runs on the configured Agent Server (no image); the run record
+        lives in a throwaway database, not the project's `remote_runs`.
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "202": { $ref: "#/components/responses/OperationAccepted" }
         "400":
-          description: The executor is not a coding agent (`internal`, `container`), has no image, or its model resolves to no usable provider.
+          description: The executor is not a coding agent (`internal`, `container`), has no image (or, for `openhands`, no server URL), or its model resolves to no usable provider.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3546,6 +4272,444 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/integrations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: getIntegrations
+      summary: Slack and Linear integration health
+      description: |
+        One entry per integration (`slack`, `linear`), configured or not. For a configured one:
+        whether it is running, which token environment variables are set (names and booleans,
+        never values), human-readable problems (a missing token, an empty Slack allowlist, events
+        dropped after retrying, a failing Linear poll), the delivery outbox counts, the Slack
+        Socket Mode connection, and the Linear poll. See
+        [integrations.md](https://github.com/devarispbrown/idea-harness/blob/main/docs/integrations.md).
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The integrations.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntegrationsView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/integrations/{name}/test:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: name
+        in: path
+        required: true
+        description: The integration.
+        schema:
+          type: string
+          enum: [slack, linear]
+    post:
+      tags: [config]
+      operationId: testIntegration
+      summary: Check an integration against the real service
+      description: |
+        `slack`: validates the bot token (`auth.test`), **posts a test message** to the configured
+        channel, and, when `socket_mode` is on and an app-level token is set, checks that it can
+        open a Socket Mode connection. `linear`: validates the API key, the team key, every
+        `state_mapping` name, the project (when set) and whether the inbound label exists; writes
+        nothing. A check that reached the service and failed answers `200` with `ok: false` and the
+        (redacted) error, so `idea integrations test` can show it.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The check ran.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntegrationTestResult" }
+        "400":
+          description: The integration is not configured in harness.yaml, or its token is not set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/integrations/{name}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: name
+        in: path
+        required: true
+        description: The integration.
+        schema:
+          type: string
+          enum: [slack, linear]
+    put:
+      tags: [config]
+      operationId: updateIntegration
+      summary: Write one integration's harness.yaml section
+      description: |
+        Replaces `integrations.<name>` in `harness.yaml` with `config` (the section exactly as
+        `IntegrationStatus.config` returns it), or removes it with `config: null`, which turns the
+        integration off. The section is validated as a hand edit would be -- the JSON Schema,
+        Slack user ids, `poll_interval_seconds` >= 15, environment-variable names -- before
+        anything is written; the file's comments are kept; and the project is reloaded, so the
+        change takes effect without restarting the daemon.
+
+        Tokens never pass through here: the section names the environment variables that hold them
+        (`bot_token_env`, `app_token_env`, `api_key_env`). A value anywhere in the section that
+        looks like a credential is refused with `400`. The body is closed from this endpoint's
+        first release: an undeclared field, at the top or inside `config`, is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                config:
+                  description: The section (SlackConfig or LinearConfig shape), or null to remove it.
+                  oneOf:
+                    - type: object
+                    - type: "null"
+              required: [config]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                  name: { type: string, enum: [slack, linear] }
+                  removed: { type: boolean }
+                required: [status, name, removed]
+        "400":
+          description: "`invalid body`, an unknown field, a value that looks like a credential, or a section the config validation refuses."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/budget:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: getProjectBudget
+      summary: The project's default spending cap and every initiative's meter
+      description: |
+        `default_initiative_usd` is `budget.default_initiative_usd` in `harness.yaml` (0: no
+        project-wide cap), and `initiatives` carries each initiative's `BudgetStatus`.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The budget overview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectBudget" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [config]
+      operationId: setProjectBudget
+      summary: Set the project's default per-initiative spending cap
+      description: |
+        Writes `budget.default_initiative_usd` (0 removes the project-wide cap) and reloads the
+        project. Every initiative stopped at its cap that has no cap of its own and that the new
+        default leaves room for is returned to where it stopped; their ids are in `resumed`. The
+        body is closed from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                default_initiative_usd: { type: number, minimum: 0 }
+              required: [default_initiative_usd]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Written and reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: updated }
+                  default_initiative_usd: { type: number }
+                  resumed:
+                    type: array
+                    items: { type: string }
+                required: [status, default_initiative_usd, resumed]
+        "400":
+          description: "`invalid body`, an unknown field, or a missing or negative amount."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`config written but not applied (reload failed): ...` - the file changed but the runtime did not."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/budget:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [initiatives]
+      operationId: getBudget
+      summary: An initiative's spending cap and what it has spent
+      description: |
+        The effective cap (the initiative's own, else the project default, else none), the spend
+        that counts against it (every model call, plus the coding agent's where the agent reported
+        one), and whether the next model or agent call would be refused. `agent_not_counted` is
+        true when the agent ran but reported no cost -- hermes and omp usually do not -- so the
+        meter understates the real spend.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The meter.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BudgetStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [initiatives]
+      operationId: setBudget
+      summary: Set or clear an initiative's own spending cap
+      description: |
+        `{"cap_usd": <number > 0>}` sets the initiative's own cap; `{"clear": true}` returns it to
+        the project default. When the initiative is stopped at its cap (`needs_human_judgment`,
+        `budget_exceeded`) and the new cap leaves room, it is returned to the status it was stopped
+        from and `resumed` is true -- `plan_approved` or the earlier judgment for a build-phase
+        stop, `failed` (naming `idea retry`) for a stop in the design pipeline of a new initiative.
+        The body is closed from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cap_usd: { type: number, exclusiveMinimum: 0 }
+                clear: { type: boolean }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The new meter, and whether the initiative was resumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/BudgetStatus" }
+                  resumed: { type: boolean }
+                required: [budget, resumed]
+        "400":
+          description: "`invalid body`, an unknown field, both or neither of `cap_usd` and `clear`, or a cap <= 0."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [automations]
+      operationId: listAutomations
+      summary: The scheduled background jobs, with their last and next run and history
+      description: |
+        `linear_inbound` (the Linear label poll), `metric_measurement` (outcome metrics with a
+        command or url source, each on its own cadence) and `eval` (`idea eval` against a real
+        model, capped per run). Each is off until enabled. `history` is the most recent runs,
+        newest first, with status and cost. For `linear_inbound` only the polls that imported an
+        issue, failed, or were run by hand are kept.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  automations:
+                    type: array
+                    items: { $ref: "#/components/schemas/AutomationView" }
+                required: [automations]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations/{name}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/AutomationName"
+    put:
+      tags: [automations]
+      operationId: updateAutomation
+      summary: Turn a scheduled job on or off, and set the eval's fields
+      description: |
+        A `harness.yaml` write, validated like a hand edit and applied without a restart.
+        `linear_inbound` and `metric_measurement` take only `enabled` (`linear_inbound` writes
+        `integrations.linear.inbound`, and needs Linear configured -- `409` otherwise); `eval`
+        also takes `model`, `max_cost_usd`, `interval_hours`, `suite`, `cases` and `baseline`.
+        Enabling the eval without a model and a cost cap is refused (`400`). The body is closed
+        from this endpoint's first release: an undeclared field is a `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                model: { type: string, description: "eval: provider/model." }
+                suite: { type: string, description: "eval: a suite file relative to the project root; empty is the built-in suite." }
+                cases:
+                  type: array
+                  items: { type: string }
+                  description: "eval: case names to run; empty runs every case."
+                interval_hours: { type: integer, minimum: 0, description: "eval: default 24." }
+                max_cost_usd: { type: number, minimum: 0, description: "eval: the per-run cap; required to enable." }
+                baseline: { type: string, description: "eval: a saved report relative to the project root; empty compares with the previous run." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The job, as written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationView" }
+        "400":
+          description: "`invalid body`, an unknown field, a field the job does not take, or a configuration the validation refuses."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "Linear is not configured (`linear_inbound`), or `config written but not applied (reload failed): ...`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/automations/{name}/run:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/AutomationName"
+    post:
+      tags: [automations]
+      operationId: runAutomation
+      summary: Run a job now
+      description: |
+        Starts one run at once, enabled or not -- a person asking for this one run is the
+        enablement -- and answers `202`; the run appears in the job's `history`. `linear_inbound`
+        polls immediately (the poller must be running). `metric_measurement` measures every command
+        or url metric, or only `target` (a metric code or id). `eval` needs its model and cost cap
+        set, and **spends real money** up to that cap. The body is optional and closed: an
+        undeclared field is a `400`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target: { type: string, description: "metric_measurement: one metric's code (MET-n) or id." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "202":
+          description: Started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: started }
+                  name: { type: string }
+                  runs: { type: integer, description: How many runs were started. }
+                required: [status, name, runs]
+        "400":
+          description: "`invalid body` or an unknown field."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The job cannot run now -- the Linear poller is not running, no metric can be measured, the eval has no model or cap, or an eval run is already in progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/executors/config:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [config]
+      operationId: getExecutorConfig
+      summary: The executor block as harness.yaml holds it
+      description: |
+        The read side of `PUT /executors`, for an editor: `config` is `executor` from
+        `harness.yaml` (kind, image, model, `acp`, `openhands`, `mcp_servers`); `env` maps every
+        variable the block names (the OpenHands session key, each MCP `value_env`) to whether it is
+        set, never a value; `problems` are the configuration findings about the block; `compat` is
+        the executor/model compatibility advisory for `?kind=&model=` (defaulting to the saved
+        ones) -- `blocked` when the combination is known to fail every run, otherwise untested.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/ExecutorKind" }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The executor block.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecutorConfigView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -3579,12 +4743,23 @@ paths:
     get:
       tags: [events]
       operationId: streamEvents
-      summary: SSE stream of product-graph events
+      summary: SSE stream of product-graph events and run events
       description: |
-        **Not JSON.** `text/event-stream`, one event per product-graph event, with the event
-        sequence as the SSE id. `Last-Event-ID` resumes from a sequence. The stream polls the store
-        once a second and pushes up to 200 events per tick, so it is at-least-once catch-up rather
-        than a true push.
+        **Not JSON.** `text/event-stream`. Two kinds of message:
+
+        - unnamed messages, one per product-graph event (`data:` an Event row as JSON), as before;
+        - `event: run_event` messages, one per run event of any agent run in the project
+          (`data:` a [RunEvent](#/components/schemas/RunEvent)), pushed the moment they are stored.
+
+        The SSE id is `<event seq>.<run event id>`, both cursors, so a reconnect resumes both:
+        `Last-Event-ID` (sent by `EventSource` on its own reconnects) or `?after=` sends only what
+        the client missed, never the whole log again. A bare `<event seq>` (an id from before run
+        events existed) resumes the product-graph events and starts run events at now - run history
+        is read through `GET .../runs/{runId}/events`. `?after=now` skips the product-graph backlog
+        as well (a page that has just fetched its data). With no cursor the product-graph log is
+        sent from the start, as it always was. Product-graph events are polled once a second; an
+        idle stream sends a `: ping` comment every 15 s so a proxy never closes it, and the
+        response carries `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no`.
 
         **This is the one path that accepts the token as a query parameter** (`?token=`), because
         `EventSource` cannot set request headers. Everywhere else the header is required, so the
@@ -3602,8 +4777,15 @@ paths:
         - name: Last-Event-ID
           in: header
           required: false
-          description: Resume from this event sequence. Unparseable values are treated as 0.
-          schema: { type: integer, format: int64 }
+          description: |
+            Resume from `<event seq>.<run event id>` (or a bare `<event seq>`). Unparseable parts
+            are treated as 0.
+          schema: { type: string }
+        - name: after
+          in: query
+          required: false
+          description: The same cursor as `Last-Event-ID`, or `now`; the header wins when both are sent.
+          schema: { type: string }
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
@@ -3612,7 +4794,9 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: "`id: <seq>` and `data: <Event as JSON>` per event."
+                description: |
+                  `id: <seq>.<run event id>` and `data: <Event as JSON>` per product-graph event;
+                  `id: ...`, `event: run_event` and `data: <RunEvent as JSON>` per run event.
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ConfigInvalid" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -3621,6 +4805,731 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/current-run:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [runs]
+      operationId: getCurrentRun
+      summary: The run the run view should show
+      description: |
+        The initiative's running agent run, or else its most recent run that has events, so a page
+        loaded mid-run (or after) knows which run to read and stream. `run_id` is empty when the
+        initiative has never run an agent.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The current run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/initiatives/{id}/remote-runs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/InitiativeId"
+    get:
+      tags: [runs]
+      operationId: listRemoteRuns
+      summary: The initiative's openhands remote runs
+      description: |
+        Every dispatch of a task to an OpenHands Agent Server (`executor.kind: openhands`), newest
+        first, terminal or not: status, attempt, server, conversation id, the progress log's last
+        line, and the error. The progress log itself is not included (it is the run's events).
+        `idea runs remote`; the run panel's Remote runs.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The remote runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RemoteRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/remote-runs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [runs]
+      operationId: listProjectRemoteRuns
+      summary: The project's openhands remote runs
+      description: |
+        The same rows across every initiative, newest first, at most 200. `?active=true` keeps
+        only the runs not yet over (what a daemon restart re-attaches to). `idea runs remote --all`;
+        the UI's Remote runs (`#/runs`).
+      parameters:
+        - name: active
+          in: query
+          required: false
+          schema: { type: boolean }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The remote runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RemoteRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/events:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: listRunEvents
+      summary: A run's events, paged
+      description: |
+        The run's stored events with `seq > after`, oldest first, for a client joining late: page
+        with `after` = the last seq of each page until `more` is false, then stream from `last_seq`
+        (`GET .../events/stream?after=<last_seq>`). Each run keeps its newest 5000 events and only
+        the 50 most recent runs keep any; `first_seq` greater than 1 means earlier events were
+        dropped.
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Return events after this seq (default 0, from the start).
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, at most 500 (the default).
+          schema: { type: integer, minimum: 0, maximum: 500 }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunEventPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/events/stream:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: streamRunEvents
+      summary: SSE stream of one run's events
+      description: |
+        **Not JSON.** `text/event-stream`: `event: run_event` messages with the event's seq as the
+        SSE id. A reconnect resumes after the client's cursor - `Last-Event-ID` (sent by
+        `EventSource` itself) or `?after=<seq>` - and gets only what it missed, never the run
+        again from the start. Without either it starts at the oldest stored event. New events are
+        pushed the moment they are stored. Once the run is over and its last events are sent, the
+        stream sends `event: end` (`data: {"run_status": ...}`) and closes, so an `EventSource`
+        client can stop reconnecting. Starts with a `retry: 3000` hint; an idle stream sends a
+        `: ping` comment every 15 s. Accepts the token as `?token=` like the project stream.
+      security:
+        - ideaToken: []
+        - bearerToken: []
+        - sseQueryToken: []
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: The API token, for `EventSource` clients that cannot set a header.
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Resume after this seq; wins over `after`.
+          schema: { type: integer, format: int64 }
+        - name: after
+          in: query
+          required: false
+          description: Resume after this seq.
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "`id: <seq>`, `event: run_event`, `data: <RunEvent as JSON>` per event; `event: end` last."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/steer:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [runs]
+      operationId: steerRun
+      summary: Send a note to a running agent
+      description: |
+        Delivers a human's note to the running agent run, as far as its executor allows:
+
+        | Executor | What happens | `delivery` |
+        |---|---|---|
+        | `acp` | Queued and sent as the agent's next `session/prompt` turn once the current turn ends (ACP defines no concurrent prompts). With `interrupt`, the turn is ended with `session/cancel` first and the note sent at once. | `queued` / `delivered` |
+        | `openhands` | Sent into the conversation as a user message (`POST /api/conversations/{id}/events`, `run: true`); the agent reads it at its next step. | `delivered` |
+        | `internal`, `container`, `hermes`, `omp` | Cannot be reached mid-run: `steering not supported by <kind>`. The note is held and appended to the task's next run's brief, like the rerun note on execute. | `next_run` |
+
+        An agent that is finishing (its session over) cannot take a note either; it is held for
+        the next run. Every note is recorded as a `message` run event (`source: user`) and on the
+        run manifest's executor provenance. Held notes are stored (redacted), so they survive a
+        daemon restart, and the next run takes each one exactly once; until then they are listed
+        as `pending_notes` on `GET .../current-run`. Stop is the operation's own cancel
+        (`POST /api/v1/operations/{id}/cancel`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, description: "Required; at most 8000 bytes." }
+                interrupt:
+                  type: boolean
+                  description: acp only - end the current turn with session/cancel and send the note at once.
+              required: [note]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: What became of the note.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SteerResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The run is not running; send the note with the task's next run
+            (`POST .../execute {"note": ...}`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502":
+          description: The executor could not deliver the note (the Agent Server refused it, say).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/projects/{projectId}/runs/{runId}/report:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [runs]
+      operationId: getRunReport
+      summary: Download a run report
+      description: |
+        The run written down: what ran, its events, the files it changed with line counts, the
+        findings on its change set, its cost and the steering notes sent to it. Everything in it is
+        redacted. `format=json` (the default), `md` (Markdown for a person), or `zip` (both, as
+        `run-<id>/report.json` and `run-<id>/report.md`). Served as an attachment.
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [json, md, zip] }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunReport" }
+            text/markdown:
+              schema: { type: string }
+            application/zip:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+
+  /api/v1/ui/pairing-codes:
+    post:
+      tags: [remote]
+      operationId: createPairingCode
+      summary: Mint a one-time pairing code for a remote browser
+      description: |
+        What `idea ui pair` calls. Returns a 10-character code (`XXXXX-XXXXX`, 50 bits) good for one
+        sign-in within ten minutes; only its SHA-256 is stored. **Token only**: a request
+        authenticated by a session cookie is refused `403`, so a stolen session cannot mint the
+        next one and outlive its own revocation. `remote` says whether any other device can reach
+        this daemon at all (a `daemon.listen` listener, or `daemon.allowed_hosts` for a proxy), and
+        `urls` names where. `burned_codes` and `last_burned_at` report pairing codes burned in the
+        last 7 days because too many wrong codes were tried while they were outstanding — a sign
+        someone is guessing. The new code is unaffected. See `docs/security-model.md` "Remote access".
+      security:
+        - ideaToken: []
+        - bearerToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, description: "A name for the device (shown in `idea ui sessions`); at most 80 bytes." }
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "201":
+          description: The code. Shown once; not retrievable again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairingCode" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Authenticated by a session cookie rather than the API token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/login:
+    post:
+      tags: [remote]
+      operationId: uiLogin
+      summary: Exchange a pairing code for a browser session
+      description: |
+        One of the two unauthenticated writes under `/api/` (the other is push renewal), so it carries its own checks: the body must be
+        `application/json` and the request must carry an `Origin` the host guard accepts (`403`
+        otherwise) — an HTML form on another site can send neither. A code is single use and expires
+        after ten minutes.
+
+        On success it sets the session cookie — `__Host-idea_session` with `Secure` when the browser
+        is on HTTPS (directly or through a TLS-terminating proxy), otherwise `idea_session`;
+        always `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age` the session lifetime
+        (`daemon.session_ttl`, default 30 days; a week unused also ends it) — and returns the
+        session's CSRF token, which every state-changing cookie-authenticated request must echo in
+        `X-Idea-CSRF`.
+
+        Wrong codes are counted per client and per code (docs/security-model.md, "Remote access"):
+        10 failures from one client within fifteen minutes refuse that client only (`429`, with
+        `Retry-After` in seconds). Every wrong code also counts against each code outstanding at
+        that moment; a code that reaches 100 is burned and can never be redeemed. Sign-in is never
+        refused for everyone: a code minted after the burn works at once. A request from this
+        machine (loopback, no proxy headers) is never counted or refused.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string, description: "The pairing code. Case, spaces and dashes do not matter; O/I/L read as 0/1/1." }
+                label: { type: string }
+              required: [code]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Signed in. `Set-Cookie` carries the session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UISessionView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`pairing code is invalid, expired or already used` — one message for all three. A real code that was burned gets its own message saying so."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not JSON, or no `Origin` header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: "This client's failure budget is spent; nobody else is affected. See `Retry-After`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/logout:
+    post:
+      tags: [remote]
+      operationId: uiLogout
+      summary: Sign this browser out
+      description: Revokes the calling session (when cookie-authenticated) and clears the cookie. With the token it only clears cookies.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Signed out. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/session:
+    get:
+      tags: [remote]
+      operationId: getUISession
+      summary: How this request is authenticated
+      description: |
+        `auth` is `token` or `session`. For a session it also returns the session and its CSRF
+        token — how a reloaded page recovers the token it must send with writes. A cross-site page
+        cannot read this response (no CORS), which is what makes the CSRF token a secret.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The caller's authentication.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UISessionView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/ui/sessions:
+    get:
+      tags: [remote]
+      operationId: listUISessions
+      summary: List browser sessions
+      description: Every session not yet pruned, newest first, including revoked ones. `current` is the caller's own session id when cookie-authenticated. Never a secret.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/UISession" }
+                  current: { type: string }
+                  burned_codes: { type: integer, description: "Pairing codes burned in the last 7 days (too many wrong codes tried while they were outstanding). 0 when none." }
+                  last_burned_at: { type: string, format: date-time, description: When the latest burned. Absent when none did. }
+                required: [sessions, current, burned_codes]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [remote]
+      operationId: revokeAllUISessions
+      summary: Revoke every browser session
+      description: What `idea ui sessions revoke --all` and the UI's "Sign out everywhere" call. Every remote browser must pair again.
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: How many were revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: integer }
+                required: [revoked]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/ui/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: A session id from `GET /api/v1/ui/sessions`.
+        schema: { type: string }
+    delete:
+      tags: [remote]
+      operationId: revokeUISession
+      summary: Revoke one browser session
+      security:
+        - sessionCookie: []
+        - ideaToken: []
+        - bearerToken: []
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/push/vapid-public-key:
+    get:
+      tags: [remote]
+      operationId: getPushConfig
+      summary: The VAPID public key browsers subscribe with
+      description: |
+        The daemon's VAPID application-server key (RFC 8292), an uncompressed P-256 point in
+        base64url — the `applicationServerKey` for `PushManager.subscribe`. Generated on first use
+        and kept in `<state root>/push/vapid.json` (0600), never in a repository. `event_kinds` are
+        the kinds a subscription may ask for.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The key and the event kinds.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  public_key: { type: string }
+                  event_kinds:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushEventKind" }
+                required: [public_key, event_kinds]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      tags: [remote]
+      operationId: listPushSubscriptions
+      summary: List this project's push subscriptions
+      description: The endpoint's host only — never its path or the keys, which are what it takes to push to the browser.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushSubscription" }
+                  event_kinds:
+                    type: array
+                    items: { $ref: "#/components/schemas/PushEventKind" }
+                required: [subscriptions, event_kinds]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [remote]
+      operationId: createPushSubscription
+      summary: Subscribe a browser to push notifications
+      description: |
+        The body is the browser's `PushSubscription.toJSON()` plus optional `events` (default: all
+        four kinds) and `label`. The endpoint must be `https`; keys must decode to a P-256 point and a
+        16-byte secret. Keyed by endpoint: the same browser subscribing again updates its row
+        (`200`) rather than creating a second (`201`). Each subscription becomes its own subscriber on
+        the project's integration bus (`webpush:<id>`), with Slack's delivery semantics: outbox,
+        idempotency key, retries with backoff, dead letters; a push service answering `404`/`410`
+        removes the subscription.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+                  required: [p256dh, auth]
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/PushEventKind" }
+                label: { type: string }
+              required: [endpoint, keys]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: An existing subscription for this endpoint, updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    patch:
+      tags: [remote]
+      operationId: updatePushSubscription
+      summary: Choose which events notify this browser
+      description: Replaces `events`. An empty list pauses the browser's notifications without unsubscribing it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/PushEventKind" }
+              required: [events]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [remote]
+      operationId: deletePushSubscription
+      summary: Unsubscribe a browser
+      description: Removes the subscription with its bus cursor and any pending deliveries.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    post:
+      tags: [remote]
+      operationId: testPushSubscription
+      summary: Send a test notification now
+      description: |
+        Sends one notification directly, outside the bus. A push service that reached and refused
+        answers `200` with `ok: false` and the (redacted) error; `gone: true` means the service
+        reported the subscription dead and it was removed.
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: The attempt ran.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+                  gone: { type: boolean }
+                required: [ok]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ConfigInvalid" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectId}/push/subscriptions/{id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: id
+        in: path
+        required: true
+        description: A push subscription id.
+        schema: { type: string }
+    post:
+      tags: [remote]
+      operationId: renewPushSubscription
+      summary: Re-point a subscription the push service replaced (service worker)
+      description: |
+        Called by the service worker on `pushsubscriptionchange`, which has neither the API token nor,
+        necessarily, a live session. Authenticated instead by the subscription's own `renewal_token`
+        — returned once by `POST …/push/subscriptions` and rotated by every renewal — in the body,
+        never the URL. It moves this one subscription to the new endpoint and keys (validated as on
+        subscribe), keeping its events and label, and returns the next token. If the new endpoint
+        already has a row in this project, that row survives (with a new token) and this one is
+        removed. Like sign-in, it must be JSON with an allowed `Origin` (`403` otherwise). Every
+        refusal — unknown project or subscription, wrong or spent token — is the same `401`. What a
+        stolen token buys: docs/security-model.md, "Remote access".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                renewal_token: { type: string }
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+                  required: [p256dh, auth]
+              required: [renewal_token, endpoint, keys]
+      responses:
+        default: { $ref: "#/components/responses/RoutingError" }
+        "200":
+          description: Renewed. `renewal_token` is the next token; the one sent no longer works.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PushSubscription" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`push subscription renewal refused …` — one message for every refusal."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not JSON, or no `Origin` header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Not sent by this route — an unknown project or subscription answers `401`, so it cannot be told apart from a wrong token. Declared because every id-taking route declares it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: The project's harness.yaml does not parse. The service worker keeps its token and renews on a later change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
 components:
   securitySchemes:
@@ -3647,13 +5556,26 @@ components:
       description: |
         The same token, accepted as `Authorization: Bearer <token>` for convenience. It is only
         consulted when `X-Idea-Token` is absent.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: idea_session
+      description: |
+        A remote browser's session (`docs/security-model.md` "Remote access"), set by
+        `POST /api/v1/ui/login` in exchange for a one-time pairing code. Named `__Host-idea_session`
+        (and `Secure`) when the browser is on HTTPS; always `HttpOnly` and `SameSite=Strict`.
+        Accepted on every operation that takes the token, except minting pairing codes. A
+        state-changing request authenticated by it must also send `X-Idea-CSRF` (from the login
+        response or `GET /api/v1/ui/session`) and an `Origin` the host guard accepts, or it is
+        refused `403`. A request that presents a token is judged by the token alone.
     sseQueryToken:
       type: apiKey
       in: query
       name: token
       description: |
-        The same token as a query parameter, accepted **only** on
-        `GET /api/v1/projects/{projectId}/events` - the SSE stream - because the browser's
+        The same token as a query parameter, accepted **only** on the two SSE streams -
+        `GET /api/v1/projects/{projectId}/events` and
+        `GET /api/v1/projects/{projectId}/runs/{runId}/events/stream` - because the browser's
         `EventSource` API cannot set request headers. It is consulted only when neither header is
         present. Every other endpoint requires a header, so the token never appears in a URL and so
         never reaches server logs, shell history or a `Referer`.
@@ -3665,11 +5587,33 @@ components:
       required: true
       description: Project id from `POST /api/v1/projects` or `GET /api/v1/projects`.
       schema: { type: string }
+    RunId:
+      name: runId
+      in: path
+      required: true
+      description: An agent run id (`runs.id`), e.g. `run_id` from `GET .../current-run`.
+      schema: { type: string }
     InitiativeId:
       name: id
       in: path
       required: true
       description: Initiative id. Every initiative-scoped route names this path parameter `id`.
+      schema: { type: string }
+    AutomationName:
+      name: name
+      in: path
+      required: true
+      description: The scheduled job.
+      schema:
+        type: string
+        enum: [linear_inbound, metric_measurement, eval]
+    GapKindFilter:
+      name: kind
+      in: query
+      required: false
+      description: |
+        Comma-separated `GapKind` values to keep (e.g. `unverified_requirement,invalidated_decision`).
+        Omitted means every kind. An unknown kind is a `400` naming the known ones.
       schema: { type: string }
     TaskId:
       name: taskId
@@ -3705,7 +5649,21 @@ components:
       name: type
       in: query
       required: true
-      description: Graph node type, e.g. `requirement`, `task`, `decision`, `assertion`, `change_set`.
+      description: |
+        Graph node type: `task`, `requirement`, `decision`, `question`, `artifact`, `context_doc`,
+        `run`, `quality_result`, `objective`, `metric`, `assertion` or `change_set`. Anything else is a 400.
+      schema: { type: string }
+    ObjectiveId:
+      name: objectiveId
+      in: path
+      required: true
+      description: An objective's code (`OBJ-1`, any case) or id.
+      schema: { type: string }
+    MetricId:
+      name: metricId
+      in: path
+      required: true
+      description: An outcome metric's code (`MET-1`, any case) or id.
       schema: { type: string }
     GraphNodeId:
       name: id
@@ -3764,6 +5722,13 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: |
+        The body is unparseable or a field is invalid; the message names which (e.g. `an objective
+        needs a statement`, `invalid direction "up" (use increase, decrease or maintain)`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     PayloadTooLarge:
       description: |
         `document too large` or `body too large`. A single document's content is capped at 2 MiB and
@@ -3805,6 +5770,160 @@ components:
           schema: { $ref: "#/components/schemas/OperationAccepted" }
 
   schemas:
+    BudgetStatus:
+      type: object
+      title: BudgetStatus
+      description: |
+        One initiative's spending cap and spend. The cap is checked before every model call and
+        before the coding agent starts; a call already in flight finishes, so spend can end at most
+        one call over the cap.
+      properties:
+        cap_usd: { type: [number, "null"], description: The effective cap; null when there is none. }
+        source: { type: string, enum: [initiative, project, none] }
+        initiative_cap_usd: { type: [number, "null"], description: The initiative's own cap, when it set one. }
+        project_default_usd: { type: number, description: "budget.default_initiative_usd (0: none)." }
+        spent_usd: { type: number, description: What counts against the cap. }
+        model_usd: { type: number }
+        agent_usd: { type: [number, "null"], description: The coding agent's reported spend; null when not measured. }
+        agent_runs: { type: integer }
+        agent_not_counted:
+          type: boolean
+          description: The agent ran but reported no cost (hermes and omp usually do not), so its spend is not in `spent_usd`.
+        remaining_usd: { type: [number, "null"] }
+        exceeded: { type: boolean, description: The next model or agent call would be refused. }
+        parked: { type: boolean, description: "The initiative is stopped on `needs_human_judgment`/`budget_exceeded`." }
+        note: { type: string }
+      required: [cap_usd, source, initiative_cap_usd, project_default_usd, spent_usd, model_usd, agent_usd, agent_runs, agent_not_counted, remaining_usd, exceeded, parked, note]
+
+    ProjectBudget:
+      type: object
+      title: ProjectBudget
+      properties:
+        default_initiative_usd: { type: number }
+        initiatives:
+          type: array
+          items:
+            type: object
+            properties:
+              initiative_id: { type: string }
+              title: { type: string }
+              status: { $ref: "#/components/schemas/InitiativeStatus" }
+              budget: { $ref: "#/components/schemas/BudgetStatus" }
+            required: [initiative_id, title, status, budget]
+      required: [default_initiative_usd, initiatives]
+
+    AutomationRun:
+      type: object
+      title: AutomationRun
+      description: One run of a scheduled job.
+      properties:
+        id: { type: string }
+        automation: { type: string, enum: [linear_inbound, metric_measurement, eval] }
+        target: { type: string, description: "metric_measurement: the metric id." }
+        trigger: { type: string, enum: [schedule, manual] }
+        status: { type: string, enum: [running, succeeded, failed, skipped] }
+        started_at_ms: { type: integer }
+        finished_at_ms: { type: integer }
+        cost_usd: { type: number }
+        summary: { type: string }
+        error: { type: string }
+        report_path: { type: string, description: "eval: the JSON report in the project's state directory." }
+      required: [id, automation, trigger, status, started_at_ms]
+
+    AutomationView:
+      type: object
+      title: AutomationView
+      properties:
+        name: { type: string, enum: [linear_inbound, metric_measurement, eval] }
+        label: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        available: { type: boolean, description: False when the job cannot run at all right now. }
+        unavailable: { type: string, description: Why not, when `available` is false. }
+        schedule: { type: string, description: The cadence in words. }
+        running: { type: boolean }
+        last_run:
+          oneOf:
+            - $ref: "#/components/schemas/AutomationRun"
+            - type: "null"
+        next_run_at: { type: [string, "null"], format: date-time }
+        settings:
+          type: object
+          description: "eval only: its harness.yaml fields."
+          properties:
+            enabled: { type: boolean }
+            model: { type: string }
+            suite: { type: string }
+            cases:
+              type: array
+              items: { type: string }
+            interval_hours: { type: integer }
+            max_cost_usd: { type: number }
+            baseline: { type: string }
+        targets:
+          type: array
+          description: "metric_measurement only: each command or url metric, when it was last measured, when it is next due, and why the schedule skips it, if it does."
+          items:
+            type: object
+            properties:
+              metric_id: { type: string }
+              initiative_id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              source: { type: string, enum: [command, url] }
+              cadence: { type: string }
+              last_at: { type: string, format: date-time }
+              next_at: { type: string, format: date-time }
+              skipped: { type: string }
+            required: [metric_id, initiative_id, code, name, source, cadence]
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/AutomationRun" }
+        note: { type: string }
+      required: [name, label, description, enabled, available, schedule, running, last_run, next_run_at, history]
+
+    ExecutorConfigView:
+      type: object
+      title: ExecutorConfigView
+      properties:
+        config:
+          type: object
+          description: "`executor` in harness.yaml: kind, image, model, acp, openhands, mcp_servers (see docs/configuration.md)."
+          properties:
+            kind: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            model: { type: string }
+            acp: { type: object }
+            openhands: { type: object }
+            mcp_servers:
+              type: array
+              items: { type: object }
+          required: [kind]
+        compat:
+          description: The executor/model compatibility advisory; null when verified or nothing to say.
+          oneOf:
+            - type: object
+              properties:
+                kind: { type: string }
+                model: { type: string }
+                blocked: { type: boolean }
+                message: { type: string }
+              required: [kind, model, blocked, message]
+            - type: "null"
+        env:
+          type: object
+          additionalProperties: { type: boolean }
+        problems:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string, enum: [error, warn] }
+              field: { type: string }
+              message: { type: string }
+            required: [severity, field, message]
+      required: [config, compat, env, problems]
+
     DocComment:
       type: object
       description: |
@@ -3872,7 +5991,7 @@ components:
         for `/` matched everything and Go synthesizes `405` only when nothing matches.
 
         Neither is declared per operation below: they apply uniformly to every path under
-        `/api/`, and repeating them 97 times would say less than saying it once here. `403` is the
+        `/api/`, and repeating them 147 times would say less than saying it once here. `403` is the
         same shape and comes from the host/origin guard rather than the router.
 
         Every operation does carry a `default` response, so a generated client has somewhere to put
@@ -3984,7 +6103,10 @@ components:
         `plan_dependencies` **only** by regenerating - approving there locks in a dependency
         graph already known to be incomplete and leaves a blocking finding that wedges
         completion - and `verification` by recording evidence, not by touching the plan.
-      enum: [prd_review, plan_dependencies, plan_review, verification]
+        `budget_exceeded` means the initiative reached its spending cap and the engine stopped
+        before the next model or agent call; raising the cap (`PUT .../budget`) returns it to the
+        status it was stopped from.
+      enum: [prd_review, plan_dependencies, plan_review, verification, budget_exceeded]
 
     TrustLevel:
       type: string
@@ -4073,8 +6195,232 @@ components:
             reflects the last check run. Absent means no test is known to cover this requirement
             yet, not that one failed.
           items: { $ref: "#/components/schemas/EvidenceTest" }
+        objective_ids:
+          type: array
+          items: { type: string }
+          description: |
+            The live objectives this requirement serves (`requirement --serves--> objective`),
+            computed from graph edges. `[]` when it serves none -- the gap the PRD review's
+            outcome check reports.
         created_at: { type: string, format: date-time }
-      required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, created_at]
+      required: [id, initiative_id, code, statement, acceptance_criteria, priority, status, provenance, objective_ids, created_at]
+
+    ObjectiveStatus:
+      type: string
+      title: ObjectiveStatus
+      description: Only an `active` objective is checked for drift or required to have a metric.
+      enum: [active, achieved, abandoned]
+
+    MetricDirection:
+      type: string
+      title: MetricDirection
+      description: Which way the metric should move; `maintain` holds it at the target.
+      enum: [increase, decrease, maintain]
+
+    MetricSourceKind:
+      type: string
+      title: MetricSourceKind
+      enum: [manual, command, url]
+
+    MetricDrift:
+      type: string
+      title: MetricDrift
+      description: |
+        The deterministic drift status (`domain.EvaluateMetricDrift`), most urgent first:
+        `regressed` (worse than the previous observation, with a change set landed in between),
+        `off_track` (worse than the baseline -- declared, or else the first observation -- or past
+        the guardrail), `stale` (more than one cadence since the last observation), `no_data`,
+        `on_track`.
+      enum: [on_track, off_track, stale, regressed, no_data]
+
+    Objective:
+      type: object
+      title: Objective
+      description: A product objective an initiative exists to move (`domain.Objective`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        code: { type: string, description: "`OBJ-n`." }
+        statement: { type: string }
+        rationale: { type: string }
+        status: { $ref: "#/components/schemas/ObjectiveStatus" }
+        owner: { type: string }
+        produced_by_run: { type: string, description: "The PRD run that authored it; absent for a human-added one." }
+        superseded_by: { type: string }
+        requirement_ids:
+          type: array
+          items: { type: string }
+        metric_ids:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, initiative_id, code, statement, status, requirement_ids, metric_ids, created_at, updated_at]
+
+    MetricSource:
+      type: object
+      title: MetricSource
+      description: |
+        How a metric is measured. `command` runs `sh -c` in the no-network check sandbox with the
+        workspace read-only at `/repo`; the last number it prints is the value. `url` is fetched by
+        the SSRF-guarded fetcher and read at `pointer` (RFC 6901; empty means the document itself).
+      properties:
+        kind: { $ref: "#/components/schemas/MetricSourceKind" }
+        command: { type: string }
+        url: { type: string }
+        pointer: { type: string }
+      required: [kind]
+
+    MetricStatus:
+      type: object
+      title: MetricStatus
+      description: One metric's drift evaluation; every signal is reported alongside the primary `drift`.
+      properties:
+        drift: { $ref: "#/components/schemas/MetricDrift" }
+        off_track: { type: boolean }
+        stale: { type: boolean }
+        regressed: { type: boolean }
+        guardrail_breached: { type: boolean }
+        achieved: { type: boolean }
+        observations: { type: integer }
+        latest: { type: number }
+        latest_at: { type: string, format: date-time }
+        previous: { type: number }
+        effective_baseline: { type: number }
+        baseline_source:
+          type: string
+          enum: [declared, first_observation]
+        regressed_by:
+          type: array
+          items: { type: string }
+          description: Change set ids attributed to the observation that moved the metric the wrong way.
+        next_due_at: { type: string, format: date-time }
+        reasons:
+          type: array
+          items: { type: string }
+      required: [drift, off_track, stale, regressed, guardrail_breached, achieved, observations, regressed_by, reasons]
+
+    OutcomeMetric:
+      type: object
+      title: OutcomeMetric
+      description: How an objective is measured (`domain.OutcomeMetric`).
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        objective_id: { type: string }
+        objective_code: { type: string }
+        code: { type: string, description: "`MET-n`." }
+        name: { type: string }
+        definition: { type: string }
+        unit: { type: string }
+        direction: { $ref: "#/components/schemas/MetricDirection" }
+        baseline: { type: number, description: "Absent when unknown." }
+        target: { type: number }
+        guardrail:
+          type: number
+          description: A floor (increase), a ceiling (decrease), or the largest allowed distance from the target (maintain).
+        source: { $ref: "#/components/schemas/MetricSource" }
+        cadence: { type: string, description: "hourly, daily, weekly, biweekly, monthly, quarterly, `<n>d`, `<n>w`, or a duration." }
+        produced_by_run: { type: string }
+        superseded_by: { type: string }
+        status: { $ref: "#/components/schemas/MetricStatus" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, initiative_id, objective_id, code, name, direction, target, source, created_at, updated_at]
+
+    MetricObservation:
+      type: object
+      title: MetricObservation
+      description: One measured value with its provenance and outcome attribution.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        metric_id: { type: string }
+        value: { type: number }
+        observed_at: { type: string, format: date-time }
+        source: { $ref: "#/components/schemas/MetricSourceKind" }
+        note: { type: string }
+        recorded_by: { type: string }
+        provenance:
+          type: array
+          items: { $ref: "#/components/schemas/ProvenanceRef" }
+        change_set_ids:
+          type: array
+          items: { type: string }
+          description: Change sets applied (still applied, not no-op) between the previous observation and this one.
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, metric_id, value, observed_at, source, recorded_by, provenance, change_set_ids, created_at]
+
+    RequirementOutcomeDrift:
+      type: object
+      title: RequirementOutcomeDrift
+      description: A verified requirement whose objective has an off-track or regressed metric.
+      properties:
+        requirement_id: { type: string }
+        requirement_code: { type: string }
+        objective_id: { type: string }
+        objective_code: { type: string }
+        metric_codes:
+          type: array
+          items: { type: string }
+        signal: { type: string, const: works_but_fails_objective }
+        detail: { type: string }
+      required: [requirement_id, requirement_code, objective_id, objective_code, metric_codes, signal, detail]
+
+    OutcomeSummary:
+      type: object
+      title: OutcomeSummary
+      properties:
+        objectives: { type: integer }
+        metrics: { type: integer }
+        on_track: { type: integer }
+        off_track: { type: integer }
+        regressed: { type: integer }
+        stale: { type: integer }
+        no_data: { type: integer }
+        drifting: { type: integer, description: "off_track + regressed + stale." }
+        works_but_fails: { type: integer }
+      required: [objectives, metrics, on_track, off_track, regressed, stale, no_data, drifting, works_but_fails]
+
+    OutcomeReport:
+      type: object
+      title: OutcomeReport
+      properties:
+        objectives:
+          type: array
+          items: { $ref: "#/components/schemas/Objective" }
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/OutcomeMetric" }
+        requirement_drift:
+          type: array
+          items: { $ref: "#/components/schemas/RequirementOutcomeDrift" }
+        gaps:
+          type: object
+          description: |
+            Codes of the outcome chain's missing links -- the same rule (`domain.AnalyzeOutcomeChain`)
+            behind the `orphan_requirement`, `unmeasured_objective` and `unserved_objective` gaps of
+            GET …/gaps. `requirements_without_objectives` is empty until an objective is active.
+          properties:
+            objectives_without_metrics: { type: array, items: { type: string } }
+            objectives_without_requirements: { type: array, items: { type: string } }
+            requirements_without_objectives: { type: array, items: { type: string } }
+          required: [objectives_without_metrics, objectives_without_requirements, requirements_without_objectives]
+        summary: { $ref: "#/components/schemas/OutcomeSummary" }
+      required: [objectives, metrics, requirement_drift, gaps, summary]
+
+    MeasureResult:
+      type: object
+      title: MeasureResult
+      description: One metric's measurement; exactly one of `observation`, `skipped` and `error` is set.
+      properties:
+        metric_id: { type: string }
+        metric_code: { type: string }
+        observation: { $ref: "#/components/schemas/MetricObservation" }
+        status: { $ref: "#/components/schemas/MetricStatus" }
+        skipped: { type: string }
+        error: { type: string }
+      required: [metric_id, metric_code]
 
     EvidenceTest:
       type: object
@@ -4097,6 +6443,9 @@ components:
       properties:
         id: { type: string }
         initiative_id: { type: string }
+        code:
+          type: string
+          description: Initiative-scoped human code (ASM-n). What a PRD cites in a requirement's or decision's based_on, and what `idea assumption` accepts.
         type:
           type: string
           enum: [fact, assumption, hypothesis]
@@ -4113,7 +6462,7 @@ components:
         produced_by_run: { type: string }
         superseded_by: { type: string }
         created_at: { type: string, format: date-time }
-      required: [id, initiative_id, type, status, statement, confidence, source, provenance, created_at]
+      required: [id, initiative_id, code, type, status, statement, confidence, source, provenance, created_at]
 
     Decision:
       type: object
@@ -4167,6 +6516,11 @@ components:
         answer_digest:
           type: string
           description: The answer is stored content-addressed; only its digest is on the row.
+        answer:
+          type: string
+          description: |
+            The answer's text, read from the store by the questions list. Omitted while the
+            question is open.
         answered_by: { type: string }
         created_at: { type: string, format: date-time }
         resolved_at:
@@ -4266,6 +6620,94 @@ components:
           description: Digest of the vision-generated description, once it has been produced.
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, kind, title, digest, preview, format, created_at]
+
+    GapKind:
+      type: string
+      title: GapKind
+      description: |
+        The class of a Product Graph gap (`domain.GapKind`). Open-ended: new kinds are added, never
+        renamed, so a client must tolerate one it does not know.
+      enum: [unimplemented_requirement, unverified_requirement, untested_acceptance_criterion, unvalidated_assumption, invalidated_decision, orphan_task, orphan_change_set, stale_artifact, orphan_requirement, unmeasured_objective, unserved_objective, drifting_metric, ineffective_requirement]
+
+    GapState:
+      type: string
+      title: GapState
+      description: |
+        Which trigger of a gap kind fired (`domain.GapState`). unimplemented_requirement: no_task,
+        not_applied. unverified_requirement: no_criteria, evidence_failed, evidence_stale.
+        untested_acceptance_criterion: no_evidence. unvalidated_assumption: unvalidated, disputed,
+        refuted. invalidated_decision: dependents_stale, requirement_revised, requirements_removed,
+        basis_refuted. orphan_task: no_requirement. orphan_change_set: task_missing, task_orphaned.
+        stale_artifact: upstream_newer. orphan_requirement: no_objective, objectives_missing.
+        unmeasured_objective: no_metric. unserved_objective: no_requirement. drifting_metric:
+        off_track, regressed, stale. ineffective_requirement: works_but_fails_objective.
+      enum: [no_task, not_applied, no_criteria, no_evidence, evidence_failed, evidence_stale, unvalidated, disputed, refuted, dependents_stale, requirement_revised, requirements_removed, basis_refuted, no_requirement, task_missing, task_orphaned, upstream_newer, no_objective, objectives_missing, no_metric, off_track, regressed, stale, works_but_fails_objective]
+
+    GapNode:
+      type: object
+      title: GapNode
+      description: One Product Graph node a gap is about.
+      properties:
+        type:
+          type: string
+          description: "`requirement`, `acceptance_criterion`, `task`, `change_set`, `decision`, `assertion`, `artifact`, `objective`, `metric` or `initiative`."
+        id:
+          type: string
+          description: The node's id. For an acceptance criterion, its criterion key (`<requirement id>:<index>`).
+        code:
+          type: string
+          description: The human handle -- `REQ-3`, `REQ-3/AC-2`, `TASK-2`, `CHG-4`, `DEC-1`, `OBJ-1`, `MET-2`, an artifact kind, or an assertion's (or initiative's) 8-character id prefix.
+        label: { type: string }
+      required: [type, id, code]
+
+    Gap:
+      type: object
+      title: Gap
+      description: |
+        One hole in the Product Graph (`domain.Gap`). `nodes[0]` is the node the gap is about; any
+        further nodes are its evidence. `dependents` counts the live nodes resting on `nodes[0]`, the
+        ranking key within a severity.
+      properties:
+        kind: { $ref: "#/components/schemas/GapKind" }
+        state: { $ref: "#/components/schemas/GapState" }
+        severity: { $ref: "#/components/schemas/Severity" }
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/GapNode" }
+        why: { type: string }
+        next:
+          type: string
+          description: The command (occasionally a web UI action) that closes the gap.
+        dependents: { type: integer }
+        initiative_id: { type: string }
+      required: [kind, state, severity, nodes, why, next, dependents, initiative_id]
+
+    GapSummary:
+      type: object
+      title: GapSummary
+      description: Gap counts by severity and by kind; every known severity and kind is present, zero included.
+      properties:
+        total: { type: integer }
+        by_severity:
+          type: object
+          additionalProperties: { type: integer }
+        by_kind:
+          type: object
+          additionalProperties: { type: integer }
+      required: [total, by_severity, by_kind]
+
+    GapReport:
+      type: object
+      title: GapReport
+      properties:
+        initiative_id:
+          type: string
+          description: Set on the per-initiative report, omitted on the project-wide one.
+        gaps:
+          type: array
+          items: { $ref: "#/components/schemas/Gap" }
+        summary: { $ref: "#/components/schemas/GapSummary" }
+      required: [gaps, summary]
 
     Severity:
       type: string
@@ -4512,6 +6954,12 @@ components:
             was cancelled mid-review — in which case the change set carries only mechanical-check
             observations (build/tests/patch-applies/workspace-copy), `approved` refuses it, and
             `POST .../review {"verdict":"rerun"}` is the way forward.
+        review_note:
+          type: string
+          description: |
+            What the human asked for when they requested changes on, or rejected, this change set
+            (`POST .../review` with a `note`). The task's next run carries it in its brief.
+            Omitted for a verdict given without one.
       required: [id, human_id, initiative_id, task_id, status, patch_digest, created_at]
 
     PRChecksResult:
@@ -4591,6 +7039,199 @@ components:
             the workspace file was edited after the agent ran. Clients show it and fall back to
             `content`.
       required: [path, change_type, size, content]
+
+    RunEventKind:
+      type: string
+      title: RunEventKind
+      description: |
+        What one step of a running agent was (`domain.RunEventKind`). `thought` carries no text:
+        chain-of-thought is never exposed, only the fact that the agent is reasoning.
+      enum: [action, tool_call, tool_result, file_change, permission, message, thought, cost, status, error]
+
+    RunEvent:
+      type: object
+      title: RunEvent
+      description: |
+        One normalized step of a coding agent's run (`domain.RunEvent`), whichever executor ran
+        it. Redacted before it is stored; `title` is bounded to 240 characters, `detail` to 4096
+        bytes (`truncated` says a field was cut).
+      properties:
+        seq: { type: integer, format: int64, description: "Monotonic per run, from 1: the resume cursor." }
+        run_id: { type: string }
+        operation_id: { type: string }
+        initiative_id: { type: string }
+        task_id: { type: string }
+        executor: { type: string, description: "internal, container, hermes, omp, acp or openhands." }
+        at: { type: string, format: date-time }
+        kind: { $ref: "#/components/schemas/RunEventKind" }
+        source:
+          type: string
+          enum: [agent, harness, user]
+          description: The coding agent, the harness (executor or engine), or the human (a steering note).
+        title: { type: string }
+        detail: { type: string }
+        path: { type: string, description: "Work-root-relative file the event is about." }
+        tool_call_id: { type: string, description: "Ties a tool_call to its tool_result(s) and permission." }
+        tool_kind: { type: string }
+        status:
+          type: string
+          description: |
+            A tool call's state (pending, in_progress, completed, failed, or cancelled when the run
+            ended first); a permission's decision
+            (allow_once, ...); a note's delivery (delivered, queued, next_run); a status event's
+            state (starting, running, agent_finished, finished, stopped, ...); on a `harness`
+            file_change, the change type of the orchestrator's own diff (add, modify, delete) -
+            the authoritative file list.
+        added: { type: integer }
+        removed: { type: integer }
+        input_tokens: { type: integer, format: int64, description: "A delta, not a total." }
+        output_tokens: { type: integer, format: int64, description: "A delta, not a total." }
+        cost_usd: { type: number, description: "A delta, not a total." }
+        change_set_id: { type: string, description: "On the status event that ends a run which produced a change set." }
+        truncated: { type: boolean }
+      required: [seq, run_id, at, kind, title]
+
+    RunEventPage:
+      type: object
+      title: RunEventPage
+      properties:
+        run_id: { type: string }
+        run_status: { type: string, description: "The run's status: pending, running, succeeded or failed." }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/RunEvent" }
+        first_seq: { type: integer, format: int64, description: "Oldest stored seq; above 1 means earlier events were dropped." }
+        last_seq: { type: integer, format: int64, description: "Newest stored seq." }
+        more: { type: boolean, description: "Another page follows; ask with after = the last event's seq." }
+      required: [run_id, run_status, events, first_seq, last_seq, more]
+
+    CurrentRun:
+      type: object
+      title: CurrentRun
+      properties:
+        run_id: { type: string, description: "Empty when the initiative has never run an agent." }
+        live: { type: boolean, description: "The run is in progress; its events are still coming." }
+        status: { type: string }
+        executor: { type: string }
+        steerable:
+          type: boolean
+          description: A note reaches the running agent itself (acp, openhands); false means it is held for the next run.
+        ui_url:
+          type: string
+          description: |
+            "Open in OpenHands": the run's conversation in the OpenHands UI named by
+            `executor.openhands.ui_url`. Omitted otherwise - never guessed.
+        pending_notes:
+          type: array
+          items: { type: string }
+          description: Steering notes held for the task's next run.
+        started_at: { type: string, format: date-time }
+      required: [run_id, live, steerable, pending_notes]
+
+    RemoteRun:
+      type: object
+      title: RemoteRun
+      description: One dispatch of a task to an OpenHands Agent Server (a `remote_runs` row, without its progress log).
+      properties:
+        id: { type: string }
+        executor: { type: string }
+        initiative_id: { type: string }
+        task_id: { type: string }
+        task_code: { type: string, description: "Omitted when the task has since been removed." }
+        attempt: { type: integer }
+        server_url: { type: string }
+        conversation_id: { type: string, description: "Empty until the conversation is created." }
+        status:
+          type: string
+          enum: [dispatching, running, finished, collected, failed, cancelled]
+        remote_status: { type: string, description: "The server's own execution_status, as last seen." }
+        event_count: { type: integer }
+        last_event_id: { type: string }
+        last_event: { type: string, description: "The progress log's last line (redacted)." }
+        error: { type: string }
+        run_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+      required: [id, executor, initiative_id, task_id, attempt, server_url, status, event_count, created_at, updated_at]
+
+    SteerResult:
+      type: object
+      title: SteerResult
+      properties:
+        run_id: { type: string }
+        executor: { type: string }
+        delivery: { type: string, enum: [delivered, queued, next_run] }
+        message: { type: string, description: "A sentence for the person who sent it." }
+      required: [run_id, delivery, message]
+
+    RunReport:
+      type: object
+      title: RunReport
+      description: The run report (`workflow.RunReport`). Already redacted.
+      properties:
+        generated_at: { type: string, format: date-time }
+        run:
+          type: object
+          properties:
+            id: { type: string }
+            status: { type: string }
+            initiative_id: { type: string }
+            task_id: { type: string }
+            task_code: { type: string }
+            task_title: { type: string }
+            executor: { type: string }
+            note: { type: string }
+            started_at: { type: string, format: date-time }
+            finished_at: { type: string, format: date-time }
+          required: [id, status, started_at]
+        manifest: { type: object, description: "The run manifest, when the run finished with one." }
+        change_set:
+          type: object
+          properties:
+            id: { type: string }
+            human_id: { type: string }
+            status: { type: string }
+            no_op: { type: boolean }
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              change: { type: string }
+              added: { type: integer }
+              removed: { type: integer }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string }
+              category: { type: string }
+              finding: { type: string }
+              disposition: { type: string }
+        cost:
+          type: object
+          properties:
+            input_tokens: { type: integer, format: int64 }
+            output_tokens: { type: integer, format: int64 }
+            cost_usd: { type: number }
+            duration_ms: { type: integer, format: int64 }
+        steering:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              note: { type: string }
+              delivery: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/RunEvent" }
+        events_dropped: { type: integer, format: int64 }
+        openhands_url: { type: string }
+      required: [generated_at, run, files, findings, cost, steering, events]
 
     OperationStatus:
       type: string
@@ -4827,6 +7468,35 @@ components:
             When present, `why` also carries a sentence naming the count and the decision code, and
             the recommended path (`idea revise-plan`, or acknowledge each item via
             `POST .../stale/{staleId}/ack`).
+        executor_resolution:
+          type: object
+          description: |
+            Which executor the next run uses, and why; present when there is a next task.
+            `warning` is set when `executor.kind` is unset (`auto`) and the run would fall back to
+            the placeholder `internal` executor - no real code will be written, and the text says
+            how to fix it. `note` is the quieter equivalent for an explicit `kind: internal`.
+          properties:
+            requested: { $ref: "#/components/schemas/ExecutorKind" }
+            resolved: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            server:
+              type: string
+              description: The Agent Server URL, for `openhands`.
+            warning: { type: string }
+            note: { type: string }
+          required: [requested, resolved]
+        gap_summary:
+          allOf: [{ $ref: "#/components/schemas/GapSummary" }]
+          description: |
+            The initiative's Product Graph gap counts (`GET .../gaps`), omitted when there are none.
+            Computed without mapped-test evidence, which `GET .../gaps` itself includes, so the
+            verification counts here can be lower.
+        outcomes:
+          allOf: [{ $ref: "#/components/schemas/OutcomeSummary" }]
+          description: |
+            Outcome drift counts, present only when a metric is off track, regressed or stale, or a
+            verified requirement's objective is failing; `why` then also carries a sentence naming
+            the codes. Never replaces `action`: drift is something to know, not a gate.
       required: [action, why, affected]
 
     StaleItemRef:
@@ -5010,10 +7680,12 @@ components:
     ImpactItem:
       title: ImpactItem
       description: |
-        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"`
-        (supersedes/invalidates edges), `"revalidate"` (every other edge type), or `"stale"` (review
-        A4 #5: an active stale mark on this exact node, which always wins over the edge-type
-        classification).
+        A `TraceItem` plus a staleness classification for the dependent node: `"obsolete"` (reached
+        by a `supersedes` edge, or the node is the target of an `invalidates` edge -- a retracted
+        assertion it rests on), `"revalidate"` (every other edge type), or `"stale"` (review A4 #5:
+        an active stale mark on this exact node, which always wins over the edge-type
+        classification). Impact never follows an incoming `invalidates` edge: the invalidator is not
+        a dependent.
       allOf:
         - $ref: "#/components/schemas/TraceItem"
         - type: object
@@ -5067,6 +7739,142 @@ components:
         question: { type: string }
         resolution: { type: string }
       required: [code, question]
+
+    QualityDimension:
+      type: string
+      title: QualityDimension
+      description: One quality dimension `idea verify` measures beyond the acceptance tests.
+      enum: [setup_reproducibility, docs_completeness, api_compatibility, api_ergonomics, security, performance, operational_readiness]
+    QualityStatus:
+      type: string
+      title: QualityStatus
+      description: |
+        A dimension's or check's outcome. `not_measured` means the harness could not look (no Docker,
+        no image, no scanner, a demo model) and never counts as a pass; `not_applicable` means it
+        looked and there was nothing to judge.
+      enum: [pass, warn, fail, not_measured, not_applicable]
+    QualityMode:
+      type: string
+      title: QualityMode
+      description: "`off` (not measured), `advisory` (reported, never blocks), `gate` (a fail, not_measured or stale result holds the verification gate)."
+      enum: [off, advisory, gate]
+    QualityMethod:
+      type: string
+      title: QualityMethod
+      description: How a check reached its result.
+      enum: [deterministic, model]
+    QualityCitation:
+      type: object
+      title: QualityCitation
+      properties:
+        path: { type: string }
+        line: { type: integer }
+        requirement: { type: string, description: A requirement code. }
+    QualityCheck:
+      type: object
+      title: QualityCheck
+      properties:
+        name: { type: string }
+        status: { $ref: "#/components/schemas/QualityStatus" }
+        method: { $ref: "#/components/schemas/QualityMethod" }
+        detail: { type: string }
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/QualityCitation" }
+      required: [name, status, method]
+    QualityResult:
+      type: object
+      title: QualityResult
+      description: One dimension's recorded measurement. Append-only; the latest per dimension is the scorecard.
+      properties:
+        id: { type: string }
+        initiative_id: { type: string }
+        measurement_id: { type: string }
+        dimension: { $ref: "#/components/schemas/QualityDimension" }
+        mode: { $ref: "#/components/schemas/QualityMode" }
+        status: { $ref: "#/components/schemas/QualityStatus" }
+        summary: { type: string }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/QualityCheck" }
+        metrics:
+          type: object
+          additionalProperties: { type: number }
+          description: Named measurements (performance budgets); the next measurement's baseline.
+        input_digest: { type: string }
+        requirements:
+          type: array
+          items: { type: string }
+          description: Codes of the requirements this result is linked to by a `verifies` edge.
+        created_at: { type: string, format: date-time }
+      required: [id, initiative_id, measurement_id, dimension, mode, status, summary, checks, input_digest, requirements, created_at]
+    ReviewTelemetry:
+      type: object
+      title: ReviewTelemetry
+      description: |
+        One review cycle's convergence record. Per-severity maps are keyed by `Severity`; a missing
+        key is zero. `new` and `reraised` partition `raised` against the previous cycle's gating
+        findings; `resolved` counts previous-cycle gating findings this cycle did not re-raise.
+      properties:
+        review: { type: string, enum: [prd, execution_plan] }
+        cycle: { type: integer }
+        mode: { type: string, description: "`review.convergence.mode` as it ran: `guarded` or `legacy`." }
+        rigor: { type: string }
+        raised: { type: object, additionalProperties: { type: integer } }
+        new: { type: object, additionalProperties: { type: integer } }
+        reraised: { type: object, additionalProperties: { type: integer } }
+        resolved: { type: object, additionalProperties: { type: integer } }
+        demoted:
+          type: object
+          additionalProperties: { type: integer }
+          description: Findings made advisory by a convergence rule, keyed by the rule.
+        deterministic:
+          type: integer
+          description: Gating deterministic-check findings this cycle.
+        open_blocking:
+          type: integer
+          description: Findings still gating approval after this cycle's rules ran.
+        prev_open_blocking:
+          type: integer
+          description: The previous cycle's `open_blocking`; -1 on a loop's first cycle.
+        outcome:
+          type: string
+          description: "What the loop did next: `converged`, `revise`, `stalled`, `max_cycles`, or `blocked`."
+      required: [review, cycle, mode, deterministic, open_blocking, prev_open_blocking, outcome]
+    QualityScorecard:
+      type: object
+      title: QualityScorecard
+      properties:
+        rigor:
+          type: string
+          description: The effective review rigor the default modes came from (`quick`, `standard`, `thorough`).
+        overridden:
+          type: array
+          items: { $ref: "#/components/schemas/QualityDimension" }
+          description: Dimensions whose mode `verify.dimensions` set explicitly.
+        dimensions:
+          type: array
+          items:
+            type: object
+            properties:
+              dimension: { $ref: "#/components/schemas/QualityDimension" }
+              mode: { $ref: "#/components/schemas/QualityMode" }
+              result:
+                description: The latest result, or null when never measured.
+                oneOf:
+                  - { $ref: "#/components/schemas/QualityResult" }
+                  - { type: "null" }
+              stale: { type: boolean }
+            required: [dimension, mode, result, stale]
+        input_digest: { type: string }
+        needs_measurement:
+          type: boolean
+          description: An enabled dimension has no result for the current input digest.
+        gate_unmet:
+          type: array
+          items: { type: string }
+          description: Each gated dimension that failed, was not measured, or is stale.
+      required: [rigor, overridden, dimensions, input_digest, needs_measurement, gate_unmet]
 
     Coverage:
       type: object
@@ -5220,7 +8028,176 @@ components:
     ExecutorKind:
       type: string
       title: ExecutorKind
-      enum: [internal, container, omp, hermes]
+      description: |
+        `auto` is what an unset `executor.kind` means: resolved per run to `hermes` (Docker
+        reachable and the coding model's key set) or to `internal` with a loud warning. `acp`
+        drives any Agent Client Protocol agent. `openhands` delegates the run to an OpenHands
+        Agent Server (opt-in only: auto never resolves to it, since the work root leaves the
+        machine). `GET /executors` lists the concrete kinds only, never `auto`.
+      enum: [auto, internal, container, omp, hermes, acp, openhands]
+
+    IntegrationsView:
+      type: object
+      title: IntegrationsView
+      properties:
+        integrations:
+          type: array
+          items: { $ref: "#/components/schemas/IntegrationStatus" }
+        event_kinds:
+          type: array
+          items: { type: string }
+          description: Every event kind `integrations.slack.events` accepts.
+        default_slack_events:
+          type: array
+          items: { type: string }
+          description: What Slack posts when `events` is unset.
+      required: [integrations, event_kinds, default_slack_events]
+
+    IntegrationStatus:
+      type: object
+      title: IntegrationStatus
+      description: One integration's health. Token values are never returned.
+      properties:
+        name: { type: string, enum: [slack, linear] }
+        configured:
+          type: boolean
+          description: Its section is present in harness.yaml.
+        active:
+          type: boolean
+          description: It is running (configured, and the token it cannot work without is set).
+        tokens:
+          type: object
+          description: Each environment variable the integration reads, mapped to whether it is set.
+          additionalProperties: { type: boolean }
+        problems:
+          type: array
+          items: { type: string }
+        outbox:
+          type: object
+          description: Delivery outbox counts for this integration.
+          properties:
+            pending: { type: integer }
+            delivered: { type: integer }
+            dead:
+              type: integer
+              description: Events dropped after the retry budget (or a permanent error).
+            last_error: { type: string }
+            last_delivered_at: { type: string, format: date-time }
+          required: [pending, delivered, dead]
+        ingest_error:
+          type: string
+          description: The last failure reading the event log, when the most recent read failed.
+        socket:
+          type: object
+          description: Slack Socket Mode connection (slack only, when an app-level token is set).
+          properties:
+            connected: { type: boolean }
+            connected_at: { type: string, format: date-time }
+            last_error: { type: string }
+            reconnects: { type: integer }
+          required: [connected, reconnects]
+        poll:
+          type: object
+          description: The Linear poller (linear only).
+          properties:
+            last_poll_at: { type: string, format: date-time }
+            last_error: { type: string }
+        linked_issues:
+          type: integer
+          description: Linear issues linked to initiatives and tasks.
+        config:
+          description: |
+            The integration's harness.yaml section as written (null when not configured): what
+            `PUT /integrations/{name}` takes. Environment-variable names only, never a token.
+          oneOf:
+            - type: object
+            - type: "null"
+        token_envs:
+          type: array
+          items: { type: string }
+          description: The environment variables the integration reads, defaults applied.
+      required: [name, configured, active, problems, config, token_envs]
+
+    PairingCode:
+      type: object
+      title: PairingCode
+      properties:
+        code: { type: string, description: "`XXXXX-XXXXX`." }
+        expires_at: { type: string, format: date-time }
+        remote: { type: boolean, description: Whether another device can reach this daemon at all. }
+        urls:
+          type: array
+          items: { type: string }
+          description: Where a remote browser reaches the UI.
+        burned_codes: { type: integer, description: "Pairing codes burned in the last 7 days (too many wrong codes tried while they were outstanding). 0 when none." }
+        last_burned_at: { type: string, format: date-time, description: When the latest burned. Absent when none did. }
+      required: [code, expires_at, remote, urls, burned_codes]
+
+    UISession:
+      type: object
+      title: UISession
+      description: A remote browser session. The session secret is never stored or returned; the database keeps its SHA-256.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        user_agent: { type: string }
+        remote_addr: { type: string, description: Display only. Behind a proxy, the first X-Forwarded-For hop. }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+      required: [id, created_at, last_seen_at, expires_at]
+
+    UISessionView:
+      type: object
+      title: UISessionView
+      properties:
+        auth: { type: string, enum: [token, session] }
+        csrf_token: { type: string, description: "Send as `X-Idea-CSRF` on every state-changing request. Present for `session`." }
+        session: { $ref: "#/components/schemas/UISession" }
+      required: [auth]
+
+    PushEventKind:
+      type: string
+      title: PushEventKind
+      description: The integration-bus kinds a browser can be notified about — the four that mean a person is needed.
+      enum: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
+
+    PushSubscription:
+      type: object
+      title: PushSubscription
+      properties:
+        id: { type: string }
+        label: { type: string }
+        endpoint_host: { type: string, description: The push service's host. The endpoint path is a capability and is never returned. }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/PushEventKind" }
+        created_at: { type: string, format: date-time }
+        last_delivered_at: { type: string, format: date-time }
+        last_error: { type: string }
+        renewal_token:
+          type: string
+          description: |
+            Only in the responses to subscribe and renew, never in a list: the secret the service
+            worker spends on `POST …/push/subscriptions/{id}/renew`. The daemon keeps its SHA-256.
+      required: [id, endpoint_host, events, created_at]
+
+    IntegrationTestResult:
+      type: object
+      title: IntegrationTestResult
+      properties:
+        name: { type: string, enum: [slack, linear] }
+        ok: { type: boolean }
+        result:
+          type: object
+          description: |
+            What the check found. Slack: `team`, `bot_user`, `message_ts`, `socket_mode`. Linear:
+            `user`, `team`, `project`, `label`, `label_exists`.
+        error:
+          type: string
+          description: Present when `ok` is false.
+      required: [name, ok]
 
     ExecutorView:
       type: object
@@ -5233,7 +8210,8 @@ components:
           enum: [internal, local_external, remote_external]
         sandbox_mode:
           type: string
-          enum: [container, local_restricted, host_approved]
+          enum: [container, local_restricted, host_approved, remote]
+          description: "`remote`: the agent runs on another machine (openhands), in a sandbox the harness does not enforce."
         network: { type: boolean }
         capabilities:
           type: array
@@ -5251,6 +8229,20 @@ components:
           type: string
           description: The image this executor would use if none were configured.
         status: { $ref: "#/components/schemas/ExecutorStatus" }
+        resolution:
+          type: object
+          description: |
+            Present on exactly one entry: the executor the next run would use. With
+            `executor.kind` unset (`auto`) no entry is `selected`, and this says what auto
+            resolved to; `warning` is set when it fell back to the placeholder `internal`
+            executor (no real code will be written), `note` for an explicit `kind: internal`.
+          properties:
+            requested: { $ref: "#/components/schemas/ExecutorKind" }
+            resolved: { $ref: "#/components/schemas/ExecutorKind" }
+            image: { type: string }
+            warning: { type: string }
+            note: { type: string }
+          required: [requested, resolved]
       required: [name, trust, sandbox_mode, network, capabilities, selected, image, model, default_image, status]
 
     ExecutorStatus:
@@ -5262,6 +8254,9 @@ components:
         (the coding agents run in a container against a keyed provider); `internal`/`container`
         always report ready, since neither pulls an agent image or forwards a provider key. Image
         presence is cached for about 30s so a poll never calls Docker more than once per interval.
+        For `openhands` there is no image (`image_present` is true); `key_env`/`key_set` describe
+        the Agent Server's session key, and `problem` names a missing or unsafe server URL or a
+        provider key that is to be sent and is set nowhere. The server is not contacted here.
       properties:
         image:
           type: string

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import LineageChip from "./LineageChip";
+import InlinePanel from "./InlinePanel";
+import { isSubmitShortcut } from "./shortcuts";
 
 export interface DecisionItem {
   id: string;
@@ -36,6 +38,9 @@ export interface QuestionItem {
   id: string;
   question: string;
   status: string;
+  // The answer's text, served by the questions list once answered.
+  answer?: string;
+  answered_by?: string;
 }
 
 export const DISPOSITIONS: { value: string; label: string }[] = [
@@ -128,17 +133,27 @@ export function DecisionCard({
             {o}
           </button>
         ))}
-        <button className="jc-secondary" onClick={() => setWriting((v) => !v)}>
+        <button className="jc-secondary" aria-expanded={writing} onClick={() => setWriting((v) => !v)}>
           Write my own…
         </button>
       </div>
       {writing && (
-        <div className="jc-own">
+        // A disclosure: focus moves to the field, Escape closes it and puts
+        // focus back on "Write my own…". Enter (or ⌘/Ctrl+Enter, as in every
+        // note field) resolves with what was typed.
+        <InlinePanel className="jc-own" label={`Your own resolution for ${d.code}`} onClose={() => setWriting(false)}>
           <input
             className="text-input"
             placeholder="Your resolution…"
+            aria-label={`Your resolution for ${d.code}: ${d.question}`}
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || isSubmitShortcut(e.nativeEvent)) && custom.trim()) {
+                e.preventDefault();
+                onResolve(custom.trim());
+              }
+            }}
           />
           <button
             className="jc-primary"
@@ -146,7 +161,7 @@ export function DecisionCard({
           >
             Resolve
           </button>
-        </div>
+        </InlinePanel>
       )}
     </section>
   );
@@ -195,7 +210,12 @@ export function FindingCard({
             {d.label}
           </button>
         ))}
-        <button className="jc-secondary" onClick={() => setOpen((v) => !v)}>
+        <button
+          className="jc-secondary"
+          aria-expanded={open}
+          aria-label="More dispositions"
+          onClick={() => setOpen((v) => !v)}
+        >
           …
         </button>
         {open && (
@@ -225,7 +245,22 @@ export function QuestionCard({
 }) {
   const [answer, setAnswer] = useState("");
   if (q.status !== "open") {
-    return null;
+    // Answered questions render here, read-only, for Define's Resolved
+    // section. This used to return null, so a question vanished the moment
+    // it was answered, along with the answer itself.
+    return (
+      <section className="judgment-card resolved">
+        <div className="jc-head">
+          <IdChip label={`Q-${q.id.slice(0, 6).toUpperCase()}`} className="chip-inactive" />
+          <span className="jc-title">{q.question}</span>
+          <span className="phase-pill pill-verified">answered</span>
+        </div>
+        <div className="jc-answer">
+          {q.answer ? <>Answer: <strong>{q.answer}</strong></> : "Answered."}
+          {q.answered_by && <span className="muted"> · by {q.answered_by}</span>}
+        </div>
+      </section>
+    );
   }
   return (
     <section className="judgment-card">
@@ -244,6 +279,7 @@ export function QuestionCard({
       <div className="jc-ask">
         <input
           className="text-input"
+          aria-label={`Answer to: ${q.question}`}
           placeholder="Your answer…"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}

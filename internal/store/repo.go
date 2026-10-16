@@ -549,11 +549,18 @@ func (db *DB) CreateAssertion(ctx context.Context, a *domain.Assertion) error {
 		Actor:         ActorOrchestrator,
 		EventType:     "assertion.created",
 	}, func(tx *sql.Tx) error {
+		if a.Code == "" {
+			code, err := nextCode(tx, "assertions", "code", "ASM", a.InitiativeID)
+			if err != nil {
+				return err
+			}
+			a.Code = code
+		}
 		_, err := tx.Exec(`
 			INSERT INTO assertions
-				(id, initiative_id, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			a.ID, a.InitiativeID, a.Type, a.Status, a.Statement, a.EvidenceDigest, a.Confidence,
+				(id, initiative_id, code, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			a.ID, a.InitiativeID, a.Code, a.Type, a.Status, a.Statement, a.EvidenceDigest, a.Confidence,
 			a.Source, mustJSON(a.Provenance), a.ProducedByRun, a.SupersededBy, a.CreatedAt.UnixMilli())
 		if err != nil {
 			return err
@@ -585,8 +592,8 @@ func (db *DB) SupersedeAssertions(ctx context.Context, initiativeID, supersededB
 // ListAssertions returns assertions for an initiative.
 func (db *DB) ListAssertions(ctx context.Context, initiativeID string) ([]domain.Assertion, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at
-		FROM assertions WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
+		SELECT id, initiative_id, code, type, status, statement, evidence_digest, confidence, source, provenance_json, produced_by_run_id, superseded_by, created_at
+		FROM assertions WHERE initiative_id = ? ORDER BY created_at ASC, rowid ASC`, initiativeID)
 	if err != nil {
 		return nil, err
 	}
@@ -596,7 +603,7 @@ func (db *DB) ListAssertions(ctx context.Context, initiativeID string) ([]domain
 		var a domain.Assertion
 		var prov string
 		var created int64
-		if err := rows.Scan(&a.ID, &a.InitiativeID, &a.Type, &a.Status, &a.Statement, &a.EvidenceDigest,
+		if err := rows.Scan(&a.ID, &a.InitiativeID, &a.Code, &a.Type, &a.Status, &a.Statement, &a.EvidenceDigest,
 			&a.Confidence, &a.Source, &prov, &a.ProducedByRun, &a.SupersededBy, &created); err != nil {
 			return nil, err
 		}
@@ -682,9 +689,23 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 		}
 		json.Unmarshal([]byte(ac), &r.AcceptanceCriteria)
 		json.Unmarshal([]byte(prov), &r.Provenance)
+		r.ObjectiveIDs = []string{}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	serves, err := db.requirementObjectives(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if ids := serves[out[i].ID]; len(ids) > 0 {
+			out[i].ObjectiveIDs = ids
+		}
+	}
+	return out, nil
 }
 
 // SupersedeRequirements marks every active requirement of an initiative as
@@ -930,6 +951,109 @@ func (db *DB) WireRequirementDerivedFromDecision(ctx context.Context, initiative
 		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{
 			FromType: "requirement", FromID: requirementID, EdgeType: domain.EdgeDerivedFrom, ToType: "decision", ToID: decisionID,
 		}})
+	})
+}
+
+// SetAssertionBasis records the assertions a requirement or decision rests on
+// (its PRD `based_on`): one fromType --derived_from--> assertion edge per id.
+// derived_from, not a new edge kind: it is the edge a requirement's source
+// assertion already uses, the one `idea why` walks toward the evidence and
+// `idea impact` walks away from it, and the one gap analysis reads both for an
+// assertion's dependents and for a decision's basis_refuted.
+//
+// replace is for a node the same PRD cycle restates -- a requirement revised in
+// place: its earlier derived_from->assertion edges that ids no longer names are
+// removed first, so the graph says what the requirement rests on now, not the
+// union of every revision. The requirement's own source_assertion_id edge is
+// never removed here; it is a fact about where the row came from, not a claim
+// the model restates each cycle. A decision is never replaced (callers pass
+// false): a re-listed decision merges into the existing row, and an earlier
+// cycle's basis for a choice already made is still its basis.
+//
+// Ids must belong to the initiative; an unknown one is refused rather than
+// written as a dangling edge.
+func (db *DB) SetAssertionBasis(ctx context.Context, initiativeID, fromType, fromID string, assertionIDs []string, replace bool) error {
+	if fromType != "requirement" && fromType != "decision" {
+		return fmt.Errorf("store: assertion basis is recorded for a requirement or decision, not %q", fromType)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: fromType,
+		AggregateID:   fromID,
+		Actor:         ActorOrchestrator,
+		EventType:     fromType + ".basis_set",
+		Operation:     strings.Join(assertionIDs, ","),
+	}, func(tx *sql.Tx) error {
+		if replace {
+			keep := ""
+			if fromType == "requirement" {
+				if err := tx.QueryRow(`SELECT source_assertion_id FROM requirements WHERE id = ?`, fromID).Scan(&keep); err != nil && err != sql.ErrNoRows {
+					return err
+				}
+			}
+			if _, err := tx.Exec(`
+				DELETE FROM graph_edges
+				WHERE initiative_id = ? AND from_type = ? AND from_id = ? AND edge_type = ? AND to_type = 'assertion' AND to_id != ?`,
+				initiativeID, fromType, fromID, string(domain.EdgeDerivedFrom), keep); err != nil {
+				return err
+			}
+		}
+		var edges []EdgeToWrite
+		seen := map[string]bool{}
+		for _, aid := range assertionIDs {
+			if aid == "" || seen[aid] {
+				continue
+			}
+			seen[aid] = true
+			if err := requireOwned(tx, "assertions", initiativeID, aid, "assertion"); err != nil {
+				return err
+			}
+			// graph_edges has no uniqueness constraint, and a decision re-cited
+			// by a later cycle must not count its basis twice.
+			var have int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM graph_edges WHERE initiative_id = ? AND from_type = ? AND from_id = ? AND edge_type = ? AND to_type = 'assertion' AND to_id = ?`,
+				initiativeID, fromType, fromID, string(domain.EdgeDerivedFrom), aid).Scan(&have); err != nil {
+				return err
+			}
+			if have > 0 {
+				continue
+			}
+			edges = append(edges, EdgeToWrite{FromType: fromType, FromID: fromID, EdgeType: domain.EdgeDerivedFrom, ToType: "assertion", ToID: aid})
+		}
+		if err := db.wireEdges(tx, initiativeID, edges); err != nil {
+			return err
+		}
+		// A node now resting on a retracted assertion is invalidated by it;
+		// one whose revision dropped the citation no longer is.
+		return db.syncInvalidatesTx(tx, initiativeID, ActorOrchestrator)
+	})
+}
+
+// RelateAssertions records that one assertion corroborates (supports) or
+// contradicts another -- a research finding judging a framing assumption. Both
+// must belong to the initiative. supports makes the target one of the
+// source's dependents in gap analysis (it is what the finding props up);
+// contradicts is recorded for `idea why`/`impact` and the reader, and is not
+// itself a gap trigger between two assertions.
+func (db *DB) RelateAssertions(ctx context.Context, initiativeID, fromID string, edge domain.EdgeType, toID string) error {
+	if edge != domain.EdgeSupports && edge != domain.EdgeContradicts {
+		return fmt.Errorf("store: assertions relate by supports or contradicts, not %q", edge)
+	}
+	if fromID == toID {
+		return fmt.Errorf("store: an assertion cannot %s itself", edge)
+	}
+	return db.Apply(ctx, Event{
+		AggregateType: "assertion",
+		AggregateID:   fromID,
+		Actor:         ActorOrchestrator,
+		EventType:     "assertion." + string(edge),
+		Operation:     toID,
+	}, func(tx *sql.Tx) error {
+		for _, aid := range []string{fromID, toID} {
+			if err := requireOwned(tx, "assertions", initiativeID, aid, "assertion"); err != nil {
+				return err
+			}
+		}
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{FromType: "assertion", FromID: fromID, EdgeType: edge, ToType: "assertion", ToID: toID}})
 	})
 }
 
@@ -1254,6 +1378,70 @@ func (db *DB) AnswerQuestion(ctx context.Context, questionID, answerDigest, acto
 }
 
 // ---------- Artifact ----------
+
+// RecordArtifactVersion records a regenerated body as the next version of the
+// initiative's existing artifact of that kind, creating the family (at v1)
+// only when there is none yet. It returns whether a version was written.
+//
+// Every regeneration used to go through CreateArtifact, which always starts a
+// new family at v1: a revised plan was a second "execution plan v1", the UI
+// labelled the comparison "Diff v1 → v1", and the diff endpoint then refused
+// it because the two versions belonged to different artifacts. Appending to
+// the family is what makes "v2" mean the second version of the same document.
+//
+// skipIdentical makes a regeneration whose body is byte-identical to the
+// latest version a no-op (false, nil): a revision that changed nothing must
+// not mint a version that differs from its predecessor only in its number.
+func (db *DB) RecordArtifactVersion(ctx context.Context, initiativeID string, kind domain.ArtifactKind, v *domain.ArtifactVersion, skipIdentical bool) (bool, error) {
+	var latestID, artifactID, latestDigest string
+	var latestVersion int
+	err := db.SQL().QueryRowContext(ctx, `
+		SELECT av.id, av.artifact_id, av.version, av.body_digest
+		FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id
+		WHERE a.initiative_id = ? AND a.kind = ?
+		ORDER BY av.created_at DESC, av.version DESC LIMIT 1`, initiativeID, kind).
+		Scan(&latestID, &artifactID, &latestVersion, &latestDigest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, db.CreateArtifact(ctx, &domain.Artifact{InitiativeID: initiativeID, Kind: kind}, v)
+	}
+	if err != nil {
+		return false, err
+	}
+	if skipIdentical && latestDigest == v.BodyDigest {
+		return false, nil
+	}
+	if v.ID == "" {
+		v.ID = id.New()
+	}
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = time.Now().UTC()
+	}
+	if v.Status == "" {
+		v.Status = "draft"
+	}
+	v.ArtifactID = artifactID
+	v.Version = latestVersion + 1
+	return true, db.Apply(ctx, Event{
+		AggregateType: "artifact",
+		AggregateID:   artifactID,
+		Actor:         ActorOrchestrator,
+		EventType:     "artifact.version_created",
+	}, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			INSERT INTO artifact_versions (id, artifact_id, version, status, body_digest, produced_by_run_id, superseded_by, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, '', ?)`,
+			v.ID, artifactID, v.Version, v.Status, v.BodyDigest, v.ProducedByRun, v.CreatedAt.UnixMilli()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE artifact_versions SET superseded_by = ? WHERE id = ?`, v.ID, latestID); err != nil {
+			return err
+		}
+		if v.ProducedByRun == "" {
+			return nil
+		}
+		return db.wireEdges(tx, initiativeID, []EdgeToWrite{{FromType: "artifact", FromID: artifactID, EdgeType: domain.EdgeProducedBy, ToType: "run", ToID: v.ProducedByRun}})
+	})
+}
 
 // CreateArtifact inserts an artifact family and its first version.
 func (db *DB) CreateArtifact(ctx context.Context, a *domain.Artifact, v *domain.ArtifactVersion) error {

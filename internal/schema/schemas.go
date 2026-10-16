@@ -32,7 +32,9 @@ const ResearchBrief = `{
           "statement": {"type": "string"},
           "type": {"enum": ["fact", "assumption", "hypothesis"]},
           "confidence": {"enum": ["high", "medium", "low"]},
-          "source": {"type": "string"}
+          "source": {"type": "string"},
+          "supports": {"type": "array", "items": {"type": "string"}, "description": "ASM codes of framing assumptions listed under assertions that this finding corroborates."},
+          "contradicts": {"type": "array", "items": {"type": "string"}, "description": "ASM codes of framing assumptions listed under assertions that this finding contradicts."}
         },
         "required": ["statement", "type", "confidence", "source"]
       }
@@ -56,6 +58,8 @@ const PRD = `{
           "priority": {"enum": ["must", "should", "could"]},
           "code": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"REQ-4\") of the requirement this one continues/updates, copied from the Requirements context. Leave empty for a genuinely new requirement."},
           "decision": {"type": "string", "description": "Exact question text of the decision this requirement is shaped by, if any."},
+          "objectives": {"type": "array", "items": {"type": "string"}, "description": "The key(s) or OBJ code(s) of the objective(s) listed under objectives that this requirement serves. Every requirement must serve at least one."},
+          "based_on": {"type": "array", "items": {"type": "string"}, "description": "ASM codes, exactly as listed under assertions, of the facts, assumptions or hypotheses this requirement rests on -- the ones that, if false, would make it wrong. Empty when it rests on none."},
           "acceptance_criteria": {
             "type": "array",
             "items": {
@@ -82,13 +86,58 @@ const PRD = `{
           "recommendation": {
             "type": "string",
             "description": "When options is non-empty, this MUST be either (a) one entry from options, copied verbatim character-for-character -- no paraphrasing, no added punctuation or wording -- or (b) the 1-based index of that entry as a string (e.g. \"2\"). A recommendation that is neither cannot be auto-accepted and will be left for a human to resolve by hand."
-          }
+          },
+          "based_on": {"type": "array", "items": {"type": "string"}, "description": "ASM codes, exactly as listed under assertions, of the facts, assumptions or hypotheses the recommendation rests on."}
         },
         "required": ["question", "options", "recommendation"]
       }
     },
+    "objectives": {
+      "type": "array",
+      "description": "The product outcomes this initiative exists to move -- what success looks like for users or the business, not features. Every requirement must serve at least one objective, and every objective needs at least one measurable metric.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"OBJ-1\") of the objective this one continues, copied from the Objectives context. Otherwise a short new key (e.g. \"O1\") that requirements cite in their objectives field."},
+          "statement": {"type": "string", "description": "The outcome, stated as a change in the world (e.g. \"New users reach their first successful sync on day one\")."},
+          "rationale": {"type": "string", "description": "Why this outcome matters."},
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {"type": "string", "description": "When revising, the EXACT existing code (e.g. \"MET-2\") of the metric this one continues; otherwise leave empty."},
+                "name": {"type": "string"},
+                "definition": {"type": "string", "description": "Exactly how the number is computed."},
+                "unit": {"type": "string"},
+                "direction": {"enum": ["increase", "decrease", "maintain"]},
+                "baseline": {"type": ["number", "null"], "description": "The value today, if known. Omit or null when unknown -- do not invent one."},
+                "target": {"type": "number"},
+                "guardrail": {"type": ["number", "null"], "description": "Optional hard limit on the bad side: a floor for increase, a ceiling for decrease, the largest allowed distance from the target for maintain."},
+                "cadence": {"type": "string", "description": "How often it should be observed: hourly, daily, weekly, biweekly, monthly, quarterly, <n>d, <n>w, or a duration like 36h."},
+                "hypothesis": {"type": "string", "description": "We believe <which requirement(s) / change> will move this metric <how>. Recorded as a hypothesis linked to the metric."}
+              },
+              "required": ["name", "direction", "target"]
+            }
+          }
+        },
+        "required": ["statement", "metrics"]
+      }
+    },
     "open_questions": {"type": "array", "items": {"type": "string"}},
-    "risks": {"type": "array", "items": {"type": "string"}}
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "review_responses": {
+      "type": "array",
+      "description": "When revising after a review, one entry per finding listed under review_findings: what this revision did about it.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {"type": "string", "description": "The finding's label exactly as listed, e.g. \"F2\"."},
+          "response": {"type": "string", "description": "What changed, naming the requirement code(s) -- or why nothing needed to."}
+        },
+        "required": ["finding", "response"]
+      }
+    }
   },
   "required": ["summary", "requirements"],
   "additionalProperties": true
@@ -111,7 +160,10 @@ const Review = `{
           "impact": {"type": "string"},
           "recommendation": {"type": "string"},
           "path": {"type": "string", "description": "The file this finding is about, if it names a specific one (change-set review only; review B2)."},
-          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."}
+          "in_diff": {"type": "boolean", "description": "Self-report: true if this finding is about code the change set actually touches. Only consulted when path is omitted (review B2)."},
+          "requirement": {"type": "string", "description": "The code of the requirement (or task, objective or metric) this finding is about, exactly as listed -- or \"idea\" for something the idea asks for that no requirement covers, with evidence quoting the idea. A critical/high finding citing none of these is recorded as advisory."},
+          "reraises": {"type": "string", "description": "When this repeats a finding listed under prior_findings, that finding's label, e.g. \"F1\"."},
+          "justification": {"type": "string", "description": "Required with reraises when the prior finding was addressed: specifically why the revision did not resolve it."}
         },
         "required": ["severity", "confidence", "category", "finding", "recommendation"]
       }
@@ -299,6 +351,38 @@ const Answers = `{
     }
   },
   "required": ["answers"],
+  "additionalProperties": true
+}`
+
+// QualityReview is the verification_engineer's model-reviewed quality check
+// (verify's api_ergonomics dimension, and docs_completeness/
+// operational_readiness when verify.model_review names them). Every finding
+// must cite a path and a line inside the diff it was shown; one that does not
+// is recorded but never affects the scorecard. unreviewed_reason is how a
+// provider that cannot actually review (the demo provider) says so, which
+// the dimension then reports as not_measured rather than a clean pass.
+const QualityReview = `{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {"enum": ["critical", "high", "medium", "low", "observation"]},
+          "category": {"type": "string"},
+          "finding": {"type": "string"},
+          "path": {"type": "string", "description": "The file the finding is about, exactly as shown in the diff header."},
+          "line": {"type": "integer", "description": "The line number in the NEW version of the file, inside one of the diff's hunks."},
+          "recommendation": {"type": "string"},
+          "requirement": {"type": "string", "description": "The requirement code this finding bears on, if any."}
+        },
+        "required": ["severity", "category", "finding", "path", "line"]
+      }
+    },
+    "unreviewed_reason": {"type": "string", "description": "Set only when you could not review the diff at all, saying why."}
+  },
+  "required": ["findings"],
   "additionalProperties": true
 }`
 

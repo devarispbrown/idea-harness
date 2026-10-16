@@ -99,22 +99,46 @@ func (e *Engine) lookupKey(name string) string {
 // selectExecutor returns the executor selected by harness.executor.kind. The
 // kind is a config field (deterministic), never model output; an unknown kind
 // fails closed to the internal executor.
+//
+// An unset kind is auto, resolved first by ResolveExecutor; the resolution is
+// returned with the executor so Execute can record it on the run manifest
+// ("requested: auto, resolved: internal" plus the warning saying why).
 func (e *Engine) selectExecutor() (executor.Executor, error) {
-	switch e.cfg.Executor.Kind {
+	ex, _, err := e.selectExecutorResolved(context.Background())
+	return ex, err
+}
+
+func (e *Engine) selectExecutorResolved(ctx context.Context) (executor.Executor, ExecutorResolution, error) {
+	res := e.ResolveExecutor(ctx)
+	ex, err := e.executorFor(config.ExecutorKind(res.Resolved), res.Image)
+	return ex, res, err
+}
+
+// executorFor builds the executor for a resolved kind. image is the
+// configured image, or the pinned default an auto resolution chose.
+func (e *Engine) executorFor(kind config.ExecutorKind, image string) (executor.Executor, error) {
+	switch kind {
 	case config.ExecutorContainer:
 		return executor.NewContainerExecutor(e.contentBlobs(), e.cfg.Executor.Image), nil
-	case config.ExecutorOMP, config.ExecutorHermes:
+	case config.ExecutorOMP, config.ExecutorHermes, config.ExecutorACP:
 		model := e.implementerModel()
 		provider, err := e.implementerProvider()
 		if err != nil {
 			return nil, err
 		}
-		// OMP has no published image to default to. Without one, docker run
-		// failed with "invalid reference format" -- after the planner's model
-		// call had already been paid for.
-		if e.cfg.Executor.Image == "" && executor.DefaultAgentImage(string(e.cfg.Executor.Kind)) == "" {
+		// OMP and ACP agents have no published image to default to. Without
+		// one, docker run failed with "invalid reference format" -- after the
+		// planner's model call had already been paid for.
+		if image == "" && executor.DefaultAgentImage(string(kind)) == "" {
+			if kind == config.ExecutorACP {
+				return nil, fmt.Errorf("executor: acp has no default image; set one with idea executors setup --kind acp --image <image> --acp-command <argv> --model %s --yes", model)
+			}
 			return nil, fmt.Errorf("executor: %s has no default image; set one with idea executors setup --kind %s --image <image> --model %s --yes",
-				e.cfg.Executor.Kind, e.cfg.Executor.Kind, model)
+				kind, kind, model)
+		}
+		if kind == config.ExecutorACP && len(e.cfg.Executor.ACP.Command) == 0 {
+			return nil, fmt.Errorf("executor: acp needs executor.acp.command, the agent's argv inside %s (e.g. [claude-code-acp]); "+
+				"set it with idea executors setup --kind acp --image %s --acp-command <argv> --yes", image, image)
 		}
 		// A key variable that resolves to nothing is refused here, not left to
 		// the agent. Hermes exits 0 after a 401, so a keyless start of a keyed
@@ -131,7 +155,7 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 		// every run, with no signal until the agent produced nothing). An
 		// untested combination is only logged -- Execute is not the place to
 		// block on "nobody has tried this yet".
-		if compat := executor.CheckModelCompat(string(e.cfg.Executor.Kind), model); compat.Message != "" {
+		if compat := executor.CheckModelCompat(string(kind), model); compat.Message != "" {
 			if compat.Blocked {
 				return nil, fmt.Errorf("executor: %s", compat.Message)
 			}
@@ -141,21 +165,62 @@ func (e *Engine) selectExecutor() (executor.Executor, error) {
 			// than requiring every such test to wire a logger for an advisory
 			// log line.
 			if e.log != nil {
-				e.log.Warn("untested executor/model combination", "kind", e.cfg.Executor.Kind, "model", model, "detail", compat.Message)
+				e.log.Warn("untested executor/model combination", "kind", kind, "model", model, "detail", compat.Message)
 			}
 		}
+		if kind == config.ExecutorACP {
+			opts := executor.ACPOptionsFrom(e.cfg.Executor, model)
+			opts.Image = image
+			ax := executor.NewACPExecutor(opts, provider)
+			ax.SetKeyLookup(e.lookupKey)
+			return ax, nil
+		}
 		var ex *executor.SandboxedAgentExecutor
-		if e.cfg.Executor.Kind == config.ExecutorOMP {
-			ex = executor.NewOMPExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
+		if kind == config.ExecutorOMP {
+			ex = executor.NewOMPExecutor(e.contentBlobs(), model, image, provider)
 		} else {
-			ex = executor.NewHermesExecutor(e.contentBlobs(), model, e.cfg.Executor.Image, provider)
+			ex = executor.NewHermesExecutor(e.contentBlobs(), model, image, provider)
 		}
 		ex.SetKeyLookup(e.lookupKey)
 		return ex, nil
+	case config.ExecutorOpenHands:
+		// Refused here, before the planner's model call, like every other
+		// kind's preflight: no server URL, an unsafe one, or a provider key
+		// that is to be sent and is set nowhere.
+		oh := e.snapshotConfig().cfg.Executor.OpenHands
+		model := e.implementerModel()
+		provider, err := e.implementerProvider()
+		if err != nil {
+			// An ACP agent on the server with the key withheld talks to its
+			// own vendor with the server's own key; nothing here needs the
+			// provider resolved.
+			if oh.EffectiveAgent() != "acp" || !oh.WithholdProviderKey {
+				return nil, err
+			}
+			provider = executor.AgentProvider{}
+		}
+		if !oh.WithholdProviderKey && provider.KeyEnv != "" && e.lookupKey(provider.KeyEnv) == "" {
+			return nil, fmt.Errorf("executor: provider %q needs %s, which is set neither in the daemon's environment nor in the project's .env; "+
+				"export it and restart the daemon (`idea daemon stop`), add it to .env, or set executor.openhands.withhold_provider_key: true "+
+				"if the Agent Server supplies its own", provider.Name, provider.KeyEnv)
+		}
+		if compat := executor.CheckModelCompat(string(kind), model); compat.Message != "" {
+			if compat.Blocked {
+				return nil, fmt.Errorf("executor: %s", compat.Message)
+			}
+			if e.log != nil {
+				e.log.Warn("untested executor/model combination", "kind", kind, "model", model, "detail", compat.Message)
+			}
+		}
+		return e.openHandsExecutor(model, provider)
 	default:
 		return executor.NewInternalExecutor(e.contentBlobs()), nil
 	}
 }
+
+// errOpenHandsURL is the refusal for kind openhands with no server.
+var errOpenHandsURL = errors.New("executor: openhands needs executor.openhands.url, the Agent Server to run on; " +
+	"set it with idea executors setup --kind openhands --url <agent-server-url> --yes")
 
 // ErrNoReadyTask is what nextReadyTask returns when the initiative has nothing
 // runnable. A sentinel rather than a bare error so callers can tell it from the
@@ -374,18 +439,22 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// missing provider key or an unresolvable provider is refused, and it ran
 	// after the planner's model call and after superseding the previous change
 	// set -- so a refusal cost money and discarded the change set being redone.
-	exec, err := e.selectExecutor()
+	exec, resolution, err := e.selectExecutorResolved(ctx)
 	if err != nil {
 		return domain.ChangeSet{}, err
+	}
+	if resolution.Warning != "" && e.log != nil {
+		e.log.Warn("executor fell back to the placeholder", "initiative", initiativeID, "requested", resolution.Requested,
+			"resolved", resolution.Resolved, "warning", resolution.Warning)
 	}
 	// The capability gate is the deterministic trust-tier policy, not the
 	// executor's self-declared capability list: the engine authorizes the
 	// selected executor's engine-assigned trust tier (§49).
 	// The engine assigns the trust tier from the selected executor's kind, never
 	// from the executor's self-declared Capabilities().Trust (system-deny).
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	// A refusal is the trust_deny system deny (authorizeExecutorWrite).
+	if err := authorizeExecutorWrite(exec.Name()); err != nil {
+		return domain.ChangeSet{}, err
 	}
 
 	// Supersede any prior changes_requested change set for this task so a
@@ -451,6 +520,22 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// wave 3 contract specifies, and cleared once Execute returns so it never
 	// bleeds into a later, unrelated run of this initiative.
 	note := strings.TrimSpace(e.currentNoteOverride(initiativeID))
+	// What the human asked for when they sent the task's previous change set
+	// back. Without it "Request changes" recorded only the verdict, and the
+	// rerun had no idea what to change. Folded into the run's note so it is
+	// also what SetRunNote records below -- the run says what steered it.
+	if prev := priorReviewNote(prior); prev != "" {
+		if note != "" {
+			note = prev + "\n\n" + note
+		} else {
+			note = prev
+		}
+	}
+	// Steering notes sent to an earlier run that could not take them mid-run
+	// (runevents.go) ride on this one, the same way.
+	if held := e.takePendingNotes(ctx, initiativeID, task.ID); len(held) > 0 {
+		note = strings.TrimSpace(note + "\n\n" + strings.Join(held, "\n\n"))
+	}
 	if note != "" {
 		brief += "\n\nNote from the human, for this run only:\n" + note
 	}
@@ -467,6 +552,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		Brief:         brief,
 		WorkRoot:      filepath.Join(root, "work", initiativeID),
 		ExtraFiles:    e.testExtraFiles,
+		ProjectRoot:   e.workspaceRoot,
 	}
 
 	// Record a durable run for the implementer step (review B7). The run is
@@ -492,6 +578,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		}
 	}()
 
+	// The run's event stream (runevents.go): the executor emits into it, the
+	// engine adds stages, coarse events for executors that have none, and
+	// the final file list. Closed (flushed) before the live entry goes.
+	rec := e.newRunRecorder(agentRunID, e.db.RunningOperationID(ctx, initiativeID), initiativeID, task.ID, exec.Name())
+	defer rec.Close()
+	e.registerLiveRun(initiativeID, agentRunID, exec, rec)
+	req.RunID, req.Events = agentRunID, rec.Sink()
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "starting",
+		Title: fmt.Sprintf("Starting %s on the %s executor", task.Code, exec.Name())})
+	if note != "" {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventMessage, Source: domain.RunEventSourceUser, Status: domain.SteeringQueued,
+			Title: "Note for this run", Detail: note})
+	}
+
 	// Snapshot the isolated work root BEFORE the executor runs, so the
 	// orchestrator computes the real diff itself — never trusting the executor's
 	// self-declaration (review B3).
@@ -508,12 +608,41 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// After the before snapshot, so what is carried is part of the diff.
 	carried := e.resumePartial(initiativeID, task.ID, req.WorkRoot)
 
+	// The spending cap, checked once more right before the agent starts: the
+	// planner's model call above may be the one that reached it, and an
+	// agent run is usually the most expensive call an initiative makes. The
+	// same check for every executor kind -- hermes, omp, acp and openhands
+	// all start here (budget.go).
+	if err := e.checkBudget(ctx, initiativeID, "the "+exec.Name()+" agent run"); err != nil {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "Stopped at the budget cap", Detail: err.Error()})
+		return domain.ChangeSet{}, err
+	}
 	attempt, err := exec.Start(ctx, req)
 	if err != nil {
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	if t, ok := exec.(executor.OutputTailer); ok {
 		e.setLive(initiativeID, t, attempt.ID)
+	}
+	e.setLiveAttempt(initiativeID, attempt.ID)
+	// Coarse events for an executor with no structured ones of its own.
+	pumpCtx, stopPump := context.WithCancel(ctx)
+	defer stopPump()
+	_, structured := exec.(executor.RunEventEmitter)
+	if !structured {
+		go e.pumpCoarseEvents(pumpCtx, exec, attempt.ID, req.WorkRoot, rec)
+	}
+	onStatus := func(executor.Status) {}
+	if !structured {
+		var last executor.Status
+		onStatus = func(st executor.Status) {
+			if st.Phase == last.Phase && st.Action == last.Action {
+				return
+			}
+			last = st
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: st.Status,
+				Title: strings.TrimSpace(st.Phase + ": " + st.Action)})
+		}
 	}
 	// Cancel the attempt on any early-exit path so a hung agent never leaks a
 	// running container/subprocess (review B6). Collect already cleans up on the
@@ -524,7 +653,13 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 			_ = exec.Cancel(context.Background(), attempt.ID)
 		}
 	}()
-	if err := waitForCompletion(ctx, exec, attempt.ID); err != nil {
+	if err := waitForCompletion(ctx, exec, attempt.ID, onStatus); err != nil {
+		stopPump()
+		if ctx.Err() != nil {
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "stopped", Title: "Stopped"})
+		} else {
+			rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "The agent run failed", Detail: err.Error()})
+		}
 		err = e.withAgentOutput(ctx, exec, attempt.ID, err)
 		// Keep what the agent wrote, so Run again continues from it -- but
 		// only once its container is confirmed gone, so nothing is still
@@ -575,7 +710,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// changed nothing is the common failure, and this is the only record of why.
 	// The same 100 lines the live view showed, kept on the change set.
 	agentOutput := e.agentOutputLines(ctx, exec, attempt.ID, liveOutputLines)
+	// The fallback warning rides on the change set too, where the person
+	// reviewing a placeholder diff will actually look.
+	if resolution.Warning != "" {
+		agentOutput = strings.TrimSpace("⚠ " + resolution.Warning + "\n\n" + agentOutput)
+	}
+	// Also before Collect, which forgets the attempt: what an ACP agent asked
+	// permission for, and what the harness answered on the operator's behalf.
+	var permissions []domain.ACPPermission
+	if pl, ok := exec.(executor.PermissionLogger); ok {
+		permissions = pl.PermissionLog(attempt.ID)
+	}
+	stopPump()
 	if _, err := exec.Collect(ctx, attempt.ID); err != nil {
+		rec.Emit(domain.RunEvent{Kind: domain.RunEventError, Title: "Could not collect the agent's result", Detail: err.Error()})
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	completed = true
@@ -655,6 +803,7 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	e.emitFinalFileChanges(rec, req.WorkRoot, files)
 
 	// Computed here (config-derived, known before the agent ever ran) so it can
 	// be stored on the change set at creation, not just on the run manifest --
@@ -833,6 +982,20 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	// area" finding -- the same signals that used to hard-reject on a bare word
 	// match now just flag the change set for a closer look.
 	if err := e.createSensitiveAreaFinding(ctx, cs.InitiativeID, cs.ID, signals, "deterministic marker scan of the produced patch"); err != nil {
+		return domain.ChangeSet{}, err
+	}
+
+	// A protected (auto-executing) path and personal data in the produced
+	// content: neither rejects the change set, both block its approval until
+	// a human has looked (deny.go). Read from the work root, like the
+	// credential sweep above, so a change set the sweep denied is covered too.
+	if err := e.recordProducedContentFindings(ctx, cs, files, func(fc domain.FileChange) (string, bool) {
+		content, err := os.ReadFile(filepath.Join(req.WorkRoot, filepath.FromSlash(fc.Path)))
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	}); err != nil {
 		return domain.ChangeSet{}, err
 	}
 
@@ -1034,6 +1197,15 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 		ResultDigest:   patchDigest,
 		StartedAt:      agentStart,
 		FinishedAt:     time.Now().UTC(),
+		Executor: &domain.ExecutorProvenance{
+			Requested:   resolution.Requested,
+			Resolved:    resolution.Resolved,
+			Image:       resolution.Image,
+			Server:      resolution.Server,
+			Warning:     resolution.Warning,
+			Permissions: permissions,
+			Steering:    e.liveSteering(initiativeID),
+		},
 	}); err != nil {
 		return domain.ChangeSet{}, err
 	}
@@ -1046,6 +1218,8 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
+	rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "finished", ChangeSetID: got.ID,
+		Title: fmt.Sprintf("%s is %s", got.HumanID, strings.ReplaceAll(string(got.Status), "_", " "))})
 	return *got, nil
 }
 
@@ -1809,7 +1983,7 @@ func (e *Engine) RestoreWorkspace(ctx context.Context, changeSetID, manifestDige
 // state. It never exposes chain-of-thought: only the terminal status is used.
 // External executors (container, OMP) can take minutes, so it polls with
 // exponential backoff up to a generous ceiling, still honoring ctx cancellation.
-func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID string) error {
+func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID string, onStatus func(executor.Status)) error {
 	const (
 		maxDuration = 15 * time.Minute
 		maxSleep    = time.Second
@@ -1831,6 +2005,9 @@ func waitForCompletion(ctx context.Context, exec executor.Executor, attemptID st
 		if err != nil {
 			_ = exec.Cancel(context.Background(), attemptID)
 			return fmt.Errorf("workflow: execute: %w", err)
+		}
+		if onStatus != nil {
+			onStatus(st)
 		}
 		switch st.Status {
 		case "succeeded":
@@ -1888,9 +2065,8 @@ func (e *Engine) ExecutePrecondition(ctx context.Context, initiativeID string) e
 	if err != nil {
 		return err
 	}
-	trust := executor.TrustTierFor(exec.Name())
-	if !executor.TrustAllows(trust, "write_file") {
-		return fmt.Errorf("workflow: execute: trust tier %q may not write_file", trust)
+	if err := authorizeExecutorWrite(exec.Name()); err != nil {
+		return err
 	}
 	prior, err := e.db.ListChangeSetsByTask(ctx, task.ID)
 	if err != nil {
@@ -2404,6 +2580,14 @@ func (e *Engine) ApplyChangeSet(ctx context.Context, initiativeID, changeSetID s
 			}
 		}
 		return fmt.Errorf("workflow: apply denied: system deny %s", domain.DenyCodeSecretSweep)
+	}
+
+	// path_escape: every path must resolve inside the workspace, and outside
+	// its control plane, as the workspace stands now -- checked before the
+	// change set is marked applying and before StaleBase, which would
+	// otherwise report a symlinked path as merely "stale" (deny.go).
+	if err := e.denyPathEscape(ctx, cs, fromStatus, workspaceRoot, patch.Files); err != nil {
+		return err
 	}
 
 	if err := e.db.TransitionChangeSet(ctx, changeSetID, fromStatus, domain.ChangeSetApplying, store.ActorOrchestrator); err != nil {
@@ -3217,6 +3401,16 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 					"`idea reviews` lists them, and `idea review <CHG-n> approve --accept-findings` "+
 					"accepts the change set findings and all", domain.DenyCodeReviewOpenBlocking, f.Severity)
 			}
+			if f.Code == domain.DenyCodePII {
+				// Not a hard deny (deny.go, recordPIIFindings): the detector
+				// is checksum-based, not proof, so a human may sign off
+				// synthetic data -- one finding at a time, never in bulk.
+				return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding, %s); "+
+					"`idea reviews` shows where -- remove real personal data and run the task again, or, if it is synthetic, "+
+					"disposition that finding accepted_risk (POST /api/v1/projects/{projectId}/findings/{id}/disposition, or the web UI); "+
+					"--accept-findings does not cover it",
+					domain.DenyCodeReviewOpenBlocking, f.Severity, f.Code)
+			}
 			return fmt.Errorf("workflow: approval blocked: system deny %s (open %s finding, %s); "+
 				"a system deny is not something a human can accept — `idea reviews` shows it",
 				domain.DenyCodeReviewOpenBlocking, f.Severity, f.Code)
@@ -3238,15 +3432,27 @@ func (e *Engine) denyReviewOpenBlocking(ctx context.Context, changeSetID string)
 // later attempt fails denyReviewOpenBlocking on them before the review even
 // runs. The keyed magic path hit this every run and had no way out.
 func (e *Engine) ReviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string) error {
-	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, false)
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, false, "")
 }
 
 // ReviewChangeSetAccepting is ReviewChangeSet with the human accept.
 func (e *Engine) ReviewChangeSetAccepting(ctx context.Context, initiativeID, changeSetID, verdict string) error {
-	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, true)
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, true, "")
 }
 
-func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool) error {
+// ReviewChangeSetWithNote is ReviewChangeSet carrying the human's note: what
+// they want changed. It is recorded on the change set with a changes_requested
+// or rejected verdict -- both reopen the task -- and the task's next Execute
+// appends it to the implementer's brief (priorReviewNote). Any other verdict
+// refuses a note rather than dropping it: there is no next run for it to steer.
+func (e *Engine) ReviewChangeSetWithNote(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool, note string) error {
+	if strings.TrimSpace(note) != "" && verdict != "changes_requested" && verdict != "rejected" {
+		return fmt.Errorf("workflow: a review note steers the task's next run, so it goes with changes_requested or rejected, not %q", verdict)
+	}
+	return e.reviewChangeSet(ctx, initiativeID, changeSetID, verdict, acceptFindings, note)
+}
+
+func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID, verdict string, acceptFindings bool, note string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -3347,7 +3553,7 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		return e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetApproved, store.HumanActor)
 
 	case "changes_requested":
-		if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor); err != nil {
+		if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetChangesRequested, store.HumanActor, note); err != nil {
 			return err
 		}
 		// Re-open the task so a subsequent Execute re-picks it and supersedes this
@@ -3358,12 +3564,12 @@ func (e *Engine) reviewChangeSet(ctx context.Context, initiativeID, changeSetID,
 		// Rejection is accepted from either checks_running or review_required.
 		switch cs.Status {
 		case domain.ChangeSetChecksRunning:
-			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor); err != nil {
+			if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetChecksRunning, domain.ChangeSetRejected, store.HumanActor, note); err != nil {
 				return err
 			}
 			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
 		case domain.ChangeSetReviewRequired:
-			if err := e.db.TransitionChangeSet(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor); err != nil {
+			if err := e.db.TransitionChangeSetWithNote(ctx, changeSetID, domain.ChangeSetReviewRequired, domain.ChangeSetRejected, store.HumanActor, note); err != nil {
 				return err
 			}
 			return e.db.SetTaskStatus(ctx, cs.TaskID, domain.TaskProposed)
@@ -3757,4 +3963,34 @@ func renderChangeSet(cs *domain.ChangeSet, patch string) string {
 		}
 	}
 	return b.String()
+}
+
+// priorReviewNote returns the review note a human left on the task's most
+// recent change set when they requested changes on it or rejected it, labelled
+// with that change set's id; "" when the newest change set carries none. Only
+// the newest counts: once a later run produced a change set, the note has been
+// answered, and replaying it on every future run would steer them all.
+//
+// prior is read before Execute supersedes a changes_requested change set, but
+// superseded is accepted too so a caller holding a fresher list still finds it.
+func priorReviewNote(prior []domain.ChangeSet) string {
+	if len(prior) == 0 {
+		return ""
+	}
+	latest := prior[0]
+	for _, p := range prior[1:] {
+		if p.CreatedAt.After(latest.CreatedAt) {
+			latest = p
+		}
+	}
+	switch latest.Status {
+	case domain.ChangeSetChangesRequested, domain.ChangeSetSuperseded, domain.ChangeSetRejected:
+	default:
+		return ""
+	}
+	n := strings.TrimSpace(latest.ReviewNote)
+	if n == "" {
+		return ""
+	}
+	return "Changes requested on " + latest.HumanID + ": " + n
 }

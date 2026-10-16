@@ -237,6 +237,22 @@ func (e *Engine) VerifyInitiative(ctx context.Context, initiativeID string) erro
 			break
 		}
 	}
+	// The quality half of the gate (verify.dimensions): every GATED
+	// dimension's latest result, measured against the initiative's current
+	// applied work and policy, must be pass, warn or not_applicable. Advisory
+	// dimensions never reach this; a gated one that failed, was not measured,
+	// or is stale holds completion exactly as an unverified requirement does.
+	// MeasureQuality is what records results; this only reads them, so the
+	// gate stays fast and deterministic.
+	if allVerified {
+		sc, err := e.QualityScorecard(ctx, initiativeID)
+		if err != nil {
+			return err
+		}
+		if len(sc.GateUnmet) > 0 {
+			allVerified = false
+		}
+	}
 	if !allVerified {
 		// A human can fail a previously-verified requirement after completion
 		// (re-evaluation). That must not leave the initiative in a false

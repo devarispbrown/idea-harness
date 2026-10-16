@@ -39,10 +39,13 @@ name: my-product   # project display name
 # researcher fetches research.urls below, and whether its findings may be
 # typed "fact" (disabled downgrades every finding to "assumption"). It does
 # NOT gate the coding agent's network access or the build/test check
-# sandbox's: the coding agent (executor.kind omp/hermes) always has network
+# sandbox's: the coding agent (executor.kind omp/hermes/acp) always has network
 # egress, deliberately, to reach its model API (see docs/agents.md); the
 # check sandbox always runs with no network at all, unconditionally (see
 # docs/security-model.md). Neither reads this setting (review defect #3).
+# verify.setup.prepare and verify.security.scanners entries marked
+# network: true are the only sandboxed commands given network, and they do
+# not read this setting either -- listing them is the opt-in.
 network: disabled
 
 # Review budget (§11, §16). The three fields bound different things — see the
@@ -52,6 +55,12 @@ review:
   max_tokens: 0        # requested output-token budget per call, 0 = each stage's own built-in size
   max_cost_usd: 0      # cumulative spend ceiling for the project (0 = no ceiling)
   rigor: auto          # auto | quick | standard | thorough (review B1)
+  convergence:         # how a review loop decides it is done (all optional)
+    mode: guarded            # guarded | legacy
+    gate_severity: high      # high | critical — the lowest adversarial severity that blocks
+    require_citation: true   # a blocking finding must cite a requirement/task (or quote the idea)
+    later_findings: changed  # changed | critical | any — the bar for a NEW finding after cycle 1
+    stall_cycles: 1          # non-decreasing cycles tolerated before stopping for a human
 
 # Blast-radius guard (review C): the most files a single change set's diff may
 # touch before `idea execute` refuses it, before the adversarial review ever
@@ -103,6 +112,28 @@ git:
   # used to silently do nothing without it, though its own name never
   # suggested a second flag was required).
   branch_per_initiative: false
+
+# Outcome-metric measurement (`idea metric measure`). Nothing here runs on its
+# own; see "Objectives & outcomes" below.
+outcomes:
+  image: ""                     # sandbox image for command sources (default: check.image, then derived)
+  measure_timeout_seconds: 120  # bound on one command source
+  allow_url_sources: false      # opt in to fetching url sources (public addresses only)
+
+# Spending cap per initiative, in USD (0 = none). An initiative can set its own
+# with `idea budget <initiative> --set <usd>`. See "Budget" below.
+budget:
+  default_initiative_usd: 0
+
+# Scheduled background jobs, every one off until enabled. See "Automations".
+automations:
+  metric_measurement:
+    enabled: false              # measure command/url metrics on their own cadence
+  eval:
+    enabled: false              # run `idea eval` on a schedule (needs model + max_cost_usd)
+    model: ""                   # provider/model
+    interval_hours: 24
+    max_cost_usd: 0             # per-run cap; required to enable
 ```
 
 Top-level fields:
@@ -114,13 +145,31 @@ Top-level fields:
 | `review.max_tokens` | the **output-token budget requested for every model call**, and the ceiling checked against the response — it is a per-call figure, not a pool that drains. Set, it directly overrides a stage's own built-in request size (still bounded by the model's real output ceiling — see "Model output ceilings" below); a response over it still fails that stage. Unset (`0`), each stage uses its own built-in request size as before | `0` (each stage's built-in size) |
 | `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |
 | `review.rigor` | `auto` \| `quick` \| `standard` \| `thorough` — how much scrutiny the PRD, plan and change-set reviews apply (review B1). See "Review rigor" below | `auto` |
+| `review.convergence.mode` | `guarded` \| `legacy` — whether the review convergence rules apply. `legacy` is the pre-0.7 loop exactly. See "Review convergence" below | `guarded` |
+| `review.convergence.gate_severity` | `high` \| `critical` — the lowest adversarial-reviewer severity that blocks the PRD or plan review; anything below is recorded as advisory. Deterministic checks are unaffected | `high` |
+| `review.convergence.require_citation` | whether an adversarial finding must cite an active requirement (or, on the plan, a task) — or the idea, quoting it — to block | `true` |
+| `review.convergence.later_findings` | `changed` \| `critical` \| `any` — what a finding first raised in cycle 2+ must be to block: about a requirement the revision added or changed (or critical), critical, or anything | `changed` |
+| `review.convergence.stall_cycles` | how many consecutive PRD review cycles the open blocking count may fail to decrease before the loop stops for a human, ahead of `max_cycles` | `1` |
 | `research.urls` | seed URLs fetched during research when `network: enabled` | none |
 | `default_model` | `provider/model` used by every role without an override | unset — deterministic demo output |
 | `models` | per-role overrides, role name → `provider/model` | falls back to `default_model` |
 | `providers` | provider map (fields below) | none |
-| `executor.kind` | `internal` \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | container image for the non-internal kinds. The default is **per-kind**, not one blanket value: `alpine:3.20` only for `kind: container`; the pinned `nousresearch/hermes-agent:…` for `kind: hermes`; `kind: omp` has no default image at all and refuses every execute until one is set | `alpine:3.20` for `container`, the pinned Hermes image for `hermes`, none for `omp` |
-| `executor.model` | coding model for the agent kinds (`omp`, `hermes`) | — |
+| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp` \| `openhands`. `openhands` runs the agent on an OpenHands Agent Server and is never chosen by `auto` ([agents.md](agents.md#openhands-agent-server-kind-openhands)). `auto` (what an unset kind means) runs `hermes` when Docker is reachable and the coding model's key is set, and otherwise falls back to `internal` with a warning on every surface that no real code will be written ([agents.md](agents.md#the-default-auto-with-a-loud-placeholder-fallback)). `internal` set explicitly keeps the placeholder quietly | `auto` |
+| `executor.image` | container image for the non-internal kinds. The default is **per-kind**, not one blanket value: `alpine:3.20` only for `kind: container`; the digest-pinned `nousresearch/hermes-agent:…@sha256:…` for `kind: hermes` (and for `auto` when it resolves to hermes); `kind: omp` and `kind: acp` have no default image at all and refuse every execute until one is set | `alpine:3.20` for `container`, the pinned Hermes image for `hermes`, none for `omp`/`acp` |
+| `executor.model` | coding model for the agent kinds (`omp`, `hermes`, `acp`, `openhands`) | — |
+| `executor.acp.command` | `acp` only: the ACP agent's argv inside the image, e.g. `[claude-code-acp]`; `{model}` and `{bare_model}` are substituted from `executor.model` | — (required for `acp`) |
+| `executor.acp.key_env` | `acp` only: the name the provider key is exposed under inside the container (e.g. `GEMINI_API_KEY`) | the provider's own variable |
+| `executor.acp.timeout_seconds` | `acp` only: bound on one prompt turn, after which the client sends `session/cancel` and then kills the container | `840` |
+| `executor.openhands.url` | `openhands` only: the Agent Server's base URL. Must be `https` unless the host is loopback, and carry no credentials; anything else is refused at load | — (required for `openhands`) |
+| `executor.openhands.api_key_env` | `openhands` only: the NAME of the variable holding the server's session key (sent as `X-Session-API-Key`), read from the daemon's environment, then `.env`. Never the key itself | `OPENHANDS_API_KEY` |
+| `executor.openhands.agent` | `openhands` only: `openhands` (the server's own agent, driving `executor.model`) or `acp` (an ACP agent the server's image carries) | `openhands` |
+| `executor.openhands.acp_command` | `openhands` with `agent: acp` only: the ACP agent's argv on the server, e.g. `[claude-agent-acp]` | — (required for `agent: acp`) |
+| `executor.openhands.workspace_dir` | `openhands` only: absolute directory on the server under which each run gets its own subdirectory | `/workspace/idea-harness` |
+| `executor.openhands.withhold_provider_key` | `openhands` only: do not send the coding model's provider key to the server; the server must supply its own | `false` |
+| `executor.openhands.max_iterations` | `openhands` only: bound on the agent's steps on the server | `100` |
+| `executor.openhands.timeout_seconds` | `openhands` only: bound on one run from dispatch, after which it is interrupted on the server | `840` |
+| `executor.openhands.ui_url` | `openhands` only, optional: an OpenHands web UI that shows the server's conversations; each run then links to `<ui_url>/conversations/<id>` ("Open in OpenHands"). Absolute http(s), no credentials | unset (no link) |
+| `executor.mcp_servers` | `acp` only: MCP servers passed in `session/new` — `name` plus `command`/`args`/`env` (stdio, runs inside the agent's container) or `type: http\|sse`/`url`/`headers`. Each `env`/`headers` entry is `{name, value}` for a literal or `{name, value_env}` naming a variable resolved from the daemon's environment, then `.env`; a literal that looks like a secret is refused at load. See [agents.md](agents.md#mcp-servers-acp-only) for the trust tradeoff | none |
 | `check.image` | image holding the project toolchain for the build/test checks | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check fails closed (see "Check auto-detection" below) |
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
 | `check_timeout_seconds` | per-check timeout | `600` |
@@ -131,7 +180,32 @@ Top-level fields:
 | `demo.block_review_cycles` | how many adversarial-review calls the **built-in demo provider** answers with a blocking finding before reverting to its usual empty list, capped at `review.max_cycles`. Does nothing when the default model resolves to a real provider | `0` |
 | `demo.block_plan_review_cycles` | the same for the M2 **execution-plan** review, on its own queue. Uncapped: `idea revise-plan` clears a plan review however many times it blocks | `0` |
 | `demo.block_change_set_review_cycles` | the same for the M3 **change-set** review, on its own queue. The change-set review runs exactly once, when the change set is created (right after checks pass) — not again on `approve` — so this only ever drains at most one entry off the queue; a surplus is harmless. This is the one whose escape needs `idea review <CHG-n> approve --accept-findings`: a plain `approve` only evaluates the findings the one review already persisted (it never calls the model again), and the deny gate refuses outright until a human dispositions them | `0` |
+| `outcomes.image` | sandbox image a metric's `command` source runs in | `check.image`, then the image derived from the project's toolchain markers, then the sandbox's minimal `alpine:3.20` |
+| `outcomes.measure_timeout_seconds` | bound on one `command` source; past it the measurement fails and nothing is recorded | `120` |
+| `outcomes.allow_url_sources` | fetch metrics' `url` sources at all. Off by default: it is the one measurement path that reaches the network, and `network: enabled` (which is about research) does not imply it | `false` |
+| `budget.default_initiative_usd` | spending cap for every initiative without its own (`idea budget`), checked before every model call and before the coding agent starts; reaching it parks the initiative on `needs_human_judgment` (`budget_exceeded`). See "Budget" below | `0` (no cap) |
+| `automations.metric_measurement.enabled` | measure each command/url metric on its own `cadence` (at most every 15 minutes). See "Automations" below | `false` |
+| `automations.eval.*` | `enabled`, `model`, `interval_hours`, `max_cost_usd`, `suite`, `cases`, `baseline` — the scheduled `idea eval`. See "Automations" below | off |
+| `demo.cost_per_call_usd` | makes every demo-provider call report this cost, so a spending cap can be reached without a real provider (CI, the browser suite) | `0` |
 | `demo.dangle_plan_dependency` | makes the demo's first execution plan name a dependency no task provides, parking the initiative on `plan_dependencies` | `false` |
+| `verify.dimensions.<dimension>` | `off` \| `advisory` \| `gate` for one of `setup_reproducibility`, `docs_completeness`, `api_compatibility`, `api_ergonomics`, `security`, `performance`, `operational_readiness`. See "Quality dimensions" below | per effective rigor (below) |
+| `verify.setup.commands` | the exact commands setup_reproducibility runs, replacing README/Makefile detection | detected |
+| `verify.setup.prepare` | commands run **with network** before the offline run, to fetch dependencies ([security-model.md](security-model.md#execution-gateway)) | none |
+| `verify.security.scanners` | `{name, command, network}` scanners run in the sandbox; non-zero exit fails | none — vulnerability scan `not_measured` |
+| `verify.performance.budgets` | `{name, command, metric, unit, max, max_regression_pct}` budgets | none — performance `not_measured` |
+| `verify.model_review` | add a model-reviewed check to `docs_completeness` and/or `operational_readiness` | none |
+| `verify.timeout_seconds` | per-command bound for sandboxed quality commands | `check_timeout_seconds`, else `600` |
+
+### Writes from Settings, Automations and the CLI
+
+`idea model set`, `idea executors setup`, `idea budget --set` and every save in the web UI's
+Settings and Automations pages write `harness.yaml` through one path. It re-reads the file from
+disk (so a hand edit is never clobbered), changes only the fields the request names, refuses
+anything `idea config validate` would refuse — the schema, an inline secret, a token pasted into an
+`*_env` field — before writing a byte, **keeps your comments** and your key order, and reloads the
+project so the change applies without restarting the daemon. A reload is refused while an operation
+is running; the file is then written but not applied (`409 config written but not applied`), and
+the next request after the operation finishes picks it up.
 
 ### Check auto-detection
 
@@ -179,6 +253,12 @@ become reachable without a provider key:
 demo:
   block_review_cycles: 3
 ```
+
+Under the default `review.convergence` (guarded) any value of 2 or more parks the review, and it
+parks at **cycle 2**: the demo's blocking finding cites the requirement and justifies its re-raise,
+so it is a genuine persisting blocker, and the stall detector stops the loop as soon as the
+blocking count fails to fall. The surplus queue entry stays on the `review` queue (a later
+`idea revise` would consume it). A value of 1 blocks once and converges at cycle 2.
 
 The three demo knobs write to **separate queues** — `review`, `plan_review` and
 `execution_plan` — so a leftover response cannot outlive the call it was meant
@@ -357,6 +437,68 @@ Reading `0` as "unlimited" is right for `max_cost_usd`, "each stage's own built-
 `max_tokens`, and wrong for `max_cycles`, which the engine rewrites to 3. `idea config validate`
 rejects a negative `max_cycles`.
 
+### Review convergence
+
+`review.convergence` decides when an adversarial review loop is done. It exists because the PRD
+review did not converge in 2 of 2 measured real-model runs, and the code — not the model — explained
+why:
+
+1. **The reviewer was memoryless.** Each cycle received the requirements and nothing else — not the
+   previous cycle's findings, not what the revision did about them — so every cycle was a fresh
+   adversarial review of a usually larger PRD, and a fresh adversarial review always finds something.
+2. **One finding anywhere blocked.** Convergence was "no open critical/high finding in one fresh
+   pass", including a finding about text the reviewer had already seen unchanged and one that cited
+   nothing at all.
+3. **No cross-cycle identity.** A reworded re-raise was a brand-new finding (the near-duplicate
+   matching only carried a *human's* disposition forward), and earlier cycles' findings stayed open,
+   so a parked initiative listed every cycle's findings as current.
+4. **The reviser was told imprecisely.** It got every finding the initiative ever had as
+   "[severity] text" — no evidence, recommendation or requirement — and its policy only obliged it to
+   act on a `mitigate` disposition no in-loop finding carries.
+5. **Nothing measured progress.** The loop ran to `max_cycles` whether the blocking count was falling
+   or flat, and recorded nothing either way.
+
+In `guarded` mode (the default) the loop answers each:
+
+- **The reviewer sees the previous cycle.** From cycle 2 it gets that cycle's blocking findings by
+  label (`F1`, `F2`, …), what each cited, the reviser's own response to each, and which requirements
+  the revision added or changed. A persisting finding is re-raised by label (`reraises`); re-raising
+  one the revision *addressed* — answered it, or changed or replaced the requirement it cited —
+  needs a `justification`, or it is recorded as advisory.
+- **Re-raises are recognized even unlabelled**, by the same token-Jaccard similarity the decision
+  and question de-duplication uses (requirement codes stripped, since a revision mints new ones).
+  The superseded finding is dispositioned `duplicate`; a previous finding nobody re-raised is
+  dispositioned `fixed` (if the revision addressed it) or `not_applicable`. Only the current cycle's
+  findings stay open.
+- **Only cited findings block.** A critical/high finding must name an active requirement (`REQ-n`),
+  or a task on the plan review, or — for a gap — cite `idea` and quote it. An uncited one is scope
+  expansion by construction and is recorded as advisory, never dropped.
+- **Later cycles have a higher bar.** A finding that is *new* in cycle 2+ blocks only if it is about a
+  requirement the revision added or changed, or is critical (`later_findings: changed`). Anything
+  about text already reviewed unchanged should have been raised then.
+- **Severity is a floor, not a hint.** Medium and below never blocked; they are now marked advisory so
+  the record says so. `gate_severity: critical` raises the floor further.
+- **The reviser gets a precise brief**: only the findings blocking *this* cycle, by label, with
+  evidence and recommendation, and is asked to answer each in `review_responses`.
+- **A stall stops the loop early.** The open blocking count must fall from one cycle to the next;
+  after `stall_cycles` cycles where it does not, the initiative parks in `needs_human_judgment`
+  without spending the rest of `max_cycles`. This is where a genuine blocker — a contradiction in the
+  idea, a decision only a human can make — still reaches a human, and sooner.
+- **Every cycle is recorded.** Each adversarial review run's manifest carries a `review` record:
+  findings raised, new, re-raised and resolved by severity; what each rule demoted; the open
+  blocking count before and after; and the outcome (`converged`, `revise`, `stalled`, `max_cycles`,
+  or `blocked` for the single-pass plan review). `idea eval` reports them per case.
+
+Nothing here lowers the bar for a genuine blocker: a cited finding that persists, with a reason,
+keeps blocking until a human acts. Deterministic checks are never subject to any of it. The plan
+review is a single pass, so only the per-finding rules (severity floor, citation) apply there.
+A human `idea revise` (or resume) starts a new loop seeded with the still-open findings, so a
+reworded twin of something the human just revised away is a re-raise rather than a new blocker.
+
+`legacy` restores the pre-0.7 loop exactly — no prior-cycle context, no demotions, no stall
+detector — though telemetry is still recorded. It is there to measure the difference (`idea eval`
+runs the non-convergence scenario both ways) and as an escape hatch.
+
 ### Model output ceilings
 
 Every stage's request carries a `MaxOutput` (the number of output tokens the model may produce),
@@ -487,6 +629,141 @@ the full prompt context to another host. Point a differently-named provider at t
 Keyless local presets (`ollama`) may still move between loopback ports. `idea config validate`
 reports a `harness.yaml` that breaks these rules, and the API rejects the write.
 
+### Quality dimensions (`verify`)
+
+`idea verify` measures more than the acceptance tests. Each **quality dimension** produces a
+result — `pass`, `warn`, `fail`, `not_measured` or `not_applicable` — made of checks, each saying
+whether it was **deterministic** or **model-reviewed** and citing the file:line (and requirement)
+its evidence is in. Results are recorded in the product record and linked to the requirements they
+bear on with a `verifies` edge, so `idea impact requirement REQ-1` lists them and
+`idea why quality_result docs_completeness` walks back to the requirements.
+
+`not_measured` is never a pass. It is what a dimension reports when the harness could not look
+(no Docker, no toolchain image, no scanner configured, a vulnerability database that needs the
+network, the demo model). A dimension's status is the worst of its checks in the order
+`fail` > `not_measured` > `warn` > `pass` > `not_applicable`, so one unmeasured check keeps a
+dimension from reading as passed.
+
+```yaml
+verify:
+  dimensions:                  # override the rigor defaults, per dimension
+    api_compatibility: gate    # off | advisory | gate
+    performance: advisory
+  setup:
+    commands: []               # set to replace README/Makefile detection
+    prepare: ["go mod download"]   # runs WITH network, before the offline run
+  security:
+    scanners:
+      - { name: govulncheck, command: "go run golang.org/x/vuln/cmd/govulncheck@latest ./...", network: true }
+  performance:
+    budgets:
+      - name: parse
+        command: go test -run '^$' -bench BenchmarkParse -benchtime 2000x ./internal/parse
+        metric: 'BenchmarkParse\S*\s+\d+\s+([0-9.]+) ns/op'   # first capture group is the number
+        unit: ns/op
+        max: 50000                # absolute ceiling (optional)
+        max_regression_pct: 20    # vs the previous measurement (optional)
+  model_review: [docs_completeness]
+```
+
+**Modes and the gate.** `off` is not measured. `advisory` is measured and reported and never
+blocks. `gate` holds the verification gate — the initiative is not completed, and `idea verify`
+exits `5` (`gate_unmet`) — while the dimension's latest result is `fail` or `not_measured`, or is
+**stale** (measured against different applied change sets, policy or verify config than the
+initiative has now). `warn` and `not_applicable` satisfy a gate. Edits made to the workspace
+outside the harness between two verifies do not make a result stale; re-run `idea verify` after
+them, or apply them through a change set.
+
+**Defaults follow the effective review rigor** (`review.rigor`, with `auto` calibrated from project
+size and the size of the initiative's applied change, as for the reviews):
+
+| rigor | setup_reproducibility, docs_completeness, api_compatibility | api_ergonomics, security, performance, operational_readiness |
+|---|---|---|
+| `quick` | off | off |
+| `standard` | advisory | off |
+| `thorough` | **gate** | advisory |
+
+`idea verify` measures every enabled dimension whose result is missing or stale before it runs the
+gate (`--no-measure` skips that and uses the last recorded scorecard), prints the scorecard, and
+includes it in `--json` as `quality`. `POST .../quality` measures from the API; `GET .../quality`
+reads.
+
+What each dimension checks:
+
+- **`setup_reproducibility`** (deterministic, sandboxed). Copies the workspace's committable files
+  (`git ls-files -co --exclude-standard`, minus `.env*` and `.idea-harness/`) — what a fresh clone
+  of the applied workspace holds — and runs the documented commands there in the check sandbox with
+  **no network**, in `check.image` or the image detected from the toolchain markers. Commands come
+  from `verify.setup.commands`; else the shell blocks under the README's
+  install/setup/build/test/development headings (only lines starting with a known tool —
+  `make`, `go`, `npm`, `pnpm`, `yarn`, `pip`, `pytest`, `cargo`, … — or `./script`; `cd <dir>` is
+  followed within a block when the directory exists); else the Makefile's `build`/`test` targets;
+  else the build/test commands [detected from the toolchain](#check-auto-detection), with a `warn`
+  that nothing documents them. Dependency-fetch commands (`npm ci`, `pip install`,
+  `go mod download`, `git clone`, `curl`, …) and long-running ones (`npm start`, `go run`,
+  `docker …`) are skipped and listed. A documented command that fails is a `fail` citing its README
+  line — except after a skipped fetch with no `verify.setup.prepare`, where the run cannot tell
+  missing dependencies from broken docs and reports `not_measured`. `verify.setup.prepare` commands
+  run first, with network; package caches are kept inside the copy so the offline run sees them.
+  No Docker or no image: `not_measured`.
+- **`docs_completeness`** (deterministic; optional model review). A root README exists (else
+  `fail`); it has a heading naming install/setup and one naming usage/examples (else `warn`);
+  every HTTP route and CLI flag the change added in source is mentioned in some Markdown/RST doc or
+  OpenAPI spec (else `fail`, citing the declaring line); every environment variable the change
+  started reading is mentioned (else `warn`), and the README has a configuration/environment
+  section when it added any; every exported Go declaration the change added has a doc comment, and
+  every OpenAPI operation it added has a summary or description (else `warn`). Routes are recognized
+  in Go (`HandleFunc`/`Handle`, gin/echo/chi/fiber verbs), Express/Fastify, Flask/FastAPI; flags in
+  Go `flag`/pflag/cobra, argparse, click, commander; env reads via `os.Getenv`/`LookupEnv`,
+  `process.env`, `os.environ`/`os.getenv`. A form not listed is not detected — silence, never a false
+  failure. `verify.model_review: [docs_completeness]` adds a verification_engineer review.
+- **`api_compatibility`** (deterministic). Diffs every changed OpenAPI 3 spec (YAML or JSON) before
+  and after the initiative's change sets. **Breaking:** a path or operation removed; a parameter
+  removed, a required parameter added, an optional one made required, or a parameter's type changed;
+  a request body made required, or one gaining a required property or changing type; a 2xx response
+  removed, a response media type removed, a response schema's type changed, or a property removed
+  from a response object. Additions are reported, not breaking. Enum, format and constraint changes,
+  and anything behind `oneOf`/`anyOf`/`allOf`, are out of scope. It also diffs the exported API of
+  every changed importable Go package (not `internal/`, not `main`, not tests) with `go/parser`:
+  a removed symbol, a changed func/method signature or field type, a changed type kind, or a method
+  added to an existing exported interface is breaking. It cannot see changes only a type checker
+  would (an underlying type changing behind a name). A breaking change is a `fail` unless an active
+  requirement (statement or criteria) or a decided decision names the path or symbol, in which case
+  it is a `warn` citing that requirement or decision.
+- **`api_ergonomics`** (model-reviewed). The verification_engineer reviews the diff of the change's
+  public surface — changed OpenAPI specs, changed importable Go files, source files adding a route or
+  flag — against a rubric: naming consistency, error shapes, pagination, idempotency, examples. A
+  finding counts only when it cites a file it was shown and a line inside one of that file's hunks;
+  others are recorded in the summary check and never move the scorecard. High/critical → `fail`,
+  medium → `warn`. The built-in demo provider declares it did not review, which is `not_measured`;
+  so is a failed model call. No public surface changed: `not_applicable`.
+- **`security`** (deterministic). Re-scans the applied files as they are now with the same
+  credential detector and allowlist the secret sweep uses (`fail`; generic assignments in test
+  fixtures `warn`); summarizes the deny checks — a denied change set never applied and is reported,
+  an undisposed deny-coded or sensitive-area finding on an applied one is a `warn`; and runs each
+  `verify.security.scanners` command in the sandbox (non-zero exit `fail`, exit 127 — not installed
+  in the image — `not_measured`). With no scanner configured the vulnerability check is
+  `not_measured`: govulncheck, `npm audit` and pip-audit need a vulnerability database from the
+  network, which the sandbox only has for a scanner marked `network: true`.
+- **`performance`** (deterministic, sandboxed). Runs each budget's command offline, reads the first
+  capture group of `metric` from its output, and fails over `max` or over `max_regression_pct`
+  against the previous measurement's value (the first measurement records the baseline). No budgets:
+  `not_measured`. A metric that matches nothing: `not_measured`.
+- **`operational_readiness`** (deterministic; optional model review). When the code starts a
+  network server (`http.ListenAndServe`, `grpc.NewServer`, `.listen(port)`, `createServer(`,
+  `uvicorn.run(`, `FastAPI(`, `Flask(__name__)`, `app.run(`): a route whose last segment is
+  `health`/`healthz`/`healthcheck`/`livez`/`readyz`/`ready`/`ping`; SIGTERM handled
+  (`signal.Notify`/`NotifyContext` naming `SIGTERM` plus a `Shutdown`/`GracefulStop` call in Go,
+  `process.on('SIGTERM')`, `signal.signal(signal.SIGTERM)`, or uvicorn/gunicorn); a structured logger
+  (slog, zap, zerolog, logrus, pino, winston, bunyan, structlog, python-json-logger); configuration
+  read from the environment. Each absent one is a `warn` — absence of a pattern is weak evidence.
+  Without a server they are `not_applicable`. Every Dockerfile has a `HEALTHCHECK` (`warn`).
+  Migration safety, for changed `.sql` files and files under `migrations/`/`migrate/`: editing an
+  already-present numbered migration is a `fail` (a database that applied it will not re-run it);
+  an added `DROP TABLE`/`DROP COLUMN`/`DROP SCHEMA`/`TRUNCATE`/`RENAME`/unqualified `DELETE` is a
+  `warn`. `verify.model_review: [operational_readiness]` adds a verification_engineer review for
+  what the patterns cannot see.
+
 ## Supported providers
 
 | Provider | Wire type | Default endpoint | Key env |
@@ -567,13 +844,215 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
 - Secret values are redacted on the paths that store them: the artifact/blob store, and the event
   log, whose rows carry digests into that store rather than content.
 
-  Two things this does **not** cover, both deliberate and both documented at
-  [`security-model.md`](security-model.md#what-this-does-not-protect-against): the daemon log is not
-  redacted and `GET /api/v1/logs` returns it verbatim, and the raw blob store (`raw-blobs/`) keeps
-  uploaded file content and image bytes exactly as received.
+  The daemon log is redacted too, by the same catalog plus every loaded project's secret values,
+  and `GET /api/v1/logs` redacts again on read, so it no longer returns it verbatim. One thing this does **not** cover, deliberately:
+  the raw blob store (`raw-blobs/`) keeps change-set file content and image bytes exactly as
+  received. Both are documented at
+  [`security-model.md`](security-model.md#what-this-does-not-protect-against).
 
   Redaction is also not a uniform gate on what leaves for the model provider — it is applied at
   specific points, not to every outbound request.
+
+## Integrations
+
+`integrations.slack` and `integrations.linear` in `harness.yaml` turn on the Slack (notifications,
+approval buttons, `/idea`) and Linear (plan tasks as issues, labeled issues as initiatives)
+integrations. Each is off until its section exists; tokens come from the environment or `.env` by
+the `*_env` names, never from the file. Setup, every key, and the security trade-offs:
+[integrations.md](integrations.md).
+
+```yaml
+integrations:
+  slack:
+    channel: C0123456789
+    allowed_users: [U0123ABCD]   # empty = notify-only
+  linear:
+    team_key: ENG
+```
+
+## Remote access
+
+Using the web UI from your phone or another computer — answering the "Needs you" queue, reviewing a
+change set — is off until you turn it on. Unlike everything above, it is **daemon-wide**, not per
+project: there is one daemon, one listener and one token for every project it serves. It lives in
+`config.yaml` under the state root (`~/.local/share/idea-harness/config.yaml`, or
+`$IDEA_HARNESS_STATE/config.yaml`), section `daemon:`, and `idea daemon` takes the same settings as
+flags (which win over the file). What each setting changes, and what it does not protect against,
+is specified in [`security-model.md`](security-model.md#remote-access) — read it before turning
+this on.
+
+```yaml
+# What each key changes: docs/security-model.md#remote-access
+daemon:
+  # A name a TLS-terminating proxy in front of loopback answers to. With
+  # `tailscale serve` this is your machine's MagicDNS name.
+  allowed_hosts: [laptop.tail1234.ts.net]
+  # Or: a second, non-loopback listener. Plain HTTP only on a Tailscale or
+  # private address (with a warning); anything else needs tls_cert/tls_key.
+  # listen: 100.101.102.103:8787
+  # tls_cert: /path/to/cert.pem
+  # tls_key: /path/to/key.pem
+  # Browser sessions end after this long (and after a week unused). Default 720h.
+  # session_ttl: 720h
+  # The VAPID contact push services may use to reach you (mailto: or https:).
+  # push_contact: mailto:you@example.com
+```
+
+| Key | Flag | Default | |
+|---|---|---|---|
+| `allowed_hosts` | `--allowed-hosts h1,h2` | none | Extra `Host`/`Origin` names to accept — a proxy's hostname |
+| `listen` | `--listen ip:port` | none (loopback only) | A second listener on a non-loopback IP; the policy table is in [`security-model.md`](security-model.md#remote-access) |
+| `tls_cert`, `tls_key` | `--tls-cert`, `--tls-key` | none | Serve `listen` over HTTPS. Both or neither |
+| `session_ttl` | — | `720h` | A browser session's absolute lifetime |
+| `push_contact` | — | the project page | VAPID `sub` for Web Push |
+
+The daemon refuses to start on a `listen` it will not allow, and logs a warning for every one it
+allows without TLS. Loopback (`IDEA_HARNESS_ADDR`, default `127.0.0.1:8787`) is served exactly as
+before either way, and keeps handing the token to the local UI.
+
+### Recommended: Tailscale
+
+[`tailscale serve`](https://tailscale.com/kb/1312/serve) gives the daemon an HTTPS address on your
+tailnet with a real certificate, reachable from your own devices and nobody else, while the daemon
+itself keeps listening on loopback only:
+
+```bash
+tailscale serve --bg 8787                      # https://laptop.tail1234.ts.net → 127.0.0.1:8787
+idea daemon stop                               # restart with the name allowed:
+idea daemon --allowed-hosts laptop.tail1234.ts.net   # or put it in config.yaml
+idea ui pair --label phone                     # prints a one-time code
+```
+
+Open `https://laptop.tail1234.ts.net` on the phone, enter the code, and you are signed in. HTTPS
+matters beyond encryption: browsers only install the app to the home screen, and only allow push
+notifications, on a secure context (HTTPS or `localhost`). `tailscale funnel` would put the same
+page on the public internet; don't.
+
+### Signing in and out
+
+- `idea ui pair [--label <name>]` mints a one-time code (ten minutes, single use) and prints where
+  to open the UI. Only the CLI on the daemon's machine can do this — it needs the API token, which
+  never reaches a remote browser. `--qr` also draws that address as a QR code in the terminal, so
+  the phone's camera can open it; the code is printed beside it and is never inside it (codes
+  never go in URLs). Without colour (output not a terminal) it is drawn for a dark background, and comes out inverted on a light one, which
+  most scanners accept; the address is printed under it either way.
+- `idea ui sessions` lists every browser session; `idea ui sessions revoke <id>` signs one out, and
+  `revoke --all` signs out every one. Settings → **Remote access** in the UI does the same.
+
+### Push notifications
+
+Settings → **Notifications** turns on Web Push for the project you are viewing, per browser, with
+a toggle per event: needs your judgment, change set ready for review, verification failed, outcome
+drifting. The browser asks for permission only when you press the button. Delivery rides the same
+integration bus as Slack ([integrations.md](integrations.md)): retried with backoff when the push
+service is unreachable, dead-lettered after eight attempts, removed when the push service says the
+browser unsubscribed. It needs a secure context (HTTPS or `localhost`) and a browser that can reach
+its push service (Google's, Mozilla's or Apple's); a plain-HTTP Tailscale IP is neither. The
+daemon's VAPID key is generated on first use in `<state root>/push/vapid.json`; deleting it orphans
+every subscription.
+
+## Budget
+
+A spending cap in US dollars per initiative: `budget.default_initiative_usd` for every initiative
+in the project, or one initiative's own cap (stored in the project's state database, since a cap is
+a decision about one piece of work) — `idea budget <initiative> --set <usd>`, the Build page's
+meter, or `PUT …/initiatives/{id}/budget`. Its own cap wins; `--clear` returns it to the default.
+
+- **What counts.** The initiative's own recorded spend, the number `GET …/costs` reports: every
+  model call's billed cost (retries included), plus the coding agent's where the agent reported one.
+  **Hermes and OMP usually print no cost, so their spend is not counted** — the meter says so
+  (`agent_not_counted`) rather than presenting a partial number as the whole.
+- **Where it is enforced.** Before every model call (the design pipeline, reviews, the planner,
+  image descriptions) and before the coding agent starts, for every executor kind — the local
+  container kinds, `acp` and `openhands` alike. A call already in flight finishes and is recorded,
+  so an initiative can end at most one call over its cap.
+- **What happens.** The run stops with `budget exceeded: …` and the initiative is parked on
+  `needs_human_judgment` with reason `budget_exceeded` (`idea next` answers `resolve budget`),
+  remembering the status it was in. An `initiative.budget_exceeded` event goes to the integration
+  bus (Slack posts it by default). Raising the cap past the spend returns the initiative to where it
+  stopped — `plan_approved` (or its earlier judgment) for a build-phase stop, `failed` naming
+  `idea retry` for a stop in a new initiative's design pipeline — and the step is run again.
+- **Not the same as `review.max_cost_usd`**, which is a process-lifetime ceiling on model calls
+  reset by every daemon restart or config reload. The budget survives both.
+
+## Automations
+
+Background jobs the daemon runs on a schedule. **Every one is off until a person enables it** (the
+Automations page, `PUT …/automations/{name}`, or the YAML below); a section that merely exists does
+not run. "Run now" runs one job once, enabled or not.
+
+| Job | Switch | Schedule | What it does |
+|---|---|---|---|
+| Linear inbound polling | `integrations.linear.inbound` (default `true` once Linear is configured) | every `poll_interval_seconds` | imports issues carrying the inbound label as initiatives ([integrations.md](integrations.md)) |
+| Scheduled metric measurement | `automations.metric_measurement.enabled` | each metric's own `cadence`, at most every 15 minutes | `idea metric measure` for every live metric with a `command` or `url` source. Manual metrics and metrics without a cadence are never scheduled; `url` sources still need `outcomes.allow_url_sources` — enabling the schedule implies no network |
+| Scheduled eval | `automations.eval.enabled` | every `interval_hours` (default 24); the first run is one interval after enabling | `idea eval` against `model`, capped at `max_cost_usd` per run (required: each case's initiative is held to what is left, and no case starts once it is spent). Reports are written to the project's state directory (`eval-reports/<stamp>.json` and `.md`) and compared with `baseline` (a saved report, relative to the project root) or, when unset, with the previous run; a regression is an `eval.regressed` event on the integration bus |
+
+Each run is recorded with its trigger (`schedule` or `manual`), status, cost and a summary, and the
+Automations page lists the history. For Linear, only polls that imported an issue, failed, or were
+run by hand are kept — a quiet poll every minute would bury those.
+
+## Objectives & outcomes
+
+The PRD stage states the objectives an initiative exists to move (`OBJ-n`), each with outcome
+metrics (`MET-n`), and links every requirement to the objectives it serves; humans add, edit and
+link more with `idea objective …` / `idea metric …` (see [cli.md](cli.md)) or the Define page. A
+metric's **source** says how its value is read:
+
+| Source | Measured by | Where it runs |
+|---|---|---|
+| `manual` (default) | `idea metric record MET-n <value>` (or the MCP `record_metric` tool) | nowhere — a person types it |
+| `command` | `idea metric measure [MET-n]` | `sh -c "cd /repo && <command>"` in the build/test check sandbox ([isolation properties](security-model.md#execution-gateway)), with the workspace mounted **read-only** at `/repo`. The last number printed is the value. Never the host — no Docker, no measurement |
+| `url` | `idea metric measure [MET-n]`, with `outcomes.allow_url_sources: true` | the daemon's SSRF-guarded fetcher (public http(s) addresses only, at most 5 redirects); the JSON response is read at the metric's RFC 6901 `pointer` |
+
+There is deliberately no networked `command` source: a number that lives behind an API is a `url`
+source, where the request is the daemon's own and goes through the address guard; a command with
+egress would be project code with the network, which the check sandbox exists to prevent. Nothing
+measures on a timer unless you enable [`automations.metric_measurement`](#automations) — a metric
+with a `cadence` that goes unmeasured becomes `stale`, which `idea status`, `idea next` and the
+Health page report.
+
+An **observation** is one measured value. Recording one also records which change sets landed
+since the previous value, so `idea impact requirement REQ-1` reaches the metric the work moved and
+`idea trace metric MET-2` names the change sets behind a regression. A **hypothesis** ("we believe
+the checklist will move activation") is an assertion linked to the metric it predicts.
+
+The PRD review enforces the chain: a requirement that serves no objective, and an objective with no
+measurable metric, are high findings; a PRD with no objectives at all gets one medium finding, so
+it is flagged but not wedged. The adversarial reviewer may cite `OBJ-n`/`MET-n` under the same
+citation rules as a requirement.
+
+```bash
+idea objectives                                  # OBJ-n, what serves each, what measures each
+idea objective add "New users reach a first sync on day one" --owner pm@example.com
+idea objective link REQ-3 OBJ-1                  # REQ-3 serves OBJ-1
+idea metric add OBJ-1 "day-one sync rate" --unit % --baseline 22 --target 40 --cadence weekly
+idea metric record MET-1 31 --note "dashboard, week 2"
+idea metric add OBJ-1 "signups" --target 500 --command "wc -l < /repo/data/signups.csv"
+idea metric measure                              # run command/url sources now
+idea metrics                                     # every metric with its drift
+```
+
+### Drift
+
+Drift is computed deterministically on every read (`domain.EvaluateMetricDrift`):
+
+| Status | When |
+|---|---|
+| `off_track` | the latest value is worse than the baseline — lower for `increase`, higher for `decrease`, farther from the target for `maintain` — or it breaches the guardrail (a floor for `increase`, a ceiling for `decrease`, the largest allowed distance from the target for `maintain`). With no declared baseline, the first observation is the baseline, so one reading can only be off track by its guardrail |
+| `stale` | a cadence is set and more than one cadence has passed since the last observation (or since the metric was defined, if never observed) |
+| `regressed` | the latest value is worse than the previous one by the same rule **and** at least one change set landed between the two. A drop with nothing landed is the world, not the work — it can still be `off_track` |
+| `no_data` | never observed |
+| `on_track` | none of the above |
+
+The most urgent one wins (`regressed` > `off_track` > `stale` > `no_data` > `on_track`); every
+signal is still reported. A requirement that is **verified** while an objective it serves has an
+off-track or regressed metric is flagged **"works, but fails its objective"** — on `idea status`,
+`idea next`, the Health page, the MCP `list_metrics` tool, and `GET …/outcomes`. An observation
+that moves a metric into `off_track` or `regressed` publishes `outcome.drifted` to the
+integrations ([integrations.md](integrations.md)). `idea gaps` reports the same chain
+(`orphan_requirement`, `unmeasured_objective`, `unserved_objective`, `drifting_metric`,
+`ineffective_requirement`); exact triggers are in
+[architecture.md](architecture.md#asking-the-graph-gaps).
 
 ## Role Contracts
 

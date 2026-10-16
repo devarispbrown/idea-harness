@@ -123,10 +123,8 @@ func runAutomaticStep(c *client, projectID, iniID, action string, stdout, stderr
 		if err := c.do("POST", initiativeResource(projectID, iniID, action), nil, &out); err != nil {
 			return err
 		}
-		if kind := out["executor_kind"]; kind == "internal" || kind == "" {
-			if action == "execute" {
-				fmt.Fprintln(stdout, warn("⚠ the internal executor writes a placeholder (not real code); set executor.kind = omp|hermes in .idea-harness/harness.yaml to generate real code."))
-			}
+		if action == "execute" {
+			printExecutorResolution(out, stdout)
 		}
 		opID := out["operation_id"]
 		if opID == "" {
@@ -200,9 +198,9 @@ func waitForOperation(c *client, projectID, iniID, opID string, stdout io.Writer
 			if step, nerr := nextAction(c, projectID, iniID); nerr == nil && step.Action == "failed" {
 				return failedInitiativeError(step.FailureReason)
 			}
-			return fmt.Errorf("%s failed — run `idea logs` for details", op.Type)
+			return errorf(kindRunFailed, "%s failed — run `idea logs` for details", op.Type)
 		case "cancelled":
-			return fmt.Errorf("%s was cancelled", op.Type)
+			return errorf(kindRunFailed, "%s was cancelled", op.Type)
 		}
 		// A model call that hangs is indistinguishable from one that is merely
 		// slow, and both looked like `working…` forever. The provider client
@@ -282,7 +280,14 @@ func reportNextAction(c *client, projectID, iniID string, step nextStep, stdout,
 		// point this loop exists to stop at.
 		return runVerify(cmdArgs{}, stdout, stderr, false)
 	}
-	return renderNextAction(step, stdout)
+	if err := renderNextAction(step, stdout); err != nil {
+		return err
+	}
+	// Outcome drift is something to know while taking the next step --
+	// most of all once the initiative is `done` and its metrics are the
+	// only thing still moving. Never a step of its own.
+	printOutcomeNote(c, projectID, iniID, "", stdout)
+	return nil
 }
 
 // renderNextAction prints the guidance for a step nothing will take on its own.
@@ -391,6 +396,11 @@ func reportJudgment(reason string, stdout io.Writer) {
 	case "verification":
 		fmt.Fprintln(stdout, bold("Next:")+" a requirement was failed after this initiative completed")
 		line("idea verify <REQ-n> --pass|--fail --note \"<how you checked>\"", "record the evidence")
+	case "budget":
+		fmt.Fprintln(stdout, bold("Next:")+" this initiative reached its spending cap and stopped before the next model or agent call — "+muted("idea budget")+muted(" shows the meter"))
+		// Raising the cap returns the initiative to where it stopped; the
+		// step is then run again with `idea next`, which names it.
+		line("idea budget <initiative> --set <usd>", "raise the cap; the initiative goes back to where it stopped")
 	default:
 		// A daemon older than the recorded reason, or an initiative parked
 		// before it existed. Name where to look rather than a wrong command.
@@ -413,7 +423,7 @@ func failedInitiativeError(reason string) error {
 	// re-running the pipeline is not what that needs.
 	const recovery = "`idea status` shows where it is; `idea retry` re-runs it, `idea logs` has the full text"
 	if strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("the initiative failed, and no reason was recorded — %s", recovery)
+		return errorf(kindRunFailed, "the initiative failed, and no reason was recorded — %s", recovery)
 	}
-	return fmt.Errorf("the initiative failed: %s — %s", reason, recovery)
+	return errorf(kindRunFailed, "the initiative failed: %s — %s", reason, recovery)
 }

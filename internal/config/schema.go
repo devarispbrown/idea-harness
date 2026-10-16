@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 )
 
 // Embedded JSON Schemas for the portable config files (§28). These are the
@@ -18,7 +19,17 @@ const projectSchema = `{
   "additionalProperties": false
 }`
 
-const harnessSchema = `{
+// integrationEventEnum is IntegrationEventKinds rendered as a JSON enum body,
+// spliced into the schema so the vocabulary is written down once.
+var integrationEventEnum = func() string {
+	q := make([]string, len(IntegrationEventKinds))
+	for i, k := range IntegrationEventKinds {
+		q[i] = `"` + k + `"`
+	}
+	return strings.Join(q, ", ")
+}()
+
+var harnessSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "harness.yaml",
   "type": "object",
@@ -30,7 +41,18 @@ const harnessSchema = `{
         "max_cycles":   { "type": "integer", "minimum": 0 },
         "max_tokens":   { "type": "integer", "minimum": 0 },
         "max_cost_usd": { "type": "number",  "minimum": 0 },
-        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] }
+        "rigor":        { "enum": ["auto", "quick", "standard", "thorough"] },
+        "convergence": {
+          "type": "object",
+          "properties": {
+            "mode":             { "enum": ["guarded", "legacy"] },
+            "gate_severity":    { "enum": ["high", "critical"] },
+            "require_citation": { "type": "boolean" },
+            "later_findings":   { "enum": ["changed", "critical", "any"] },
+            "stall_cycles":     { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
@@ -62,16 +84,58 @@ const harnessSchema = `{
         "block_review_cycles": { "type": "integer", "minimum": 0 },
         "block_plan_review_cycles": { "type": "integer", "minimum": 0 },
         "block_change_set_review_cycles": { "type": "integer", "minimum": 0 },
-        "dangle_plan_dependency": { "type": "boolean" }
+        "dangle_plan_dependency": { "type": "boolean" },
+        "cost_per_call_usd": { "type": "number", "minimum": 0 }
       },
       "additionalProperties": false
     },
     "executor": {
       "type": "object",
       "properties": {
-        "kind":  { "enum": ["internal", "container", "omp", "hermes"] },
+        "kind":  { "enum": ["auto", "internal", "container", "omp", "hermes", "acp", "openhands"] },
         "image": { "type": "string" },
-        "model": { "type": "string" }
+        "model": { "type": "string" },
+        "acp": {
+          "type": "object",
+          "properties": {
+            "command":         { "type": "array", "items": { "type": "string" } },
+            "key_env":         { "type": "string" },
+            "timeout_seconds": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "openhands": {
+          "type": "object",
+          "properties": {
+            "url":                   { "type": "string" },
+            "api_key_env":           { "type": "string" },
+            "agent":                 { "enum": ["openhands", "acp"] },
+            "acp_command":           { "type": "array", "items": { "type": "string" } },
+            "workspace_dir":         { "type": "string" },
+            "withhold_provider_key": { "type": "boolean" },
+            "max_iterations":        { "type": "integer", "minimum": 0 },
+            "timeout_seconds":       { "type": "integer", "minimum": 0 },
+            "ui_url":                { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name":    { "type": "string" },
+              "type":    { "enum": ["stdio", "http", "sse"] },
+              "command": { "type": "string" },
+              "args":    { "type": "array", "items": { "type": "string" } },
+              "url":     { "type": "string" },
+              "env":     { "$ref": "#/$defs/nameValues" },
+              "headers": { "$ref": "#/$defs/nameValues" }
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -88,9 +152,182 @@ const harnessSchema = `{
         "max_files": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
+    },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "dimensions": {
+          "type": "object",
+          "properties": {
+            "setup_reproducibility": { "$ref": "#/$defs/qualityMode" },
+            "docs_completeness":     { "$ref": "#/$defs/qualityMode" },
+            "api_compatibility":     { "$ref": "#/$defs/qualityMode" },
+            "api_ergonomics":        { "$ref": "#/$defs/qualityMode" },
+            "security":              { "$ref": "#/$defs/qualityMode" },
+            "performance":           { "$ref": "#/$defs/qualityMode" },
+            "operational_readiness": { "$ref": "#/$defs/qualityMode" }
+          },
+          "additionalProperties": false
+        },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "commands": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "prepare":  { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "security": {
+          "type": "object",
+          "properties": {
+            "scanners": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "command"],
+                "properties": {
+                  "name":    { "type": "string", "minLength": 1 },
+                  "command": { "type": "string", "minLength": 1 },
+                  "network": { "type": "boolean" }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "performance": {
+          "type": "object",
+          "properties": {
+            "budgets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "command", "metric"],
+                "properties": {
+                  "name":               { "type": "string", "minLength": 1 },
+                  "command":            { "type": "string", "minLength": 1 },
+                  "metric":             { "type": "string", "minLength": 1 },
+                  "unit":               { "type": "string" },
+                  "max":                { "type": "number" },
+                  "max_regression_pct": { "type": "number", "minimum": 0 }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "model_review": { "type": "array", "items": { "enum": ["docs_completeness", "operational_readiness"] } },
+        "timeout_seconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "outcomes": {
+      "type": "object",
+      "properties": {
+        "image":                   { "type": "string" },
+        "measure_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "allow_url_sources":       { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "default_initiative_usd": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "automations": {
+      "type": "object",
+      "properties": {
+        "metric_measurement": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "eval": {
+          "type": "object",
+          "properties": {
+            "enabled":        { "type": "boolean" },
+            "model":          { "type": "string" },
+            "suite":          { "type": "string" },
+            "cases":          { "type": "array", "items": { "type": "string" } },
+            "interval_hours": { "type": "integer", "minimum": 0 },
+            "max_cost_usd":   { "type": "number", "minimum": 0 },
+            "baseline":       { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "integrations": {
+      "type": "object",
+      "properties": {
+        "slack": {
+          "type": "object",
+          "properties": {
+            "channel":             { "type": "string" },
+            "events":              { "type": "array", "items": { "enum": [` + integrationEventEnum + `] } },
+            "mention_on_judgment": { "type": "array", "items": { "type": "string" } },
+            "allowed_users":       { "type": "array", "items": { "type": "string" } },
+            "socket_mode":         { "type": "boolean" },
+            "bot_token_env":       { "type": "string" },
+            "app_token_env":       { "type": "string" },
+            "ui_base_url":         { "type": "string" }
+          },
+          "required": ["channel"],
+          "additionalProperties": false
+        },
+        "linear": {
+          "type": "object",
+          "properties": {
+            "team_key":              { "type": "string" },
+            "project":               { "type": "string" },
+            "inbound_label":         { "type": "string" },
+            "inbound":               { "type": "boolean" },
+            "poll_interval_seconds": { "type": "integer", "minimum": 0 },
+            "api_key_env":           { "type": "string" },
+            "state_mapping": {
+              "type": "object",
+              "properties": {
+                "todo":        { "type": "string" },
+                "in_progress": { "type": "string" },
+                "in_review":   { "type": "string" },
+                "done":        { "type": "string" },
+                "canceled":    { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["team_key"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "qualityMode": { "enum": ["off", "advisory", "gate"] },
+    "nameValues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":      { "type": "string" },
+          "value":     { "type": "string" },
+          "value_env": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
 }`
 
 // HarnessTopLevelKeys returns the field names harness.yaml accepts at its top

@@ -1,18 +1,37 @@
 # Wire a real coding agent
 
-By default, `idea execute` does **not** write real code. This guide explains what the default
-executor actually does, how to switch to a real coding agent (OMP or Hermes), and — critically —
-the security tradeoff you accept when you do.
+This guide explains which executor `idea execute` uses by default, how to choose a real coding
+agent (Hermes, OMP, any Agent Client Protocol agent, or an OpenHands Agent Server), and — critically — the security tradeoff
+you accept when you do.
 
-## The default `internal` executor is a placeholder
+## The default: `auto`, with a loud placeholder fallback
 
-Out of the box, `harness.executor.kind` defaults to `internal`. The internal executor is
-deterministic and hermetic: it makes no model calls, performs no network I/O, and depends on no
-external services. It writes a placeholder file into the isolated work root so the change-set
-pipeline (snapshot → diff → review → apply → revert) runs end-to-end — but it does **not** generate
-real code.
+Out of the box, `harness.executor.kind` is unset, which means `auto`. Each run resolves it:
 
-To produce real file changes, select a coding-agent executor.
+- **Docker reachable and the coding model's provider key set** → `hermes`, on the digest-pinned
+  image (see [Select OMP or Hermes](#select-omp-or-hermes)). Docker pulls the image on the first
+  run if it is not present.
+- **Anything else** → `internal`, the placeholder executor, with a warning that starts
+  `NO REAL CODE WILL BE WRITTEN` and says why (no model configured, the key missing from both the
+  daemon's environment and `.env`, Docker not running, or a keyless provider such as Ollama, which
+  auto never picks) and how to fix it.
+
+The warning is not silent anywhere: `idea execute` and `idea next` print it in red, `idea doctor`
+prints it as `⚠ executor:` (a warning; doctor still exits 0), the Build page's guidance carries it
+as `executor_resolution.warning`, `GET /executors` carries it on the row that will run, the change
+set's agent output starts with it, and the run manifest records `requested: auto, resolved:
+internal` with the warning text.
+
+The internal executor is deterministic and hermetic: no model calls, no network I/O, no external
+services. It writes a placeholder file into the isolated work root so the change-set pipeline
+(snapshot → diff → review → apply → revert) runs end to end, but it does **not** write real code.
+To keep it on purpose — a demo, a CI run — set `executor.kind: internal`; runs then print only a
+one-line note instead of the warning.
+
+**Projects created before auto existed** have `kind: internal` written into `harness.yaml` by
+`idea init`, so they keep the placeholder. Delete the line (or set `kind: auto`) to opt in.
+
+To choose a specific agent, select its executor kind below.
 
 ## Select OMP or Hermes
 
@@ -37,7 +56,12 @@ idea executors setup --kind omp --image ghcr.io/your-org/omp:latest --model anth
 `idea executors setup` verifies the agent CLI is present in the image (hardened, no network, no
 pull), prints the security tradeoff, and writes `executor.kind/image/model` to `harness.yaml`.
 For **Hermes** `--image` is optional: when omitted it downloads the pinned official image
-(`nousresearch/hermes-agent:<version>`) and prints the pulled digest. For **OMP** `--image` is
+(`nousresearch/hermes-agent:<version>@sha256:<digest>`) and prints the pulled image id. The
+default is pinned by **digest**, not only by tag: a tag can be re-pointed at different bytes, a
+digest cannot. After the pull, the image's `RepoDigests` must contain that digest for that
+repository, or setup refuses it (a registry mirror rewriting images is the usual cause). Any
+`--image` given as `repo[:tag]@sha256:…` gets the same check; a tag-only `--image` is used as
+given. For **OMP** `--image` is
 required. `--model` is optional if a default model is already configured. There is **no silent
 fallback** — pass `--kind omp` explicitly to choose OMP.
 
@@ -66,7 +90,8 @@ the run stops before the agent starts, and the error names the variable.
 | Ollama (local) | `ollama/qwen3.8:latest` | none | smoke passed, 46 s to 7 min |
 
 "Verified" means `idea executors setup --kind hermes --model <that> --smoke --yes` produced a
-real file on 2026-09-17, against the pinned image `nousresearch/hermes-agent:v2026.5.16`. Times
+real file on 2026-09-17, against the pinned image `nousresearch/hermes-agent:v2026.5.16` (since
+pinned by its index digest, `sha256:b6e41c15…`; the bytes are the same). Times
 are for the whole command, with the image already pulled. Ollama's depends on the machine and on
 whether the model is already loaded: two runs on the same machine took 46 s and 429 s. Any
 model the provider serves works; these are the ones measured.
@@ -149,6 +174,8 @@ since nobody has actually run it through `--smoke` yet.
 |---|---|---|---|
 | `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
 | `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
+| `acp` | any | Warned | No ACP agent has been smoke-tested against a real model yet; run `--smoke` (with `--image` and `--acp-command`) first. |
+| `openhands` | any | Warned | No Agent Server run has been smoke-tested against a real model yet; run `--smoke` (with `--url`) first. |
 
 A row placed in the table stops `idea executors setup` and `idea execute` before anything runs,
 naming the model and why — reserved for a combination that turns out to be genuinely, unfixably
@@ -194,11 +221,134 @@ idea daemon stop        # then run any command — the daemon auto-starts and re
 
 | Field | Meaning | Default |
 |---|---|---|
-| `executor.kind` | `internal` (default) \| `container` \| `omp` \| `hermes` | `internal` |
-| `executor.image` | Docker image containing the agent CLI (`omp` / `hermes`) | `alpine:3.20` (not useful for a real agent) |
+| `executor.kind` | `auto` \| `internal` \| `container` \| `omp` \| `hermes` \| `acp` \| `openhands` | `auto` (unset) |
+| `executor.image` | Docker image containing the agent (`omp` / `hermes` / `acp`) | the pinned Hermes image for `hermes`; none for `omp`/`acp` (required) |
 | `executor.model` | Coding model for the agent, as `provider/model` | falls back to the default-model chain |
+| `executor.acp.command` | The ACP agent's argv inside the image; `{model}` / `{bare_model}` are substituted | none (required for `acp`) |
+| `executor.acp.key_env` | Name the provider key is exposed under inside an `acp` container | the provider's own variable |
+| `executor.acp.timeout_seconds` | Bound on one ACP prompt turn; then `session/cancel`, then kill | `840` |
+| `executor.openhands.*` | The Agent Server, its session-key variable and agent (see [OpenHands Agent Server](#openhands-agent-server-kind-openhands)) | none (`url` required for `openhands`) |
+| `executor.mcp_servers` | MCP servers handed to an `acp` agent (see [MCP servers](#mcp-servers-acp-only)) | none |
 
 The per-role model map `models.implementer` overrides `executor.model` if both are set.
+
+## Any Agent Client Protocol agent (`kind: acp`)
+
+The `acp` kind drives any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+— JSON-RPC 2.0 over stdio — instead of a CLI with a bespoke argv. That covers Claude Code
+(`claude-code-acp`, from `@zed-industries/claude-code-acp`), Codex (`codex-acp`), Gemini CLI
+(`gemini --experimental-acp`), OpenHands (`openhands acp`) and OpenCode. There is no canonical image
+for any of them: build one with the agent installed and pass it with `--image`.
+
+```bash
+idea executors setup --kind acp --image ghcr.io/your-org/claude-acp:1 \
+  --acp-command claude-code-acp --model anthropic/claude-sonnet-5 --yes
+
+# argv with arguments: whitespace-separated words, or a JSON array when an argument has a space
+idea executors setup --kind acp --image ghcr.io/your-org/gemini:1 \
+  --acp-command "gemini --experimental-acp -m {bare_model}" --acp-key-env GEMINI_API_KEY \
+  --model gemini/gemini-3.6-flash --yes
+```
+
+Setup verifies the image the ACP way: it starts the command in the hardened container with no
+network and no key (the probe's isolation is in [`security-model.md`](security-model.md)), sends
+`initialize`, and requires a protocol-version-1 answer (an ACP
+adapter need not implement `--version`, so the CLI-presence probe Hermes and OMP use does not
+apply). `--smoke` then runs the same trivial task Hermes's smoke runs, through the agent.
+
+How a run works. The agent runs in the same hardened container as Hermes and OMP (see the security
+section below), attached with `docker run -i --rm`, and the harness is its ACP client:
+
+1. `initialize` — the harness advertises `fs.readTextFile` and `fs.writeTextFile`, and nothing else.
+   `terminal` is **false**: the agent runs its own commands inside its own container, and a client
+   terminal would run them on the host. An agent that calls `terminal/*` anyway gets
+   method-not-found. A protocol version other than 1 fails the run.
+2. `session/new` with `cwd: /work` and the configured `mcpServers`.
+3. `session/prompt` with the implementation brief. The run succeeds on `stopReason: end_turn`; any
+   other stop reason, an agent that exits, or a JSON-RPC error fails it with the reason.
+
+While the turn runs:
+
+- **`fs/read_text_file` and `fs/write_text_file` are confined to the work root.** The path must be
+  absolute and under `/work`; it is cleaned (`/work/../etc/passwd` is refused) and then resolved on
+  the host, symlinks included, so a link inside the work root pointing out of it is refused too.
+  Refusals answer `-32602` and are written to the agent output.
+- **`session/request_permission` is answered without asking anyone**: `allow_once` when offered,
+  else `allow_always`, else `reject_once`/`reject_always`, else `cancelled`. The container is the
+  boundary, exactly as Hermes's `--yolo` and OMP's `--auto-approve` are. Every request and its answer
+  is recorded on the run manifest (`executor.permissions`), so nothing approved on your behalf is
+  invisible.
+- **Output** — the agent's messages, tool-call titles, permission answers, file writes and stderr —
+  feeds the same live view and change-set `agent_output` as the other agents. Thought chunks are
+  not kept. Known secret values (the key, MCP `value_env` values) are redacted.
+- **Timeout and cancel.** After `executor.acp.timeout_seconds` (default 840 s, under the engine's
+  15-minute ceiling), or when the run is stopped, the harness sends `session/cancel`, waits 10 s for
+  the agent to answer `cancelled`, then kills the container.
+
+**The model.** ACP has no standard way to choose a model, so `executor.model` does two things: it
+picks which provider key is forwarded (the same resolution as Hermes), and it is substituted into
+`executor.acp.command` wherever `{model}` (`provider/model`) or `{bare_model}` appears. An agent
+that reads its model from its own config or environment ignores it. The agent talks to its own
+vendor's API directly; a `providers:` base URL override does not apply to it.
+
+**The key's name.** The provider key is forwarded under the provider's own variable unless
+`executor.acp.key_env` renames it — Gemini CLI reads `GEMINI_API_KEY`, not the `GOOGLE_API_KEY` the
+`gemini` provider uses. Docker reads the value from its own environment (`-e NAME` with no value), so
+it never appears in the `docker run` argv.
+
+**Not verified yet.** The protocol handling is tested against a fake ACP agent (handshake, file
+writes, permission requests, path-escape refusal, timeout, cancel), and the production transport
+against a real Docker container running a shell ACP agent. No real ACP coding agent has been run
+end to end through `--smoke` against a real model yet, so every `acp` combination is reported as
+untested; run `--smoke` before relying on one.
+
+### MCP servers (acp only)
+
+`executor.mcp_servers` hands MCP servers to an ACP agent in `session/new`, in ACP's own shape:
+
+```yaml
+executor:
+  kind: acp
+  image: ghcr.io/your-org/claude-acp:1
+  acp:
+    command: [claude-code-acp]
+  mcp_servers:
+    - name: github                     # stdio: runs INSIDE the agent's container
+      command: github-mcp-server
+      args: [stdio]
+      env:
+        - name: GITHUB_PERSONAL_ACCESS_TOKEN
+          value_env: GITHUB_TOKEN      # the NAME of a variable; never the token itself
+        - name: LOG_LEVEL
+          value: info                  # a literal, for a non-secret setting
+    - name: docs                       # http (or sse): reached by the agent over the network
+      type: http
+      url: https://docs.example.com/mcp
+      headers:
+        - name: Authorization
+          value_env: DOCS_MCP_AUTH
+```
+
+The trust tradeoff, which you take on per server:
+
+- **A stdio server runs inside the agent's container**, as the agent's child — with the same
+  isolation, the same unrestricted egress, and the same auto-approved permissions. Its binary must
+  be in the image. It is as trusted as the agent itself.
+- **An http/sse server is reached by the agent**, which sends it whatever its `headers` carry. The
+  agent must advertise `mcpCapabilities.http` (or `sse`); if it does not, the run fails rather than
+  silently dropping the server.
+- **Secrets are never inline.** Each `env`/`headers` entry is either `value` (a literal) or
+  `value_env` (the name of a variable). `harness.yaml` is committable, so a literal whose name looks
+  like a credential (`*_TOKEN`, `*_KEY`, `Authorization`, …) or whose value matches a known credential
+  format is refused when the config loads. `value_env` is resolved like a provider key — the
+  daemon's environment, then the project's `.env` — and one that is set in neither stops the run
+  before the container starts, naming the variable. The resolved values travel to the agent in the
+  `session/new` message on its stdin, never in argv, and are redacted from its output.
+- The agent can use every server you list, for anything, with nobody approving the call. List only
+  servers whose reach you would grant the agent directly.
+
+`mcp_servers` on any kind other than `acp` is reported by `idea config validate` and `idea doctor`
+as unused, rather than ignored silently.
 
 ### API key
 
@@ -225,6 +375,147 @@ run` argv and is never written to state.
 > If the provider cannot be resolved at all, the run stops before the container starts, naming the
 > model it could not resolve — it never falls back to some other provider's key.
 
+## OpenHands Agent Server (`kind: openhands`)
+
+The `openhands` kind hands the agent run to an [OpenHands Agent
+Server](https://docs.openhands.dev/sdk) — a separate execution plane, usually on another machine —
+while idea-harness stays the control plane: the task, the change set, its review, approval and
+apply never leave here. It is **opt-in only**. `auto` never resolves to it, because the work root
+and (unless withheld) the provider key leave the machine; what exactly leaves, and what is checked
+on the way back, is in [`security-model.md`](security-model.md#the-remote-execution-plane-openhands).
+
+```bash
+export OPENHANDS_API_KEY=...          # the server's session key (or put it in .env)
+idea executors setup --kind openhands --url https://agents.example.com \
+  --model anthropic/claude-sonnet-5 --yes
+
+# an ACP agent the server's image carries (claude-agent-acp, codex-acp, gemini-cli)
+idea executors setup --kind openhands --url https://agents.example.com \
+  --agent acp --acp-command claude-agent-acp --model anthropic/claude-sonnet-5 --yes
+```
+
+Setup refuses a plain-http URL to another host, checks that `GET /server_info` answers and that
+the session key is accepted (an authenticated `GET /api/conversations/count`), prints what leaves the
+machine, and writes:
+
+```yaml
+executor:
+  kind: openhands
+  model: anthropic/claude-sonnet-5     # passed to the server's agent as its LiteLLM model
+  openhands:
+    url: https://agents.example.com
+    api_key_env: OPENHANDS_API_KEY     # the variable's NAME; default shown
+    agent: openhands                   # or acp, with acp_command
+    # workspace_dir: /workspace/idea-harness
+    # withhold_provider_key: true      # the server supplies its own model key
+    # max_iterations: 100
+    # timeout_seconds: 840
+```
+
+`--smoke` runs the shared trivial task on the server. `idea doctor` re-checks the server and key on
+every run (a warning, not a failure). Field reference: [configuration.md](configuration.md).
+
+**The model.** For the server's own agent, `executor.model` becomes the agent's LLM: the six
+built-in providers already use LiteLLM's prefixes (`anthropic/…`, `openai/…`, `gemini/…`,
+`deepseek/…`, `openrouter/…`, `ollama/…`), and a custom OpenAI-compatible provider goes through
+`openai/<model>` with its `base_url`. An Ollama at `localhost` only works when the server runs on
+this machine — the server's localhost is its own. An ACP agent on the server chooses its model its
+own way; its provider key reaches it as a conversation secret under the provider's variable name.
+
+### How a run works
+
+1. **Up.** The work root — the seeded copy of the workspace — is packed as one tar.gz of exactly
+   the files the engine's own snapshot sees, uploaded (`POST /api/file/upload`), and unpacked on
+   the server into `<workspace_dir>/<conversation-id>` with one `tar -xzf`
+   (`POST /api/bash/execute_bash_command`).
+2. **Run.** `POST /api/conversations` creates the conversation with that directory as its
+   workspace and the implementation brief as its initial message, which starts the agent. The
+   confirmation policy is left at the server's default, `NeverConfirm` — the same auto-approve the
+   local agent kinds run with.
+3. **Follow.** A watcher ingests events through `GET /api/conversations/{id}/events/search` from a
+   stored cursor, and the event websocket (`/sockets/events/{id}`) only wakes it up; without the
+   socket it polls every 2 s. Agent messages, tool calls, failing tool results and errors become
+   compact, redacted lines — the live view and the change set's agent output — and thoughts are not
+   kept. `finished` completes the run; `error`, `stuck`, a pause or a confirmation request nobody
+   here will answer fail it, with the agent's own error text.
+4. **Down.** `GET /api/file/archive?format=tar.gz` brings the directory back. It is unpacked into a
+   staging directory and validated before anything in the work root changes, then mirrored in: a
+   file is deleted locally only if it was uploaded and is gone on the server (a file the archive
+   route's default excludes leave out is fetched on its own, not read as deleted). From here the
+   pipeline is the one every agent uses: snapshot, diff, secret sweep, checks, review.
+
+Why a tarball: per-file transfer is thousands of requests and leaves a half-copied tree on a crash;
+the archive route's `git-delta` format needs a repository on the server (the work root has no
+`.git`, deliberately) and a patch applier here, when the engine computes its own diff anyway; and
+the bash route returns only the last 1 MiB of output, so it cannot carry files back.
+
+### Durable runs: idempotency, restarts, cancel
+
+Every run is a row in `remote_runs` (the project's `state.db`): local id, remote conversation id,
+server URL, status, event cursor, idempotency key, timestamps, and the compact progress log.
+`idea runs remote [<initiative>] [--all] [--json]` lists them (task, status, attempt, server,
+conversation id, last event, error), as do `GET …/initiatives/{id}/remote-runs` and the run panel's
+**Remote runs** when the run's executor is `openhands`.
+
+- **Idempotent dispatch.** The key is a hash of (task, attempt), where the attempt number counts
+  the task's runs that are already over, so a retry after a crash computes the same key and finds
+  the same row. The conversation id is derived from the key, and the server treats a create with an
+  existing id as "return it" — so a crash between "create sent" and "id recorded" still cannot
+  start a second conversation. Every dispatch step is idempotent (the unpack starts with `rm -rf`).
+- **Daemon restart.** Stopping the daemon fails the Execute operation, as for any kind, but does
+  **not** stop the remote run: the daemon lets go of it first. The next daemon re-attaches to every
+  run not yet over (once per project, in the background), catches up on the events it missed from
+  the cursor — each exactly once — and follows it to the end. A finished run waits for the task's
+  next `idea execute`, which collects its files instead of starting again — as long as the freshly
+  seeded work root still matches what was uploaded; if the workspace changed meanwhile, the stale
+  run is retired (and interrupted on the server) and a new attempt starts.
+- **Vanished.** A conversation the server no longer has (deleted, or a server restarted without
+  persistence) fails the run with that reason; the next execute starts a new attempt.
+- **Cancel.** `idea cancel` / Stop marks the run cancelled, interrupts it on the server
+  (`/interrupt`, then `/pause` as the fallback), and brings back what the agent had written so
+  the next run can continue from it, as Stop does for a local agent.
+- **Retries.** Network errors, timeouts, 408/429 and 5xx are retried with exponential backoff
+  (up to 5 tries per call; a watcher keeps retrying until the run's timeout). 401/403 and 404 are
+  answers, not outages, and are never retried.
+- **Timeout.** `timeout_seconds` (default 840 s, under the engine's own 15-minute ceiling) is
+  measured from dispatch; past it the run is interrupted on the server and failed.
+- **The engine lock.** `idea execute` holds the engine's lock while it waits on its own run, as it
+  does for every kind. Reconciliation and the watchers never take it: they write only their own
+  `remote_runs` rows.
+
+### API version, and what is confirmed
+
+Written against **openhands-agent-server v1.54.0** (OpenHands/software-agent-sdk, released
+2026-10-09; image `ghcr.io/openhands/agent-server:1.54.0-python`), from the server's own routers
+(`openhands-agent-server/openhands/agent_server/*_router.py`, `sockets.py`) and the SDK's remote
+client. Setup and doctor report a server on another version as a warning, not a refusal.
+
+| Part | Status |
+|---|---|
+| `X-Session-API-Key`; websocket first-frame auth; 401 on a wrong key | Confirmed from source |
+| `GET /server_info`, `GET /api/conversations/count`, `GET /api/conversations/{id}`, `execution_status` values | Confirmed from source |
+| `POST /api/conversations` with a client-chosen `conversation_id` (201 new / 200 existing), `initial_message.run` starting the agent, default `NeverConfirm` | Confirmed from source |
+| `Agent` spec: `llm.model/api_key/base_url`, tools by registered name (`terminal`, `file_editor`, `task_tracker`); `ACPAgent` with `acp_command` | Confirmed from source |
+| `/interrupt`, `/pause`; `events/search` parameters and `{items, next_page_id}` shape | Confirmed from source |
+| `POST /api/file/upload?path=` (field `file`), `GET /api/file/download?path=`, `GET /api/file/archive?format=tar.gz`, `POST /api/bash/execute_bash_command` | Confirmed from source |
+| `events/search` `page_id` starts a page **at** that event (inclusive) | Confirmed against the real image |
+| Archive entries rooted under the directory's base name, plus an `archive_manifest.json` of metadata the route appends at the root (left out of the work root; a real file of that name is fetched on its own) | Confirmed against the real image |
+| `tar` present in the server image; a missing file answering 404 on download; `interrupt` on an unknown conversation answering 400, not 404 | Confirmed against the real image |
+| A wrong session key refused; a conversation with a bad model key settling as `error` with the provider's own message | Confirmed against the real image |
+| A conversation secret serialised as `{"kind": "StaticSecret", "value": …}` (only `agent: acp` sends one) | Assumed (`acpSecrets`) |
+
+**What is verified, and what is not.** The behaviour is tested against a fake Agent Server
+(`internal/executor/ohfake`, which mimics the real archive layout): the file round trip, idempotent
+re-dispatch, a restart with reconciliation, a stale base, a vanished conversation, cancel, 5xx
+retries, auth failure, plain-http refusal, timeout, redaction, archive safety, and an `idea execute`
+whose returned files go through the secret sweep. The protocol is also tested against the real
+`ghcr.io/openhands/agent-server:1.54.0-python` image with no LLM key
+(`TestOpenHandsAgainstRealAgentServer`, skipped unless the image is present locally): session-key
+auth, upload and unpack, idempotent create, event ingestion, the run settling on the provider's
+auth error, and the archive round trip. No run with a real model — an agent actually editing files
+on a real server — has been made, so every `openhands` combination is reported as untested; run
+`--smoke` before relying on one.
+
 ## Smoke test
 
 **From the web UI:** Settings → Executor → **Run smoke test**. The daemon runs a trivial task
@@ -239,13 +530,73 @@ runs it in your terminal's environment, which is not always the daemon's.
 **In CI:** [`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) runs a real Hermes coding task end-to-end in
 the isolated container and asserts that it produces a real file diff. It is **opt-in**: it requires
 `HERMES_IMAGE` and `AGENT_MODEL` (plus a model API key), which are repository variables/secrets
-rather than CI defaults — so it runs manually (workflow_dispatch), not on every push.
+rather than CI defaults — so it runs manually (workflow_dispatch), not on every push. Setting
+`ACP_IMAGE` and `ACP_COMMAND` (a YAML flow sequence such as `[claude-code-acp]`, optionally
+`ACP_KEY_ENV`) instead runs the same task through an ACP agent.
 
 ## Watching and stopping a run
 
-While the agent runs, the Build page's running card shows its latest output: the last 100 lines,
-refreshed every couple of seconds, with known secrets redacted. When the run finishes, the same
-lines stay on the change set it produced, under "Agent output".
+While the agent runs, the Build page's running card shows the **run panel** (see
+[ui.md](ui.md#run-panel)): what the agent is doing now, its tool calls, the files it has written
+with line counts, the permissions answered for it, tokens, cost and elapsed time, and any error. It
+is fed by the run's normalized event stream ([api.md](api.md#run-events)), which every executor
+produces at the grain it can:
+
+| Executor | Where its events come from |
+|---|---|
+| `acp` | The agent's own `session/update` notifications (messages, tool calls and their updates, plans, thought markers), its `fs/write_text_file` calls with +/- counts against the previous content, and every permission answer. |
+| `openhands` | The Agent Server's events, ingested by the run's watcher from the same cursor as the progress log (so exactly once, across daemon restarts): actions, observations, the agent's messages, errors, status, and a `stats` update's running cost turned into deltas. |
+| `hermes`, `omp`, `container` | Coarse: each new line of the agent's output tail is an action, a work-root scan (size and mtime, every 2 s) reports files as they change, and status changes become events. |
+| `internal` | A few synthetic events: started, one per phase, the placeholder file. |
+
+Whatever the executor, once the agent finishes the engine adds the authoritative file list from its
+own diff, with +/- counts, then the checks and review stages and the change set it produced. The
+agent's raw output (the last 100 lines, secrets redacted) is still there under "Agent output", and
+stays on the change set when the run finishes.
+
+### Steering a running agent
+
+The run panel's note box sends a note to the agent while it runs (`POST …/runs/{runId}/steer`).
+What happens depends on the executor:
+
+| Executor | Steering | How |
+|---|---|---|
+| `acp` | Yes | Queued and sent as the agent's next `session/prompt` turn, in the same session, once its current turn ends. ACP defines no concurrent prompts in a session ("once a prompt turn completes, the Client may send another `session/prompt`"), so a note is never sent mid-turn. **Interrupt the current step** ends the turn first with `session/cancel` - which the agent must answer with `stopReason: cancelled` - then sends the note at once. |
+| `openhands` | Yes | Sent into the conversation as a user message (`POST /api/conversations/{id}/events`, `SendMessageRequest` with `run: true`); the agent reads it at its next step. Sent once, never retried, so it cannot arrive twice. |
+| `internal`, `container`, `hermes`, `omp` | No | The reply is `steering not supported by <kind>`. The note is held and appended to the task's **next** run's brief, the same way the rerun note on execute is. |
+
+A note sent while an agent is finishing (its session already over) is held for the next run too.
+Every note is recorded as a run event and on the run manifest's executor provenance. Held notes are
+stored in the project's state (redacted), so a daemon restart keeps them, and the next run of the
+task takes each one exactly once; until then the run panel lists them. **Stop** is the running
+card's Stop button (the operation's cancel), unchanged.
+
+From a terminal, the same two things:
+
+```sh
+idea run events current --follow        # the run panel's events, tailed live until the run ends
+idea steer current "also update the README" --interrupt
+```
+
+`current` is the initiative's running agent run, else its most recent one (the newest initiative,
+or name one after it); a run id works too. `idea run events` pages what is stored, then with
+`--follow` streams the rest, resuming after its last event when the connection drops; `--json`
+prints one event object per line. `idea steer` prints what became of the note (`delivered`,
+`queued` or `next_run`); a run that is not running is a conflict (exit 4) whose hint is
+`idea execute --note`, which carries a note on the task's next run.
+
+### Open in OpenHands
+
+An Agent Server serves no UI of its own. If you also run an OpenHands web UI that shows the server's
+conversations, set `executor.openhands.ui_url` and the run panel links each run to
+`<ui_url>/conversations/<conversation id>`. Without it there is no link; the address is never
+guessed.
+
+### Run report
+
+**Report (JSON)** / **Report (MD)** on the run panel download the run written down - its events,
+the files it changed with line counts, the findings on its change set, cost, and the steering notes
+- from `GET …/runs/{runId}/report?format=json|md|zip`. Everything in it is redacted.
 
 **Stop keeps what the agent wrote.** When a run ends without a change set, the files the agent had
 written are kept. That covers Stop, a failure, a timeout and the daemon stopping. The next run of the
@@ -285,6 +636,13 @@ Neither is guaranteed: an agent that prints neither leaves `agent.usd: null` wit
 to the total, not as a silent zero — review defect #5). A run's total cost is only ever reported
 once EVERY agent run in the initiative was priced one of these two ways; a partial sum would
 understate the real spend, which is worse than admitting it is not measured.
+
+**Spending caps count only what is measured.** A [budget](configuration.md#budget) is checked
+before the agent starts, for every kind, so a cap that is already reached stops the run before it
+is dispatched. But an agent run whose spend was not measured adds nothing to the meter: with Hermes
+or OMP the cap bounds the pipeline's own model calls, not the agent's, and the budget view says so
+(`agent_not_counted`). Any agent whose output carries a cost line or its token counts (the two
+rules above) is counted, whatever its kind.
 
 **Follow-up, not yet done:** Hermes's CLI documents a `--usage-file <path>` flag that writes a
 machine-readable JSON usage report (`estimated_cost_usd`, `input_tokens`/`output_tokens`/
@@ -367,13 +725,15 @@ recurring in practice.
 
 ## Security / trust tradeoff — read this before wiring an agent
 
-The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of all four executor kinds against what each one actually passes:
+The coding-agent container is sandboxed for **filesystem and process** isolation. The argv below is a summary; [`security-model.md`](security-model.md) is the canonical table of every executor kind against what each one actually passes:
 
 - read-only root filesystem (`--read-only`); only the mounted `/work` and a `/tmp` tmpfs are writable
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- runs as the daemon's own UID/GID (`--user <uid>:<gid>`) — so if the daemon runs as root, the
-  container does too; nothing refuses to start or warns
+- never as root: the daemon's own UID/GID; when the daemon runs as root, the UID/GID that owns the
+  project root, or a fixed unprivileged `65532:65532` if that owner is root (the work root is
+  handed to that user for the run and back afterwards — details in
+  [`security-model.md`](security-model.md))
 - bounded resources: `--memory 2g`, `--pids-limit 256`
 
 But it is **not network-isolated**. The agent needs egress to reach its model API, so
@@ -381,19 +741,23 @@ But it is **not network-isolated**. The agent needs egress to reach its model AP
 Concretely, the agent container:
 
 - can reach the network,
-- receives **its own provider API key** (forwarded in via env-file), and
-- runs in auto-approve mode — OMP with `--auto-approve`, Hermes with `--yolo` — so it writes files
-  and runs commands without asking you first.
+- receives **its own provider API key** (forwarded in via env-file; for `acp`, via the docker CLI's
+  environment), and
+- runs in auto-approve mode — OMP with `--auto-approve`, Hermes with `--yolo`, an ACP agent by
+  having every permission request answered `allow_once` — so it writes files and runs commands
+  without asking you first.
 
 **A compromised or malicious agent image, or a prompt-injection attack through the task content,
 could exfiltrate that API key or the generated data it can reach** — the sandbox does not block
 network egress ([`security-model.md`](security-model.md) records this under what the execution
-gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire OMP/Hermes images you
-trust, and prefer a scoped, rotatable API key you can revoke.
+gateway does *not* protect against), and auto-approve means it acts without a human gate. Only wire agent images (and, for
+`openhands`, Agent Servers) you trust, and prefer a scoped, rotatable API key you can revoke.
 
 The canonical statement of what each executor kind isolates, and what none of them do, is
 [`security-model.md`](security-model.md#what-this-does-not-protect-against). This page repeats the
 agent-specific part because it is where you decide whether to wire one.
 
-The deterministic `internal` executor has none of this exposure (no network, no key, no real code),
-which is why it remains the safe default until you deliberately opt into a real agent.
+The deterministic `internal` executor has none of this exposure (no network, no key, no real code).
+It is no longer the silent default: an unset `executor.kind` runs Hermes once a model key and
+Docker are both present, so having both is the opt-in. Set `executor.kind: internal` if you want
+the placeholder regardless.

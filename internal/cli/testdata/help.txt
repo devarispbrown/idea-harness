@@ -24,7 +24,7 @@ Commands:
   approve              accept the reviewed PRD as it stands
   revise               regenerate the PRD from the review findings
   approve-plan         accept the execution plan as it stands
-  revise-plan          regenerate the execution plan
+  revise-plan [--note <text>] regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes
   plan                 render the execution plan
   tasks                list the ordered plan tasks
   add-task "<title>" --requirement <ref> [--statement <text>] [--priority must|should|could] [--estimate <text>] [--depends-on <ref>] [<initiative>] add a plan task (at least one --requirement is required)
@@ -35,6 +35,9 @@ Commands:
   why <type> <id>      show the provenance chain
   impact <type> <id>   show dependents + staleness
   trace <type> <id>    show provenance + dependents
+  gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all] list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)
+  assumption <id> accept|dispute|retract judge an assumption or hypothesis (closes an unvalidated_assumption gap)
+  budget [<initiative>] [--set <usd>|--clear] show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted
   diff                 structured requirement/decision diff
   execute [--note <text>] [--wait] run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait
   reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
@@ -45,21 +48,29 @@ Commands:
   revert <id> [--wait] roll back a change set; returns a handle immediately unless --wait
   pr [<initiative>]    open a pull request for the initiative's branch (git.branch_per_initiative)
   pr checks <change-set-id> show the latest CI status via `gh pr checks`
-  review <id> <verdict> [--no-wait] approve|reject|changes_requested|rerun (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
-  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed
+  review <id> <verdict> [--note <text>] [--no-wait] approve|reject|changes_requested|rerun; --note with changes_requested|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
+  verify [<req>]       run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard
   next [--until-human] run the next automatable step (--until-human: keep going until a human decision)
   risk                 show the deterministic risk profile
   executors            list executors + capabilities
-  executors setup [<kind>] wire a coding agent: hermes|omp, default hermes (or --kind)
+  executors setup [<kind>] wire a coding agent: hermes|omp|acp|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands|acp)
+  integrations [status] show Slack/Linear integration health: tokens present, deliveries, socket and poll state
+  integrations test slack|linear post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   watch                watch a run live
+  run events <run-id|current> [<initiative>] [--follow] [--json] print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line
+  runs remote [<initiative>] [--all] [--json] list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative)
+  steer <run-id|current> "<note>" [<initiative>] [--interrupt] send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run
   cancel <op-id>       interrupt a running operation
   config               show or validate .idea-harness config
   doctor               check daemon/config/state health
   docs                 list uploaded context docs
   docs add <path>      upload a context doc (--kind, --title)
   logs [-f] [n]        show (or follow) the daemon log
-  daemon               run the daemon in the foreground
+  daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>] run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access")
   daemon status|stop   manage the managed daemon
+  ui pair|sessions     sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)
+  ui pair [--label <name>] [--qr] mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it)
+  ui sessions [revoke <id>|--all] list remote browser sessions; revoke one, or every one
   dev                  start the daemon and serve the web UI
   version              print the version, commit and build state
   help [--format=md]   show this command list (--format=md emits the docs/cli.md table)

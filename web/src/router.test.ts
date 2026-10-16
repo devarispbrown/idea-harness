@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute } from "./router";
+import { lineageHref, parseRoute } from "./router";
 
 // K: a bogus route used to silently resolve to home, indistinguishable from
 // the user having navigated there on purpose. parseRoute now returns a
@@ -10,6 +10,17 @@ describe("parseRoute", () => {
   it("resolves the empty hash to home", () => {
     expect(parseRoute("#/")).toEqual({ name: "home" });
     expect(parseRoute("")).toEqual({ name: "home" });
+  });
+
+  it("resolves automations", () => {
+    expect(parseRoute("#/automations")).toEqual({ name: "automations" });
+    expect(parseRoute("#/automations/eval").name).toBe("not-found");
+  });
+
+  it("resolves the project-wide remote runs", () => {
+    expect(parseRoute("#/runs")).toEqual({ name: "runs" });
+    expect(parseRoute("#/p/abc/runs")).toEqual({ name: "runs" });
+    expect(parseRoute("#/runs/r1").name).toBe("not-found");
   });
 
   it("resolves settings", () => {
@@ -60,5 +71,25 @@ describe("parseRoute", () => {
 
   it("keeps the offending path for display", () => {
     expect(parseRoute("#/weird/path")).toEqual({ name: "not-found", path: "weird/path" });
+  });
+});
+
+describe("lineage route", () => {
+  it("parses #/i/<id>/lineage/<type>/<ref>", () => {
+    expect(parseRoute("#/i/abc/lineage/context_doc/doc-1")).toEqual({
+      name: "lineage",
+      id: "abc",
+      nodeType: "context_doc",
+      ref: "doc-1",
+    });
+  });
+
+  it("round-trips through lineageHref, encoding what needs it", () => {
+    const href = lineageHref("abc", "requirement", "REQ 1/x");
+    expect(parseRoute(href)).toEqual({ name: "lineage", id: "abc", nodeType: "requirement", ref: "REQ 1/x" });
+  });
+
+  it("is not-found with a missing ref", () => {
+    expect(parseRoute("#/i/abc/lineage/context_doc").name).toBe("not-found");
   });
 });

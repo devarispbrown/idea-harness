@@ -35,6 +35,10 @@ type Runtime struct {
 	token     string
 	global    *store.DB
 	log       *slog.Logger
+	// logRedact masks credentials in every daemon log record (log is wrapped
+	// with it in NewRuntime) and in GET /api/v1/logs on the way out. Each
+	// project's resolved secrets are added as the project loads.
+	logRedact *logRedactor
 
 	mu       sync.Mutex
 	projects map[string]*projectRuntime
@@ -70,6 +74,36 @@ type Runtime struct {
 	images *imagePresenceCache
 	// smokes is the per-project claim for smoke tests started from the UI.
 	smokes smokeClaims
+
+	// extraProviders are registered into every project's model registry on
+	// top of what harness.yaml configures (RegisterProvider; eval_hooks.go).
+	// Its own mutex, because EnsureProject builds a registry while holding mu.
+	extraMu        sync.Mutex
+	extraProviders map[string]model.Provider
+
+	// integ runs the Slack/Linear integrations (integrations.go); created on
+	// first use by integrations().
+	integOnce sync.Once
+	integ     *integrationHub
+
+	// remote is the daemon-wide config (config.yaml `daemon:`) and hosts the
+	// Host/Origin allowlist derived from it (remote.go). Zero values: loopback
+	// only, exactly as before remote use existed. remoteBase is the URL a
+	// remote browser uses, when there is one.
+	remote     DaemonConfig
+	hosts      hostPolicy
+	remoteBase []string
+	// uiAuthState is the sign-in rate limiter and last-seen throttle
+	// (uisession.go), created on first use.
+	uiAuthOnce  sync.Once
+	uiAuthState *uiAuth
+	// push holds the Web Push sender and its VAPID keys (push.go).
+	push pushState
+
+	// sched runs the scheduled automations (automations.go); created on
+	// first use by automations().
+	schedOnce sync.Once
+	sched     *scheduler
 }
 
 type projectRuntime struct {
@@ -169,6 +203,12 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		return nil, err
 	}
 	lifetime, endLifetime := context.WithCancel(context.Background())
+	// Every record the daemon logs passes through the redactor before it
+	// reaches daemon.log (audit 3 / S4). The API token is a known value too:
+	// it is the daemon's sole credential, and nothing should ever log it, but
+	// "should" is what this layer exists not to rely on.
+	logRedact := newLogRedactor(append(processSecrets(), token)...)
+	log = redactingLogger(log, logRedact)
 	return &Runtime{
 		lifetime:    lifetime,
 		endLifetime: endLifetime,
@@ -176,6 +216,7 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 		token:       token,
 		global:      global,
 		log:         log,
+		logRedact:   logRedact,
 		projects:    map[string]*projectRuntime{},
 		reconciled:  map[string]bool{},
 		cancels:     map[string]context.CancelFunc{},
@@ -188,7 +229,12 @@ func NewRuntime(stateRoot string, log *slog.Logger) (*Runtime, error) {
 func (r *Runtime) Token() string { return r.token }
 
 // Close releases global resources.
-func (r *Runtime) Close() error { return r.global.Close() }
+func (r *Runtime) Close() error {
+	// Integrations first: their goroutines read project databases and must
+	// be gone before anything underneath them is.
+	r.stopIntegrations()
+	return r.global.Close()
+}
 
 // StateRoot returns the global state directory.
 func (r *Runtime) StateRoot() string { return r.stateRoot }
@@ -271,7 +317,9 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		db.Close()
 		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
 	}
-	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
+	secrets := collectSecrets(cfg, dotEnv)
+	redactor := security.NewRedactorWithKey(fpKey, secrets...)
+	r.logRedact.add(secrets...)
 	blobs, err := blob.New(filepath.Join(projDir, "blobs"), redactor.Redact)
 	if err != nil {
 		db.Close()
@@ -285,6 +333,7 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
+	r.addExtraProviders(registry)
 	engine := workflow.New(db, blobs, registry, cfg.Harness, r.log)
 	engine.SetRawBlobs(rawBlobs)
 	engine.SetRedactor(redactor)
@@ -321,7 +370,25 @@ func (r *Runtime) EnsureProject(ctx context.Context, projectID string) (*project
 		} else if n > 0 {
 			r.log.Info("no_op backfill: fixed pre-migration change sets", "project", projectID, "count", n)
 		}
+		// Re-attach to runs a previous daemon left going on a remote Agent
+		// Server (executor kind openhands). The Execute operations that
+		// started them were failed just above, but the runs themselves kept
+		// going; this follows each to the end so the task's next execute can
+		// collect the result instead of starting over. In the background and
+		// on the daemon's lifetime: a slow or unreachable server must not hold
+		// up the request that happened to open the project.
+		go func(engine *workflow.Engine) {
+			n, err := engine.ReconcileRemoteRuns(r.lifetimeContext())
+			if err != nil {
+				r.log.Warn("remote run reconciliation failed", "project", projectID, "err", err)
+			} else if n > 0 {
+				r.log.Info("re-attached to remote runs", "project", projectID, "count", n)
+			}
+		}(pr.engine)
 	}
+	// After reconciliation, so the integration bus never observes (and
+	// announces) a half-reconciled state as news.
+	r.configureIntegrations(projectID, pr)
 	return pr, nil
 }
 
@@ -357,12 +424,15 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	if err != nil {
 		return nil, fmt.Errorf("daemon: secret fingerprint key: %w", err)
 	}
-	redactor := security.NewRedactorWithKey(fpKey, collectSecrets(cfg, dotEnv)...)
+	secrets := collectSecrets(cfg, dotEnv)
+	redactor := security.NewRedactorWithKey(fpKey, secrets...)
+	r.logRedact.add(secrets...)
 	blobs, err := blob.New(filepath.Join(r.stateRoot, "projects", projectID, "blobs"), redactor.Redact)
 	if err != nil {
 		return nil, err
 	}
 	registry := buildRegistry(cfg, r.log, dotEnv)
+	r.addExtraProviders(registry)
 
 	// Rebuild config-derived components on the SAME engine (its own mutexes
 	// keep serializing execute/apply/revert, and cfgMu -- see engine.go --
@@ -400,6 +470,8 @@ func (r *Runtime) ReloadProject(ctx context.Context, projectID string) (*project
 	r.mu.Lock()
 	r.projects[projectID] = newPr
 	r.mu.Unlock()
+	// A no-op unless the integrations section or its tokens changed.
+	r.configureIntegrations(projectID, newPr)
 	return newPr, nil
 }
 
@@ -476,6 +548,21 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 // beginShutdown cancels every running operation and makes any launched from
 // now on start cancelled. Safe to call more than once.
 func (r *Runtime) beginShutdown() {
+	// First, let go of remote runs WITHOUT stopping them, so the operation
+	// cancellations below do not interrupt them on their server: an
+	// openhands run is meant to outlive this process and be re-attached to
+	// by the next one. (A local agent's container, by contrast, holds a key
+	// on this machine and is removed, as before.)
+	r.mu.Lock()
+	engines := make([]*workflow.Engine, 0, len(r.projects))
+	for _, pr := range r.projects {
+		engines = append(engines, pr.engine)
+	}
+	r.mu.Unlock()
+	for _, e := range engines {
+		e.DetachRemoteRuns()
+	}
+
 	r.cancelMu.Lock()
 	defer r.cancelMu.Unlock()
 	r.closing = true
@@ -506,6 +593,21 @@ func (r *Runtime) lifetimeContext() context.Context {
 // cancelled when the daemon stops.
 func (r *Runtime) detachedContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.lifetimeContext(), 5*time.Minute)
+}
+
+// waitSwept blocks until the startup sweep is done, for work that starts a
+// container outside an operation (metric commands): the sweep may delete
+// the scratch directory of anything that starts before it finishes.
+func (r *Runtime) waitSwept(ctx context.Context) error {
+	if r.swept == nil {
+		return nil
+	}
+	select {
+	case <-r.swept:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // markSwept records that the startup sweep is done.
@@ -716,6 +818,15 @@ func (r *Runtime) failOperation(opID, initiativeID, logMsg string, opCtx context
 		r.log.Error(logMsg, "initiative", initiativeID, "op", opID, "err", runErr)
 	}
 	_ = pr.db.SetOperationFailed(sctx, opID, status, operationErrorMessage(pr, runErr.Error()))
+
+	// A spending-cap stop is not a failure: the work is fine, the money ran
+	// out. Park the initiative for a human (needs_human_judgment:
+	// budget_exceeded, remembering where it was) instead of failing it --
+	// for execute too, whose failures otherwise leave the initiative alone
+	// (budget.go).
+	if status == domain.OperationFailed && r.parkIfBudget(pr, initiativeID, runErr) {
+		return
+	}
 
 	// Release the initiative on cancellation too, not only on failure.
 	//
@@ -1677,6 +1788,15 @@ func (r *Runtime) ReopenPhaseInitiative(ctx context.Context, projectID, initiati
 // RevisePlanInitiative regenerates the execution plan (and its review)
 // asynchronously, keeping the PRD/design artifacts. Returns the operation id.
 func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativeID string) (string, error) {
+	return r.RevisePlanInitiativeWithNote(ctx, projectID, initiativeID, "")
+}
+
+// RevisePlanInitiativeWithNote is RevisePlanInitiative with the human's note
+// on what to change. "Ask for a revision" used to take no input, so the
+// planner regenerated from exactly the inputs that produced the plan being
+// revised. The note joins the planner's inputs for this one revision and is
+// recorded on its run, the same contract as execute's and retry's notes.
+func (r *Runtime) RevisePlanInitiativeWithNote(ctx context.Context, projectID, initiativeID, note string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -1761,6 +1881,9 @@ func (r *Runtime) RevisePlanInitiative(ctx context.Context, projectID, initiativ
 	// The plan this changes may change the task a stopped run's kept files
 	// belong to; carrying them into a rewritten task would be wrong.
 	_ = pr.engine.DiscardPartial(initiativeID)
+	if strings.TrimSpace(note) != "" {
+		pr.engine.SetNoteOverride(initiativeID, note)
+	}
 	r.launchOperation(opID, func(bg context.Context) {
 		status, runErr := pr.engine.RevisePlan(bg, initiativeID)
 		if runErr != nil {
@@ -2062,6 +2185,8 @@ func (r *Runtime) ApprovePlanInitiative(ctx context.Context, projectID, initiati
 	// reason was recorded.
 	switch ini.JudgmentReason {
 	case "", domain.JudgmentPlanReview:
+	case domain.JudgmentBudget:
+		return "", preconditionf("this initiative stopped at its spending cap; raise the cap with `idea budget %s --set <usd>` first", initiativeID)
 	default:
 		return "", preconditionf("approve-plan accepts a plan whose review raised findings; "+
 			"this initiative is waiting on %s, which only `idea revise-plan` resolves", ini.JudgmentReason)
@@ -2438,6 +2563,16 @@ func collectSecrets(cfg config.Config, dotEnv map[string]string) []string {
 			add(lookupEnv(keyEnv, dotEnv))
 		}
 	}
+	// Integration tokens (integrations.go), by whatever env names harness.yaml
+	// points at -- including ones set only in the process environment, which
+	// the .env sweep below never sees.
+	if s := cfg.Harness.Integrations.Slack; s != nil {
+		add(lookupEnv(s.BotTokenEnvName(), dotEnv))
+		add(lookupEnv(s.AppTokenEnvName(), dotEnv))
+	}
+	if l := cfg.Harness.Integrations.Linear; l != nil {
+		add(lookupEnv(l.APIKeyEnvName(), dotEnv))
+	}
 	// Arbitrary secret-bearing .env entries (e.g. AWS_SECRET_ACCESS_KEY, a
 	// DATABASE_URL with an embedded password) are redacted too (review).
 	for k, v := range dotEnv {
@@ -2585,6 +2720,9 @@ func demoProvider(h config.HarnessConfig) *model.FakeProvider {
 	}
 	if h.Demo.DanglePlanDependency {
 		fp.EnqueueResponse("execution_plan", model.DemoDanglingPlanJSON)
+	}
+	if h.Demo.CostPerCallUSD > 0 {
+		fp.SetDefaultCost(h.Demo.CostPerCallUSD)
 	}
 	return fp
 }

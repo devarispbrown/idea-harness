@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, NetworkError, post, resource } from "./api";
+import { get, NetworkError, post, resource, UNAUTHORIZED_EVENT } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import { providerDotState, type ProviderDotState, type ProviderStatusInput } from "./providerStatus";
@@ -20,8 +20,19 @@ import HealthPage from "./HealthPage";
 import ProductHome from "./ProductHome";
 import ChangedPage from "./ChangedPage";
 import QueuePage from "./QueuePage";
+import AutomationsPage from "./AutomationsPage";
+import RemoteRunsPage from "./RemoteRunsPage";
+import BudgetMeter from "./BudgetMeter";
 import StaleBanner from "./StaleBanner";
 import TimelinePanel from "./TimelinePanel";
+import LineageView from "./LineageView";
+import GapsPage from "./GapsPage";
+import OutcomesPage from "./OutcomesPage";
+import QualityPage from "./QualityPage";
+import NotFound from "./NotFound";
+import LiveAnnouncer from "./LiveAnnouncer";
+import ShortcutsDialog from "./ShortcutsDialog";
+import { focusTarget, useRouteFocus } from "./focus";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import {
@@ -36,13 +47,28 @@ import {
   type PhaseSource,
   type PhaseState,
 } from "./phases";
-import { PHASES, currentRoute, navigate, phaseHref, type Route, type PhaseName } from "./router";
+import {
+  PHASES,
+  currentProjectFromHash,
+  currentRoute,
+  navigate,
+  phaseHref,
+  setActiveProject,
+  withProject,
+  type Route,
+  type PhaseName,
+} from "./router";
+import { hasToken, resolveAuth, type AuthState } from "./remote";
+import LoginPage from "./LoginPage";
+import ProjectSwitcher from "./ProjectSwitcher";
+import { pickProject, rememberProject, rememberedProject } from "./projectSwitch";
 import { daemonDownAfterPoll, daemonLostMessage } from "./daemonStatus";
 import { verifiedRequirementCount } from "./verify";
 import type { StaleItemRef } from "./staleItems";
 import type { CostsView } from "./cost";
 import type { TimelineEntry } from "./timeline";
 import { setLastVisit } from "./lastVisit";
+import { useProjectChanges } from "./useEventStream";
 
 interface Project {
   id: string;
@@ -83,8 +109,32 @@ interface ChangeSet {
 }
 
 export default function App() {
+  // Remote sign-in (remote.ts): a page with the token is authenticated
+  // already; one without asks the daemon whether its cookie is a session, and
+  // shows the sign-in page if not. Nothing loads until that is settled.
+  const [auth, setAuth] = useState<AuthState | "checking">(() => (hasToken() ? "token" : "checking"));
+  const [signedOut, setSignedOut] = useState(false);
+  const authed = auth === "token" || auth === "session";
+  useEffect(() => {
+    if (auth !== "checking") return;
+    resolveAuth().then(setAuth);
+  }, [auth]);
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSignedOut(true);
+      setAuth("signed-out");
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  // The project the address named but the daemon does not serve (a stale
+  // deep link): shown as not-found rather than silently swapped for another.
+  const [unknownProject, setUnknownProject] = useState("");
+  // The selected project, readable from callbacks without re-creating them.
+  const projectIdRef = useRef("");
   const [initiatives, setInitiatives] = useState<Initiative[]>([]);
   const [route, setRoute] = useState<Route>(() => currentRoute());
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -105,6 +155,29 @@ export default function App() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
   const [daemonDown, setDaemonDown] = useState(false);
+  // Focus follows the route: after a navigation, the new page's heading has
+  // focus (focus.ts), so a keyboard user is not left on a link that has gone.
+  const mainRef = useRef<HTMLElement>(null);
+  useRouteFocus(JSON.stringify(route), mainRef);
+
+  // The demo banner sits above the shell, so a full-height sidebar would end
+  // that far below the screen and hide its footer (Settings) until the page
+  // scrolls. Its height, kept current, lets the sidebar subtract it.
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const [bannerHeight, setBannerHeight] = useState(0);
+  useEffect(() => {
+    const el = bannerRef.current;
+    if (!el) {
+      setBannerHeight(0);
+      return;
+    }
+    const measure = () => setBannerHeight(el.getBoundingClientRect().height);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [demo]);
 
   // M4: `daemonDown` used to be set independently by each of the four loaders
   // below, from just its own single request's outcome -- so whichever one
@@ -142,7 +215,12 @@ export default function App() {
     try {
       const ps = (await get<Project[]>("/projects")) ?? [];
       setProjects(ps);
-      if (ps.length > 0) setProjectId((prev) => prev || ps[0].project_id);
+      if (ps.length > 0 && !projectIdRef.current) {
+        const choice = pickProject(ps, currentProjectFromHash(), rememberedProject());
+        projectIdRef.current = choice.projectId;
+        setUnknownProject(choice.unknown ?? "");
+        setProjectId(choice.projectId);
+      }
       reportOutcome("projects", false);
     } catch (e) {
       reportOutcome("projects", e instanceof NetworkError);
@@ -220,9 +298,30 @@ export default function App() {
   }, [reportOutcome]);
 
   useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+    if (authed) loadProjects();
+  }, [loadProjects, authed]);
 
+  // switchProject is the switcher's action, and what a link naming another
+  // project does: everything initiative-scoped belongs to the old project, so
+  // it is cleared rather than shown against the new one until it reloads.
+  const switchProject = useCallback((pid: string, href?: string) => {
+    rememberProject(pid);
+    setUnknownProject("");
+    if (projectIdRef.current !== pid) {
+      setInitiatives([]);
+      setInitiativesLoaded(false);
+      setAttention([]);
+    }
+    projectIdRef.current = pid;
+    setProjectId(pid);
+    setActiveProject(pid);
+    if (href !== undefined) navigate(withProject(href, pid));
+  }, []);
+
+  // navigate() names the current project in every link it follows.
+  useEffect(() => {
+    setActiveProject(projectId);
+  }, [projectId]);
   useEffect(() => {
     if (!projectId) return;
     loadInitiatives(projectId);
@@ -242,24 +341,50 @@ export default function App() {
       .catch(() => {});
   }, [projectId, loadInitiatives, loadAttention]);
 
-  // Hash routing.
+  // Hash routing. A hash naming another project (a pasted deep link, a push
+  // notification opening an existing tab) switches to it.
   useEffect(() => {
-    const onHash = () => setRoute(currentRoute());
+    const onHash = () => {
+      setRoute(currentRoute());
+      const named = currentProjectFromHash();
+      if (named && projects.some((p) => p.project_id === named)) {
+        if (named !== projectId) switchProject(named);
+      } else if (named && projects.length > 0) {
+        setUnknownProject(named);
+      }
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+  }, [projects, projectId, switchProject]);
+
+  // Canonical address: a bare `#/…` gets the current project's prefix
+  // (replaceState, so Back is unaffected), so what a person copies out of the
+  // address bar opens the same project for whoever follows it.
+  useEffect(() => {
+    if (!projectId || unknownProject) return;
+    const hash = window.location.hash || "#/";
+    const canonical = withProject(hash, projectId);
+    if (canonical !== hash) window.history.replaceState(null, "", canonical);
+  }, [projectId, route, unknownProject]);
 
   const initiativeId =
     route.name !== "home" &&
     route.name !== "settings" &&
     route.name !== "not-found" &&
-    route.name !== "queue"
+    route.name !== "queue" &&
+    route.name !== "automations" &&
+    route.name !== "runs"
       ? route.id
       : "";
   const currentInitiative = initiativeId
     ? initiatives.find((i) => i.id === initiativeId) ?? null
     : null;
   const currentInitiativeId = currentInitiative?.id ?? "";
+  // Every route that names an initiative renders NotFound, and nothing else,
+  // when the id resolves to none in this project. Only phase routes used to
+  // check: a decision, health, doc, diff or changed link with a stale id
+  // rendered its page against an initiative that does not exist.
+  const missingInitiative = initiativeId !== "" && initiativesLoaded && !currentInitiative;
 
   useEffect(() => {
     if (projectId && currentInitiativeId) {
@@ -300,19 +425,25 @@ export default function App() {
     };
   }, [currentInitiativeId]);
 
-  // Poll for freshness (SSE live-update arrives with the running-state work).
+  // Freshness: refetch when the project's event stream (SSE) says something
+  // changed -- the What-changed and queue badges, the initiative's data. The
+  // timer stays as a backstop: slow while the stream is live, the old 2.5s
+  // poll when it is not (no EventSource, a proxy that strips it).
+  const refresh = useCallback(() => {
+    if (!projectId) return;
+    loadInitiatives(projectId);
+    loadAttention(projectId);
+    if (currentInitiativeId) {
+      loadInitiativeData(projectId, currentInitiativeId);
+      loadWave3Data(projectId, currentInitiativeId);
+    }
+  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData, loadWave3Data]);
+  const projectStreamLive = useProjectChanges(projectId ?? "", refresh);
   useEffect(() => {
     if (!projectId) return;
-    const id = setInterval(() => {
-      loadInitiatives(projectId);
-      loadAttention(projectId);
-      if (currentInitiativeId) {
-        loadInitiativeData(projectId, currentInitiativeId);
-        loadWave3Data(projectId, currentInitiativeId);
-      }
-    }, 2500);
+    const id = setInterval(refresh, projectStreamLive ? 15000 : 2500);
     return () => clearInterval(id);
-  }, [projectId, currentInitiativeId, loadInitiatives, loadAttention, loadInitiativeData, loadWave3Data]);
+  }, [projectId, refresh, projectStreamLive]);
 
   const phaseSource: PhaseSource = {
     status: currentInitiative?.status ?? "",
@@ -323,12 +454,16 @@ export default function App() {
     verifiedRequirements,
   };
   const phases = derivePhases(phaseSource);
-  const activePhase: PhaseName | "settings" =
+  const activePhase: PhaseName | "settings" | "automations" | "runs" =
     route.name === "phase"
       ? route.phase
       : route.name === "settings"
         ? "settings"
-        : currentPhase(phaseSource); // decision/health/doc sub-surfaces
+        : route.name === "automations"
+          ? "automations"
+          : route.name === "runs"
+            ? "runs"
+            : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
   const createIdea = async (text: string) => {
     if (!projectId || !text.trim()) return;
@@ -359,6 +494,36 @@ export default function App() {
   };
 
   // ---------- render ----------
+
+  if (auth === "checking") {
+    return (
+      <div className="empty">
+        <p className="muted">Connecting…</p>
+      </div>
+    );
+  }
+  if (auth === "signed-out") {
+    return (
+      <LoginPage
+        expired={signedOut}
+        onSignedIn={() => {
+          setSignedOut(false);
+          setAuth("session");
+        }}
+      />
+    );
+  }
+  if (auth === "unreachable") {
+    return (
+      <div className="empty">
+        <h1>idea-harness</h1>
+        <p className="error">{daemonLostMessage(window.location.host)}</p>
+        <button className="cs-secondary" onClick={() => setAuth("checking")}>
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   // M4/H1: with no projects loaded yet there is no "last good page" to keep
   // showing underneath a banner, so this is the one place daemonDown still
@@ -407,9 +572,27 @@ export default function App() {
         }))
         .filter((i) => i.count > 0)
     : [];
+  // Everything waiting on the person across the project: the way into the
+  // queue from Home and Settings, and from the top bar on a phone.
+  const needsYou = attention.reduce((n, r) => n + attentionCount(r), 0);
 
   return (
-    <div className="app-root">
+    <div className="app-root" style={{ ["--app-banner-h" as string]: `${bannerHeight}px` }}>
+      {/* The first Tab stop on every page: past the sidebar's dozen links
+          straight to the page itself. Its click is handled here, because a
+          real "#main-content" href would be read as a route by the hash
+          router. */}
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(e) => {
+          e.preventDefault();
+          if (mainRef.current) focusTarget(mainRef.current);
+        }}
+      >
+        Skip to content
+      </a>
+      <LiveAnnouncer />
       {daemonDown && (
         <div className="daemon-down-banner" role="alert">
           {daemonLostMessage(window.location.host)} Nothing will update until it's back — run{" "}
@@ -417,9 +600,9 @@ export default function App() {
         </div>
       )}
       {demo && (
-        <div className="banner banner-app">
-          Demo mode — this project has no model provider configured, so every
-          document, review and change you see here is synthetic.{" "}
+        <div className="banner banner-app" ref={bannerRef}>
+          Demo mode — no model is selected for this project, so every document,
+          review and change you see here is synthetic.{" "}
           <a
             href="#/settings"
             onClick={(e) => {
@@ -444,10 +627,19 @@ export default function App() {
           modelChip={defaultModel ? defaultModel.split("/").pop() || defaultModel : "demo"}
           modelDot={modelDot}
           costs={costs}
+          graphView={route.name === "gaps" || route.name === "outcomes" || route.name === "quality" ? route.name : undefined}
           onNavigate={navigate}
+          needsYou={needsYou}
+          switcher={
+            <ProjectSwitcher
+              projects={projects}
+              projectId={projectId}
+              onSwitch={(pid) => switchProject(pid, "#/")}
+            />
+          }
         />
 
-        <main className="phase-main">
+        <main className="phase-main" id="main-content" ref={mainRef} tabIndex={-1}>
           {/* A4 #5 / JTBD 5: visible from every phase, not only the one
               where the stale mark happened to originate. */}
           {currentInitiativeId && staleItems.length > 0 && (
@@ -465,6 +657,12 @@ export default function App() {
 
           {currentInitiativeId && (
             <RunningCard projectId={projectId} initiativeId={currentInitiativeId} />
+          )}
+
+          {/* The spending-cap meter, on every phase -- only when a cap
+              applies or the initiative is stopped at one (BudgetMeter). */}
+          {currentInitiativeId && (
+            <BudgetMeter projectId={projectId} initiativeId={currentInitiativeId} variant="shell" />
           )}
 
           {/* C1 / JTBD 6: "no useful 'what changed'" -- a compact panel on
@@ -487,10 +685,17 @@ export default function App() {
 
         {route.name === "settings" && <Settings projectId={projectId} />}
 
-        {route.name === "phase" && !currentInitiative && initiativesLoaded && (
+        {unknownProject && (
+          <NotFound
+            title="Project not found"
+            detail={`This daemon serves no project "${unknownProject}". Pick one from the project switcher.`}
+          />
+        )}
+
+        {missingInitiative && !unknownProject && (
           <NotFound
             title="Initiative not found"
-            detail={`There's no initiative "${route.id}" in this project.`}
+            detail={`There's no initiative "${initiativeId}" in this project.`}
           />
         )}
 
@@ -571,41 +776,36 @@ export default function App() {
             );
           })()}
 
-        {route.name === "decision" && (
+        {route.name === "decision" && currentInitiative && (
           <DecisionPage projectId={projectId} initiativeId={route.id} decisionId={route.decisionId} />
         )}
-        {route.name === "health" && (
+        {route.name === "health" && currentInitiative && (
           <HealthPage projectId={projectId} initiativeId={route.id} />
         )}
-        {route.name === "doc" && (
+        {route.name === "doc" && currentInitiative && (
           <DocReader projectId={projectId} initiativeId={route.id} artifactId={route.artifact} />
         )}
-        {route.name === "diff" && (
+        {route.name === "diff" && currentInitiative && (
           <ArtifactDiffPage projectId={projectId} from={route.from} to={route.to} />
         )}
-        {route.name === "changed" && (
+        {route.name === "changed" && currentInitiative && (
           <ChangedPage projectId={projectId} initiativeId={route.id} />
         )}
         {route.name === "queue" && <QueuePage projectId={projectId} />}
+        {route.name === "automations" && <AutomationsPage projectId={projectId} />}
+        {route.name === "runs" && <RemoteRunsPage projectId={projectId} initiatives={initiatives} />}
+        {/* The Product Graph views (lineage, gaps, outcomes, quality). */}
+        {route.name === "lineage" && currentInitiative && (
+          <LineageView projectId={projectId} initiativeId={route.id} nodeType={route.nodeType} nodeRefParam={route.ref} />
+        )}
+        {route.name === "gaps" && currentInitiative && <GapsPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "outcomes" && currentInitiative && <OutcomesPage projectId={projectId} initiativeId={route.id} />}
+        {route.name === "quality" && currentInitiative && <QualityPage projectId={projectId} initiativeId={route.id} />}
         </main>
 
         <CommandPalette initiativeId={currentInitiativeId} onNavigate={navigate} />
+        <ShortcutsDialog />
       </div>
-    </div>
-  );
-}
-
-// NotFound covers both a bogus route (K: a mistyped or stale hash used to
-// silently resolve to home) and a phase link to an initiative that doesn't
-// exist in this project -- previously a blank main area in both cases.
-function NotFound({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="empty">
-      <h1>{title}</h1>
-      <p className="muted">{detail}</p>
-      <button className="jc-primary" onClick={() => navigate("#/")}>
-        Back to initiatives
-      </button>
     </div>
   );
 }

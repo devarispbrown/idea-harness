@@ -610,6 +610,14 @@ var credentialCatalog = []credentialPattern{
 	{re: regexp.MustCompile(`\b(sk_live_[0-9A-Za-z]{16,})\b`), kind: "Stripe secret key"},
 	// Slack tokens (bot, app, refresh, signing, user).
 	{re: regexp.MustCompile(`\b(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,})\b`), kind: "Slack token"},
+	// Slack app-level token (Socket Mode): xapp-<version>-<app id>-<digits>-<hex>.
+	// Its own entry because the xox pattern above never matched it, and the
+	// integrations read one from SLACK_APP_TOKEN. The app id segment is
+	// uppercase alphanumerics; the secret tail is long hex.
+	{re: regexp.MustCompile(`\b(xapp-[0-9]+-[A-Z0-9]{6,}-[0-9]{6,}-[0-9A-Za-z]{16,})\b`), kind: "Slack app-level token"},
+	// Linear personal API key (LINEAR_API_KEY): a fixed prefix and a long
+	// alphanumeric body.
+	{re: regexp.MustCompile(`\b(lin_api_[0-9A-Za-z]{32,})\b`), kind: "Linear API key"},
 	// Generic Bearer token. No vendor prefix of its own (review H11), so it
 	// goes through the same placeholder/template gate as the generic
 	// assignment rule (validBearerOrDSNValue) -- otherwise

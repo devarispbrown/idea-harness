@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRaw, get, post, resource } from "./api";
 import PhaseHeader from "./PhaseHeader";
 import FailedBanner from "./FailedBanner";
+import QualityScorecard from "./QualityScorecard";
+import LineagePanel from "./LineagePanel";
+import RunPanel from "./RunPanel";
+import BudgetMeter from "./BudgetMeter";
 import {
+  acceptableFindingCount,
   advisoryBacklogLabel,
-  appliedPillLabel,
   approveErrorMessage,
   buildFailure,
   buildHeaderMeta,
@@ -23,6 +27,7 @@ import {
   notASecretConfirmCopy,
   partitionAdvisory,
   patchLines,
+  reviewRequestBody,
   prOverallLabel,
   prOverallState,
   reviewNeverCompleted,
@@ -34,6 +39,25 @@ import {
   type PRChecksResultLike,
 } from "./buildLogic";
 import { isHttpUrl } from "./url";
+import { diffStat, initialCollapsed, narrowNow, toggled } from "./mobileLayout";
+import { changeSetChip } from "./statusChips";
+import NoteField from "./NoteField";
+import InlinePanel from "./InlinePanel";
+import { announce } from "./announce";
+
+// What a screen reader hears when a change-set action lands (announce.ts):
+// the chip changing colour is the only other sign.
+const ACTION_DONE: Record<string, string> = {
+  approve: "approved",
+  "approve-accept": "approved, accepting its findings",
+  changes: "sent back with your note",
+  reject: "rejected",
+  apply: "applied",
+  revert: "reverted",
+  "resolve-retry": "apply retried",
+  "resolve-reject": "rejected",
+  "rerun-review": "review re-run",
+};
 
 interface Task {
   id: string;
@@ -77,6 +101,9 @@ interface ChangeSet {
   // mechanical-check observations. Approve always 400s in review_required
   // while this is unset; reviewNeverCompleted is the one place that reads it.
   review_completed_at?: string;
+  // review_note: what the human asked for when they requested changes on (or
+  // rejected) this change set. The task's next run carries it in its brief.
+  review_note?: string;
 }
 interface Finding {
   id: string;
@@ -156,20 +183,6 @@ interface Operation {
   error?: string;
 }
 
-const STATUS_PILL: Record<string, { label: string; state: string }> = {
-  draft: { label: "draft", state: "inactive" },
-  checks_running: { label: "checking", state: "running" },
-  review_required: { label: "review required", state: "needs-you" },
-  rejected: { label: "rejected", state: "failing" },
-  changes_requested: { label: "changes requested", state: "needs-you" },
-  superseded: { label: "superseded", state: "inactive" },
-  approved: { label: "approved", state: "verified" },
-  applying: { label: "applying", state: "running" },
-  applied: { label: "applied", state: "verified" },
-  reverted: { label: "reverted", state: "inactive" },
-  conflicted: { label: "conflicted", state: "needs-you" },
-};
-
 export default function BuildPage({
   projectId,
   initiativeId,
@@ -183,7 +196,12 @@ export default function BuildPage({
   const [openDiff, setOpenDiff] = useState<string | null>(null);
   const [diffText, setDiffText] = useState("");
   const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
+  // Phone review (mobileLayout.ts): long lines wrap by default on a narrow
+  // screen, and past the first few files a change set opens collapsed.
+  const [wrapDiff, setWrapDiff] = useState(() => narrowNow());
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(() => new Set());
   const [revertTarget, setRevertTarget] = useState<ChangeSet | null>(null);
+  const revertCancelRef = useRef<HTMLButtonElement>(null);
   const [executorName, setExecutorName] = useState("internal");
   const [initiative, setInitiative] = useState<Initiative | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
@@ -192,6 +210,11 @@ export default function BuildPage({
   // to appear. The Run button vanished on accept and the card only arrived on
   // its next poll, so for a few seconds the click looked ignored.
   const [startedTask, setStartedTask] = useState<string | null>(null);
+  // How many change sets existed when the run was accepted. "Starting TASK-1…"
+  // used to outlive the run itself: it stayed up for its full timeout even
+  // after CHG-1 had landed. Any new change set, or the running card taking
+  // over, now retires it.
+  const [startedCount, setStartedCount] = useState(0);
   useEffect(() => {
     if (!startedTask) return;
     const id = setTimeout(() => setStartedTask(null), 6000);
@@ -209,6 +232,12 @@ export default function BuildPage({
   // "Run the task again" all start the SAME next task, so they share the
   // same note rather than each keeping (and losing sync with) its own.
   const [runNote, setRunNote] = useState("");
+  // Request changes takes a note (what to change), keyed by change set id:
+  // `requesting` holds the open form's text. The note is recorded on the
+  // change set and the task's next run carries it in its brief -- before
+  // this, the button only flipped the status and the rerun had nothing new
+  // to go on.
+  const [requesting, setRequesting] = useState<Record<string, string>>({});
   // Secret-sweep override state (task 1), keyed by finding id: `confirming`
   // shows the explanation before the disposition is posted; `busy`/`error`
   // guard the POST itself; `done` switches the card to "Run the task again"
@@ -310,9 +339,12 @@ export default function BuildPage({
     let ok = true;
     try {
       await fn();
+      announce(`${cs.human_id} ${ACTION_DONE[action] ?? "updated"}.`);
     } catch (e) {
       ok = false;
-      setCsError((prev) => ({ ...prev, [cs.id]: formatError(errMessage(e)) }));
+      const msg = formatError(errMessage(e));
+      setCsError((prev) => ({ ...prev, [cs.id]: msg }));
+      announce(`${cs.human_id}: ${msg}`);
     } finally {
       setCsBusy((b) => {
         const next = { ...b };
@@ -328,15 +360,27 @@ export default function BuildPage({
   // change set and approves without re-reviewing. Only the reviewer's: a finding
   // carrying a deny code is untouched and still refuses, which is the panel
   // above this one.
-  const review = (cs: ChangeSet, verdict: string, acceptFindings = false) => {
+  const review = (cs: ChangeSet, verdict: string, acceptFindings = false, note = "") => {
     const action =
       verdict === "approved" ? (acceptFindings ? "approve-accept" : "approve")
       : verdict === "changes_requested" ? "changes"
       : "reject";
     return runAction(cs, action, async () => {
-      await post(`/projects/${projectId}/change-sets/${cs.id}/review`,
-        acceptFindings ? { verdict, accept_findings: true } : { verdict });
+      await post(
+        `/projects/${projectId}/change-sets/${cs.id}/review`,
+        reviewRequestBody(verdict, acceptFindings, note),
+      );
     });
+  };
+  const openRequestChanges = (cs: ChangeSet) => setRequesting((r) => ({ ...r, [cs.id]: r[cs.id] ?? "" }));
+  const closeRequestChanges = (cs: ChangeSet) =>
+    setRequesting((r) => {
+      const next = { ...r };
+      delete next[cs.id];
+      return next;
+    });
+  const sendRequestChanges = async (cs: ChangeSet) => {
+    if (await review(cs, "changes_requested", false, requesting[cs.id] ?? "")) closeRequestChanges(cs);
   };
   const apply = (cs: ChangeSet) =>
     runAction(cs, "apply", async () => {
@@ -401,6 +445,7 @@ export default function BuildPage({
         executeRequestBody(discardPartial, runNote),
       );
       setStartedTask(initiative?.next_task?.human_id ?? "the next task");
+      setStartedCount(changeSets.length);
       setRunNote("");
     } catch (e) {
       setRunError(errMessage(e));
@@ -468,8 +513,10 @@ export default function BuildPage({
       try {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") {
-          if (Array.isArray(parsed.files)) setDiffFiles(parsed.files);
-          else setDiffFiles([]);
+          if (Array.isArray(parsed.files)) {
+            setDiffFiles(parsed.files);
+            setCollapsedFiles(initialCollapsed(parsed.files.map((f: DiffFile) => f.path), narrowNow()));
+          } else setDiffFiles([]);
           setDiffText(typeof parsed.patch === "string" ? parsed.patch : "");
           return;
         }
@@ -515,6 +562,8 @@ export default function BuildPage({
         purpose="Nothing touches your repo until you approve it."
         meta={buildHeaderMeta(executorName)}
       />
+      <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
+      <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
 
       {/* task 3: the initiative's dedicated branch and its PR, once
           git.branch_per_initiative has created one. Absent (not just
@@ -582,13 +631,12 @@ export default function BuildPage({
           initiativeId={initiativeId}
           title="Build failed"
           reason={failedExecute.error}
-          onRetry={async () => {
-            // task 5: the shared "Note to the agent" field rides along here
-            // too -- read at click time, not baked in when the banner was
-            // rendered, so a note typed after the failure appeared is used.
+          onRetry={async (note) => {
+            // The banner's own note field steers this retry; the shared run
+            // note is the fallback for one typed before the failure appeared.
             const res = await post<{ operation_id: string }>(
               `/projects/${projectId}/initiatives/${initiativeId}/execute`,
-              executeRequestBody(false, runNote),
+              executeRequestBody(false, note || runNote),
             );
             setRunNote("");
             return res.operation_id;
@@ -596,7 +644,7 @@ export default function BuildPage({
         />
       )}
 
-      {!runState.visible && startedTask && (
+      {!runState.visible && startedTask && !isRunning && changeSets.length === startedCount && (
         <div className="run-next-row">
           <span className="run-next-reason">Starting {startedTask}…</span>
         </div>
@@ -625,12 +673,14 @@ export default function BuildPage({
           start the same next task. */}
       {runState.visible && !runState.disabled && (
         <div className="run-note-row">
-          <textarea
-            className="text-input run-note-input"
-            placeholder="Note to the agent (optional) — e.g. what to try differently this time"
+          <NoteField
+            id={`run-note-${initiativeId}`}
+            label={`Note to the agent for ${initiative?.next_task?.human_id ?? "this run"} (optional)`}
+            placeholder="e.g. what to try differently this time — appended to the implementer's brief"
             value={runNote}
-            onChange={(e) => setRunNote(e.target.value)}
-            rows={2}
+            onChange={setRunNote}
+            onSubmit={runNext}
+            submitLabel="run it"
           />
         </div>
       )}
@@ -769,10 +819,9 @@ export default function BuildPage({
         // agent_output finding means the diff is genuinely empty, which
         // appliedOutcomeLabel alone has no way to know.
         const noFiles = hasNoFilesChanged(csFindings);
-        const pillLabel =
-          cs.status === "applied"
-            ? appliedPillLabel(!!cs.no_op, noFiles, cs.executor, cs.model)
-            : STATUS_PILL[cs.status]?.label ?? cs.status;
+        const chip = changeSetChip(cs, noFiles);
+        const acceptable = acceptableFindingCount(csFindings);
+        const requestNote = requesting[cs.id];
         return (
           <section key={cs.id} className="cs-card">
             <div className="cs-row">
@@ -780,10 +829,14 @@ export default function BuildPage({
               <div className="cs-body">
                 <div className="cs-title">{tasks.find((t) => t.id === cs.task_id)?.title ?? cs.task_id}</div>
                 {cs.patch_digest && <div className="cs-meta">digest {cs.patch_digest.slice(0, 12)}…</div>}
+                <LineagePanel projectId={projectId} initiativeId={initiativeId} type="change_set" id={cs.id} code={cs.human_id} />
               </div>
-              <span className={`cs-pill pill-${STATUS_PILL[cs.status]?.state ?? "inactive"}`}>
-                {pillLabel}
-              </span>
+              <span className={`cs-pill pill-${chip.state}`}>{chip.label}</span>
+              {chip.marker && (
+                <span className="cs-pill-marker" title={chip.marker === "demo" ? "Placeholder output: the demo model or the internal executor produced this, so no real code was written" : undefined}>
+                  {chip.marker}
+                </span>
+              )}
               <button className="cs-action" onClick={() => toggleDiff(cs)}>
                 {openDiff === cs.id ? "Hide diff" : "View diff"}
               </button>
@@ -796,7 +849,26 @@ export default function BuildPage({
               <div className="cs-git-warning">{cs.git_commit_warning}</div>
             )}
             {openDiff === cs.id && (
-              <div className="cs-files">
+              <div className={`cs-files${wrapDiff ? " cs-diff-wrap" : ""}`}>
+                {diffFiles.length > 0 && (
+                  <div className="cs-diff-toolbar">
+                    <label className="cs-diff-wrap-toggle">
+                      <input type="checkbox" checked={wrapDiff} onChange={(e) => setWrapDiff(e.target.checked)} />
+                      Wrap long lines
+                    </label>
+                    {diffFiles.length > 1 && (
+                      <button
+                        type="button"
+                        className="cs-action"
+                        onClick={() =>
+                          setCollapsedFiles(collapsedFiles.size > 0 ? new Set() : new Set(diffFiles.map((f) => f.path)))
+                        }
+                      >
+                        {collapsedFiles.size > 0 ? "Expand all files" : "Collapse all files"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {diffFiles.length === 0 ? (
                   <pre className="cs-diff">{diffText || noDiffMessage(noFiles)}</pre>
                 ) : (
@@ -807,9 +879,20 @@ export default function BuildPage({
                     // the raw new content is shown underneath it rather than
                     // silently falling back with no explanation.
                     const lines = f.patch ? patchLines(f.patch) : [];
+                    const collapsed = collapsedFiles.has(f.path);
+                    const stat = f.patch ? diffStat(f.patch) : null;
                     return (
-                      <div key={f.path} className="cs-file">
+                      <div key={f.path} className={`cs-file${collapsed ? " cs-file-collapsed" : ""}`}>
                         <div className="cs-file-head">
+                          <button
+                            type="button"
+                            className="cs-file-toggle"
+                            aria-expanded={!collapsed}
+                            aria-label={`${collapsed ? "Show" : "Hide"} ${f.path}`}
+                            onClick={() => setCollapsedFiles((c) => toggled(c, f.path))}
+                          >
+                            {collapsed ? "▸" : "▾"}
+                          </button>
                           <span className={`cs-file-badge cs-file-${f.change_type}`}>
                             {diffChangeTypeLabel(f.change_type)}
                           </span>
@@ -822,11 +905,17 @@ export default function BuildPage({
                               whole-file rewrite
                             </span>
                           )}
+                          {stat && (
+                            <span className="cs-file-stat">
+                              <span className="cs-file-stat-add">+{stat.added}</span>{" "}
+                              <span className="cs-file-stat-del">−{stat.removed}</span>
+                            </span>
+                          )}
                           {f.change_type !== "delete" && (
                             <span className="cs-file-size">{f.size ?? 0} B</span>
                           )}
                         </div>
-                        {f.change_type === "delete" ? (
+                        {collapsed ? null : f.change_type === "delete" ? (
                           <div className="cs-file-deleted">file deleted</div>
                         ) : lines.length > 0 ? (
                           <pre className="cs-file-content">
@@ -928,6 +1017,11 @@ export default function BuildPage({
                 observations, not a real review, so Approve will refuse until the review runs.
               </p>
             )}
+            {/* On a phone the decision stays in reach: for a change set
+                awaiting review, the actions and the note form below them
+                stick to the bottom of the screen while the diff scrolls
+                (styles.css, "Remote use and phones"). */}
+            <div className={cs.status === "review_required" ? "cs-decision-bar" : undefined}>
             <div className="cs-actions">
               {cs.status === "review_required" &&
                 (reviewNeverCompleted(cs) ? (
@@ -941,10 +1035,10 @@ export default function BuildPage({
                     </button>
                     <button
                       className="cs-secondary"
-                      disabled={!!busyAction}
-                      onClick={() => review(cs, "changes_requested")}
+                      disabled={!!busyAction || requestNote !== undefined}
+                      onClick={() => openRequestChanges(cs)}
                     >
-                      {busyAction === "changes" ? "Requesting…" : "Request changes"}
+                      Request changes…
                     </button>
                     <button className="cs-secondary" disabled={!!busyAction} onClick={() => review(cs, "rejected")}>
                       {busyAction === "reject" ? "Rejecting…" : "Reject"}
@@ -959,19 +1053,23 @@ export default function BuildPage({
                         pass has no route forward in this UI at all: Approve 400s,
                         Request changes regenerates into the same block, and Reject
                         throws the work away. */}
+                    {acceptable > 0 && (
+                      <button
+                        className="cs-secondary"
+                        disabled={!!busyAction}
+                        onClick={() => review(cs, "approved", true)}
+                      >
+                        {busyAction === "approve-accept"
+                          ? "Reviewing…"
+                          : `Approve, accepting ${acceptable} finding${acceptable === 1 ? "" : "s"}`}
+                      </button>
+                    )}
                     <button
                       className="cs-secondary"
-                      disabled={!!busyAction}
-                      onClick={() => review(cs, "approved", true)}
+                      disabled={!!busyAction || requestNote !== undefined}
+                      onClick={() => openRequestChanges(cs)}
                     >
-                      {busyAction === "approve-accept" ? "Reviewing…" : "Approve, accepting findings"}
-                    </button>
-                    <button
-                      className="cs-secondary"
-                      disabled={!!busyAction}
-                      onClick={() => review(cs, "changes_requested")}
-                    >
-                      {busyAction === "changes" ? "Requesting…" : "Request changes"}
+                      Request changes…
                     </button>
                     <button className="cs-secondary" disabled={!!busyAction} onClick={() => review(cs, "rejected")}>
                       {busyAction === "reject" ? "Rejecting…" : "Reject"}
@@ -1046,6 +1144,57 @@ export default function BuildPage({
                   </>
                 ))}
             </div>
+            {cs.status === "review_required" && requestNote !== undefined && (
+              <InlinePanel
+                className="request-changes-form"
+                label={`Request changes to ${cs.human_id}`}
+                onClose={() => closeRequestChanges(cs)}
+              >
+                <NoteField
+                  id={`request-changes-${cs.id}`}
+                  label={`What should change in ${cs.human_id}?`}
+                  placeholder="Recorded on the change set; the task's next run gets it in its brief"
+                  value={requestNote}
+                  onChange={(v) => setRequesting((r) => ({ ...r, [cs.id]: v }))}
+                  onSubmit={() => {
+                    if (!busyAction && requestNote.trim()) sendRequestChanges(cs);
+                  }}
+                  submitLabel="send it back"
+                />
+                <div className="request-changes-actions">
+                  <button
+                    className="cs-green"
+                    disabled={!!busyAction || !requestNote.trim()}
+                    onClick={() => sendRequestChanges(cs)}
+                  >
+                    {busyAction === "changes" ? "Sending…" : "Send back with this note"}
+                  </button>
+                  {/* Rejecting can carry the same note: it is recorded on the
+                      change set, and the task's next run gets it. */}
+                  <button
+                    className="cs-secondary"
+                    disabled={!!busyAction || !requestNote.trim()}
+                    onClick={async () => {
+                      if (await review(cs, "rejected", false, requestNote)) closeRequestChanges(cs);
+                    }}
+                  >
+                    {busyAction === "reject" ? "Rejecting…" : "Reject with this note"}
+                  </button>
+                  <button className="cs-secondary" disabled={!!busyAction} onClick={() => closeRequestChanges(cs)}>
+                    Cancel
+                  </button>
+                </div>
+              </InlinePanel>
+            )}
+            </div>
+            {cs.review_note && (
+              <p className="muted cs-review-note">
+                You asked: “{cs.review_note}” —{" "}
+                {cs.status === "changes_requested" || cs.status === "rejected"
+                  ? "the task's next run carries this note."
+                  : "the run after this one was given this note."}
+              </p>
+            )}
             {actionError && <p className="error">{actionError}</p>}
           </section>
         );
@@ -1053,9 +1202,22 @@ export default function BuildPage({
 
       {changeSets.length === 0 && <p className="muted">No change sets yet.</p>}
 
+      {changeSets.some((c) => c.status === "applied") && (
+        <QualityScorecard projectId={projectId} initiativeId={initiativeId} />
+      )}
+
       {revertTarget && (
-        <section className="revert-card">
-          <div className="revert-title">Revert {revertTarget.human_id}?</div>
+        // A confirmation that opens at the foot of the page, far from the
+        // Revert button that asked for it: focus moves to its Cancel (the
+        // safe choice), Escape cancels, and focus goes back to Revert.
+        <InlinePanel
+          className="revert-card"
+          role="alertdialog"
+          labelledBy="revert-title"
+          initial={revertCancelRef}
+          onClose={() => setRevertTarget(null)}
+        >
+          <div className="revert-title" id="revert-title">Revert {revertTarget.human_id}?</div>
           <div className="revert-desc">
             Restores the files to their exact pre-apply bytes. This is a file-level restore, not a git
             revert — your git history is untouched. The requirement returns to approved and its
@@ -1070,6 +1232,7 @@ export default function BuildPage({
               {csBusy[revertTarget.id] === "revert" ? "Reverting…" : "Revert byte-for-byte"}
             </button>
             <button
+              ref={revertCancelRef}
               className="cs-secondary"
               disabled={csBusy[revertTarget.id] === "revert"}
               onClick={() => setRevertTarget(null)}
@@ -1078,7 +1241,7 @@ export default function BuildPage({
             </button>
           </div>
           {csError[revertTarget.id] && <p className="error">{csError[revertTarget.id]}</p>}
-        </section>
+        </InlinePanel>
       )}
     </div>
   );
