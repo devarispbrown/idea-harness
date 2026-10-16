@@ -444,3 +444,151 @@ func TestStartInitiativeWithDocsFailsRatherThanStranding(t *testing.T) {
 		t.Error("failed initiative carries no failure_reason, so `idea status` cannot say why")
 	}
 }
+
+// tinyPNG is a minimal 1x1 PNG: enough for docparse.Sniff to classify it as an
+// image, without carrying any real pixels.
+var tinyPNG = []byte{
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+	0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+	0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54,
+	0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05,
+	0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00,
+	0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42,
+	0x60, 0x82,
+}
+
+// TestStartInitiativeWithDocsImage verifies an image doc (raw bytes) is stored
+// with Format="image" in the create-with-docs path, not rejected as empty text.
+func TestStartInitiativeWithDocsImage(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "", `{"root_path":"`+dir+`"}`)
+	var p map[string]string
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+
+	iniID, opID, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
+		{Data: tinyPNG, Filename: "mockup.png", Kind: "design", Title: "mockup.png"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, err := rt.EnsureProject(t.Context(), p["project_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := pr.db.ListContextDocs(t.Context(), iniID)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d (err=%v)", len(docs), err)
+	}
+	if docs[0].Format != "image" || docs[0].Kind != "design" {
+		t.Fatalf("doc = %+v, want Format=image Kind=design", docs[0])
+	}
+	// Settle the async run (which attempts the vision description) so cleanup
+	// does not race it.
+	settleOperation(t, pr, opID)
+}
+
+// TestCreateInitiativeMultipart exercises the multipart create shape: a text
+// file and an image file attach in the same request as title + description.
+func TestCreateInitiativeMultipart(t *testing.T) {
+	rt, ts, token := newTestServer(t)
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects", token, "", `{"root_path":"`+dir+`"}`)
+	var p map[string]string
+	json.NewDecoder(resp.Body).Decode(&p)
+	resp.Body.Close()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("title", "idea"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("description", "a multi-line brief"); err != nil {
+		t.Fatal(err)
+	}
+	fw, err := mw.CreateFormFile("file", "notes.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write([]byte("# notes\n\ngrounding text")); err != nil {
+		t.Fatal(err)
+	}
+	iw, err := mw.CreateFormFile("file", "mockup.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := iw.Write(tinyPNG); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/projects/"+p["project_id"]+"/initiatives", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Idea-Token", token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	httpResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(httpResp.Body)
+		t.Fatalf("expected 202, got %d: %s", httpResp.StatusCode, raw)
+	}
+	var created map[string]string
+	if err := json.NewDecoder(httpResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	pr, err := rt.EnsureProject(t.Context(), p["project_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := pr.db.ListContextDocs(t.Context(), created["initiative_id"])
+	if err != nil || len(docs) != 2 {
+		t.Fatalf("expected 2 docs, got %d (err=%v)", len(docs), err)
+	}
+	var text, image bool
+	for _, d := range docs {
+		if d.Format == "image" {
+			image = true
+		} else if strings.Contains(d.Preview, "grounding text") {
+			text = true
+		}
+	}
+	if !text || !image {
+		t.Fatalf("expected one text doc and one image doc, got %+v", docs)
+	}
+	// Settle the async run (describes the image) before cleanup.
+	settleOperation(t, pr, created["operation_id"])
+}
+
+// settleOperation waits briefly for an operation to reach a terminal state so a
+// temp-dir cleanup does not race the async run.
+func settleOperation(t *testing.T, pr *projectRuntime, opID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		op, err := pr.db.GetOperation(t.Context(), opID)
+		if err == nil && (op.Status == domain.OperationSucceeded || op.Status == domain.OperationFailed || op.Status == domain.OperationCancelled) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -929,12 +929,19 @@ func (r *Runtime) findOperation(ctx context.Context, opID string) (*projectRunti
 }
 
 // InitiativeDocInput is one context doc supplied atomically at initiative
-// creation (idea new --doc).
+// creation (idea new --doc). Exactly one of Content (extracted text) or Data
+// (raw image bytes) is set: text/extractable docs carry Content, image docs
+// carry Data + Filename.
 type InitiativeDocInput struct {
-	Content string
-	Kind    string
-	Title   string
+	Content  string
+	Kind     string
+	Title    string
+	Data     []byte
+	Filename string
 }
+
+// isImage reports whether this doc is an image (raw bytes) rather than text.
+func (d InitiativeDocInput) isImage() bool { return d.Data != nil }
 
 // StartInitiative creates an initiative + operation and runs the workflow
 // asynchronously (§34). Returns the initiative and operation ids.
@@ -970,6 +977,17 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	// The comment above this loop had promised the opposite since it was
 	// written.
 	for _, d := range docs {
+		if d.isImage() {
+			// Images are size-checked only: raw bytes are not credential-swept
+			// (the vision description is redacted after the fact, not the image).
+			if len(d.Data) == 0 {
+				return "", "", ingestError{http.StatusBadRequest, "image is empty"}
+			}
+			if len(d.Data) > maxDocFileBytes {
+				return "", "", ingestError{http.StatusRequestEntityTooLarge, "document too large"}
+			}
+			continue
+		}
 		content := strings.TrimSpace(d.Content)
 		if content == "" {
 			return "", "", ingestError{http.StatusBadRequest, "content is required"}
@@ -982,7 +1000,11 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 		}
 	}
 
-	ini := &domain.Initiative{Title: pr.redactor.RedactString(title), Description: pr.redactor.RedactString(description), Status: domain.InitiativeRunning}
+	ini := &domain.Initiative{
+		Title:       truncateRunes(pr.redactor.RedactString(title), 200),
+		Description: pr.redactor.RedactString(description),
+		Status:      domain.InitiativeRunning,
+	}
 	if err := pr.db.CreateInitiative(ctx, ini); err != nil {
 		return "", "", err
 	}
@@ -1007,8 +1029,16 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 		return "", "", err
 	}
 
+	hasImage := false
 	for _, d := range docs {
-		if _, err := pr.ingestTextDoc(ctx, ini.ID, d.Content, d.Kind, d.Title); err != nil {
+		var err error
+		if d.isImage() {
+			hasImage = true
+			_, err = pr.ingestImageDocBytes(ctx, ini.ID, d.Data, d.Kind, d.Title)
+		} else {
+			_, err = pr.ingestTextDoc(ctx, ini.ID, d.Content, d.Kind, d.Title)
+		}
+		if err != nil {
 			return fail(err)
 		}
 	}
@@ -1019,6 +1049,15 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 	}
 
 	r.launchOperation(opID, func(bg context.Context) {
+		// Describe any image docs FIRST so the vision description grounds
+		// framing/research/PRD. Best-effort: a vision hiccup logs and the run
+		// proceeds with the image "not yet described" rather than failing the
+		// whole initiative over one description call.
+		if hasImage {
+			if derr := pr.engine.DescribeImages(bg, ini.ID); derr != nil {
+				r.log.Warn("describe images failed before run", "initiative", ini.ID, "err", derr)
+			}
+		}
 		// ini.Description, not the raw parameter: the redactor already swept it
 		// on the line that created the initiative, and the engine sends this
 		// value straight to the model provider.

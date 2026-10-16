@@ -17,7 +17,6 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/buildinfo"
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/daemon"
-	"github.com/devarispbrown/idea-harness/internal/docparse"
 	"github.com/devarispbrown/idea-harness/internal/eval"
 )
 
@@ -97,7 +96,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
-		{names: []string{"new"}, usage: `new "<idea>" [--no-wait]`, summary: "create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately)", flags: flagSpec{"--doc": flagRepeated, "--no-wait": flagBool, "--wait": flagBool}, run: cmdNew, inHelp: true},
+		{names: []string{"new"}, usage: `new "<idea>" [--doc <path> …] [--file <path>|-] [--no-wait]`, summary: "create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), and --doc attaches any text or image files", flags: flagSpec{"--doc": flagRepeated, "--file": flagValue, "--no-wait": flagBool, "--wait": flagBool}, run: cmdNew, inHelp: true},
 		{names: []string{"status"}, usage: "status [<initiative>]", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
 		{names: []string{"changed"}, usage: "changed [<initiative>]", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
 		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, maxPositional: 1, run: cmdDecisions, inHelp: true},
@@ -587,65 +586,152 @@ func cmdInit(a cmdArgs, stdout io.Writer) error {
 	return nil
 }
 
-// newDocInput is one context doc read from a --doc flag.
-type newDocInput struct {
-	Content string `json:"content"`
-	Kind    string `json:"kind"`
-	Title   string `json:"title"`
+// readBrief returns the initiative brief: --file <path> (or `-` for stdin)
+// wins over a positional, and a bare `-` positional means stdin. Otherwise the
+// positional words are joined, preserving the one-liner `idea new "<idea>"`.
+func readBrief(a cmdArgs) (string, error) {
+	if path := a.value("--file"); path != "" {
+		if len(a.positional) > 0 {
+			return "", usageErrorf("--file and a positional idea are mutually exclusive")
+		}
+		if path == "-" {
+			return readStdinCapped()
+		}
+		data, err := readFileCapped(path)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	if len(a.positional) == 1 && a.positional[0] == "-" {
+		return readStdinCapped()
+	}
+	return strings.Join(a.positional, " "), nil
+}
+
+// splitBrief derives a short title from a brief's first non-empty line and
+// keeps the full text as the description. A single-line brief uses itself for
+// both, preserving the previous `idea new "<one-liner>"` behaviour.
+func splitBrief(brief string) (string, string) {
+	brief = strings.TrimSpace(brief)
+	title := brief
+	if i := strings.IndexByte(brief, '\n'); i >= 0 {
+		title = strings.TrimSpace(brief[:i])
+	}
+	if title == "" {
+		title = brief
+	}
+	return title, brief
+}
+
+// expandGlobs expands shell glob patterns in file paths. A pattern with no
+// matches is kept literally so a later open reports a clear "no such file"
+// error instead of silently dropping it.
+func expandGlobs(paths []string) ([]string, error) {
+	var out []string
+	for _, p := range paths {
+		if !strings.ContainsAny(p, "*?[") {
+			out = append(out, p)
+			continue
+		}
+		matches, err := filepath.Glob(p)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			out = append(out, p)
+		} else {
+			out = append(out, matches...)
+		}
+	}
+	return out, nil
+}
+
+// readFileCapped reads a file, rejecting it before it exceeds maxDocUploadBytes
+// so a huge file is refused before being read fully into memory.
+func readFileCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxDocUploadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDocUploadBytes {
+		return nil, usageErrorf("%q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
+	}
+	return data, nil
+}
+
+// readStdinCapped reads a bounded brief from stdin.
+func readStdinCapped() (string, error) {
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxDocUploadBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxDocUploadBytes {
+		return "", usageErrorf("stdin exceeds the %d MiB limit", maxDocUploadBytes>>20)
+	}
+	return string(data), nil
 }
 
 func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 	// --doc is declared in the table's spec for `new`; this used to be a
 	// hand-rolled loop with its own "unknown flag" arm.
 	docPaths := a.list("--doc")
-	idea := strings.Join(a.positional, " ")
-	if strings.TrimSpace(idea) == "" {
+
+	brief, err := readBrief(a)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(brief) == "" {
 		if len(docPaths) > 0 {
 			return usageErrorf("an idea is required with --doc (e.g. idea new \"<idea>\" --doc <path>)")
 		}
 		if !colorEnabled {
-			return usageErrorf("usage: idea new \"<idea>\" [--doc <path> …]")
+			return usageErrorf("usage: idea new \"<idea>\" [--doc <path> …] [--file <path>|-]")
 		}
 		return interactiveNew(stdout, stderr)
 	}
+	title, description := splitBrief(brief)
 
-	// Read each --doc file as text, bound and swept atomically BEFORE the M1 run.
-	docs := make([]newDocInput, 0, len(docPaths))
-	for _, path := range docPaths {
-		f, err := os.Open(path)
+	// Expand globs and read each --doc as raw bytes. The daemon sniffs each
+	// file and routes it to text extraction or the vision-describe path, so
+	// text, PDF/DOCX/XLSX and images all attach in the one gesture.
+	expanded, err := expandGlobs(docPaths)
+	if err != nil {
+		return err
+	}
+	files := make([]fileUpload, 0, len(expanded))
+	for _, path := range expanded {
+		data, err := readFileCapped(path)
 		if err != nil {
 			return err
-		}
-		data, err := io.ReadAll(io.LimitReader(f, maxDocUploadBytes+1))
-		f.Close()
-		if err != nil {
-			return err
-		}
-		if len(data) > maxDocUploadBytes {
-			return usageErrorf("document %q exceeds the %d MiB limit", path, maxDocUploadBytes>>20)
 		}
 		if len(data) == 0 {
 			return usageErrorf("document %q is empty", path)
 		}
-		if docparse.Sniff(path, data) != "text" {
-			return usageErrorf("--doc supports text files only (%s); use `idea docs add` for PDF/DOCX/images", path)
-		}
-		kind := docparse.InferKind(path)
-		title := filepath.Base(path)
-		docs = append(docs, newDocInput{Content: string(data), Kind: kind, Title: title})
+		files = append(files, fileUpload{filename: filepath.Base(path), data: data})
 	}
 
 	c, projectID, err := connect()
 	if err != nil {
 		return err
 	}
-	body := struct {
-		Title       string        `json:"title"`
-		Description string        `json:"description"`
-		Docs        []newDocInput `json:"docs,omitempty"`
-	}{Title: idea, Description: idea, Docs: docs}
 	var out map[string]string
-	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives", body, &out); err != nil {
+	if len(files) > 0 {
+		err = c.doMultipartFiles("POST", "/api/v1/projects/"+projectID+"/initiatives",
+			map[string]string{"title": title, "description": description}, files, &out)
+	} else {
+		body := struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		}{Title: title, Description: description}
+		err = c.do("POST", "/api/v1/projects/"+projectID+"/initiatives", body, &out)
+	}
+	if err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, ok("✓ initiative started")+" "+code(out["initiative_id"]))

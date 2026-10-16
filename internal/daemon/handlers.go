@@ -84,36 +84,48 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
-	var body struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Docs        []struct {
-			Content string `json:"content"`
-			Kind    string `json:"kind"`
-			Title   string `json:"title"`
-		} `json:"docs"`
-	}
-	// Bound the create-with-docs body (title + description + up to N docs, each
-	// ≤ maxDocFileBytes) so a non-CLI client cannot force unbounded decode.
-	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes*maxContextDocsPerInitiative)
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body too large")
+	var title, description string
+	var docs []InitiativeDocInput
+
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		var err error
+		title, description, docs, err = s.readCreateMultipart(w, r)
+		if err != nil {
+			return // readCreateMultipart already wrote the error
+		}
+	} else {
+		var body struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Docs        []struct {
+				Content string `json:"content"`
+				Kind    string `json:"kind"`
+				Title   string `json:"title"`
+			} `json:"docs"`
+		}
+		// Bound the create-with-docs body (title + description + up to N docs,
+		// each ≤ maxDocFileBytes) so a non-CLI client cannot force unbounded
+		// decode.
+		r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes*maxContextDocsPerInitiative)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeError(w, http.StatusRequestEntityTooLarge, "body too large")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
+		title, description = body.Title, body.Description
+		for _, d := range body.Docs {
+			docs = append(docs, InitiativeDocInput{Content: d.Content, Kind: d.Kind, Title: d.Title})
+		}
 	}
-	if body.Title == "" {
+	if title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	var docs []InitiativeDocInput
-	for _, d := range body.Docs {
-		docs = append(docs, InitiativeDocInput{Content: d.Content, Kind: d.Kind, Title: d.Title})
-	}
-	iniID, opID, err := s.rt.StartInitiativeWithDocs(r.Context(), projectID, body.Title, body.Description, docs)
+	iniID, opID, err := s.rt.StartInitiativeWithDocs(r.Context(), projectID, title, description, docs)
 	if err != nil {
 		var ie ingestError
 		if errors.As(err, &ie) {
@@ -124,6 +136,64 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"initiative_id": iniID, "operation_id": opID})
+}
+
+// readCreateMultipart parses a multipart initiative-create body: `title` +
+// `description` fields plus repeated `file` parts, sniffing each file to route
+// it to text (extract) or image (raw bytes). Kind/title derive from the
+// filename, matching readMultipartFile. On failure it writes the error and
+// returns a non-nil err.
+func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (string, string, []InitiativeDocInput, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes*maxContextDocsPerInitiative)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid multipart body")
+		}
+		return "", "", nil, err
+	}
+	defer r.MultipartForm.RemoveAll()
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	description := strings.TrimSpace(r.FormValue("description"))
+	if description == "" {
+		description = title
+	}
+
+	var docs []InitiativeDocInput
+	for _, fh := range r.MultipartForm.File["file"] {
+		f, err := fh.Open()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not read file")
+			return "", "", nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxDocFileBytes+1))
+		f.Close()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not read file")
+			return "", "", nil, err
+		}
+		if len(data) > maxDocFileBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "document too large")
+			return "", "", nil, fmt.Errorf("document too large")
+		}
+		filename := fh.Filename
+		kind := docparse.InferKind(filename)
+		docTitle := filepath.Base(filename)
+		if docparse.Sniff(filename, data) == "image" {
+			docs = append(docs, InitiativeDocInput{Data: data, Filename: filename, Kind: kind, Title: docTitle})
+		} else {
+			extracted, err := docparse.ExtractText(filename, data)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "could not parse document")
+				return "", "", nil, err
+			}
+			docs = append(docs, InitiativeDocInput{Content: extracted, Kind: kind, Title: docTitle})
+		}
+	}
+	return title, description, docs, nil
 }
 
 func (s *Server) handleListInitiatives(w http.ResponseWriter, r *http.Request) {
@@ -3005,6 +3075,45 @@ func (pr *projectRuntime) ingestTextDoc(ctx context.Context, iniID, content, kin
 		Title:        title,
 		Digest:       digest,
 		Preview:      truncateRunes(redacted, 200),
+	}
+	if err := pr.db.CreateContextDoc(ctx, doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// ingestImageDocBytes is the projectRuntime-level image ingest: store the bytes
+// in the redaction-free store and record a context_docs row with Format="image".
+// It is the create-with-docs equivalent of the Server's ingestImageDoc (which
+// additionally checks the per-initiative doc cap, already enforced by
+// StartInitiativeWithDocs). Images are deliberately NOT credential-swept: the
+// raw bytes are egressed to the vision provider and only the returned
+// description is redacted (see security.md → Context docs).
+func (pr *projectRuntime) ingestImageDocBytes(ctx context.Context, iniID string, data []byte, kind, title string) (*domain.ContextDoc, error) {
+	if len(data) == 0 {
+		return nil, ingestError{http.StatusBadRequest, "image is empty"}
+	}
+	if len(data) > maxDocFileBytes {
+		return nil, ingestError{http.StatusRequestEntityTooLarge, "document too large"}
+	}
+	kind = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(kind)), 64)
+	if kind == "" {
+		kind = "other"
+	}
+	title = truncateRunes(pr.redactor.RedactString(strings.TrimSpace(title)), 200)
+	if title == "" {
+		title = "untitled"
+	}
+	digest, err := pr.rawBlobs.Put(data)
+	if err != nil {
+		return nil, err
+	}
+	doc := &domain.ContextDoc{
+		InitiativeID: iniID,
+		Kind:         kind,
+		Title:        title,
+		Digest:       digest,
+		Format:       "image",
 	}
 	if err := pr.db.CreateContextDoc(ctx, doc); err != nil {
 		return nil, err

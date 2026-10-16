@@ -66,9 +66,10 @@ func interactiveNew(stdout, stderr io.Writer) error {
 		}
 	}
 
+	title, description := splitBrief(idea)
 	var out map[string]string
 	if err := c.do("POST", "/api/v1/projects/"+projectID+"/initiatives",
-		map[string]string{"title": idea, "description": idea}, &out); err != nil {
+		map[string]string{"title": title, "description": description}, &out); err != nil {
 		return err
 	}
 

@@ -246,6 +246,46 @@ func (c *client) doMultipart(method, path string, fields map[string]string, file
 	return c.send(req, out)
 }
 
+// fileUpload is one file part in a multipart request (e.g. idea new --doc).
+type fileUpload struct {
+	filename string
+	data     []byte
+}
+
+// doMultipartFiles performs a multipart/form-data request with one or more
+// `file` parts plus optional form fields, decoding the JSON response into out
+// (if non-nil). Used for initiative creation with attached context docs.
+func (c *client) doMultipartFiles(method, path string, fields map[string]string, files []fileUpload, out any) error {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		if v != "" {
+			if err := mw.WriteField(k, v); err != nil {
+				return err
+			}
+		}
+	}
+	for _, f := range files {
+		fw, err := mw.CreateFormFile("file", f.filename)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(f.data); err != nil {
+			return err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequest(method, c.baseURL+path, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Idea-Token", c.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return c.send(req, out)
+}
+
 // doRaw performs a request and returns the raw response body as a string.
 func (c *client) doRaw(method, path string) (string, error) {
 	req, err := http.NewRequest(method, c.baseURL+path, nil)
