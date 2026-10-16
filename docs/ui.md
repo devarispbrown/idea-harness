@@ -103,9 +103,11 @@ The main region renders, above the routed page:
 ## Home
 
 The home screen lists every initiative. Its header carries the `ih` mark, the project's name, a
-**Settings** button, and a **+ New idea** button. Below it: the initiative count, a "*n* need you" chip, and an input —
-"What are you thinking about building?" — where Enter or **+ New idea** creates the initiative
-(`POST …/initiatives`) and jumps to its Explore page.
+**Settings** button, and a **+ New idea** button. Below it: the initiative count, a "*n* need you" chip, and a
+compose — a **Brief** textarea ("What are you thinking about building?") plus a drop-zone that takes
+grounding files (any of the Explore formats), each listed with a `text`/`image` badge. **Start**
+creates the initiative (`POST …/initiatives`, multipart when files are attached) and jumps to its
+Explore page; the first non-empty line of the brief becomes the title.
 
 Each initiative is a card with its number, title, a status chip, and six small phase bars:
 

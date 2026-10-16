@@ -293,7 +293,7 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` (optional inline `docs[]`) and start the M1 pipeline. **202**, returns `initiative_id` + `operation_id`. |
+| POST | `/projects/{projectId}/initiatives` | Create an initiative from `title`/`description` and start the M1 pipeline. Accepts JSON (`title`/`description`, optional inline `docs[]` of text) or multipart (`title`/`description` + repeated `file` parts, sniffed as text or image). **202**, returns `initiative_id` + `operation_id`. |
 | GET | `/projects/{projectId}/initiatives` | List the project's initiatives, oldest first. |
 | GET | `/projects/{projectId}/initiatives/{id}` | One initiative: status, title, failure reason. |
 | POST | `/projects/{projectId}/initiatives/{id}/retry` | Re-run the phase that failed under `{"model": …}`. `model` is optional and decoded leniently (like `fresh`/`note` on `/execute`): absent or blank falls back to the initiative's configured default model, so `{"note": "…"}` alone is accepted. **202**. `409` when the initiative is running. An optional `note` (D-a) steers this retry: it joins the framing prompt that restarts the pipeline (there is no implementer brief at this stage) and is recorded on that run. |

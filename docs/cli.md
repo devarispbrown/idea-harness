@@ -16,7 +16,7 @@ if this file has drifted.
 | Command | What it does | Flags | `--json` |
 | --- | --- | --- | --- |
 | `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
-| `idea new "<idea>" [--no-wait]` | create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately) | `--doc`, `--no-wait`, `--wait` | no |
+| `idea new "<idea>" [--doc <path> …] [--file <path>\|-] [--no-wait]` | create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), and --doc attaches any text or image files | `--doc`, `--file`, `--no-wait`, `--wait` | no |
 | `idea status [<initiative>]` | show initiative + current work | `--json` | yes |
 | `idea changed [<initiative>]` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |

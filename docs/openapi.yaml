@@ -285,11 +285,13 @@ paths:
       operationId: createInitiative
       summary: Create an initiative and start the first pipeline
       description: |
-        Creates the initiative from `title`/`description`, optionally ingesting inline context docs
-        in the same atomic request, then starts the first pipeline run.
+        Creates the initiative from `title`/`description`, optionally ingesting context docs in the
+        same atomic request, then starts the first pipeline run. Accepts JSON (`docs[]` inline text)
+        or multipart (`file` parts, sniffed as text or image).
 
         The body is bounded: a doc's content is capped at 2 MiB and an initiative holds at most 100
-        context docs. A doc containing a credential is rejected outright rather than redacted.
+        context docs. A text doc containing a credential is rejected outright rather than redacted;
+        images are stored and egressed to the vision model unredacted (see `docs/security.md`).
       requestBody:
         required: true
         content:
@@ -315,6 +317,23 @@ paths:
                         type: string
                         description: Truncated to 200 runes; defaults to "untitled".
                     required: [content]
+              required: [title]
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Required; the one-line statement of the idea (the CLI derives it from the brief's first non-empty line).
+                description:
+                  type: string
+                  description: The full brief; defaults to `title` when empty.
+                file:
+                  type: array
+                  description: One or more grounding files (`.md/.txt/.pdf/.docx/.xlsx/.jpg/.png/…`); each is sniffed as text (extracted) or image (vision-described).
+                  items:
+                    type: string
+                    format: binary
               required: [title]
       responses:
         default: { $ref: "#/components/responses/RoutingError" }

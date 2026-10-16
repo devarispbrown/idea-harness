@@ -85,20 +85,27 @@ stored inline.
 > design, planning, and PRD revisions among them. Text formats are extracted directly; images are
 > described by a vision model, and only the description reaches the agents.
 >
-> **Text documents go in with the idea itself** (`.md`, `.txt`, `.csv`, `.json`, `.yaml`, … —
-> anything that sniffs as text), because `idea docs add` needs an initiative to attach to and there
-> is none until `idea new` has run. Use this *instead of* the plain `idea new` below:
+> **Everything goes in with the idea itself, in one gesture.** `--doc` takes any file — text,
+> `.pdf`/`.docx`/`.xlsx`, or an image — and `--doc` is repeatable:
 >
 > ```bash
-> idea new "A recipe-sharing app" --doc prd.md --doc notes.txt   # text files only
+> idea new "A recipe-sharing app" --doc prd.md --doc spec.pdf --doc mockup.png
 > ```
 >
-> Everything else is added *after* the initiative exists — so these run once `idea new` has returned:
+> You can also hand the team a longer brief from a file instead of one line in quotes; the first
+> line becomes the title and the whole thing is the brief. A bare `-` reads the brief from stdin:
 >
 > ```bash
-> idea docs add spec.pdf              # .pdf / .docx / .xlsx (text formats work here too)
-> idea docs add mockup.png            # .jpg / .png / .gif / .webp — described by a vision model
-> printf '# PRD\n…' | idea docs add - --kind prd --title "pasted PRD"   # paste from stdin
+> idea new --file brief.md --doc spec.pdf --doc mockup.png
+> printf '%s\n' 'A recipe-sharing app' 'for home cooks who…' | idea new - --doc notes.txt
+> ```
+>
+> Add more material after the initiative exists with `idea docs add` (paste text from stdin with
+> `-`); the new-idea compose in the web UI takes files the same way as `--doc`:
+>
+> ```bash
+> idea docs add competitor.png        # any file, any time
+> printf '# PRD\n…' | idea docs add - --kind prd --title "pasted PRD"
 > idea docs                           # list uploaded docs
 > ```
 >
