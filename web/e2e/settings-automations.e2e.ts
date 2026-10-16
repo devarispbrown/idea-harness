@@ -99,7 +99,7 @@ test("budget: a cap stops a demo run, and raising it sends the initiative back",
 
     await page.goto("/");
     await page.getByPlaceholder("What are you thinking about building?").fill("A packing list app for weekend trips");
-    await page.getByPlaceholder("What are you thinking about building?").press("Enter");
+    await page.getByRole("button", { name: "Start" }).click();
     await expect(page).toHaveURL(/#\/p\/[0-9a-f]{32}\/i\/[0-9a-f]{32}\/explore$/);
     const id = page.url().match(/\/i\/([0-9a-f]{32})\//)![1];
 

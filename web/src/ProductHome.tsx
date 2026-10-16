@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { derivePhases, PHASE_LABELS, PHASE_PURPOSE, rollupPhaseSource } from "./phases";
 import type { InitiativeRollup } from "./phases";
 import { PHASES, type PhaseName } from "./router";
 import { get, resource } from "./api";
 import { displayTitle } from "./title";
+import { isSubmitShortcut } from "./shortcuts";
 import { entriesSince, getLastVisit } from "./lastVisit";
 import { describeTimelineEntry, type TimelineEntry } from "./timeline";
 
@@ -33,6 +34,22 @@ const STATUS_PILL: Record<string, { label: string; state: string }> = {
   failed: { label: "failed", state: "failing" },
 };
 
+// An attached grounding doc: the file itself plus a stable id for the file
+// chip's React key (file.name can repeat, so the name alone can't key it).
+interface AttachedFile {
+  id: string;
+  file: File;
+}
+
+// isImageFile decides the per-file badge ("text" / "image"). The daemon
+// infers each doc's kind from its extension; this only needs to distinguish
+// the two badge words, so it checks the MIME type and falls back to common
+// image extensions when a browser reports an empty/octet-stream type.
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|svg|bmp|avif|heic|heif)$/i;
+function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/") || IMAGE_EXT.test(file.name);
+}
+
 export default function ProductHome({
   projectId,
   initiatives,
@@ -47,14 +64,20 @@ export default function ProductHome({
   attention: InitiativeRollup[];
   projectName: string;
   onOpen: (id: string) => void;
-  onCreate: (idea: string) => void;
+  onCreate: (brief: string, files: File[]) => void;
   onOpenSettings: () => void;
 }) {
-  const [idea, setIdea] = useState("");
-  // Shown once, after an empty "+ New idea" / Enter, until the field has
-  // something in it again -- clicking with nothing typed used to just do
-  // nothing (K).
+  const [brief, setBrief] = useState("");
+  // Files attached to the compose before Start. Held locally so the person
+  // can add/remove grounding docs before the initiative exists on the server.
+  const [files, setFiles] = useState<AttachedFile[]>([]);
+  const [dragging, setDragging] = useState(false);
+  // Shown once, after an empty Start, until the brief has content again --
+  // clicking Start with nothing typed used to just do nothing (K).
   const [ideaHint, setIdeaHint] = useState(false);
+  const briefRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nextFileId = useRef(0);
   const rollupById = new Map(attention.map((r) => [r.id, r]));
 
   const needYou = initiatives.filter((i) => i.status === "needs_human_judgment").length;
@@ -103,10 +126,39 @@ export default function ProductHome({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initiativeIds is the stable key for `initiatives`' identity.
   }, [projectId, initiativeIds]);
 
-  const submitIdea = () => {
-    if (idea.trim()) onCreate(idea.trim());
-    else setIdeaHint(true);
+  // addFiles appends one or more picked/dropped/pasted files. The hidden
+  // <input type=file> and the drop-zone both funnel here, so there is one
+  // place that dedupes the React key and clears the empty-submit hint.
+  const addFiles = (incoming: File[]) => {
+    if (incoming.length === 0) return;
+    setFiles((prev) => [
+      ...prev,
+      ...incoming.map((file) => ({ id: `f${nextFileId.current++}`, file })),
+    ]);
+    if (ideaHint) setIdeaHint(false);
   };
+  const removeFile = (id: string) => setFiles((prev) => prev.filter((f) => f.id !== id));
+  // onPaste: a clipboard image/file becomes an attachment; pasted text falls
+  // through to the textarea's normal paste behavior.
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = e.clipboardData?.files;
+    if (pasted && pasted.length > 0) {
+      e.preventDefault();
+      addFiles(Array.from(pasted));
+    }
+  };
+
+  const submitIdea = () => {
+    if (brief.trim()) onCreate(brief, files.map((f) => f.file));
+    else {
+      setIdeaHint(true);
+      briefRef.current?.focus();
+    }
+  };
+  // The header's "+ New idea" button just brings the compose into view (and
+  // keyboard focus); it no longer submits, since the compose is now a full
+  // brief + attachments surface rather than a one-line field.
+  const focusCompose = () => briefRef.current?.focus();
 
   return (
     <div className="product-home">
@@ -118,7 +170,7 @@ export default function ProductHome({
         <button className="ph-settings" onClick={onOpenSettings}>
           Settings
         </button>
-        <button className="ph-new" onClick={submitIdea}>+ New idea</button>
+        <button className="ph-new" onClick={focusCompose}>+ New idea</button>
       </header>
       {/* A single <main> landmark per page -- App.tsx already renders one
           around this component, so this is a plain div (K). */}
@@ -128,21 +180,105 @@ export default function ProductHome({
           <span className="muted">{initiatives.length} total</span>
           {needYou > 0 && <span className="ph-need">{needYou} need you</span>}
         </div>
+        {/* The "New initiative" compose: a brief + optional grounding-doc
+            attachments. It replaced the single-line idea input; title and
+            description are derived from the brief by App.tsx (title = first
+            non-empty line, description = full trimmed brief). */}
         <div className="ph-create">
-          <input
-            className="text-input"
+          <label className="ph-compose-label" htmlFor="ph-brief">
+            Brief
+          </label>
+          <textarea
+            id="ph-brief"
+            ref={briefRef}
+            className="text-input ph-brief"
             placeholder="What are you thinking about building?"
-            value={idea}
+            value={brief}
+            rows={3}
             onChange={(e) => {
-              setIdea(e.target.value);
+              setBrief(e.target.value);
               if (ideaHint) setIdeaHint(false);
             }}
-            onKeyDown={(e) => e.key === "Enter" && submitIdea()}
+            onPaste={onPaste}
+            onKeyDown={(e) => {
+              if (isSubmitShortcut(e.nativeEvent)) {
+                e.preventDefault();
+                submitIdea();
+              }
+            }}
           />
+          <div
+            className={`ph-dropzone ${dragging ? "dragging" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-label="Attach a grounding document (click to browse, drag and drop, or paste)"
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              addFiles(Array.from(e.dataTransfer.files ?? []));
+            }}
+          >
+            <div className="ph-dropzone-main">
+              Drop files here, <u>browse</u>, or paste
+            </div>
+            <div className="ph-dropzone-hint">
+              .md .txt .pdf .docx .xlsx .jpg .png … · each file becomes a grounding doc
+            </div>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".md,.txt,.pdf,.docx,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              addFiles(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+          />
+          {files.length > 0 && (
+            <ul className="ph-files" aria-label="Attached files">
+              {files.map(({ id, file }) => (
+                <li key={id} className="ph-file">
+                  <span className={`ph-file-badge ${isImageFile(file) ? "image" : "text"}`}>
+                    {isImageFile(file) ? "image" : "text"}
+                  </span>
+                  <span className="ph-file-name" title={file.name}>
+                    {file.name}
+                  </span>
+                  <button
+                    type="button"
+                    className="ph-file-remove"
+                    aria-label={`Remove ${file.name}`}
+                    onClick={() => removeFile(id)}
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="ph-compose-actions">
+            <button type="button" className="ph-start" onClick={submitIdea}>
+              Start
+            </button>
+          </div>
           {ideaHint && (
             <p className="ph-create-hint">
-              Type what you're thinking about building, then press Enter — e.g. "Add CSV export to
-              the reports page".
+              Write a line or two about what you're building, attach any grounding docs if you have
+              them, then press Start — e.g. "Add CSV export to the reports page".
             </p>
           )}
         </div>
@@ -239,7 +375,7 @@ function ProductHomeExplainer() {
         ))}
       </ol>
       <p className="ph-empty-next">
-        <strong>Next:</strong> type what you're thinking about building above, then press Enter.
+        <strong>Next:</strong> write what you're thinking about building above, then press Start.
       </p>
     </div>
   );

@@ -190,6 +190,33 @@ export async function uploadDoc<T>(
   return (await res.json()) as T;
 }
 
+// uploadInitiative posts a NEW initiative as multipart/form-data when the
+// "New initiative" compose has files attached (ProductHome.tsx). The daemon
+// infers each file's kind from its extension and treats the filename as the
+// grounding doc's title, so `file` parts carry no explicit kind. With no
+// files, App.tsx posts the same fields as JSON instead -- this is only the
+// file path of the create contract (docs/api.md "Initiatives").
+export async function uploadInitiative<T>(
+  path: string,
+  fields: Record<string, string>,
+  files: File[],
+): Promise<T> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) {
+    if (v) form.append(k, v);
+  }
+  for (const file of files) {
+    form.append("file", file, file.name);
+  }
+  const res = await callFetch("/api/v1" + path, {
+    method: "POST",
+    headers: authHeaders("POST"),
+    body: form,
+  });
+  await throwOnError(res);
+  return (await res.json()) as T;
+}
+
 // patch mirrors get/post/put for the PATCH routes (objectives, metrics).
 export const patch = <T>(path: string, body: unknown) =>
   api<T>("PATCH", path, body);

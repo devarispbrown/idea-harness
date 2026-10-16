@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, NetworkError, post, resource, UNAUTHORIZED_EVENT } from "./api";
+import { get, NetworkError, post, resource, UNAUTHORIZED_EVENT, uploadInitiative } from "./api";
 import Settings from "./Settings";
 import PhaseNav from "./PhaseNav";
 import { providerDotState, type ProviderDotState, type ProviderStatusInput } from "./providerStatus";
@@ -465,13 +465,29 @@ export default function App() {
             ? "runs"
             : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
-  const createIdea = async (text: string) => {
-    if (!projectId || !text.trim()) return;
+  const createIdea = async (brief: string, files: File[]) => {
+    if (!projectId) return;
+    const description = brief.trim();
+    if (!description) return;
+    // Title = the first non-empty line (the whole brief when single-line);
+    // description = the full trimmed brief (the "New initiative" contract).
+    const title =
+      description
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => l.length > 0) ?? description;
     try {
-      const created = await post<{ initiative_id: string }>(`/projects/${projectId}/initiatives`, {
-        title: text.trim(),
-        description: text.trim(),
-      });
+      const created =
+        files.length > 0
+          ? await uploadInitiative<{ initiative_id: string }>(
+              `/projects/${projectId}/initiatives`,
+              { title, description },
+              files,
+            )
+          : await post<{ initiative_id: string }>(`/projects/${projectId}/initiatives`, {
+              title,
+              description,
+            });
       await loadInitiatives(projectId);
       navigate(`#/i/${created.initiative_id}/explore`);
     } catch {

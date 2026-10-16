@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { api, NetworkError, unwrapError } from "./api";
+import { api, NetworkError, unwrapError, uploadInitiative } from "./api";
 
 // F2: api.ts must throw an Error whose .message is the server's `error`
 // string when the body is `{"error": "..."}`, and the raw text or status
@@ -75,5 +75,49 @@ describe("api / NetworkError", () => {
       expect(e).not.toBeInstanceOf(NetworkError);
       expect(e instanceof Error ? e.message : String(e)).toBe("provider refused the request");
     }
+  });
+});
+
+// uploadInitiative is the file path of the "New initiative" contract: one
+// FormData with `title`, `description`, and a repeated `file` part per
+// grounding doc -- no Content-Type header of its own, so the browser sets the
+// multipart boundary. This pins the shape App.tsx depends on while the
+// backend lands in parallel.
+describe("uploadInitiative", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("builds multipart form-data with title, description, and repeated file parts", async () => {
+    let body: unknown;
+    let contentType: string | null = null;
+    globalThis.fetch = vi.fn(async (_input, init) => {
+      body = init?.body;
+      const headers = init?.headers as Record<string, string> | undefined;
+      contentType = headers ? (headers["Content-Type"] ?? null) : null;
+      return new Response(JSON.stringify({ initiative_id: "i1", operation_id: "op1" }), {
+        status: 202,
+      });
+    });
+
+    const files = [
+      new File(["# brief"], "brief.md", { type: "text/markdown" }),
+      new File(["x"], "mock.png", { type: "image/png" }),
+    ];
+    const created = await uploadInitiative<{ initiative_id: string; operation_id: string }>(
+      "/projects/p1/initiatives",
+      { title: "Add CSV export", description: "Add CSV export\n\nto the reports page" },
+      files,
+    );
+
+    expect(created).toEqual({ initiative_id: "i1", operation_id: "op1" });
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get("title")).toBe("Add CSV export");
+    expect(form.get("description")).toBe("Add CSV export\n\nto the reports page");
+    expect(form.getAll("file")).toHaveLength(2);
+    // No JSON Content-Type: the browser must own the multipart boundary.
+    expect(contentType).toBeNull();
   });
 });
