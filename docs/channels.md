@@ -67,22 +67,28 @@ it → **Start**.
 ## Slack (create / monitor / operate) — native
 
 The daemon runs the Slack adapter itself over **Socket Mode** (no public URL —
-the daemon opens a WebSocket to Slack). Configure `integrations.slack` in
-`harness.yaml` (socket mode on, `allowed_users`, `channel`, and the app/bot token
-env names), as in [`configuration.md`](configuration.md) and
-[`integrations.md`](integrations.md). Then add the app:
+the daemon opens a WebSocket to Slack). The canonical setup — including the app
+**manifest** you paste to get the scopes, Socket Mode and Interactivity in one
+step — is [`integrations.md`](integrations.md). In short:
 
-**1. Create the app.** <https://api.slack.com/apps> → **Create New App** → **from
-scratch** → name it, pick a workspace.
+**1. Create the app from the manifest** at <https://api.slack.com/apps>
+([`integrations/slack-manifest.yaml`](integrations/slack-manifest.yaml)).
 
-**2. Enable Socket Mode** → on → copy the **app-level token** (`xapp-…`).
+**2. Copy the Bot User OAuth Token** (`xoxb-…`) and generate an **app-level
+token** (`xapp-…`, `connections:write` scope).
 
-**3. Add a slash command** `/idea`. In socket mode the request URL is unused.
+**3. Put them in the daemon's environment:**
 
-**4. Copy the bot token** (`xoxb-…`) under **OAuth & Permissions**.
+```bash
+export SLACK_BOT_TOKEN="xoxb-…"
+export SLACK_APP_TOKEN="xapp-…"
+```
 
-**5. Put both tokens in the env vars** your `harness.yaml` names, restart the
-daemon, and use:
+**4. Configure `integrations.slack`** in `harness.yaml` — `channel` (a channel ID)
+and `allowed_users` (who may act; empty means notify-only) — then **invite the
+bot to the channel** (`/invite @<bot>`).
+
+**5. Restart the daemon** and check it: `idea integrations test slack`. Then use:
 
 | Slash command | Does |
 |---|---|

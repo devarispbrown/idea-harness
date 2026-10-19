@@ -866,10 +866,11 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
 
 ## Integrations
 
-`integrations.slack` and `integrations.linear` in `harness.yaml` turn on the Slack (notifications,
-approval buttons, `/idea`) and Linear (plan tasks as issues, labeled issues as initiatives)
-integrations. Each is off until its section exists; tokens come from the environment or `.env` by
-the `*_env` names, never from the file. Setup, every key, and the security trade-offs:
+`integrations.slack`, `integrations.linear` and `integrations.email` in `harness.yaml` turn on the
+Slack (notifications, approval buttons, `/idea`), Linear (plan tasks as issues, labeled issues as
+initiatives) and email (SMTP notifications) integrations. Each is off until its section exists;
+tokens come from the environment or `.env` by the `*_env` names, never from the file. Setup, every
+key, and the security trade-offs:
 [integrations.md](integrations.md).
 
 ```yaml

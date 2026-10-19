@@ -61,10 +61,11 @@ value — and refuses a token pasted into any field. "Send test message" / "Test
 `idea integrations test`. Linear inbound polling is also listed, with its history and a Run now
 button, on the Automations page.
 
-Slack and Linear tokens are read from the process environment, then the project's `.env`, by the
-names harness.yaml gives — never from harness.yaml itself (`idea config validate` rejects a token
-pasted there). A `.env` edit is not noticed on its own: touch `harness.yaml` (or restart the daemon)
-after rotating a token, as for model keys ([configuration.md](configuration.md#secrets)).
+Slack, Linear and email credentials are read from the process environment, then the project's
+`.env`, by the names harness.yaml gives — never from harness.yaml itself (`idea config validate`
+rejects a token pasted there). A `.env` edit is not noticed on its own: touch `harness.yaml` (or
+restart the daemon) after rotating a token, as for model keys
+([configuration.md](configuration.md#secrets)).
 
 ## Slack
 
@@ -133,19 +134,43 @@ running the daemon, and the message says so.
 | **Answer** (opens a dialog) | `idea answer <question> "<answer>"` | On `needs_judgment`, per open question (up to 5) |
 | `/idea new <your idea>` | `idea new "<your idea>"` | Any channel the project posts to |
 | `/idea status` | `idea status` (the list) | Same |
+| `/idea approve <id>` | `idea approve` | Any channel the project posts to |
+| `/idea advance <id>` | `idea advance` | Same |
+| `/idea execute <id>` | `idea execute` | Same |
+| `/idea review <change-set> approve\|reject` | `idea review CHG-n approve\|reject` | Same |
+| `/idea apply <change-set>` | `idea apply CHG-n` | Same |
 
 Each action is sent through the daemon's own HTTP API handler — the same route, preconditions and
 gates the CLI reaches — so Slack can do nothing the CLI cannot. Approving a change set whose
 adversarial review never completed is refused from Slack exactly as at the terminal, with the same
-message. There is no Slack equivalent of `--accept-findings`. Applying an approved change set stays
-a CLI/UI step (`idea apply`): it writes into your working tree, and that should happen where you
-can see it.
+message. There is no Slack equivalent of `--accept-findings`: a review that refuses over blocking
+findings is resolved from the CLI with `idea review CHG-n approve --accept-findings`. `/idea apply`
+writes into the working tree on the daemon's machine — the box where the code lives in the
+self-hosted setup, so the change is where you will see it.
 
 `/idea` is routed to a project by the channel it is typed in (the project whose `channel` matches),
 so several projects can share one Slack app. One daemon opens **one** Socket Mode connection per
 app token however many projects use it: Slack load-balances a Socket Mode app's traffic across all
 of its open connections, and one connection per project would hand each project half of the
 other's clicks.
+
+## Email
+
+`integrations.email` turns on SMTP notifications — the same events Slack posts, as plain-text
+email. Setup and per-provider snippets (Postmark, Resend, SES, SendGrid, Gmail, and Mailpit for
+local testing): [`email-providers.md`](email-providers.md).
+
+```yaml
+integrations:
+  email:
+    to: you@example.com
+    from: idea@example.com
+    smtp_host: smtp.postmarkapp.com
+    smtp_port: 587                  # default; STARTTLS, handled automatically
+    smtp_user: <provider-username>
+    smtp_password_env: SMTP_PASSWORD   # env var NAME, never the password
+    # events: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
+```
 
 ## Linear
 
