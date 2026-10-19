@@ -108,7 +108,10 @@ func TestPushRenewalRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, project, id, body string
 	}{
-		{"wrong token", projectID, sub.ID, `{"renewal_token":"x` + sub.RenewalToken[1:] + `",` + newSub + `}`},
+		// "!" is not in the base64url alphabet, so this is wrong no matter what
+		// the real token starts with. (An earlier version used "x", which made
+		// the "wrong" token equal the real one whenever the token began with x.)
+		{"wrong token", projectID, sub.ID, `{"renewal_token":"!` + sub.RenewalToken[1:] + `",` + newSub + `}`},
 		{"no token", projectID, sub.ID, `{` + newSub + `}`},
 		{"unknown subscription", projectID, "nope", good},
 		{"unknown project", "nope", sub.ID, good},
