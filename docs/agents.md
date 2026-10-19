@@ -663,15 +663,11 @@ or OMP the cap bounds the pipeline's own model calls, not the agent's, and the b
 (`agent_not_counted`). Any agent whose output carries a cost line or its token counts (the two
 rules above) is counted, whatever its kind.
 
-**Follow-up, not yet done:** Hermes's CLI documents a `--usage-file <path>` flag that writes a
-machine-readable JSON usage report (`estimated_cost_usd`, `input_tokens`/`output_tokens`/
-`total_tokens`, `api_calls`, …) after a run — but it is documented against `hermes -z`
-(the standalone one-shot entry point), and this harness invokes `hermes chat --yolo -q ...`. Whether
-`--usage-file` (or an equivalent) is available in that exact invocation, and what changing the
-invocation to get it would risk breaking (the exact argv Hermes accepts has broken this integration
-silently before — see the `hermesArgs` comment in `internal/executor/agent.go`), needs verifying
-against a real Hermes container before being wired in. Until then, the stdout-scraping above is the
-whole story.
+**Verified (no flag to wire).** `--usage-file` was checked against the real pinned image
+(`nousresearch/hermes-agent:v2026.5.16`): `hermes chat --help` lists no such flag, and neither
+`cli.py` nor `hermes_cli/` in the image contain `usage-file`/`usage_file`/`usage file` at all. It
+is not a `hermes chat` option in this version, so the stdout-scraping above is not a placeholder —
+it is the only thing the pinned image offers, and it stays.
 
 ## Live output during a run: what "silent for minutes" is, and is not
 
@@ -710,10 +706,12 @@ print. The captured live-output snapshot from that exact run showed the agent st
 search phase (`search_files`, `read_file`, `session_search`) with no write yet at the moment of Stop
 — consistent with slow generation, not a buffering bug caught in the act.
 
-**Follow-up, not yet done:** confirming this either way needs a real Hermes container with stdout
-piped (not a TTY) and a known-slow prompt, watching whether *any* output line appears before the
-process exits. Until that is done, no flag is added to `hermesArgs` on the strength of a plausible
-name alone.
+**Verified (not a bug).** Confirmed against the real pinned image's source
+(`nousresearch/hermes-agent:v2026.5.16`): Hermes force-flushes its output — `sys.stdout.flush()`,
+`out.flush()` and a `_flush_stream()` path in `cli.py` — and `hermes chat --help` exposes no
+`--format stream-json` or other buffering-adjacent flag. The "silent for minutes" is the agent
+genuinely printing nothing mid-generation (waiting on its model between tool calls), not a flush
+defect, so no flag is added.
 
 ## Toolchains: the agent's image doesn't need one, and shouldn't install one
 
@@ -734,13 +732,14 @@ sanity cap in `internal/fsdiff`). The right fix is upstream of that: the impleme
 build/test commands and tells the agent not to install a toolchain, compiler, or SDK to verify its
 own work — the harness already will, right after.
 
-**Follow-up, not yet done:** offering the check image's own toolchain to the agent container
-directly (e.g. a read-only bind mount of a matching toolchain layer, or running the agent from the
-same base image as `check.image`) would remove even the temptation, and might be cheap for the
-common case where `executor.image` and the derived/configured `check.image` are the same toolchain
-family. It isn't implemented here — it changes how the agent container and the check sandbox relate
-to each other, which is more than this fix's scope — but it's a reasonable next step if this keeps
-recurring in practice.
+**Deliberate, not a gap.** Giving the agent container a toolchain (a read-only bind mount of the
+check image's toolchain, or running the agent from the check image's base) is *not* implemented on
+purpose: it would hand the auto-approving agent the very thing it must not have — a way to run its
+own unbounded build/test/compiler commands inside its egress-enabled container, re-introducing the
+downloaded-toolchain bloat and undermining the "the harness runs checks in its own network-isolated
+sandbox" split that this section exists to preserve. The primary mitigation stands: the
+implementation brief names the harness's own build/test commands and tells the agent not to install
+a toolchain. Revisit only if a real run shows the agent still installing one despite the brief.
 
 ## Security / trust tradeoff — read this before wiring an agent
 
