@@ -29,7 +29,9 @@ test("home lists the seeded initiative", async () => {
   await expect(page.getByRole("heading", { name: "Initiatives" })).toBeVisible();
   // The project's own name, not a hard-coded label.
   await expect(page.locator(".ph-project")).toHaveText("project");
-  const card = page.getByText("A recipe sharing app for home cooks").first();
+  // The card's title control is a button; getByRole scopes past the seed-from
+  // selector's <option> with the same text (and the button is what opens it).
+  const card = page.getByRole("button", { name: "A recipe sharing app for home cooks" });
   await expect(card).toBeVisible();
   await expectAccessible(page, "home");
   await card.click();

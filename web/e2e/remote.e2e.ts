@@ -69,15 +69,15 @@ test("the project switcher: deep links name the project, the choice is remembere
 
   await switcher.selectOption(p2);
   await expect(page).toHaveURL(new RegExp(`#/p/${p2}/$`));
-  await expect(page.getByText("A shared grocery list for families").first()).toBeVisible();
-  await expect(page.getByText("A recipe sharing app for home cooks")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "A shared grocery list for families" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "A recipe sharing app for home cooks" })).toHaveCount(0);
 
   // Remembered: a bare address opens the last project chosen.
   await page.goto("/#/");
   await expect(page).toHaveURL(new RegExp(`#/p/${p2}/$`));
   // A deep link into the other project switches to it.
   await page.goto(`/#/p/${p1}/`);
-  await expect(page.getByText("A recipe sharing app for home cooks").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "A recipe sharing app for home cooks" })).toBeVisible();
   await expect(switcher).toHaveValue(p1);
   // A project the daemon does not serve is said to be missing.
   await page.goto("/#/p/0123456789abcdef0123456789abcdef/");
@@ -127,7 +127,7 @@ test.describe("a phone on another device", () => {
 
   test("switches project in the top bar and answers a question at 390px", async () => {
     await page.getByLabel("Project").selectOption(p2);
-    await expect(page.getByText("A shared grocery list for families").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "A shared grocery list for families" })).toBeVisible();
     await page.goto(`${base}/#/p/${p2}/i/${ini2}/define`);
     const answer = page.getByLabel("Answer to: Who is the primary user?");
     await expect(answer).toBeVisible();
