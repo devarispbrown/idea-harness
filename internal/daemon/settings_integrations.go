@@ -28,8 +28,10 @@ func (s *Server) handleUpdateIntegration(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
-	if name != "slack" && name != "linear" {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("no integration matching %q (use slack or linear)", name))
+	switch name {
+	case "slack", "linear", "email", "telegram":
+	default:
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no integration matching %q (use slack, linear, email or telegram)", name))
 		return
 	}
 	var body struct {
@@ -46,14 +48,23 @@ func (s *Server) handleUpdateIntegration(w http.ResponseWriter, r *http.Request)
 	remove := bytes.Equal(bytes.TrimSpace(body.Config), []byte("null"))
 	var slackCfg *config.SlackConfig
 	var linearCfg *config.LinearConfig
+	var emailCfg *config.EmailConfig
+	var telegramCfg *config.TelegramChannelConfig
 	if !remove {
 		var target any
-		if name == "slack" {
+		switch name {
+		case "slack":
 			slackCfg = &config.SlackConfig{}
 			target = slackCfg
-		} else {
+		case "linear":
 			linearCfg = &config.LinearConfig{}
 			target = linearCfg
+		case "email":
+			emailCfg = &config.EmailConfig{}
+			target = emailCfg
+		case "telegram":
+			telegramCfg = &config.TelegramChannelConfig{}
+			target = telegramCfg
 		}
 		if err := decodeStrict(bytes.NewReader(body.Config), target); err != nil {
 			writeError(w, http.StatusBadRequest, "config: "+err.Error())
@@ -65,10 +76,15 @@ func (s *Server) handleUpdateIntegration(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if !s.writeHarness(w, r, pr, func(h *config.HarnessConfig) error {
-		if name == "slack" {
+		switch name {
+		case "slack":
 			h.Integrations.Slack = slackCfg
-		} else {
+		case "linear":
 			h.Integrations.Linear = linearCfg
+		case "email":
+			h.Integrations.Email = emailCfg
+		case "telegram":
+			h.Integrations.Telegram = telegramCfg
 		}
 		return nil
 	}) {
