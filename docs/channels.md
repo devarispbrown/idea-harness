@@ -21,14 +21,25 @@ box or VPS — see [`self-hosting.md`](self-hosting.md) and `idea remote enable`
 The daemon long-polls the bot and turns each text message into a **draft**
 initiative. No separate script, no capture token.
 
-**1. Create the bot.** In Telegram, message `@BotFather`, send `/newbot`, name
-it, and copy the bot token (`1234567890:AA…`).
+**1. Create the bot.** In Telegram (desktop or mobile — same flow), search for
+`@BotFather` — use the **verified** one (blue checkmark; there are impersonators)
+— start a chat, and send `/newbot`. It asks for two things, in order:
 
-**2. Put the token in the daemon's environment:**
+- a **display name** (anything, e.g. "My Idea Bot"), then
+- a **username** (must end in `bot`, lowercase, e.g. `my_idea_bot`).
+
+It then replies with the token (`1234567890:AA…`). Copy that.
+
+**2. Put the token in the daemon's environment.** The daemon reads it from its
+own process environment, so export it in the shell where you run `idea`, then
+restart the daemon (step 4) from that same shell:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="1234567890:AA…"
 ```
+
+(To make it stick across reboots, put the `export` in your shell profile —
+`~/.zshrc` or `~/.bashrc` — and restart the daemon after.)
 
 **3. Configure the channel** in `~/.local/share/idea-harness/config.yaml` (or
 `$IDEA_HARNESS_STATE/config.yaml`):
@@ -37,14 +48,19 @@ export TELEGRAM_BOT_TOKEN="1234567890:AA…"
 channels:
   telegram:
     bot_token_env: TELEGRAM_BOT_TOKEN   # the env var name, never the token itself
-    project: <project-id>               # where drafts land (idea status shows ids)
+    project: <project-id>               # the 32-char id in the web UI address (#/p/<id>/)
 ```
+
+`<project-id>` is the 32-character id you see in the web UI's address bar
+(`http://127.0.0.1:8787/#/p/<id>/…`) — the same value `idea init` printed when
+you created the project.
 
 **4. Restart the daemon** so it picks up the config: `idea daemon stop`, then any
 command starts it again.
 
-**5. Verify.** Text your bot "A recipe sharing app for home cooks"; it appears on
-the Home page as a **draft** initiative. Open it → **Start**.
+**5. Verify.** In Telegram, open a chat with your bot and send "A recipe sharing
+app for home cooks"; it appears on the Home page as a **draft** initiative. Open
+it → **Start**.
 
 ---
 
