@@ -934,6 +934,9 @@ idea daemon --allowed-hosts laptop.tail1234.ts.net   # or put it in config.yaml
 idea ui pair --label phone                     # prints a one-time code
 ```
 
+`idea remote enable` does those three steps for you — detect the name, run
+`tailscale serve`, and set the allowed host (see [`self-hosting.md`](self-hosting.md)).
+
 Open `https://laptop.tail1234.ts.net` on the phone, enter the code, and you are signed in. HTTPS
 matters beyond encryption: browsers only install the app to the home screen, and only allow push
 notifications, on a secure context (HTTPS or `localhost`). `tailscale funnel` would put the same

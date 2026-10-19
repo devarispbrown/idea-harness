@@ -71,6 +71,10 @@ Commands:
   ui pair|sessions     sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)
   ui pair [--label <name>] [--qr] mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it)
   ui sessions [revoke <id>|--all] list remote browser sessions; revoke one, or every one
+  remote enable|disable|status turn remote access on or off over Tailscale (see docs/self-hosting.md): enable detects the MagicDNS name, runs `tailscale serve`, and records it as an allowed host; disable reverses it; status shows the current setup
+  remote enable        turn remote access on: detect the Tailscale MagicDNS name, run `tailscale serve`, set the allowed host, restart the daemon
+  remote disable       turn remote access off: clear the allowed host and stop `tailscale serve`
+  remote status        show the daemon's remote listener and allowed hosts, and whether tailscale serve is up
   dev                  start the daemon and serve the web UI
   version              print the version, commit and build state
   help [--format=md]   show this command list (--format=md emits the docs/cli.md table)

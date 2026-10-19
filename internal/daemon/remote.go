@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -64,6 +65,12 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML writes the duration in its Go string form ("720h"), the form
+// UnmarshalYAML reads back, so a config round-trip is lossless.
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
 const (
 	defaultSessionTTL  = 30 * 24 * time.Hour
 	defaultPushContact = "https://github.com/devarispbrown/idea-harness"
@@ -94,6 +101,29 @@ func LoadDaemonConfig(stateRoot string) (DaemonConfig, error) {
 		return DaemonConfig{}, fmt.Errorf("%s: %w", DaemonConfigPath(stateRoot), err)
 	}
 	return wrapper.Daemon, nil
+}
+
+// WriteDaemonConfig writes <stateRoot>/config.yaml with the `daemon:` section.
+// It is the single write path for the daemon-wide config, mirroring
+// LoadDaemonConfig: the same file, the same shape, 0600.
+func WriteDaemonConfig(stateRoot string, c DaemonConfig) error {
+	var wrapper struct {
+		Daemon DaemonConfig `yaml:"daemon"`
+	}
+	wrapper.Daemon = c
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(wrapper); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(DaemonConfigPath(stateRoot), buf.Bytes(), 0o600)
 }
 
 func (c DaemonConfig) sessionTTL() time.Duration {

@@ -132,6 +132,33 @@ func TestLoadDaemonConfig(t *testing.T) {
 	}
 }
 
+// TestWriteDaemonConfigRoundTrip: WriteDaemonConfig then LoadDaemonConfig
+// preserves every field, including SessionTTL's duration string form.
+func TestWriteDaemonConfigRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	want := DaemonConfig{
+		AllowedHosts: []string{"laptop.tail1.ts.net"},
+		Listen:       "100.64.0.9:8787",
+		SessionTTL:   Duration(48 * time.Hour),
+	}
+	if err := WriteDaemonConfig(root, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadDaemonConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "laptop.tail1.ts.net" {
+		t.Fatalf("allowed_hosts round-trip: %v", got.AllowedHosts)
+	}
+	if got.Listen != "100.64.0.9:8787" {
+		t.Fatalf("listen round-trip: %q", got.Listen)
+	}
+	if got.sessionTTL() != 48*time.Hour {
+		t.Fatalf("session_ttl round-trip: %v", got.sessionTTL())
+	}
+}
+
 // TestRunRefusesABadListenBeforeBinding: a refused daemon.listen stops the
 // daemon at start rather than leaving it quietly loopback-only.
 func TestRunRefusesABadListenBeforeBinding(t *testing.T) {

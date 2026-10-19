@@ -24,25 +24,23 @@ permanent or spend a cent on a box.
 use `go install ./cmd/idea`, which omits it), and Tailscale on this machine *and*
 on your phone. Sign both in to the same tailnet.
 
-**Turn on remote access:**
+**One command:**
 
 ```bash
-tailscale serve --bg 8787            # prints https://<machine>.ts.net — copy the hostname
-idea daemon stop
-idea daemon --allowed-hosts <machine>.ts.net   # foreground; leave this terminal open
+idea remote enable        # detects the name, runs tailscale serve, allows the name, restarts
+idea ui pair --qr         # scan from your phone
 ```
 
-In a second terminal:
+`idea remote enable` detects the machine's MagicDNS name, runs
+`tailscale serve --bg 8787`, records the name as an allowed host in the daemon
+config, and restarts the daemon — the manual steps collapsed into one command.
+`idea remote status` shows the result; `idea remote disable` turns it back off.
 
-```bash
-idea ui pair --qr                    # scan from your phone
-```
-
-**Did it work?** Open the `tailscale serve` address on your phone, enter the code,
-and you land on the Home page. A **403 "invalid host"** means the name passed to
-`--allowed-hosts` is not the one the browser sent — re-check `tailscale serve`'s
-output and restart. A **401** means the pairing code was wrong or expired — run
-`idea ui pair` again.
+**Did it work?** Open the `tailscale serve` address on your phone (it is
+`https://<machine>.ts.net`), enter the code, and you land on the Home page. A
+**403 "invalid host"** means the name the daemon accepted is not the one the
+browser sent — run `idea remote enable` again. A **401** means the pairing code
+was wrong or expired — run `idea ui pair` again.
 
 The policy behind `tailscale serve` and the remote listener:
 [`configuration.md`](configuration.md#remote-access),
