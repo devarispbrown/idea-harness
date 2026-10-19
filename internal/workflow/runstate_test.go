@@ -14,6 +14,16 @@ import (
 	"github.com/devarispbrown/idea-harness/internal/security"
 )
 
+// firstTaskID returns the initiative's first task id (these fixtures create one).
+func firstTaskID(t *testing.T, eng *Engine, iniID string) string {
+	t.Helper()
+	tasks, err := eng.db.ListTasks(context.Background(), iniID)
+	if err != nil || len(tasks) == 0 {
+		t.Fatalf("no tasks: %v", err)
+	}
+	return tasks[0].ID
+}
+
 // scriptedAgentDocker is a fake docker whose agent writes $FAKE_WRITE (with
 // $FAKE_CONTENT) into the work root, prints a couple of lines, and keeps
 // "running" until the file $FAKE_HOLD exists.
@@ -60,7 +70,7 @@ func stopMidRun(t *testing.T, eng *Engine, iniID, path, content string) {
 	// Cancel once the agent has written its file, not after a fixed delay:
 	// under -race on a loaded machine the planner can outlast 300 ms, and a
 	// cancel before the agent ran kept nothing -- a flake, not a defect.
-	written := filepath.Join(eng.workRoot, "work", iniID, path)
+	written := filepath.Join(eng.workRoot, "work", iniID, firstTaskID(t, eng, iniID), path)
 	go func() {
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
@@ -197,7 +207,7 @@ func TestAStaleCarriedFileIsSkipped(t *testing.T) {
 	if f == nil || !strings.Contains(f.Evidence, "not carried") || !strings.Contains(f.Evidence, "a.txt") {
 		t.Errorf("the skipped file is not reported: %+v", f)
 	}
-	root := filepath.Join(eng.workRoot, "work", iniID)
+	root := filepath.Join(eng.workRoot, "work", iniID, firstTaskID(t, eng, iniID))
 	if got, _ := os.ReadFile(filepath.Join(root, "a.txt")); string(got) != "written by hand since\n" {
 		t.Errorf("the carried file overwrote the workspace's: %q", got)
 	}
@@ -244,7 +254,7 @@ func TestKeptFilesSurviveARestartAndCorruptionIsIgnored(t *testing.T) {
 	if restarted.PartialWork(iniID) == nil {
 		t.Fatal("the kept files did not survive a restart")
 	}
-	if err := os.WriteFile(restarted.partialPath(iniID), []byte("{torn"), 0o644); err != nil {
+	if err := os.WriteFile(restarted.partialPath(iniID, firstTaskID(t, restarted, iniID)), []byte("{torn"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if restarted.PartialWork(iniID) != nil {

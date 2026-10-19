@@ -576,7 +576,7 @@ func (e *Engine) executeTask(ctx context.Context, initiativeID string, task doma
 		TaskTitle:     task.Title,
 		TaskStatement: task.Statement,
 		Brief:         brief,
-		WorkRoot:      filepath.Join(root, "work", initiativeID),
+		WorkRoot:      filepath.Join(root, "work", initiativeID, task.ID),
 		ExtraFiles:    e.testExtraFiles,
 		ProjectRoot:   e.workspaceRoot,
 	}
@@ -978,7 +978,7 @@ func (e *Engine) executeTask(ctx context.Context, initiativeID string, task doma
 
 	// The change set now carries the kept files, so the record can go.
 	if carried != nil {
-		_ = os.Remove(e.partialPath(initiativeID))
+		_ = os.Remove(e.partialPath(initiativeID, task.ID))
 	}
 	if f := e.carriedFinding(cs, carried); f != nil {
 		if err := e.db.CreateFinding(ctx, f); err != nil {

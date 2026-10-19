@@ -181,14 +181,15 @@ type PartialWorkInfo struct {
 	Note string `json:"note,omitempty"`
 }
 
-// partialPath is beside the initiative's work root, not inside it: seeding
-// removes the work root before every run.
-func (e *Engine) partialPath(initiativeID string) string {
+// partialPath is beside the task's work root, not inside it: seeding removes
+// the work root before every run. Per-task so concurrent tasks keep their own
+// stopped-run files.
+func (e *Engine) partialPath(initiativeID, taskID string) string {
 	root := e.workRoot
 	if root == "" {
 		root = os.TempDir()
 	}
-	return filepath.Join(root, "work", ".partial-"+initiativeID+".json")
+	return filepath.Join(root, "work", ".partial-"+initiativeID+"-"+taskID+".json")
 }
 
 // capturePartial keeps what a run that ended without a change set had
@@ -239,49 +240,63 @@ func (e *Engine) capturePartial(ctx context.Context, initiativeID, taskID, workR
 	} else {
 		pw.Files = files
 	}
-	if err := writeJSONAtomic(e.partialPath(initiativeID), pw); err != nil {
+	if err := writeJSONAtomic(e.partialPath(initiativeID, taskID), pw); err != nil {
 		e.log.Warn("could not record the stopped run's files", "initiative", initiativeID, "err", err)
 		return
 	}
 	e.log.Info("kept the stopped run's files", "initiative", initiativeID, "task", taskID, "files", len(pw.Files), "dropped", pw.Dropped)
 }
 
-// readPartial returns the initiative's partial, or nil. A corrupt or
-// unreadable file is treated as absent: a torn write must not stop a run.
-func (e *Engine) readPartial(initiativeID string) *partialWork {
-	data, err := os.ReadFile(e.partialPath(initiativeID))
+// readPartial returns a task's kept partial, or nil. A corrupt or unreadable
+// file is treated as absent: a torn write must not stop a run.
+func (e *Engine) readPartial(initiativeID, taskID string) *partialWork {
+	data, err := os.ReadFile(e.partialPath(initiativeID, taskID))
 	if err != nil {
 		return nil
 	}
 	var pw partialWork
 	if err := json.Unmarshal(data, &pw); err != nil || pw.TaskID == "" {
-		_ = os.Remove(e.partialPath(initiativeID))
+		_ = os.Remove(e.partialPath(initiativeID, taskID))
 		return nil
 	}
 	return &pw
 }
 
-// PartialWork describes the initiative's kept partial, or nil.
+// PartialWork describes the next ready task's kept partial, or nil — the one a
+// re-run would carry, mirroring nextReadyTask.
 func (e *Engine) PartialWork(initiativeID string) *PartialWorkInfo {
-	pw := e.readPartial(initiativeID)
+	task, err := e.nextReadyTask(context.Background(), initiativeID)
+	if err != nil {
+		return nil
+	}
+	pw := e.readPartial(initiativeID, task.ID)
 	if pw == nil {
 		return nil
 	}
 	return &PartialWorkInfo{TaskID: pw.TaskID, Files: len(pw.Files), Note: pw.Dropped}
 }
 
-// DiscardPartial throws the initiative's kept partial away. It is called by
-// "Start over", and by reopening a phase or revising the plan, which can
-// change the task it belongs to.
+// DiscardPartial throws the initiative's kept partials away — every task's, not
+// one. It is called by "Start over", and by reopening a phase or revising the
+// plan, which can change the task a partial belongs to.
 func (e *Engine) DiscardPartial(initiativeID string) error {
-	err := os.Remove(e.partialPath(initiativeID))
-	if err == nil {
-		e.log.Info("discarded the stopped run's files", "initiative", initiativeID)
+	root := e.workRoot
+	if root == "" {
+		root = os.TempDir()
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	matches, err := filepath.Glob(filepath.Join(root, "work", ".partial-"+initiativeID+"-*.json"))
+	if err != nil {
+		return err
 	}
-	return err
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if len(matches) > 0 {
+		e.log.Info("discarded the stopped run's files", "initiative", initiativeID, "files", len(matches))
+	}
+	return nil
 }
 
 // carryResult is what resumePartial did, for the change set's finding.
@@ -301,7 +316,7 @@ type carryResult struct {
 // if the path is absent, an edit only if the file is unchanged. Anything else
 // changed in the workspace since, and carrying it would overwrite that.
 func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResult {
-	pw := e.readPartial(initiativeID)
+	pw := e.readPartial(initiativeID, taskID)
 	if pw == nil {
 		return nil
 	}
@@ -310,7 +325,7 @@ func (e *Engine) resumePartial(initiativeID, taskID, workRoot string) *carryResu
 	// would otherwise lose the kept files for good. Execute removes it once
 	// the change set that carries them exists.
 	if pw.TaskID != taskID {
-		_ = os.Remove(e.partialPath(initiativeID))
+		_ = os.Remove(e.partialPath(initiativeID, taskID))
 		e.log.Info("discarded a stopped run's files kept for a different task", "initiative", initiativeID, "task", pw.TaskID)
 		return nil
 	}

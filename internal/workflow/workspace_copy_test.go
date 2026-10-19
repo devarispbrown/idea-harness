@@ -152,7 +152,7 @@ func TestSecretsAreNotGivenToTheAgentAndTheSkipIsReported(t *testing.T) {
 	if strings.Contains(string(listing), ".env") {
 		t.Errorf("the agent's work root contained .env:\n%s", listing)
 	}
-	root := filepath.Join(eng.workRoot, "work", iniID)
+	root := filepath.Join(eng.workRoot, "work", iniID, firstTaskID(t, eng, iniID))
 	if _, err := os.Stat(filepath.Join(root, "config", "prod.json")); err == nil {
 		t.Error("a file holding a credential was given to the agent")
 	}
@@ -234,9 +234,9 @@ func TestNextTaskWaitsForTheOpenChangeSet(t *testing.T) {
 // Each attempt starts from the workspace, not from what the last attempt left.
 func TestEachAttemptStartsFromTheWorkspace(t *testing.T) {
 	eng, db, iniID, _ := newWorkspaceFixture(t)
-	addTask(t, db, iniID, "add /health")
+	task := addTask(t, db, iniID, "add /health")
 	ctx := context.Background()
-	root := filepath.Join(eng.workRoot, "work", iniID)
+	root := filepath.Join(eng.workRoot, "work", iniID, task.ID)
 	writeFile(t, filepath.Join(root, "leftover.txt"), "from an earlier attempt\n")
 	if _, err := eng.Execute(ctx, iniID); err != nil {
 		t.Fatal(err)

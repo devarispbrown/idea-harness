@@ -2001,7 +2001,7 @@ func TestExecuteBlastRadiusFalsePositiveFixture(t *testing.T) {
 
 	// The generated file really was written -- a genuine 4th file -- so this
 	// proves the COUNT excludes it, not that it never existed.
-	if _, err := os.Stat(filepath.Join(eng.workRoot, "work", iniID, "generated.bin")); err != nil {
+	if _, err := os.Stat(filepath.Join(eng.workRoot, "work", iniID, task.ID, "generated.bin")); err != nil {
 		t.Fatalf("expected the generated file to actually exist in the work root: %v", err)
 	}
 
