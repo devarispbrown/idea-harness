@@ -8,7 +8,7 @@ func TrustFor(selector string) domain.TrustLevel {
 	switch selector {
 	case "system", "role_contract":
 		return domain.TrustSystem
-	case "immutable_policy", "project_policy":
+	case "immutable_policy", "project_policy", "project_memory":
 		return domain.TrustPolicy
 	case "human_approved", "task":
 		// "task" is the user's own idea/direction — human-provided input.

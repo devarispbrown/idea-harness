@@ -149,6 +149,17 @@ type Question struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
+// ProjectMemory is one accumulated, cross-initiative entry in a project's
+// standing memory: a human-resolved decision (DEC-x: question → resolution)
+// that later initiatives read as authoritative context. The per-project DB is
+// the project, so no initiative_id is stored.
+type ProjectMemory struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // DocComment is a human comment anchored to a section of an artifact version.
 // It can be promoted into an open Question for the initiative's judgment flow.
 type DocComment struct {

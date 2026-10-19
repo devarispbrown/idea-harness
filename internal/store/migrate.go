@@ -1184,6 +1184,19 @@ ALTER TABLE push_subscriptions ADD COLUMN renewal_token_hash TEXT NOT NULL DEFAU
 	`
 ALTER TABLE questions ADD COLUMN needs_clarification INTEGER NOT NULL DEFAULT 0;
 `,
+	// 51: project_memory is a project-scoped (the per-project DB IS the
+	// project), append-only record of cross-initiative facts -- for now, each
+	// human-resolved decision as "DEC-x: question → resolution". Later
+	// initiatives read the most recent entries as authoritative context, so the
+	// project's decided facts accumulate instead of being re-derived.
+	`
+CREATE TABLE IF NOT EXISTS project_memory (
+	id         TEXT PRIMARY KEY,
+	kind       TEXT NOT NULL,
+	body       TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

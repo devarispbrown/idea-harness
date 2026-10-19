@@ -17,6 +17,7 @@ import (
 var priorityFor = map[string]int{
 	"immutable_policy":   1,
 	"project_policy":     2,
+	"project_memory":     2,
 	"role_contract":      3,
 	"stage_instructions": 4,
 	"task":               5,

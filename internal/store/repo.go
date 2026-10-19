@@ -1172,8 +1172,40 @@ func (db *DB) ResolveDecision(ctx context.Context, decisionID, resolution, actor
 		// leave the decision resolved with nothing marked stale. A decision
 		// resolved before anything depends on it (the ordinary case) marks
 		// nothing -- markDependentsStaleTx no-ops on three empty lists.
-		return markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs)
+		if err := markDependentsStaleTx(tx, dec.InitiativeID, dec.ID, dec.Code, reqIDs, taskIDs, csIDs); err != nil {
+			return err
+		}
+		// Append the resolution to project memory in the same transaction, so a
+		// decided fact survives beyond its initiative and later initiatives read
+		// it as authoritative context. Bounded so a long question/resolution
+		// cannot bloat the memory.
+		body := truncateOperationError(fmt.Sprintf("%s: %s → %s", dec.Code, dec.Question, resolution), 400)
+		_, err = tx.Exec(`INSERT INTO project_memory (id, kind, body, created_at) VALUES (?, ?, ?, ?)`,
+			id.New(), "decision", body, time.Now().UTC().UnixMilli())
+		return err
 	})
+}
+
+// ListProjectMemory returns the most recent project-memory entries, newest
+// first. The per-project DB is the project, so no scope argument is needed.
+func (db *DB) ListProjectMemory(ctx context.Context, limit int) ([]domain.ProjectMemory, error) {
+	rows, err := db.SQL().QueryContext(ctx,
+		`SELECT id, kind, body, created_at FROM project_memory ORDER BY created_at DESC, rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.ProjectMemory, 0)
+	for rows.Next() {
+		var m domain.ProjectMemory
+		var created int64
+		if err := rows.Scan(&m.ID, &m.Kind, &m.Body, &created); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = time.UnixMilli(created)
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // ReopenDecision returns a decided decision to open and clears its resolution,

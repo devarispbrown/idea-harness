@@ -500,6 +500,7 @@ func (e *Engine) runModel(ctx context.Context, initiativeID, stageKey, roleName,
 	// that generation configured, not whatever Reload has swapped in by the
 	// time the response comes back.
 	snap := e.snapshotConfig()
+	inputs = e.injectProjectContext(ctx, inputs, snap.cfg)
 	bundle := ccontext.Compile(inputs)
 	modelSpec := e.modelSpecFor(initiativeID, roleName)
 	prov, modelName, err := snap.registry.Resolve(modelSpec)
@@ -2119,6 +2120,67 @@ func (e *Engine) contextDocs(ctx context.Context, initiativeID string) string {
 	}
 	out := b.String()
 	return truncateRunesForContext(out, contextDocsMaxTotal)
+}
+
+// projectMemoryMaxEntries caps how many accumulated decision entries a single
+// model call reads, and projectMemoryMaxBody caps each entry's contribution, so
+// the block cannot grow unbounded as a project resolves more decisions.
+const (
+	projectMemoryMaxEntries = 50
+	projectMemoryMaxBody    = 400
+)
+
+// injectProjectContext prepends the project's constitution (project_policy) and
+// its accumulated decision memory (project_memory) to the stage inputs, so
+// every model call -- generative and reviewer alike -- is grounded in the
+// project's standing constraints and previously-resolved decisions.
+func (e *Engine) injectProjectContext(ctx context.Context, inputs []ccontext.Input, cfg config.HarnessConfig) []ccontext.Input {
+	mem := e.projectMemory(ctx)
+	if len(cfg.Constitution) == 0 && mem == "" {
+		return inputs
+	}
+	out := make([]ccontext.Input, 0, len(inputs)+2)
+	if len(cfg.Constitution) > 0 {
+		out = append(out, ccontext.Input{Selector: "project_policy", Content: constitutionBlock(cfg.Constitution)})
+	}
+	if mem != "" {
+		out = append(out, ccontext.Input{Selector: "project_memory", Content: mem})
+	}
+	return append(out, inputs...)
+}
+
+// projectMemory assembles the project's accumulated decision memory as a
+// bounded block. Empty when nothing has been resolved yet.
+func (e *Engine) projectMemory(ctx context.Context) string {
+	entries, err := e.db.ListProjectMemory(ctx, projectMemoryMaxEntries)
+	if err != nil {
+		e.log.Warn("project memory unavailable", "err", err)
+		return ""
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Decisions already resolved in this project (authoritative — do not contradict):\n")
+	for _, m := range entries {
+		body := m.Body
+		if len([]rune(body)) > projectMemoryMaxBody {
+			body = truncateRunesForContext(body, projectMemoryMaxBody)
+		}
+		fmt.Fprintf(&b, "- %s\n", body)
+	}
+	return truncateRunesForContext(b.String(), 16000)
+}
+
+// constitutionBlock renders the project's immutable principles as a policy
+// block the reviewer is expected to enforce.
+func constitutionBlock(principles []string) string {
+	var b strings.Builder
+	b.WriteString("The project's immutable principles (hard constraints — violating one is a defect):\n")
+	for _, p := range principles {
+		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	return b.String()
 }
 
 // DescribeImages describes every image context doc that lacks a description,

@@ -35,6 +35,7 @@ var harnessSchema = `{
   "type": "object",
   "properties": {
     "network": { "enum": ["disabled", "enabled"] },
+    "constitution": { "type": "array", "items": { "type": "string" } },
     "review": {
       "type": "object",
       "properties": {

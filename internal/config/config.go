@@ -306,9 +306,14 @@ type OutcomesConfig struct {
 
 // HarnessConfig is harness.yaml (portable, committable).
 type HarnessConfig struct {
-	Network      NetworkPolicy             `json:"network" yaml:"network"`
-	Review       ReviewConfig              `json:"review" yaml:"review"`
-	Research     ResearchConfig            `json:"research" yaml:"research"`
+	Network  NetworkPolicy  `json:"network" yaml:"network"`
+	Review   ReviewConfig   `json:"review" yaml:"review"`
+	Research ResearchConfig `json:"research" yaml:"research"`
+	// Constitution lists the project's immutable principles. Each is injected
+	// into every stage and reviewer as a hard constraint (the project_policy
+	// context selector); the reviewer is instructed to flag any violation. Empty
+	// means no project-specific constitution.
+	Constitution []string                  `json:"constitution,omitempty" yaml:"constitution,omitempty"`
 	Providers    map[string]ProviderConfig `json:"providers" yaml:"providers"`
 	DefaultModel string                    `json:"default_model" yaml:"default_model"`
 	Executor     ExecutorConfig            `json:"executor" yaml:"executor"`
