@@ -117,6 +117,12 @@ func commands() []command {
 		{usage: "model ls <provider>", summary: "list a provider's models live (falls back to the catalog offline)"},
 		{usage: "model set <provider/model>", summary: "set the default model (--role <role> sets one role only)"},
 		{usage: "model add <name>", summary: "add a provider (--type, --base-url, --key-env)"},
+		{names: []string{"key"}, usage: "key set <provider> [--stdin] | key list", summary: "set or list the API keys providers read (set prompts for the key and writes it to .env, never shown)", flags: flagSpec{}, subs: map[string]flagSpec{
+			"set":  {"--stdin": flagBool},
+			"list": {},
+		}, subsAreRequired: true, run: cmdKey, inHelp: true},
+		{usage: "key set <provider> [--stdin]", summary: "set a provider's API key: prompts (or reads --stdin) and writes it to .env, then reloads the daemon", inHelp: true},
+		{usage: "key list", summary: "list each provider's key variable and whether it is set", inHelp: true},
 		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", flags: flagSpec{}, maxPositional: 2, run: cmdPRD, inHelp: true},
 		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", flags: jsonFlag, maxPositional: 1, run: cmdExplain, inHelp: true},
 		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", flags: flagSpec{}, maxPositional: 2, run: cmdExport, inHelp: true},

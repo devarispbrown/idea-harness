@@ -33,6 +33,9 @@ if this file has drifted.
 | `idea model ls <provider>` | list a provider's models live (falls back to the catalog offline) | — | — |
 | `idea model set <provider/model>` | set the default model (--role <role> sets one role only) | — | — |
 | `idea model add <name>` | add a provider (--type, --base-url, --key-env) | — | — |
+| `idea key set <provider> [--stdin] \| key list` | set or list the API keys providers read (set prompts for the key and writes it to .env, never shown) | `list`, `set --stdin` | takes no flags |
+| `idea key set <provider> [--stdin]` | set a provider's API key: prompts (or reads --stdin) and writes it to .env, then reloads the daemon | — | — |
+| `idea key list` | list each provider's key variable and whether it is set | — | — |
 | `idea prd` | render the reviewed PRD in your terminal | none | takes no flags |
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |

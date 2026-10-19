@@ -6,6 +6,41 @@ import (
 	"strings"
 )
 
+// SetDotEnv upserts KEY=VALUE into dir/.env, preserving every other line and
+// comment. A line that already sets KEY (with or without `export`, quoted or
+// not) is replaced in place; otherwise a line is appended. The file is created
+// mode 0600 — it holds secrets — and a missing file starts empty.
+func SetDotEnv(dir, key, value string) error {
+	path := filepath.Join(dir, ".env")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		probe := strings.TrimPrefix(trimmed, "export ")
+		eq := strings.Index(probe, "=")
+		if eq <= 0 || strings.TrimSpace(probe[:eq]) != key {
+			continue
+		}
+		lines[i] = key + "=" + value
+		replaced = true
+	}
+	if !replaced {
+		lines = append(lines, key+"="+value)
+	}
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return os.WriteFile(path, []byte(out), 0o600)
+}
+
 // LoadDotEnv reads a .env file (KEY=VALUE, with optional `export` prefix and
 // quotes) and returns its values. Values are used only as a fallback to the
 // real process environment for secret resolution (§47). No interpolation or

@@ -223,6 +223,7 @@ func listModels(a cmdArgs, stdout io.Writer) error {
 	fmt.Fprintln(stdout, muted("set the default: ")+bold("idea model set <provider/model>"))
 	fmt.Fprintln(stdout, muted("set per-role:    ")+bold("idea model set <provider/model> --role <role>"))
 	fmt.Fprintln(stdout, muted("add a provider:  ")+bold("idea model add <name> --type <type> --base-url <url> --key-env <ENV>"))
+	fmt.Fprintln(stdout, muted("set an API key:  ")+bold("idea key set <provider>"))
 	return nil
 }
 
@@ -286,7 +287,10 @@ func warnIfDaemonMissedTheKey(c *client, projectID, spec string, stdout io.Write
 		}
 		if os.Getenv(p.KeyEnv) == "" {
 			// The key is missing here too, which is the plain "no key" case that
-			// idea doctor already reports.
+			// idea doctor already reports. Name the fix so the very next thing
+			// after `idea model set` is not a dead end.
+			fmt.Fprintln(stdout, warn("⚠ "+p.KeyEnv+" is not set."))
+			fmt.Fprintln(stdout, muted("  Set it with ")+bold("idea key set "+provider)+muted(" — it prompts, writes the project's .env, and never shows the value."))
 			return
 		}
 		fmt.Fprintln(stdout, warn("⚠ the daemon does not have "+p.KeyEnv+", but your shell does."))

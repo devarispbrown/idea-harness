@@ -381,9 +381,10 @@ run` argv and is never written to state.
 > An earlier revision of this page said `.env` **does not reach the agent** — true before
 > `979e0d0`, and stale ever since: since that commit, a key that lives only in `.env` is enough,
 > with no separate step for the agent. If a keyed provider's key is set in neither the daemon's
-> environment nor `.env`, the run stops before the container starts, naming the variable. If you
-> set or change the environment variable itself (rather than `.env`), the daemon still needs a
-> restart to pick it up:
+> environment nor `.env`, the run stops before the container starts, naming the variable. The easy
+> path is `idea key set <provider>` (prompts, writes `.env`, reloads — no restart, no shell
+> history). If you set or change the environment variable itself (rather than `.env`), the daemon
+> still needs a restart to pick it up:
 >
 > ```bash
 > export ANTHROPIC_API_KEY=...   # before the daemon starts

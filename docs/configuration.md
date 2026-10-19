@@ -850,6 +850,11 @@ marks every claim as an **assumption** with source `"model knowledge, unverified
 
   The process environment takes precedence over `.env`; `.env` values are never written to config
   or state, only read for API calls and redaction.
+
+  The easy path is `idea key set <provider>` — it prompts for the key (input is hidden), writes
+  `.env`, and reloads the daemon so the next run picks it up without a restart; `idea key list`
+  shows each provider's variable and whether it is set. The key is never shown back or written to
+  `harness.yaml`.
 - `config validate` and the config API reject any key that would store a secret **value** inline
   (e.g. `api_key`, `password`, `token`); `*_env` references are permitted.
 - Secret values are redacted on the paths that store them: the artifact/blob store, and the event

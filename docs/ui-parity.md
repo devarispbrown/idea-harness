@@ -46,6 +46,8 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `model ls` | ui | `#/settings` — live model list per provider | |
 | `model set` | partial | `#/settings` — default model chips / custom model id | `--role` (per-role model) has no UI control |
 | `model add` | ui | `#/settings` — Add provider | |
+| `key set` | cli-only | CLI-only: prompts for the key and writes it to `.env`; Settings → Providers shows set/unset but does not write it | |
+| `key list` | ui | `#/settings` — Providers: each provider's key variable and set/unset | |
 | `prd` | ui | `#/i/<id>/doc/<artifact>` — Read on the PRD document row (Define) | |
 | `explain` | cli-only | CLI-only: gap — the Current Understanding (`GET …/understanding`) is not rendered anywhere in the UI yet | |
 | `export` | partial | `#/i/<id>/explore` — download an artifact as markdown | Explore lists artifacts for download; no kind picker like `export [kind]` |
