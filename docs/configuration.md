@@ -939,6 +939,9 @@ matters beyond encryption: browsers only install the app to the home screen, and
 notifications, on a secure context (HTTPS or `localhost`). `tailscale funnel` would put the same
 page on the public internet; don't.
 
+To keep the daemon running always-on — at boot, after a crash, or on a box in the cloud — see
+[`self-hosting.md`](self-hosting.md).
+
 ### Signing in and out
 
 - `idea ui pair [--label <name>]` mints a one-time code (ten minutes, single use) and prints where

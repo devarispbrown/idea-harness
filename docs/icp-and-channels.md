@@ -95,8 +95,8 @@ say so" moat (see `security-model.md`).
 ## Build order (each a small, independently shippable slice)
 
 1. **Capture endpoint + draft semantics + capability tokens** — the foundation.
-2. **Always-on setup guide** — local (Windows/macOS/Linux) + cloud
-   (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale.
+2. **Always-on setup guide** — [`self-hosting.md`](self-hosting.md): local
+   (Windows/macOS/Linux) + cloud (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale.
 3. **Slack control plane** — slash commands for create / monitor / operate, with
    context-before-action.
 4. **Telegram capture + judgment taps** — the solo-builder entry.
