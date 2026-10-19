@@ -1,89 +1,103 @@
 # ICP and channels: capture anywhere, judge anywhere
 
 The product's interaction model is **human-in-the-loop judgment**, not chat. This
-page pins the ICP, the one reframe every channel decision hangs off, and the
-decisions for adding capture/judgment channels and an always-on story.
+page pins the ICP, the interaction split, the channel decisions, and the ingress
+and always-on model that make "from anywhere" real.
 
 ## Who this is for (ICP)
 
 A **solo technical builder or a small team's technical lead** who:
 
 - wants reviewed, defensible output (idea → PRD → plan → code), not a chatbot;
-- is time-poor and context-switches constantly, so ideas strike — and pings land —
-  at odd moments away from a desk;
-- values control: their provider keys, their code, their review, their hardware.
+- wants to **create from anywhere** — capture an idea the moment it strikes, from
+  any device, and start and steer the work without sitting at a desk;
+- is time-poor and context-switches, so pings land at odd moments;
+- values control: their keys, their code, their review, their hardware.
 
-What they hire idea-harness for: turn ideas into **reviewed, verifiable**
-product/engineering work, with themselves as the reviewer of record.
+What they hire idea-harness for: turn ideas into reviewed, verifiable work, with
+themselves as the reviewer of record — **and to do that from anywhere, not just at
+a desk.**
 
 ## The interaction model (everything else follows)
 
-Two interaction classes with different channel needs:
+Two interaction classes, with different channel needs:
 
 | Class | What the human does | Bandwidth | Best surface |
 |---|---|---|---|
-| **Capture** | "idea: a CLI that …" | low, one-shot | phone / messaging / email |
+| **Capture** | "idea: a CLI that …" | low, one-shot | phone / messaging |
 | **Judge** | read, resolve, approve, verify | high, needs context | the web UI, deep-linked |
 
-Capture is chat-shaped; judgment is not. A channel must never try to do the
-judgment UI's job — its job is to *ping and hand off*.
+Capture is chat-shaped; judgment is context-shaped. A channel's job is to ping
+and hand off — it must never replace the judgment UI.
 
-**The tap-vs-open line** — what a notification may let you do, vs. what must
-deep-link into the app:
-
-- *Tap is fine:* resolve a decision to its recommendation, answer a simple
-  question, record a metric, waive a criterion.
-- *Must open the app:* approve the PRD (unlocks the pipeline), apply/revert a
-  change set (writes code), verify-with-evidence (a person's word).
-
-A stray thumb must never be able to approve a PRD or apply a diff.
+**Context-before-action** — the one rule every channel action obeys: *no blind
+action.* Before any accept, the action shows its options and their tradeoffs
+(Slack interactive message / Telegram inline keyboard with the tradeoff text). If
+the context genuinely cannot fit inline — a full diff, a PRD with findings — the
+action is a deep link, not a button. A stray tap must never approve a PRD or
+apply a diff without the human having seen why.
 
 ## Channels
 
-| Channel | Current state | Decision |
+| Channel | Role | Status |
 |---|---|---|
-| Slack | outbound notifications | keep; add interactive judgment taps |
-| Linear | two-way (inbound → initiatives, outbound updates) | keep |
-| Web push | per-browser, deep-links | keep — this is the phone channel |
-| Telegram | none | **add** — capture + judgment taps; best fit for the solo ICP |
-| Email | none | **add** as the no-config capture fallback |
-| SMS | none | **skip** — can't carry judgment, costs per message, web push already covers "ping my phone" |
+| **Slack** | **operational control plane** — create, monitor, operate via slash commands and interactive messages | outbound notifications today; build out |
+| **Telegram** | capture + judgment taps (the solo-builder entry) | add |
+| **Web push** | phone notifications, deep-links | keep |
+| **Email** | notifications only (outbound) | add (outbound) |
+| **Linear** | two-way issue sync | keep |
+| **SMS** | — | skip — can't carry context, costs per message |
 
-## The new ingress, and how to keep the trust model
+Slack is the flagship for the team ICP; Telegram for the solo ICP. Email is
+notifications-only, never a capture channel.
 
-Capture from a channel is an **unauthenticated write path into a local-first
-daemon** — a security-model change, not just a feature. Rules:
+## The ingress model (capability-tiered)
 
-1. **Per-channel capability token**, minted in Settings exactly like the push
-   renewal token (SHA-256 stored, never listed, constant-time compare). A
-   captured message without its channel's token is refused with one identical
-   401, so the route reveals nothing about which channels or projects exist.
-2. **Capture = draft only.** A captured idea creates a *draft* initiative (brief
-   saved, pipeline **not** started). Grounding docs and "Start" happen from the
-   real UI, so a channel can never auto-spend model budget or start the executor.
-3. **No secrets in, no secrets out.** Capture text goes through the existing
-   redactor on ingest; notifications are already redacted.
+Capture and operate from a channel are **unauthenticated write paths into a
+local-first daemon** — a security-model change, not just a feature. Rules:
 
-## Always-on: pull first, push as opt-in
+1. **Capability tokens, tiered by blast radius.**
+   - *Capture token* — creates a draft only. It can never start the pipeline,
+     spend budget, or touch the executor.
+   - *Operate token* — per channel (Slack), for the judgment actions. Each
+     operation carries its own context (options + tradeoffs, the diff, the
+     findings) and is refused otherwise.
+   - Both follow the push renewal token precedent: SHA-256 hashed, never listed,
+     constant-time compared, one identical 401 on refusal.
+2. **Capture = draft only.** A captured idea creates a draft initiative (brief
+   saved, pipeline **not** started). Grounding docs and Start happen from the real
+   UI.
+3. **Operate = context-before-action.** Approve/advance/review/apply from Slack
+   render what is being judged before the button; what cannot fit inline deep-links.
+4. **Who runs the relay.** Slack and Telegram host the bots (the always-on relay).
+   A compromised relay can at worst inject drafts under a capture token; an
+   operate token is channel-scoped and never permits a blind judgment. No secrets
+   in; everything is redacted on ingest and in notifications.
 
-A capture message must reach a daemon that is often asleep. Two models:
+## Always-on: a self-hosted box is the recommended setup
 
-- **Pull (default):** the channel is a tiny always-on *inbox* (the bot/email just
-  queues messages). The daemon drains it on start/interval. Zero infrastructure,
-  zero trust change.
-- **Push (opt-in):** the daemon runs on a box the builder controls
-  ($5 VPS + Tailscale), reusing the existing remote-access/pairing story.
-  Documented, never hosted.
+"From anywhere" means the daemon must be reachable when you are not at your
+machine. The recommended setup is a box you control, reachable over Tailscale.
 
-**No multi-tenant SaaS.** Hosting the executor means hosting arbitrary code
-execution — a liability and abuse surface that also dissolves the "runs on your
-machine, nothing leaves unless you say so" moat (see `security-model.md`).
+- **Local** — Windows, macOS, Linux: run the daemon headless, join it to your
+  Tailnet, reach it from any device.
+- **Cloud** — Render, Digital Ocean, Hetzner, AWS, GCP: a cheap always-on box,
+  the same way, over Tailscale.
+- **Pull inbox (fallback)** — the channel queues and the daemon drains on start.
+  For people who do not want an always-on box. Lower fidelity: nothing happens
+  until the daemon wakes.
+
+**No multi-tenant SaaS.** The daemon stays on hardware the builder controls —
+their laptop or their box. Hosting the executor would mean hosting arbitrary code
+execution, and it dissolves the "runs on your machine, nothing leaves unless you
+say so" moat (see `security-model.md`).
 
 ## Build order (each a small, independently shippable slice)
 
-1. Capture endpoint + draft semantics — reuse `POST /initiatives` and the
-   one-gesture brief (`idea new --file/--doc/--from`, Home compose).
-2. Telegram bot — capture → draft; judgment taps; deep-link everything else.
-3. Email inbox drain (pull model) — the no-config fallback.
-4. Self-host VPS + Tailscale guide (push opt-in).
-5. Interactive Slack taps — only if the small-team ICP is worth serving.
+1. **Capture endpoint + draft semantics + capability tokens** — the foundation.
+2. **Always-on setup guide** — local (Windows/macOS/Linux) + cloud
+   (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale.
+3. **Slack control plane** — slash commands for create / monitor / operate, with
+   context-before-action.
+4. **Telegram capture + judgment taps** — the solo-builder entry.
+5. **Email notifications** — outbound only.
