@@ -274,9 +274,12 @@ export default function ProductHome({
             </ul>
           )}
           {initiatives.length > 0 && (
-            <label className="ph-from">
-              <span className="ph-from-label">Seed from an existing initiative (optional)</span>
+            <div className="ph-from">
+              <label className="ph-from-label" htmlFor="ph-from">
+                Seed from an existing initiative (optional)
+              </label>
               <select
+                id="ph-from"
                 className="text-input"
                 value={from}
                 onChange={(e) => setFrom(e.target.value)}
@@ -288,7 +291,7 @@ export default function ProductHome({
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
           )}
           <div className="ph-compose-actions">
             <button type="button" className="ph-start" onClick={submitIdea}>
