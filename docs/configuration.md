@@ -48,6 +48,14 @@ name: my-product   # project display name
 # not read this setting either -- listing them is the opt-in.
 network: disabled
 
+# The project's immutable principles, injected into every stage and reviewer as
+# hard constraints (the project_policy context, policy trust). A reviewer is
+# expected to flag any output that violates one. Empty means no project-specific
+# constitution.
+#constitution:
+#  - "every feature starts as a small library with its own tests"
+#  - "no new third-party dependency without a written justification"
+
 # Review budget (§11, §16). The three fields bound different things — see the
 # table below; they are not three spellings of one budget.
 review:
@@ -141,6 +149,7 @@ Top-level fields:
 | Field | Meaning | Default |
 |---|---|---|
 | `network` | `disabled` \| `enabled` — whether research may fetch `research.urls` | `disabled` |
+| `constitution` | list of strings — the project's immutable principles, injected into every stage and reviewer as hard constraints (`project_policy` trust); a reviewer flags violations | (none) |
 | `review.max_cycles` | how many **review passes** the M1 review loop may run before it stops and sets the initiative to `needs_human_judgment`. A revise happens between passes, so `n` passes allow at most `n-1` revisions. `0` is **not** unlimited: the engine coerces any value `<= 0` to 3 | `3` |
 | `review.max_tokens` | the **output-token budget requested for every model call**, and the ceiling checked against the response — it is a per-call figure, not a pool that drains. Set, it directly overrides a stage's own built-in request size (still bounded by the model's real output ceiling — see "Model output ceilings" below); a response over it still fails that stage. Unset (`0`), each stage uses its own built-in request size as before | `0` (each stage's built-in size) |
 | `review.max_cost_usd` | **cumulative** spend ceiling across every model call the daemon makes for this project. The running total is charged per billed attempt (retries included) and is never reset while the daemon lives, so a crossed ceiling refuses every later call until the daemon restarts | `0` (no ceiling) |

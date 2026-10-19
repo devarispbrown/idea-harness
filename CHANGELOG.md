@@ -102,6 +102,18 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ### Added
 
+- **Cross-initiative project memory + a constitution.** Resolving a decision now appends
+  `DEC-x: question → resolution` to a project-wide `project_memory` table (in the same
+  transaction), and every stage and reviewer reads the most recent entries as authoritative
+  `project_memory` context. `harness.yaml` gains a `constitution:` list of immutable principles
+  injected into every model call as `project_policy` — a reviewer flags violations.
+- **Uncertainty markers.** The framing/PRD stages are told to emit `[NEEDS CLARIFICATION]`
+  instead of guessing at a missing input; the marker is recorded on the question
+  (`needs_clarification`, migration 50) and stripped from its text. `idea approve` refuses (409)
+  while an open flagged question remains, scoped so ordinary open questions still do not block.
+- **Requirement→task coverage gate.** Plan review's deterministic checks now also flag every
+  live requirement with no implementing task (an `EdgeVerifies` does not count), closing the
+  direction that previously only `idea gaps` reported non-blocking.
 - **`docs/failure-modes.md`.** Five classes of refusal/stall a founder journey actually hit,
   each as symptom → diagnostic command → expected output → recovery, quoting the real message
   verbatim (several are `%s`-templated, shown as a rendered example): a change set whose
