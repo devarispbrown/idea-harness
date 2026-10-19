@@ -77,20 +77,19 @@ local-first daemon** — a security-model change, not just a feature. Rules:
 ## Always-on: a self-hosted box is the recommended setup
 
 "From anywhere" means the daemon must be reachable when you are not at your
-machine. The recommended setup is a box you control, reachable over Tailscale.
-
-- **Local** — Windows, macOS, Linux: run the daemon headless, join it to your
-  Tailnet, reach it from any device.
-- **Cloud** — Render, Digital Ocean, Hetzner, AWS, GCP: a cheap always-on box,
-  the same way, over Tailscale.
-- **Pull inbox (fallback)** — the channel queues and the daemon drains on start.
-  For people who do not want an always-on box. Lower fidelity: nothing happens
-  until the daemon wakes.
+machine. The recommended setup is a box you control, reachable over Tailscale —
+the walkthrough is [`self-hosting.md`](self-hosting.md): local (Windows, macOS,
+Linux) and cloud (Render, Digital Ocean, Hetzner, AWS, GCP).
 
 **No multi-tenant SaaS.** The daemon stays on hardware the builder controls —
 their laptop or their box. Hosting the executor would mean hosting arbitrary code
 execution, and it dissolves the "runs on your machine, nothing leaves unless you
 say so" moat (see `security-model.md`).
+
+Channel capture also works without an always-on box: the bot or email queues a
+message and the daemon drains it on next start. Lower fidelity — nothing happens
+until the daemon wakes — so that is the fallback, not the plan (the capture slice
+below).
 
 ## Build order (each a small, independently shippable slice)
 

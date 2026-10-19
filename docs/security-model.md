@@ -496,7 +496,8 @@ operator's. `executor.kind: auto` never resolves to `openhands`.
 <!-- claim:remote-access -->
 The daemon is a loopback service that can, opt-in, be used from another device — a phone
 answering the "Needs you" queue, say. This section is the one statement of what that changes.
-Setup is in [`configuration.md`](configuration.md#remote-access).
+Setup is in [`configuration.md`](configuration.md#remote-access); keeping the daemon running
+always-on is [`self-hosting.md`](self-hosting.md).
 
 **Loopback is unchanged.** The main listener (`IDEA_HARNESS_ADDR`) must be loopback or the daemon
 refuses to start, and a page served to a browser on this machine carries the API token exactly as

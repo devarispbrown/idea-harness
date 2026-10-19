@@ -121,7 +121,8 @@ review rigor, spending caps and integrations, so you don't need to edit YAML.
 **From your phone.** Remote access is off by default. Turn it on (Tailscale is the recommended
 way), run `idea ui pair --qr` on your machine, and sign in on the phone with the pairing code. You
 can then review diffs, approve and get push notifications. Setup:
-[configuration → remote access](docs/configuration.md#remote-access).
+[configuration → remote access](docs/configuration.md#remote-access); keep it running on a box:
+[self-hosting](docs/self-hosting.md).
 
 Every screen and route is described in [`docs/ui.md`](docs/ui.md).
 [`docs/ui-parity.md`](docs/ui-parity.md) lists which CLI commands have a UI equivalent.
@@ -207,9 +208,11 @@ configured, idea-harness runs in demo mode and labels its synthetic output every
 | [Quickstart](docs/quickstart.md) | [Configuration](docs/configuration.md) | [Security](docs/security.md) |
 | | [Coding agents](docs/agents.md) | [Security model](docs/security-model.md) |
 | | [MCP](docs/mcp.md) and [integrations](docs/integrations.md) | [Hosting the API reference](docs/api-reference-hosting.md) |
+| | [Self-hosting](docs/self-hosting.md) (run it always-on) | |
 
 Project records: [`CHANGELOG.md`](CHANGELOG.md) (breaking changes and migrations),
-[`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md), and
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md),
+[`docs/icp-and-channels.md`](docs/icp-and-channels.md) (product direction), and
 [`docs/plans/`](docs/plans/), which includes the [deferred items](docs/plans/deferred.md).
 
 ## Development
