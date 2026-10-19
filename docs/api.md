@@ -522,3 +522,12 @@ Sign-in for browsers on another device, and Web Push. See
 - [`docs/architecture.md`](architecture.md) — where the daemon sits in the system.
 - [`docs/security.md`](security.md) — the token, loopback and redaction invariants behind the auth
   model above.
+
+## Capture (draft initiatives from a channel)
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/capture` | **Unauthenticated.** A channel presents its capture token (`{"token","brief"}`) to create a draft initiative in the token's project; the pipeline does not start. Every refusal is the same 401, so the route reveals nothing about which tokens or projects exist. |
+| GET | `/projects/{projectId}/capture-tokens` | List the project's capture tokens as metadata (id, label, created/last-used) — never the secret or its hash. |
+| POST | `/projects/{projectId}/capture-tokens` | Mint a capture token and return it once (`{"label"}` optional). **201.** |
+| POST | `/projects/{projectId}/initiatives/{id}/start` | Run the pipeline on a captured draft (`draft` → `running`). **202** |

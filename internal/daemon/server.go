@@ -365,6 +365,13 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/capture" {
+			// Authenticated by the capture token in the body: a channel (a
+			// bot) can create a draft initiative without the API token or a
+			// session (capture.go).
+			next.ServeHTTP(w, r)
+			return
+		}
 		provided := r.Header.Get("X-Idea-Token")
 		if provided == "" {
 			// Also accept a Bearer token for convenience.

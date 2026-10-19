@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS ui_pairing_codes (
 	`
 ALTER TABLE ui_pairing_codes ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE ui_pairing_codes ADD COLUMN burned_at INTEGER;
+`,
+	// 4: capture_tokens are the per-channel capability tokens for the
+	// unauthenticated capture route (POST /api/v1/capture). A token is minted in
+	// Settings or by `idea capture`, and presenting it creates a draft
+	// initiative in the project it belongs to. Only the SHA-256 is stored,
+	// never the token, so global.db is not a credential store.
+	`
+CREATE TABLE IF NOT EXISTS capture_tokens (
+	id           TEXT PRIMARY KEY,
+	project_id   TEXT NOT NULL,
+	token_hash   TEXT NOT NULL UNIQUE,
+	label        TEXT NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL,
+	last_used_at INTEGER
+);
 `}
 
 // migrations is the ordered state.db schema history. Append-only: never edit an

@@ -75,6 +75,9 @@ Commands:
   remote enable        turn remote access on: detect the Tailscale MagicDNS name, run `tailscale serve`, set the allowed host, restart the daemon
   remote disable       turn remote access off: clear the allowed host and stop `tailscale serve`
   remote status        show the daemon's remote listener and allowed hosts, and whether tailscale serve is up
+  capture token|list   mint a capture token for the unauthenticated POST /api/v1/capture route (a channel presents it to create a draft initiative), or list this project's tokens
+  capture token [--label <name>] mint a capture token and show it once; present it to POST /api/v1/capture to create a draft
+  capture list         list this project's capture tokens (id, label, last used) — never the secret
   dev                  start the daemon and serve the web UI
   version              print the version, commit and build state
   help [--format=md]   show this command list (--format=md emits the docs/cli.md table)

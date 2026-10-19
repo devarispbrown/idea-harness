@@ -223,6 +223,12 @@ func commands() []command {
 		{usage: "remote enable", summary: "turn remote access on: detect the Tailscale MagicDNS name, run `tailscale serve`, set the allowed host, restart the daemon", inHelp: true},
 		{usage: "remote disable", summary: "turn remote access off: clear the allowed host and stop `tailscale serve`", inHelp: true},
 		{usage: "remote status", summary: "show the daemon's remote listener and allowed hosts, and whether tailscale serve is up", inHelp: true},
+		{names: []string{"capture"}, usage: "capture token|list", summary: "mint a capture token for the unauthenticated POST /api/v1/capture route (a channel presents it to create a draft initiative), or list this project's tokens", flags: flagSpec{}, subs: map[string]flagSpec{
+			"token": {"--label": flagValue},
+			"list":  {},
+		}, subsAreRequired: true, run: cmdCapture, inHelp: true},
+		{usage: "capture token [--label <name>]", summary: "mint a capture token and show it once; present it to POST /api/v1/capture to create a draft", inHelp: true},
+		{usage: "capture list", summary: "list this project's capture tokens (id, label, last used) — never the secret", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
 		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
 		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},

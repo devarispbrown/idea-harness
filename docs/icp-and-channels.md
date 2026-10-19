@@ -93,10 +93,13 @@ below).
 
 ## Build order (each a small, independently shippable slice)
 
-1. **Capture endpoint + draft semantics + capability tokens** — the foundation.
-2. **Always-on setup guide** — [`self-hosting.md`](self-hosting.md): local
-   (Windows/macOS/Linux) + cloud (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale.
+1. ✅ **Capture endpoint + draft semantics + capability tokens** — `POST /api/v1/capture`
+   (token-authenticated, unauthenticated route) creates a draft initiative; `idea capture
+   token|list` mints and lists tokens; `POST …/initiatives/{id}/start` runs a draft.
+2. ✅ **Always-on setup guide** — [`self-hosting.md`](self-hosting.md): local
+   (Windows/macOS/Linux) + cloud (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale, plus
+   `idea remote enable|disable|status`.
 3. **Slack control plane** — slash commands for create / monitor / operate, with
-   context-before-action.
-4. **Telegram capture + judgment taps** — the solo-builder entry.
-5. **Email notifications** — outbound only.
+   context-before-action. (Needs a Slack app + hosting.)
+4. **Telegram capture + judgment taps** — the solo-builder entry. (Needs a bot token.)
+5. **Email notifications** — outbound only. (Needs SMTP.)

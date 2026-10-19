@@ -113,6 +113,8 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `remote enable` | cli-only | CLI-only: writes the daemon's allowed-hosts setting and runs `tailscale serve` — listener config, which Settings → Remote access (sessions) does not edit | |
 | `remote disable` | cli-only | CLI-only: clears the allowed-hosts setting and stops `tailscale serve` | |
 | `remote status` | cli-only | CLI-only: shows the daemon's remote listener and allowed hosts | |
+| `capture token` | cli-only | CLI-only: mints a capture token and shows it once — a secret that is never re-readable | |
+| `capture list` | cli-only | CLI-only: lists capture tokens as metadata (id, label, last used) | |
 | `mcp` | cli-only | CLI-only: stdio server for MCP clients; no UI by design | |
 | `eval` | partial | `#/automations` — Scheduled eval: model, per-run cost cap, interval, Run now, history with cost and regressions | ad-hoc flags (`--policy`, `--harness`, `--keep`, scripted runs) are CLI-only |
 | `version` | ui | `#/i/<id>/health` — daemon version in the Health footer | |

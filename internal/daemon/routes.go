@@ -21,6 +21,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/revise", s.handleRevise)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/retry", s.handleRetry)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/start", s.handleStartDraftInitiative)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/advance", s.handleAdvance)
 	m.HandleFunc("POST /api/v1/projects/{projectId}/initiatives/{id}/docs", s.handleAddDoc)
 	m.HandleFunc("GET /api/v1/projects/{projectId}/initiatives/{id}/docs", s.handleListDocs)
@@ -182,6 +183,11 @@ func (s *Server) routes() {
 	// Unauthenticated: the service worker renews with the subscription's own
 	// renewal token (push.go, handleRenewPushSubscription).
 	m.HandleFunc("POST /api/v1/projects/{projectId}/push/subscriptions/{id}/renew", s.handleRenewPushSubscription)
+	m.HandleFunc("POST /api/v1/projects/{projectId}/capture-tokens", s.handleMintCaptureToken)
+	m.HandleFunc("GET /api/v1/projects/{projectId}/capture-tokens", s.handleListCaptureTokens)
+	// Unauthenticated: a channel creates a draft with its capture token in the
+	// body (capture.go, handleCapture).
+	m.HandleFunc("POST /api/v1/capture", s.handleCapture)
 
 	// The API reference and the spec it renders. Deliberately outside /api/:
 	// the auth middleware guards that prefix, and a token-gated spec would make

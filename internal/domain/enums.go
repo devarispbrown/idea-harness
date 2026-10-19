@@ -260,11 +260,14 @@ const (
 	InitiativePlanApproved       InitiativeStatus = "plan_approved"
 	InitiativeFailed             InitiativeStatus = "failed"
 	InitiativeComplete           InitiativeStatus = "complete"
+	// InitiativeDraft is a captured idea that has not started the pipeline:
+	// created by `idea capture`/a channel, opened and started later from the UI.
+	InitiativeDraft InitiativeStatus = "draft"
 )
 
 func (s InitiativeStatus) Valid() bool {
 	switch s {
-	case InitiativeRunning, InitiativeNeedsHumanJudgment, InitiativeApproved, InitiativePlanApproved, InitiativeFailed, InitiativeComplete:
+	case InitiativeRunning, InitiativeNeedsHumanJudgment, InitiativeApproved, InitiativePlanApproved, InitiativeFailed, InitiativeComplete, InitiativeDraft:
 		return true
 	}
 	return false
