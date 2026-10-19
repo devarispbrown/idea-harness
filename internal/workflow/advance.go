@@ -920,6 +920,7 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 	decs, _ := e.db.ListDecisions(ctx, initiativeID)
 
 	deps := map[string][]string{}
+	implemented := map[string]bool{}
 	for _, t := range tasks {
 		edges, _ := e.db.ListGraphEdgesFrom(ctx, initiativeID, "task", t.ID)
 		hasImplements := false
@@ -927,7 +928,10 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 			switch ed.EdgeType {
 			case domain.EdgeDependsOn:
 				deps[t.ID] = append(deps[t.ID], ed.ToID)
-			case domain.EdgeImplements, domain.EdgeVerifies:
+			case domain.EdgeImplements:
+				hasImplements = true
+				implemented[ed.ToID] = true
+			case domain.EdgeVerifies:
 				hasImplements = true
 			}
 		}
@@ -978,6 +982,26 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 			Impact:         "the plan cannot be scheduled",
 			Recommendation: "break the cycle",
 		})
+	}
+	// Coverage in the other direction: every live requirement must be
+	// implemented by at least one task. A verification task's EdgeVerifies does
+	// not count — verifying is not implementing. (review: the task→requirement
+	// direction above already flags orphan tasks; this closes the requirement→
+	// task direction that previously only `idea gaps` reported, non-blocking.)
+	for _, r := range allReqs {
+		if r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+			continue
+		}
+		if !implemented[r.ID] {
+			out = append(out, domain.Finding{
+				Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+				Category:       "traceability",
+				Finding:        fmt.Sprintf("%s has no implementing task", r.Code),
+				Evidence:       r.Statement,
+				Impact:         "an unimplemented requirement ships incomplete",
+				Recommendation: "add a task that implements it, or remove the requirement from the PRD",
+			})
+		}
 	}
 	return out
 }

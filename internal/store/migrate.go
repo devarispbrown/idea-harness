@@ -1176,6 +1176,14 @@ UPDATE assertions SET code = 'ASM-' || (
 	`
 ALTER TABLE push_subscriptions ADD COLUMN renewal_token_hash TEXT NOT NULL DEFAULT '';
 `,
+	// 50: needs_clarification marks an open question the model flagged
+	// [NEEDS CLARIFICATION] rather than inventing a value for a missing input.
+	// Approve refuses while any such question is open. 0 (rows created before
+	// this migration) means "not flagged"; the gate only blocks on explicitly
+	// flagged questions.
+	`
+ALTER TABLE questions ADD COLUMN needs_clarification INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

@@ -805,7 +805,7 @@ func displayModel(spec string) string {
 
 func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) error {
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Produce a concise IdeaBrief."},
+		{Selector: "immutable_policy", Content: "Produce a concise IdeaBrief. When a fact is genuinely unknown and would change the framing, put it in open_questions prefixed [NEEDS CLARIFICATION] rather than inventing a value."},
 		{Selector: "project_scale", Content: proportionateContext(projectScaleOf(ctx, e.workspaceRoot), detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot))},
 		{Selector: "task", Content: idea},
 	}
@@ -889,11 +889,32 @@ func (e *Engine) runFraming(ctx context.Context, initiativeID, idea string) erro
 // cycle"); a `question.reraised_answered` event links the re-raising to the
 // answered original, so the audit trail shows the cycle asked again rather
 // than looking like nothing happened.
+// needsClarificationMarker is the prefix a stage emits on an open question when
+// a needed input is genuinely unknown, signalling "do not guess" (§uncertainty).
+const needsClarificationMarker = "[NEEDS CLARIFICATION]"
+
+// stripNeedsClarification reports whether text carries the marker (case-
+// insensitive) and returns the text with the marker, any following colon and
+// surrounding whitespace removed. A marker-only text keeps the marker as the
+// visible question so it is never silently dropped.
+func stripNeedsClarification(text string) (string, bool) {
+	if !strings.HasPrefix(strings.ToUpper(text), needsClarificationMarker) {
+		return text, false
+	}
+	rest := strings.TrimSpace(text[len(needsClarificationMarker):])
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, ":"))
+	if rest == "" {
+		return needsClarificationMarker, true
+	}
+	return rest, true
+}
+
 func (e *Engine) createQuestionIfNew(ctx context.Context, initiativeID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}
+	text, needsClarification := stripNeedsClarification(text)
 	norm := normalizeJudgment(text)
 
 	decisions, err := e.db.ListDecisions(ctx, initiativeID)
@@ -925,7 +946,7 @@ func (e *Engine) createQuestionIfNew(ctx context.Context, initiativeID, text str
 			return nil
 		}
 	}
-	return e.db.CreateQuestion(ctx, &domain.Question{InitiativeID: initiativeID, Question: text})
+	return e.db.CreateQuestion(ctx, &domain.Question{InitiativeID: initiativeID, Question: text, NeedsClarification: needsClarification})
 }
 
 // createDecisionIfNew adds a decision unless an equivalent one of the SAME
@@ -1123,7 +1144,7 @@ func (e *Engine) runProductDefinitionRevising(ctx context.Context, initiativeID 
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{IdeaWords: ideaWordCount(ini.Description)})
 
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement. State the product objectives this work exists to move -- outcomes for users or the business, not features -- each with at least one measurable metric (direction, target, a baseline only when known, an optional guardrail and cadence), and list in every requirement's 'objectives' field the objective(s) it serves; every requirement must serve at least one. When revising, keep each continuing objective's and metric's existing code (OBJ-n, MET-n) as its key. When a requirement or a decision rests on a fact, assumption or hypothesis listed under assertions -- one that, if false, would make it wrong -- list its ASM code(s) in that item's based_on; cite only codes listed there."},
+		{Selector: "immutable_policy", Content: "Author a PRD with verifiable requirements and measurable acceptance criteria (metric + target + condition). Raise a decision only for a genuinely open, undecided choice; do not re-list decisions already marked DECIDED, and do not restate an open question as a decision. Do not re-raise a question that already exists (open or answered); only add genuinely new questions. Any review finding dispositioned 'mitigate' must be addressed directly: incorporate the mitigation into the requirements. When a requirement is shaped by one of the decisions you raise, set the requirement's 'decision' field to that decision's exact question text. When revising, if a requirement continues one already listed under Requirements below, set its 'code' field to that requirement's exact existing code (e.g. \"REQ-4\") so it is updated rather than duplicated; leave 'code' empty for a genuinely new requirement. State the product objectives this work exists to move -- outcomes for users or the business, not features -- each with at least one measurable metric (direction, target, a baseline only when known, an optional guardrail and cadence), and list in every requirement's 'objectives' field the objective(s) it serves; every requirement must serve at least one. When revising, keep each continuing objective's and metric's existing code (OBJ-n, MET-n) as its key. When a requirement or a decision rests on a fact, assumption or hypothesis listed under assertions -- one that, if false, would make it wrong -- list its ASM code(s) in that item's based_on; cite only codes listed there. When a requirement or decision depends on an input you do not have, do not guess: raise it in open_questions prefixed [NEEDS CLARIFICATION]."},
 		{Selector: "project_scale", Content: proportionateContext(scale, detectStack(e.workspaceRoot), projectConventions(e.workspaceRoot)) + requirementCountGuidance(rigor)},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},

@@ -1320,9 +1320,9 @@ func (db *DB) CreateQuestion(ctx context.Context, q *domain.Question) error {
 		EventType:     "question.created",
 	}, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
-			INSERT INTO questions (id, initiative_id, question, status, answer_digest, answered_by, created_at, resolved_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.ID, q.InitiativeID, q.Question, q.Status, q.AnswerDigest, q.AnsweredBy, q.CreatedAt.UnixMilli(), nil)
+			INSERT INTO questions (id, initiative_id, question, status, answer_digest, answered_by, created_at, resolved_at, needs_clarification)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.ID, q.InitiativeID, q.Question, q.Status, q.AnswerDigest, q.AnsweredBy, q.CreatedAt.UnixMilli(), nil, q.NeedsClarification)
 		return err
 	})
 }
@@ -1330,7 +1330,7 @@ func (db *DB) CreateQuestion(ctx context.Context, q *domain.Question) error {
 // ListQuestions returns questions for an initiative.
 func (db *DB) ListQuestions(ctx context.Context, initiativeID string) ([]domain.Question, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, question, status, answer_digest, answered_by, created_at, resolved_at
+		SELECT id, initiative_id, question, status, answer_digest, answered_by, created_at, resolved_at, needs_clarification
 		FROM questions WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -1342,7 +1342,7 @@ func (db *DB) ListQuestions(ctx context.Context, initiativeID string) ([]domain.
 		var created int64
 		var resolved sql.NullInt64
 		if err := rows.Scan(&q.ID, &q.InitiativeID, &q.Question, &q.Status, &q.AnswerDigest,
-			&q.AnsweredBy, &created, &resolved); err != nil {
+			&q.AnsweredBy, &created, &resolved, &q.NeedsClarification); err != nil {
 			return nil, err
 		}
 		q.CreatedAt = time.UnixMilli(created)

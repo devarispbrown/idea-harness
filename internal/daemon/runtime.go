@@ -1092,6 +1092,20 @@ func (r *Runtime) ApproveInitiative(ctx context.Context, projectID, initiativeID
 	if err != nil {
 		return "", err
 	}
+	// An open [NEEDS CLARIFICATION] question blocks approval: the PRD rests on
+	// an input the model admitted it did not have, so accepting it would sign
+	// off an invented value. The human must answer the question or revise first.
+	questions, qerr := pr.db.ListQuestions(ctx, initiativeID)
+	if qerr != nil {
+		return "", qerr
+	}
+	for _, q := range questions {
+		if q.Status == domain.QuestionOpen && q.NeedsClarification {
+			return "", preconditionf(
+				"approve refused: %q is flagged [NEEDS CLARIFICATION] and still open — answer it (`idea answer`) or revise the PRD",
+				q.Question)
+		}
+	}
 	if err := pr.engine.Approve(ctx, initiativeID); err != nil {
 		if errors.Is(err, store.ErrInitiativeNotClaimable) {
 			ini, gerr := pr.db.GetInitiative(ctx, initiativeID)

@@ -133,7 +133,12 @@ type Question struct {
 	InitiativeID string         `json:"initiative_id"`
 	Question     string         `json:"question"`
 	Status       QuestionStatus `json:"status"`
-	AnswerDigest string         `json:"answer_digest,omitempty"`
+	// NeedsClarification marks a question the model flagged [NEEDS
+	// CLARIFICATION] rather than guessing at a missing input. Approving the PRD
+	// refuses while any such question is still open, so an unresolved unknown
+	// cannot silently become an invented requirement.
+	NeedsClarification bool           `json:"needs_clarification,omitempty"`
+	AnswerDigest       string         `json:"answer_digest,omitempty"`
 	// Answer is the answer's text, filled at read time by the questions list
 	// (never stored on the row: the text lives in the blob store under
 	// AnswerDigest). The UI's Resolved section shows it; without it an
