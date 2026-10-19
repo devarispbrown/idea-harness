@@ -46,6 +46,7 @@ export interface ExecutorConfig {
 
 export interface ExecutorConfigView {
   config: ExecutorConfig;
+  max_parallel?: number;
   compat: { kind: string; model: string; blocked: boolean; message: string } | null;
   env: Record<string, boolean>;
   problems: { severity: string; field: string; message: string }[];

@@ -3960,6 +3960,9 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 		OpenHandsMaxIterations       *int                      `json:"openhands_max_iterations"`
 		OpenHandsTimeoutSeconds      *int                      `json:"openhands_timeout_seconds"`
 		MCPServers                   *[]config.MCPServerConfig `json:"mcp_servers"`
+		// MaxParallel sets execute.max_parallel: how many independent ready
+		// tasks `idea execute` runs at once (<=0 means the default 1).
+		MaxParallel *int `json:"max_parallel"`
 	}
 	if err := decodeStrict(r.Body, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -4028,6 +4031,9 @@ func (s *Server) handleUpdateExecutors(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.MCPServers != nil {
 		cfg.Harness.Executor.MCPServers = *body.MCPServers // [] removes them all
+	}
+	if body.MaxParallel != nil {
+		cfg.Harness.Execute.MaxParallel = *body.MaxParallel // <=0 means the default 1
 	}
 	// openhands without a server would save a configuration every run then
 	// refuses, and an unsafe URL (plain http off-machine) is refused before

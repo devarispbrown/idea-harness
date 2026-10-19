@@ -598,7 +598,9 @@ GROQ_API_KEY`.
 The executor profile — the whole `executor` block — is edited here, with each kind's trust
 trade-off stated under the kind (nothing leaves the machine, local with network and your key, or
 another machine), the executor/model compatibility advisory as you type ("Known not to work" /
-"Untested"), the block's configuration problems, and which referenced variables are set.
+"Untested"), the block's configuration problems, and which referenced variables are set. The
+**Parallel execution** field at the bottom sets `execute.max_parallel` — how many independent ready
+tasks `idea execute` runs at once.
 
 - **Kind** — `auto` (what an unset kind means), `internal` (the placeholder), `container`, `omp`,
   `hermes`, `acp` or `openhands`. The selection is what `harness.yaml` asks for; under `auto` the card also says what

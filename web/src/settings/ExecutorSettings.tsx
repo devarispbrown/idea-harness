@@ -65,6 +65,10 @@ export default function ExecutorSettings({ projectId }: { projectId: string }) {
   const [modelError, setModelError] = useState("");
   const [saved, setSaved] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
+  // execute.max_parallel is a different config block from the executor, but it
+  // lives here because it controls how execute runs tasks.
+  const [maxParallel, setMaxParallel] = useState("1");
+  const [initialMaxParallel, setInitialMaxParallel] = useState("1");
 
   const [smokeOpId, setSmokeOpId] = useState<string | null>(null);
   const [smokeStartedAt, setSmokeStartedAt] = useState<number | null>(null);
@@ -91,6 +95,8 @@ export default function ExecutorSettings({ projectId }: { projectId: string }) {
       const f = executorFormFrom(v.config);
       setInitial(f);
       setForm(f);
+      setMaxParallel(String(v.max_parallel ?? 1));
+      setInitialMaxParallel(String(v.max_parallel ?? 1));
     } catch (e) {
       // A daemon that predates GET /executors/config: fall back to the list's
       // kind/image/model so the basic fields still edit.
@@ -170,6 +176,14 @@ export default function ExecutorSettings({ projectId }: { projectId: string }) {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     const body = executorPutBody(initial, form);
+    if (maxParallel !== initialMaxParallel) {
+      const n = Number(maxParallel);
+      if (!Number.isInteger(n) || n < 1) {
+        setErrors((prev) => ({ ...prev, max_parallel: "Enter a whole number of 1 or more." }));
+        return;
+      }
+      body.max_parallel = n;
+    }
     if (Object.keys(body).length === 0) {
       setSaved("Executor is unchanged.");
       return;
@@ -210,7 +224,7 @@ export default function ExecutorSettings({ projectId }: { projectId: string }) {
   const resolvedRow = executors.find((e) => e.resolution);
   const entry = form.kind === "auto" ? resolvedRow : executors.find((e) => e.name === form.kind);
   const savedRow = executors.find((e) => e.selected) ?? (initial.kind === "auto" ? resolvedRow : undefined);
-  const dirty = Object.keys(executorPutBody(initial, form)).length > 0;
+  const dirty = Object.keys(executorPutBody(initial, form)).length > 0 || maxParallel !== initialMaxParallel;
   const otherSmokeRunning = !smokeOpId && ["running", "pending"].includes(savedRow?.status?.last_smoke?.status ?? "");
   useEffect(() => {
     if (!otherSmokeRunning) return;
@@ -550,6 +564,27 @@ export default function ExecutorSettings({ projectId }: { projectId: string }) {
           ))}
         </ul>
       )}
+
+      <section className="card" aria-labelledby="max-parallel-title">
+        <h3 id="max-parallel-title">Parallel execution</h3>
+        <p className="muted">
+          How many independent ready tasks <code>idea execute</code> runs at once. Independent tasks
+          editing overlapping files are caught at apply — the later change set is refused as stale.
+        </p>
+        <label className="field-label" htmlFor="max-parallel">
+          Max parallel tasks
+        </label>
+        <input
+          id="max-parallel"
+          className="text-input"
+          type="number"
+          min={1}
+          step={1}
+          value={maxParallel}
+          onChange={(e) => setMaxParallel(e.target.value)}
+        />
+        {errors.max_parallel && <p className="error">{errors.max_parallel}</p>}
+      </section>
 
       <div className="row">
         <button onClick={save}>Save executor</button>

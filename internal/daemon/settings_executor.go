@@ -14,6 +14,9 @@ import (
 // kinds and readiness but only the kind/image/model fields of the config.
 type ExecutorConfigView struct {
 	Config config.ExecutorConfig `json:"config"`
+	// MaxParallel is execute.max_parallel as it is enforced (<=0 -> 1), for the
+	// Settings editor alongside the executor block.
+	MaxParallel int `json:"max_parallel"`
 	// Compat is the executor/model compatibility advisory for the kind and
 	// model asked about (?kind=&model=, defaulting to the saved ones):
 	// blocked (known to fail every run, refused at execute) or untested.
@@ -42,7 +45,7 @@ func (s *Server) handleExecutorConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := pr.cfg.Harness
-	view := ExecutorConfigView{Config: h.Executor, Env: map[string]bool{}, Problems: []config.Problem{}}
+	view := ExecutorConfigView{Config: h.Executor, MaxParallel: h.Execute.EffectiveMaxParallel(), Env: map[string]bool{}, Problems: []config.Problem{}}
 	if view.Config.MCPServers == nil {
 		view.Config.MCPServers = []config.MCPServerConfig{}
 	}

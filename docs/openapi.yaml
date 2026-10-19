@@ -4230,6 +4230,10 @@ paths:
                     or `headers` entry gives exactly one of `value` (a literal, refused when its name or
                     content looks like a credential) or `value_env` (the NAME of a variable).
                   items: { type: object }
+                max_parallel:
+                  type: integer
+                  minimum: 1
+                  description: "`execute.max_parallel`: how many independent ready tasks `idea execute` runs at once (unset: 1, serial)."
       responses:
         default: { $ref: "#/components/responses/RoutingError" }
         "200":
