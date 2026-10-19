@@ -2272,6 +2272,14 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   cursor: pointer;
 }
 .ph-file-remove:hover { color: var(--failing-fg); }
+.ph-from {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+.ph-from-label { color: var(--text-muted, var(--muted-fg)); }
 .ph-compose-actions {
   display: flex;
   align-items: center;

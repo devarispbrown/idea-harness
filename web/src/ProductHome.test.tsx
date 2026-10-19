@@ -37,7 +37,7 @@ describe("ProductHome compose", () => {
       target: { value: "Add CSV export\n\nfor the reports page" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    expect(onCreate).toHaveBeenCalledWith("Add CSV export\n\nfor the reports page", []);
+    expect(onCreate).toHaveBeenCalledWith("Add CSV export\n\nfor the reports page", [], undefined);
   });
 
   it("no-ops with an empty brief and shows the hint", () => {
@@ -62,7 +62,7 @@ describe("ProductHome compose", () => {
     expect(screen.getByText("image")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Brief"), { target: { value: "Ship it" } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    expect(onCreate).toHaveBeenCalledWith("Ship it", [md, png]);
+    expect(onCreate).toHaveBeenCalledWith("Ship it", [md, png], undefined);
   });
 
   it("adds a pasted file and can remove an attached file", () => {
@@ -73,5 +73,22 @@ describe("ProductHome compose", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove pasted.png" }));
     expect(screen.queryByText("pasted.png")).toBeNull();
     expect(container.querySelector(".ph-files")).toBeNull();
+  });
+
+  it("seeds from an existing initiative (brownfield --from)", () => {
+    const onCreate = vi.fn();
+    render(
+      <ProductHome
+        {...base}
+        initiatives={[{ id: "ini-1", title: "Usage-based billing", description: "x", status: "approved" }]}
+        onCreate={onCreate}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Brief"), { target: { value: "Add CSV export" } });
+    fireEvent.change(screen.getByLabelText("Seed from an existing initiative (optional)"), {
+      target: { value: "ini-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(onCreate).toHaveBeenCalledWith("Add CSV export", [], "ini-1");
   });
 });

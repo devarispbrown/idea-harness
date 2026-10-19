@@ -64,13 +64,16 @@ export default function ProductHome({
   attention: InitiativeRollup[];
   projectName: string;
   onOpen: (id: string) => void;
-  onCreate: (brief: string, files: File[]) => void;
+  onCreate: (brief: string, files: File[], from?: string) => void;
   onOpenSettings: () => void;
 }) {
   const [brief, setBrief] = useState("");
   // Files attached to the compose before Start. Held locally so the person
   // can add/remove grounding docs before the initiative exists on the server.
   const [files, setFiles] = useState<AttachedFile[]>([]);
+  // Seed-from (brownfield): the initiative whose live requirements this new
+  // initiative revises, mirroring `idea new --from`.
+  const [from, setFrom] = useState("");
   const [dragging, setDragging] = useState(false);
   // Shown once, after an empty Start, until the brief has content again --
   // clicking Start with nothing typed used to just do nothing (K).
@@ -149,7 +152,7 @@ export default function ProductHome({
   };
 
   const submitIdea = () => {
-    if (brief.trim()) onCreate(brief, files.map((f) => f.file));
+    if (brief.trim()) onCreate(brief.trim(), files.map((f) => f.file), from || undefined);
     else {
       setIdeaHint(true);
       briefRef.current?.focus();
@@ -269,6 +272,23 @@ export default function ProductHome({
                 </li>
               ))}
             </ul>
+          )}
+          {initiatives.length > 0 && (
+            <label className="ph-from">
+              <span className="ph-from-label">Seed from an existing initiative (optional)</span>
+              <select
+                className="text-input"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              >
+                <option value="">Start fresh</option>
+                {initiatives.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {displayTitle(i) || i.title}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
           <div className="ph-compose-actions">
             <button type="button" className="ph-start" onClick={submitIdea}>

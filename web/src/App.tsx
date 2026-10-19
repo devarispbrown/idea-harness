@@ -465,7 +465,7 @@ export default function App() {
             ? "runs"
             : currentPhase(phaseSource); // decision/health/doc sub-surfaces
 
-  const createIdea = async (brief: string, files: File[]) => {
+  const createIdea = async (brief: string, files: File[], from?: string) => {
     if (!projectId) return;
     const description = brief.trim();
     if (!description) return;
@@ -476,18 +476,16 @@ export default function App() {
         .split(/\r?\n/)
         .map((l) => l.trim())
         .find((l) => l.length > 0) ?? description;
+    const fields = { title, description, ...(from ? { from_initiative: from } : {}) };
     try {
       const created =
         files.length > 0
           ? await uploadInitiative<{ initiative_id: string }>(
               `/projects/${projectId}/initiatives`,
-              { title, description },
+              fields,
               files,
             )
-          : await post<{ initiative_id: string }>(`/projects/${projectId}/initiatives`, {
-              title,
-              description,
-            });
+          : await post<{ initiative_id: string }>(`/projects/${projectId}/initiatives`, fields);
       await loadInitiatives(projectId);
       navigate(`#/i/${created.initiative_id}/explore`);
     } catch {

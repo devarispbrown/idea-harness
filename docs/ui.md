@@ -105,9 +105,11 @@ The main region renders, above the routed page:
 The home screen lists every initiative. Its header carries the `ih` mark, the project's name, a
 **Settings** button, and a **+ New idea** button. Below it: the initiative count, a "*n* need you" chip, and a
 compose — a **Brief** textarea ("What are you thinking about building?") plus a drop-zone that takes
-grounding files (any of the Explore formats), each listed with a `text`/`image` badge. **Start**
-creates the initiative (`POST …/initiatives`, multipart when files are attached) and jumps to its
-Explore page; the first non-empty line of the brief becomes the title.
+grounding files (any of the Explore formats), each listed with a `text`/`image` badge. A
+**Seed from an existing initiative** selector revises that initiative's live requirements instead of
+starting fresh (brownfield `idea new --from`). **Start** creates the initiative
+(`POST …/initiatives`, multipart when files are attached) and jumps to its Explore page; the first
+non-empty line of the brief becomes the title.
 
 Each initiative is a card with its number, title, a status chip, and six small phase bars:
 
