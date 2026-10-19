@@ -1,13 +1,8 @@
 # Wiring a channel
 
-The capture endpoint (`POST /api/v1/capture`), the capture token (`idea capture
-token`), and the native Telegram poller are built. This page is the wiring for
-the three channels: **Telegram** (capture — the daemon runs the bot itself),
-**Slack** (create/monitor/operate — needs an adapter), and **email** (outbound
-notifications — needs an SMTP notifier).
-
-Channels are configured in `<state root>/config.yaml` under a `channels:` section.
-Credentials are **env-var names, never values**, so the file stays committable.
+Channels are configured in `harness.yaml` under `integrations:` — **one file** —
+and the `idea channel` command writes it for you, so there is no hand-editing.
+Credentials are **env-var names, never values**.
 
 ## Prerequisite (all channels)
 
@@ -16,7 +11,7 @@ box or VPS — see [`self-hosting.md`](self-hosting.md) and `idea remote enable`
 
 ---
 
-## Telegram (capture) — native, ready today
+## Telegram (capture) — native
 
 The daemon long-polls the bot and turns each text message into a **draft**
 initiative. No separate script, no capture token.
@@ -30,35 +25,20 @@ initiative. No separate script, no capture token.
 
 It then replies with the token (`1234567890:AA…`). Copy that.
 
-**2. Put the token in the daemon's environment.** The daemon reads it from its
-own process environment, so export it in the shell where you run `idea`, then
-restart the daemon (step 4) from that same shell:
+**2. Configure it — one command:**
 
 ```bash
-export TELEGRAM_BOT_TOKEN="1234567890:AA…"
+export TELEGRAM_BOT_TOKEN="1234567890:AA…"    # the @BotFather token
+idea channel telegram                          # writes integrations.telegram to harness.yaml
+idea daemon stop                               # restart; the next command reloads it
 ```
 
-(To make it stick across reboots, put the `export` in your shell profile —
-`~/.zshrc` or `~/.bashrc` — and restart the daemon after.)
+`idea channel telegram` writes `integrations.telegram.bot_token_env` (default
+`TELEGRAM_BOT_TOKEN`) into `harness.yaml`. The project is implicit — it is the
+one whose `harness.yaml` you are in. (To make the token stick across reboots,
+put the `export` in your shell profile.)
 
-**3. Configure the channel** in `~/.local/share/idea-harness/config.yaml` (or
-`$IDEA_HARNESS_STATE/config.yaml`):
-
-```yaml
-channels:
-  telegram:
-    bot_token_env: TELEGRAM_BOT_TOKEN   # the env var name, never the token itself
-    project: <project-id>               # the 32-char id in the web UI address (#/p/<id>/)
-```
-
-`<project-id>` is the 32-character id you see in the web UI's address bar
-(`http://127.0.0.1:8787/#/p/<id>/…`) — the same value `idea init` printed when
-you created the project.
-
-**4. Restart the daemon** so it picks up the config: `idea daemon stop`, then any
-command starts it again.
-
-**5. Verify.** In Telegram, open a chat with your bot and send "A recipe sharing
+**3. Verify.** In Telegram, open a chat with your bot and send "A recipe sharing
 app for home cooks"; it appears on the Home page as a **draft** initiative. Open
 it → **Start**.
 
@@ -118,13 +98,19 @@ same "needs your judgment" events it sends to Slack and Web Push.
 SendGrid) or Gmail. Per-provider snippets (hosts, ports, the exact
 username/password to use): [`email-providers.md`](email-providers.md).
 
-**2. Put the password in an env var:**
+**2. Configure it — one command:**
 
 ```bash
-export SMTP_PASSWORD="…"
+export SMTP_PASSWORD="…"     # the provider password/API key
+idea channel email --to you@example.com --from idea@example.com \
+  --smtp-host smtp.postmarkapp.com --smtp-user <api-key>
+idea daemon stop              # restart; the next command reloads it
 ```
 
-**3. Configure `integrations.email` in `harness.yaml`:**
+`idea channel email` writes `integrations.email` into `harness.yaml`. It is the
+same shape as the YAML below, so either works. Per-provider snippets (the exact
+host/port/username for Postmark, Resend, SES, SendGrid, Gmail, and Mailpit for
+testing): [`email-providers.md`](email-providers.md).
 
 ```yaml
 integrations:
@@ -138,6 +124,6 @@ integrations:
     # events: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
 ```
 
-**4. Restart the daemon.** Each wanted event lands in your inbox as a one-line
-subject with the reason and a deep link. `events` defaults to the same set Slack
-uses; narrow it to just the four "needs you" kinds if you only want pings.
+Each wanted event lands in your inbox as a one-line subject with the reason and a
+deep link. `events` defaults to the same set Slack uses; narrow it to just the
+four "needs you" kinds if you only want pings.

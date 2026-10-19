@@ -78,6 +78,11 @@ Commands:
   capture token|list   mint a capture token for the unauthenticated POST /api/v1/capture route (a channel presents it to create a draft initiative), or list this project's tokens
   capture token [--label <name>] mint a capture token and show it once; present it to POST /api/v1/capture to create a draft
   capture list         list this project's capture tokens (id, label, last used) — never the secret
+  channel telegram|slack|email|show configure a channel by writing harness.yaml's integrations section (no hand-editing): telegram, slack, email, or show the current setup
+  channel telegram [--token-env <name>] turn on Telegram capture; the bot token comes from the named env var (default TELEGRAM_BOT_TOKEN)
+  channel slack --channel <id> [--allowed-users u1,u2] [--bot-token-env n] [--app-token-env n] turn on Slack (notifications + /idea); a channel ID, not a #name
+  channel email --to <a> --from <a> --smtp-host <h> [--smtp-port n] [--smtp-user u] [--smtp-password-env n] turn on email notifications over SMTP
+  channel show         print the current channel configuration
   dev                  start the daemon and serve the web UI
   version              print the version, commit and build state
   help [--format=md]   show this command list (--format=md emits the docs/cli.md table)

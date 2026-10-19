@@ -323,6 +323,13 @@ var harnessSchema = `{
           },
           "required": ["to", "from", "smtp_host"],
           "additionalProperties": false
+        },
+        "telegram": {
+          "type": "object",
+          "properties": {
+            "bot_token_env": { "type": "string" }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

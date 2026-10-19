@@ -12,7 +12,7 @@ import (
 )
 
 // TestTelegramPollerCapturesDrafts: the native poller turns a Telegram text
-// message into a draft initiative in the configured project.
+// message into a draft initiative in the registered project.
 func TestTelegramPollerCapturesDrafts(t *testing.T) {
 	rt, _, _, projectID := newIntegrationServer(t, "", "", nil)
 
@@ -33,10 +33,10 @@ func TestTelegramPollerCapturesDrafts(t *testing.T) {
 	telegramAPIBase = fake.URL
 	t.Cleanup(func() { telegramAPIBase = old })
 
-	t.Setenv("TG_BOT_TOKEN", "fake-token")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt.startTelegram(ctx, TelegramChannelConfig{BotTokenEnv: "TG_BOT_TOKEN", Project: projectID})
+	hub := &telegramHub{}
+	hub.register(ctx, rt, "fake-token", projectID)
 
 	var captured string
 	waitFor(t, "draft captured", func() bool {
@@ -61,12 +61,19 @@ func TestTelegramPollerCapturesDrafts(t *testing.T) {
 	}
 }
 
-// TestTelegramUnconfiguredDoesNothing: no token env, no poller, no panic.
-func TestTelegramUnconfiguredDoesNothing(t *testing.T) {
+// TestTelegramHubOnePollerPerToken: a second project naming the same bot token
+// does not start a second poller (which would split getUpdates).
+func TestTelegramHubOnePollerPerToken(t *testing.T) {
 	rt, _, _, _ := newIntegrationServer(t, "", "", nil)
-	t.Setenv("TG_BOT_TOKEN", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt.startTelegram(ctx, TelegramChannelConfig{BotTokenEnv: "TG_BOT_TOKEN", Project: "p"})
-	// If we got here without a panic and without an API call, it's correct.
+	hub := &telegramHub{}
+	hub.register(ctx, rt, "shared-token", "p1")
+	hub.register(ctx, rt, "shared-token", "p2")
+	hub.mu.Lock()
+	n := len(hub.pollers)
+	hub.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("pollers = %d, want 1 (one per token)", n)
+	}
 }

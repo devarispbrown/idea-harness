@@ -924,19 +924,19 @@ before either way, and keeps handing the token to the local UI.
 
 ### Channels
 
-`config.yaml` also takes a `channels:` section for the native channel adapters
-(Telegram today; Slack and email follow). Credentials are env-var **names**, never
-values, so the file stays committable:
+Channels live in `harness.yaml` under `integrations:` (one file, alongside Slack
+and email), and `idea channel` writes them for you:
 
 ```yaml
-channels:
+# .idea-harness/harness.yaml
+integrations:
   telegram:
     bot_token_env: TELEGRAM_BOT_TOKEN   # env var holding the @BotFather token
-    project: <project-id>               # where captured briefs land as drafts
 ```
 
 The daemon long-polls the bot and turns each text message into a draft
-initiative. Wiring and the Slack/email shapes: [`channels.md`](channels.md).
+initiative in the project whose `harness.yaml` this is. Full wiring and the
+Slack/email shapes: [`channels.md`](channels.md).
 
 ### Recommended: Tailscale
 

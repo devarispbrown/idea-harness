@@ -3,78 +3,52 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/devarispbrown/idea-harness/internal/config"
 )
-
-// ChannelsConfig is the daemon-wide channel configuration: <state root>/config.yaml,
-// section `channels:`. Credentials are env-var NAMES, never values, so the file
-// stays committable.
-type ChannelsConfig struct {
-	Telegram TelegramChannelConfig `yaml:"telegram"`
-	// Slack and email follow.
-}
-
-// TelegramChannelConfig wires a Telegram bot as a capture channel: the daemon
-// long-polls the bot and creates a draft initiative for each text message.
-type TelegramChannelConfig struct {
-	// BotTokenEnv names the environment variable holding the bot token from
-	// @BotFather.
-	BotTokenEnv string `yaml:"bot_token_env"`
-	// Project is the project id captured briefs land in as drafts.
-	Project string `yaml:"project"`
-}
-
-// LoadChannelsConfig reads the `channels:` section of config.yaml. A missing
-// file or section is the zero config.
-func LoadChannelsConfig(stateRoot string) (ChannelsConfig, error) {
-	var wrapper struct {
-		Channels ChannelsConfig `yaml:"channels"`
-	}
-	b, err := os.ReadFile(filepath.Join(stateRoot, "config.yaml"))
-	if errors.Is(err, os.ErrNotExist) {
-		return ChannelsConfig{}, nil
-	}
-	if err != nil {
-		return ChannelsConfig{}, err
-	}
-	if err := yaml.Unmarshal(b, &wrapper); err != nil {
-		return ChannelsConfig{}, fmt.Errorf("%s: %w", filepath.Join(stateRoot, "config.yaml"), err)
-	}
-	return wrapper.Channels, nil
-}
 
 // telegramAPIBase is the Telegram Bot API origin; a var so tests point it at a
 // fake server.
 var telegramAPIBase = "https://api.telegram.org"
 
-// startTelegram runs the Telegram poller until ctx is cancelled, when the config
-// is non-empty and the token is resolvable. It never returns an error: a broken
-// bot token is logged and retried forever, since the user fixes it in their env.
-func (r *Runtime) startTelegram(ctx context.Context, cfg TelegramChannelConfig) {
-	if cfg.BotTokenEnv == "" || cfg.Project == "" {
+// telegramHub owns one poller per distinct bot token, mirroring the Slack
+// SocketHub: two projects that name the same bot token must not each poll
+// getUpdates, or they would split each other's updates. A token belongs to one
+// project; a second project naming it logs a warning and does not poll.
+type telegramHub struct {
+	mu      sync.Mutex
+	pollers map[string]*telegramPoller
+}
+
+// register attaches a project to the poller for botToken, starting it on first
+// use. ctx is the daemon's lifetime.
+func (h *telegramHub) register(ctx context.Context, rt *Runtime, botToken, projectID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pollers == nil {
+		h.pollers = map[string]*telegramPoller{}
+	}
+	if p, ok := h.pollers[botToken]; ok {
+		if p.project != projectID {
+			rt.log.Warn("telegram: this bot token is already polling for another project; a bot belongs to one project",
+				"existing", p.project, "ignored", projectID)
+		}
 		return
 	}
-	token := os.Getenv(cfg.BotTokenEnv)
-	if token == "" {
-		r.log.Warn("channels.telegram configured but the token env is unset; the bot is not polled",
-			"env", cfg.BotTokenEnv)
-		return
-	}
-	p := &telegramPoller{rt: r, botToken: token, project: cfg.Project, log: r.log}
+	p := &telegramPoller{rt: rt, botToken: botToken, project: projectID, log: rt.log}
+	h.pollers[botToken] = p
 	go p.run(ctx)
 }
 
-// telegramPoller long-polls getUpdates and turns each text message into a draft.
+// telegramPoller long-polls getUpdates and turns each text message into a draft
+// in its project.
 type telegramPoller struct {
 	rt       *Runtime
 	botToken string
@@ -137,8 +111,8 @@ func (p *telegramPoller) getUpdates(ctx context.Context, client *http.Client) ([
 		return nil, fmt.Errorf("telegram answered %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	var out struct {
-		OK     bool            `json:"ok"`
-		Result []telegramUpdate `json:"result"`
+		OK      bool             `json:"ok"`
+		Result  []telegramUpdate `json:"result"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
@@ -147,4 +121,10 @@ func (p *telegramPoller) getUpdates(ctx context.Context, client *http.Client) ([
 		return nil, fmt.Errorf("telegram getUpdates: ok=false")
 	}
 	return out.Result, nil
+}
+
+// resolveTelegramToken reads the bot token from the environment or the project's
+// .env, by the name the config gives.
+func resolveTelegramToken(cfg config.TelegramChannelConfig, dotEnv map[string]string) string {
+	return lookupEnv(cfg.BotTokenEnvName(), dotEnv)
 }

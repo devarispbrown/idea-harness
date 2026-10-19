@@ -115,6 +115,10 @@ Routes use the UI's hash router (web/src/router.ts); `<id>` is an initiative id.
 | `remote status` | cli-only | CLI-only: shows the daemon's remote listener and allowed hosts | |
 | `capture token` | cli-only | CLI-only: mints a capture token and shows it once — a secret that is never re-readable | |
 | `capture list` | cli-only | CLI-only: lists capture tokens as metadata (id, label, last used) | |
+| `channel telegram` | cli-only | CLI-only: writes `integrations.telegram` to harness.yaml — Settings → Integrations is the UI equivalent (being extended) | |
+| `channel slack` | ui | `#/settings` — Integrations: the Slack channel, allowed users and token envs | |
+| `channel email` | cli-only | CLI-only: writes `integrations.email` to harness.yaml — Settings → Integrations is the UI equivalent (being extended) | |
+| `channel show` | ui | `#/settings` — Integrations: the current channel config | |
 | `mcp` | cli-only | CLI-only: stdio server for MCP clients; no UI by design | |
 | `eval` | partial | `#/automations` — Scheduled eval: model, per-run cost cap, interval, Run now, history with cost and regressions | ad-hoc flags (`--policy`, `--harness`, `--keep`, scripted runs) are CLI-only |
 | `version` | ui | `#/i/<id>/health` — daemon version in the Health footer | |

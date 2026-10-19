@@ -38,6 +38,7 @@ type integrationHub struct {
 	mu       sync.Mutex
 	projects map[string]*projectIntegrations
 	sockets  *slack.SocketHub
+	telegram *telegramHub
 	// handler is the daemon's own authenticated HTTP handler; every Actions
 	// call goes through it (daemonActions). Set by NewServer.
 	handler http.Handler
@@ -115,7 +116,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	hub := r.integrations()
 	cfg := pr.cfg.Harness.Integrations
 
-	var slackBot, slackApp, linearKey, smtpPass string
+	var slackBot, slackApp, linearKey, smtpPass, telegramBot string
 	if s := cfg.Slack; s != nil {
 		slackBot = lookupEnv(s.BotTokenEnvName(), pr.dotEnv)
 		slackApp = lookupEnv(s.AppTokenEnvName(), pr.dotEnv)
@@ -126,6 +127,9 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	if e := cfg.Email; e != nil {
 		smtpPass = lookupEnv(e.SMTPPasswordEnvName(), pr.dotEnv)
 	}
+	if t := cfg.Telegram; t != nil {
+		telegramBot = lookupEnv(t.BotTokenEnvName(), pr.dotEnv)
+	}
 	// Browsers subscribed to push notifications are bus subscribers too
 	// (push.go): a project with any needs a dispatcher even when it
 	// configures no Slack or Linear.
@@ -134,7 +138,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		r.log.Warn("push: listing subscriptions", "project", projectID, "err", err)
 		pushSubs = nil
 	}
-	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, smtpPass, pushFingerprint(pushSubs))
+	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, smtpPass, telegramBot, pushFingerprint(pushSubs))
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -206,6 +210,17 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 				uiBase = hub.uiBase
 			}
 			subs = append(subs, &email.Notifier{Cfg: *e, Password: smtpPass, UIBase: uiBase, Redact: redact})
+		}
+	}
+
+	if t := cfg.Telegram; t != nil {
+		if telegramBot == "" {
+			pi.problems["telegram"] = append(pi.problems["telegram"], t.BotTokenEnvName()+" is not set (environment or the project's .env): Telegram capture is off")
+		} else {
+			if hub.telegram == nil {
+				hub.telegram = &telegramHub{}
+			}
+			hub.telegram.register(r.lifetimeContext(), r, telegramBot, projectID)
 		}
 	}
 

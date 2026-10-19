@@ -10,13 +10,14 @@ import (
 // integration is enabled by its section being present -- there is no separate
 // `enabled` flag to forget -- and disabled by removing it.
 type IntegrationsConfig struct {
-	Slack  *SlackConfig  `json:"slack,omitempty" yaml:"slack,omitempty"`
-	Linear *LinearConfig `json:"linear,omitempty" yaml:"linear,omitempty"`
-	Email  *EmailConfig  `json:"email,omitempty" yaml:"email,omitempty"`
+	Slack   *SlackConfig          `json:"slack,omitempty" yaml:"slack,omitempty"`
+	Linear  *LinearConfig         `json:"linear,omitempty" yaml:"linear,omitempty"`
+	Email   *EmailConfig          `json:"email,omitempty" yaml:"email,omitempty"`
+	Telegram *TelegramChannelConfig `json:"telegram,omitempty" yaml:"telegram,omitempty"`
 }
 
 // Configured reports whether any integration is configured.
-func (c IntegrationsConfig) Configured() bool { return c.Slack != nil || c.Linear != nil || c.Email != nil }
+func (c IntegrationsConfig) Configured() bool { return c.Slack != nil || c.Linear != nil || c.Email != nil || c.Telegram != nil }
 
 // IntegrationEventKinds is the vocabulary of domain events the integration bus
 // publishes (internal/integrations: Kind). It lives here, in the leaf config
@@ -142,6 +143,17 @@ func (e EmailConfig) EffectivePort() int {
 
 // SMTPPasswordEnvName returns the password's environment variable name.
 func (e EmailConfig) SMTPPasswordEnvName() string { return orDefault(e.SMTPPasswordEnv, "SMTP_PASSWORD") }
+
+// TelegramChannelConfig is `integrations.telegram`: the native capture bot. The
+// daemon long-polls the bot and turns each text message into a draft initiative
+// in THIS project, so the project is implicit — no `project` field.
+type TelegramChannelConfig struct {
+	// BotTokenEnv names the environment variable holding the @BotFather token.
+	BotTokenEnv string `json:"bot_token_env" yaml:"bot_token_env"`
+}
+
+// BotTokenEnvName returns the bot token's environment variable name.
+func (t TelegramChannelConfig) BotTokenEnvName() string { return orDefault(t.BotTokenEnv, "TELEGRAM_BOT_TOKEN") }
 
 // SocketModeEnabled reports the effective socket_mode (default true).
 func (s SlackConfig) SocketModeEnabled() bool { return s.SocketMode == nil || *s.SocketMode }
