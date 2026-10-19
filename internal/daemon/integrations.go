@@ -499,7 +499,7 @@ type IntegrationStatus struct {
 	TokenEnvs []string `json:"token_envs"`
 }
 
-var integrationNames = []string{"slack", "linear"}
+var integrationNames = []string{"slack", "linear", "email", "telegram"}
 
 func (s *Server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
@@ -533,18 +533,35 @@ func (r *Runtime) integrationStatus(ctx context.Context, projectID string, pr *p
 	out := []IntegrationStatus{}
 	for _, name := range integrationNames {
 		st := IntegrationStatus{Name: name, Problems: []string{}}
-		st.Configured = (name == "slack" && cfg.Slack != nil) || (name == "linear" && cfg.Linear != nil)
-		switch {
-		case name == "slack" && cfg.Slack != nil:
-			st.Config = cfg.Slack
-			st.TokenEnvs = []string{cfg.Slack.BotTokenEnvName(), cfg.Slack.AppTokenEnvName()}
-		case name == "slack":
+		switch name {
+		case "slack":
+			st.Configured = cfg.Slack != nil
 			st.TokenEnvs = []string{config.SlackConfig{}.BotTokenEnvName(), config.SlackConfig{}.AppTokenEnvName()}
-		case name == "linear" && cfg.Linear != nil:
-			st.Config = cfg.Linear
-			st.TokenEnvs = []string{cfg.Linear.APIKeyEnvName()}
-		default:
+			if cfg.Slack != nil {
+				st.Config = cfg.Slack
+				st.TokenEnvs = []string{cfg.Slack.BotTokenEnvName(), cfg.Slack.AppTokenEnvName()}
+			}
+		case "linear":
+			st.Configured = cfg.Linear != nil
 			st.TokenEnvs = []string{config.LinearConfig{}.APIKeyEnvName()}
+			if cfg.Linear != nil {
+				st.Config = cfg.Linear
+				st.TokenEnvs = []string{cfg.Linear.APIKeyEnvName()}
+			}
+		case "email":
+			st.Configured = cfg.Email != nil
+			st.TokenEnvs = []string{config.EmailConfig{}.SMTPPasswordEnvName()}
+			if cfg.Email != nil {
+				st.Config = cfg.Email
+				st.TokenEnvs = []string{cfg.Email.SMTPPasswordEnvName()}
+			}
+		case "telegram":
+			st.Configured = cfg.Telegram != nil
+			st.TokenEnvs = []string{config.TelegramChannelConfig{}.BotTokenEnvName()}
+			if cfg.Telegram != nil {
+				st.Config = cfg.Telegram
+				st.TokenEnvs = []string{cfg.Telegram.BotTokenEnvName()}
+			}
 		}
 		if st.Tokens == nil {
 			// Set-or-not for every variable, even before the integration is

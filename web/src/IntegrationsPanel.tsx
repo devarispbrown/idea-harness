@@ -8,7 +8,7 @@ import {
   type IntegrationsView,
 } from "./integrationStatus";
 import IntegrationEditor from "./settings/IntegrationEditor";
-import type { LinearConfig, SlackConfig } from "./settings/integrationForm";
+import type { EmailConfig, LinearConfig, SlackConfig, TelegramConfig } from "./settings/integrationForm";
 
 interface TestResult {
   ok: boolean;
@@ -63,7 +63,7 @@ export default function IntegrationsPanel({ projectId }: { projectId: string }) 
     <section className="card" aria-labelledby="integrations-title">
       <h2 id="integrations-title">Integrations</h2>
       <p className="muted">
-        Slack notifications and approvals, Linear issue sync. Saved to <code>integrations</code> in harness.yaml; tokens
+        Slack, Linear, email and Telegram. Saved to <code>integrations</code> in harness.yaml; tokens
         stay in the environment or <code>.env</code> and are never shown here. See docs/integrations.md.
       </p>
       {error && <p className="error">{error}</p>}
@@ -73,7 +73,7 @@ export default function IntegrationsPanel({ projectId }: { projectId: string }) 
           {view.integrations.map((s) => {
             const state = integrationState(s);
             const result = results[s.name];
-            const editable = s.name === "slack" || s.name === "linear";
+            const editable = s.name === "slack" || s.name === "linear" || s.name === "email" || s.name === "telegram";
             return (
               <li key={s.name} data-integration={s.name}>
                 <div>
@@ -93,7 +93,7 @@ export default function IntegrationsPanel({ projectId }: { projectId: string }) 
                   </div>
                 ))}
                 <div className="row">
-                  {s.configured && (
+                  {s.configured && (s.name === "slack" || s.name === "linear") && (
                     <button className="ghost" disabled={testing !== ""} onClick={() => runTest(s.name)}>
                       {testing === s.name ? "Testing…" : s.name === "slack" ? "Send test message" : "Test connection"}
                     </button>
@@ -115,8 +115,8 @@ export default function IntegrationsPanel({ projectId }: { projectId: string }) 
                   <IntegrationEditor
                     key={`${s.name}-${generation}`}
                     projectId={projectId}
-                    name={s.name as "slack" | "linear"}
-                    config={(s.config ?? null) as SlackConfig | LinearConfig | null}
+                    name={s.name as "slack" | "linear" | "email" | "telegram"}
+                    config={(s.config ?? null) as SlackConfig | LinearConfig | EmailConfig | TelegramConfig | null}
                     tokens={tokensFor(s.tokens, s.token_envs)}
                     eventKinds={view.event_kinds ?? []}
                     defaultEvents={view.default_slack_events ?? []}

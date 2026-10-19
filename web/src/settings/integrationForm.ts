@@ -36,6 +36,20 @@ export interface LinearConfig {
   api_key_env?: string;
 }
 
+export interface EmailConfig {
+  to: string;
+  from: string;
+  smtp_host: string;
+  smtp_port?: number;
+  smtp_user?: string;
+  smtp_password_env?: string;
+  ui_base_url?: string;
+}
+
+export interface TelegramConfig {
+  bot_token_env?: string;
+}
+
 // The form keeps lists as the text a person types (comma- or
 // space-separated) and numbers as strings, so a half-typed value is never
 // silently coerced.
@@ -58,6 +72,20 @@ export interface LinearForm {
   pollIntervalSeconds: string;
   states: Required<LinearStateMapping>;
   apiKeyEnv: string;
+}
+
+export interface EmailForm {
+  to: string;
+  from: string;
+  smtpHost: string;
+  smtpPort: string;
+  smtpUser: string;
+  smtpPasswordEnv: string;
+  uiBaseURL: string;
+}
+
+export interface TelegramForm {
+  botTokenEnv: string;
 }
 
 export type FieldErrors = Record<string, string>;
@@ -110,6 +138,22 @@ export function linearFormFrom(c: LinearConfig | null | undefined): LinearForm {
     },
     apiKeyEnv: c?.api_key_env ?? "",
   };
+}
+
+export function emailFormFrom(c: EmailConfig | null | undefined): EmailForm {
+  return {
+    to: c?.to ?? "",
+    from: c?.from ?? "",
+    smtpHost: c?.smtp_host ?? "",
+    smtpPort: c?.smtp_port ? String(c.smtp_port) : "",
+    smtpUser: c?.smtp_user ?? "",
+    smtpPasswordEnv: c?.smtp_password_env ?? "",
+    uiBaseURL: c?.ui_base_url ?? "",
+  };
+}
+
+export function telegramFormFrom(c: TelegramConfig | null | undefined): TelegramForm {
+  return { botTokenEnv: c?.bot_token_env ?? "" };
 }
 
 function envNameError(v: string): string {
@@ -200,6 +244,50 @@ export function linearConfigFrom(f: LinearForm): LinearConfig {
   if (Object.keys(states).length) out.state_mapping = states;
   if (f.apiKeyEnv.trim()) out.api_key_env = f.apiKeyEnv.trim();
   return out;
+}
+
+export function emailConfigFrom(f: EmailForm): EmailConfig {
+  const out: EmailConfig = { to: f.to.trim(), from: f.from.trim(), smtp_host: f.smtpHost.trim() };
+  if (f.smtpPort.trim()) out.smtp_port = Number(f.smtpPort.trim());
+  if (f.smtpUser.trim()) out.smtp_user = f.smtpUser.trim();
+  if (f.smtpPasswordEnv.trim()) out.smtp_password_env = f.smtpPasswordEnv.trim();
+  if (f.uiBaseURL.trim()) out.ui_base_url = f.uiBaseURL.trim();
+  return out;
+}
+
+export function telegramConfigFrom(f: TelegramForm): TelegramConfig {
+  const out: TelegramConfig = {};
+  if (f.botTokenEnv.trim()) out.bot_token_env = f.botTokenEnv.trim();
+  return out;
+}
+
+export function validateEmail(f: EmailForm): FieldErrors {
+  const e: FieldErrors = {};
+  const to = f.to.trim();
+  if (!to) e.to = "Required: the recipient address.";
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) e.to = "An email address, e.g. you@example.com.";
+  const from = f.from.trim();
+  if (!from) e.from = "Required: the From address.";
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from)) e.from = "An email address, e.g. idea@example.com.";
+  const host = f.smtpHost.trim();
+  if (!host) e.smtpHost = "Required: the SMTP host, e.g. smtp.postmarkapp.com.";
+  const port = f.smtpPort.trim();
+  if (port !== "") {
+    const n = Number(port);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) e.smtpPort = "A port number (587 for STARTTLS).";
+  }
+  const pw = envNameError(f.smtpPasswordEnv.trim());
+  if (pw) e.smtpPasswordEnv = pw;
+  const ui = f.uiBaseURL.trim();
+  if (ui && !/^https?:\/\/[^\s/@]+/i.test(ui)) e.uiBaseURL = "An absolute http(s) URL.";
+  return e;
+}
+
+export function validateTelegram(f: TelegramForm): FieldErrors {
+  const e: FieldErrors = {};
+  const env = envNameError(f.botTokenEnv.trim());
+  if (env) e.botTokenEnv = env;
+  return e;
 }
 
 export function hasErrors(e: FieldErrors): boolean {

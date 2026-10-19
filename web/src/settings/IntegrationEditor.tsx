@@ -1,18 +1,28 @@
 import { useState } from "react";
 import { put } from "../api";
 import {
+  emailConfigFrom,
+  emailFormFrom,
   hasErrors,
   linearConfigFrom,
   linearFormFrom,
   slackConfigFrom,
   slackFormFrom,
+  telegramConfigFrom,
+  telegramFormFrom,
+  validateEmail,
   validateLinear,
   validateSlack,
+  validateTelegram,
+  type EmailConfig,
+  type EmailForm,
   type FieldErrors,
   type LinearConfig,
   type LinearForm,
   type SlackConfig,
   type SlackForm,
+  type TelegramConfig,
+  type TelegramForm,
 } from "./integrationForm";
 
 // IntegrationEditor edits one integration's harness.yaml section through
@@ -29,8 +39,8 @@ export default function IntegrationEditor({
   onSaved,
 }: {
   projectId: string;
-  name: "slack" | "linear";
-  config: SlackConfig | LinearConfig | null;
+  name: "slack" | "linear" | "email" | "telegram";
+  config: SlackConfig | LinearConfig | EmailConfig | TelegramConfig | null;
   tokens: Record<string, boolean>;
   eventKinds: string[];
   defaultEvents: string[];
@@ -38,12 +48,15 @@ export default function IntegrationEditor({
 }) {
   const [slack, setSlack] = useState<SlackForm>(() => slackFormFrom(name === "slack" ? (config as SlackConfig | null) : null, defaultEvents));
   const [linear, setLinear] = useState<LinearForm>(() => linearFormFrom(name === "linear" ? (config as LinearConfig | null) : null));
+  const [email, setEmail] = useState<EmailForm>(() => emailFormFrom(name === "email" ? (config as EmailConfig | null) : null));
+  const [telegram, setTelegram] = useState<TelegramForm>(() => telegramFormFrom(name === "telegram" ? (config as TelegramConfig | null) : null));
   const [errors, setErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState("");
   const [saving, setSaving] = useState(false);
   const id = (field: string) => `integ-${name}-${field}`;
+  const label = name === "slack" ? "Slack" : name === "linear" ? "Linear" : name === "email" ? "Email" : "Telegram";
 
-  const send = async (body: { config: SlackConfig | LinearConfig | null }, done: string) => {
+  const send = async (body: { config: SlackConfig | LinearConfig | EmailConfig | TelegramConfig | null }, done: string) => {
     setSaving(true);
     setServerError("");
     try {
@@ -57,16 +70,27 @@ export default function IntegrationEditor({
   };
 
   const save = () => {
-    const e = name === "slack" ? validateSlack(slack, eventKinds) : validateLinear(linear);
+    let e: FieldErrors;
+    let cfg: SlackConfig | LinearConfig | EmailConfig | TelegramConfig;
+    if (name === "slack") {
+      e = validateSlack(slack, eventKinds);
+      cfg = slackConfigFrom(slack, defaultEvents);
+    } else if (name === "linear") {
+      e = validateLinear(linear);
+      cfg = linearConfigFrom(linear);
+    } else if (name === "email") {
+      e = validateEmail(email);
+      cfg = emailConfigFrom(email);
+    } else {
+      e = validateTelegram(telegram);
+      cfg = telegramConfigFrom(telegram);
+    }
     setErrors(e);
     if (hasErrors(e)) return;
-    send(
-      { config: name === "slack" ? slackConfigFrom(slack, defaultEvents) : linearConfigFrom(linear) },
-      `${name === "slack" ? "Slack" : "Linear"} settings saved to harness.yaml.`,
-    );
+    send({ config: cfg }, `${label} settings saved to harness.yaml.`);
   };
 
-  const remove = () => send({ config: null }, `${name === "slack" ? "Slack" : "Linear"} turned off (its section was removed from harness.yaml).`);
+  const remove = () => send({ config: null }, `${label} turned off (its section was removed from harness.yaml).`);
 
   const err = (field: string) =>
     errors[field] ? (
@@ -150,7 +174,7 @@ export default function IntegrationEditor({
             {err("uiBaseURL")}
           </details>
         </>
-      ) : (
+      ) : name === "linear" ? (
         <>
           <label className="field-label" htmlFor={id("team")}>
             Team key
@@ -209,11 +233,54 @@ export default function IntegrationEditor({
             {err("apiKeyEnv")}
           </details>
         </>
+      ) : name === "email" ? (
+        <>
+          <label className="field-label" htmlFor={id("to")}>
+            To
+          </label>
+          <input id={id("to")} className="text-input" placeholder="you@example.com" value={email.to} onChange={(e) => setEmail({ ...email, to: e.target.value })} {...described("to")} />
+          {err("to")}
+          <label className="field-label" htmlFor={id("from")}>
+            From
+          </label>
+          <input id={id("from")} className="text-input" placeholder="idea@example.com" value={email.from} onChange={(e) => setEmail({ ...email, from: e.target.value })} {...described("from")} />
+          {err("from")}
+          <label className="field-label" htmlFor={id("smtp-host")}>
+            SMTP host
+          </label>
+          <input id={id("smtp-host")} className="text-input" placeholder="smtp.postmarkapp.com" value={email.smtpHost} onChange={(e) => setEmail({ ...email, smtpHost: e.target.value })} {...described("smtpHost")} />
+          {err("smtpHost")}
+          <details>
+            <summary>Port, login and password variable</summary>
+            <label className="field-label" htmlFor={id("smtp-port")}>
+              Port (default 587)
+            </label>
+            <input id={id("smtp-port")} className="text-input" inputMode="numeric" placeholder="587" value={email.smtpPort} onChange={(e) => setEmail({ ...email, smtpPort: e.target.value })} {...described("smtpPort")} />
+            {err("smtpPort")}
+            <label className="field-label" htmlFor={id("smtp-user")}>
+              SMTP username
+            </label>
+            <input id={id("smtp-user")} className="text-input" value={email.smtpUser} onChange={(e) => setEmail({ ...email, smtpUser: e.target.value })} />
+            <label className="field-label" htmlFor={id("smtp-pw-env")}>
+              Password variable
+            </label>
+            <input id={id("smtp-pw-env")} className="text-input" placeholder="SMTP_PASSWORD" value={email.smtpPasswordEnv} onChange={(e) => setEmail({ ...email, smtpPasswordEnv: e.target.value })} {...described("smtpPasswordEnv")} />
+            {err("smtpPasswordEnv")}
+          </details>
+        </>
+      ) : (
+        <>
+          <label className="field-label" htmlFor={id("bot-env")}>
+            Bot token variable
+          </label>
+          <input id={id("bot-env")} className="text-input" placeholder="TELEGRAM_BOT_TOKEN" value={telegram.botTokenEnv} onChange={(e) => setTelegram({ ...telegram, botTokenEnv: e.target.value })} {...described("botTokenEnv")} />
+          {err("botTokenEnv")}
+        </>
       )}
       {tokenNote}
       <div className="row">
         <button disabled={saving} onClick={save}>
-          {config ? `Save ${name === "slack" ? "Slack" : "Linear"} settings` : `Turn on ${name === "slack" ? "Slack" : "Linear"}`}
+          {config ? `Save ${label} settings` : `Turn on ${label}`}
         </button>
         {config && (
           <button className="ghost" disabled={saving} onClick={remove}>

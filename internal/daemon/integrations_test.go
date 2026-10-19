@@ -335,12 +335,19 @@ func TestIntegrationsStatusWhenUnconfiguredOrMissingTokens(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&st)
 	resp.Body.Close()
-	if len(st.Integrations) != 2 {
+	if len(st.Integrations) != 4 {
 		t.Fatalf("status = %+v", st)
 	}
 	for _, in := range st.Integrations {
-		if !in.Configured || in.Active || len(in.Problems) == 0 {
-			t.Fatalf("%s: want configured, inactive, with problems: %+v", in.Name, in)
+		switch in.Name {
+		case "slack", "linear":
+			if !in.Configured || in.Active || len(in.Problems) == 0 {
+				t.Fatalf("%s: want configured, inactive, with problems: %+v", in.Name, in)
+			}
+		case "email", "telegram":
+			if in.Configured {
+				t.Fatalf("%s: want unconfigured: %+v", in.Name, in)
+			}
 		}
 	}
 	joined := strings.Join(st.Integrations[0].Problems, " ")

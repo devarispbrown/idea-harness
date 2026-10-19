@@ -28,7 +28,7 @@ export interface IntegrationsView {
 
 export type IntegrationState = "off" | "ok" | "warn" | "down";
 
-const LABELS: Record<string, string> = { slack: "Slack", linear: "Linear" };
+const LABELS: Record<string, string> = { slack: "Slack", linear: "Linear", email: "Email", telegram: "Telegram" };
 
 export function integrationLabel(name: string): string {
   return LABELS[name] ?? name;
