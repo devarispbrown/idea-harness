@@ -1473,6 +1473,7 @@ button.ghost.small {
 .pill-verified { background: var(--verified-pill); color: var(--verified-fg); }
 .pill-failing { background: var(--failing-pill); color: var(--failing-fg); }
 .pill-inactive { background: var(--inactive-pill); color: var(--inactive-fg); }
+.pill-modified { background: var(--modified-pill, var(--inactive-pill)); color: var(--modified-fg, var(--inactive-fg)); }
 
 .doc-eyebrow {
   font-size: 10.5px;

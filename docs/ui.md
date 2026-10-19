@@ -356,7 +356,10 @@ A coverage meter — "*p* of *t* criteria · *v* of *r* requirements verified", 
 when any are — over one card per requirement.
 
 Each card shows the requirement code and statement, a `verified` / `failed` / `waived` pill once it
-has one, an *n*/*n* criteria count, and the acceptance criteria as `metric target (condition)`.
+has one, and a `modified` pill when the requirement was revised in place (its derived `change_kind`
+is `modified`, e.g. after a brownfield `idea new --from` revision) — an *n*/*n* criteria count, and
+the acceptance criteria as `metric target (condition)`. (`added` shows no pill; `removed`
+requirements are not listed here.)
 Requirements still awaiting evidence get a note field and **Waive** and **Add verify task** (which
 generates a verification task for the requirement); **Pass** and **Fail** appear beside them once a
 change set has been built and applied — until then a line above the cards says so, and the buttons

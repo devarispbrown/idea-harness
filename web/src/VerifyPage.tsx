@@ -21,6 +21,9 @@ interface Requirement {
   code: string;
   statement: string;
   status: string;
+  // change_kind (brownfield delta): "added" (default), "modified" (revised in
+  // place), or "removed" (superseded; filtered out of the active list).
+  change_kind?: string;
   acceptance_criteria: Criterion[];
   // evidence_tests (task 7, C2 wire contract): the test names mapped to this
   // requirement and whether each passed. Optional so this still works
@@ -202,6 +205,7 @@ export default function VerifyPage({
                 {verified && <span className="phase-pill pill-verified">verified</span>}
                 {failed && <span className="phase-pill pill-failing">failed</span>}
                 {waived && <span className="phase-pill pill-inactive">waived</span>}
+                {r.change_kind === "modified" && <span className="phase-pill pill-modified">modified</span>}
                 <span className="verify-count">
                   {verified ? r.acceptance_criteria.length : 0}/{r.acceptance_criteria.length}
                 </span>
