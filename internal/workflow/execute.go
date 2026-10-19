@@ -231,23 +231,43 @@ var ErrNoReadyTask = errors.New("workflow: no ready tasks")
 // nextReadyTask returns the first task that is ready or proposed (i.e. not yet
 // done) for an initiative, in creation order.
 func (e *Engine) nextReadyTask(ctx context.Context, initiativeID string) (domain.Task, error) {
-	tasks, err := e.db.ListTasks(ctx, initiativeID)
+	ready, err := e.nextReadyTasks(ctx, initiativeID, 1)
 	if err != nil {
 		return domain.Task{}, err
 	}
+	if len(ready) == 0 {
+		return domain.Task{}, fmt.Errorf("%w for initiative %q (dependencies not satisfied)", ErrNoReadyTask, initiativeID)
+	}
+	return ready[0], nil
+}
+
+// nextReadyTasks returns up to limit tasks that are ready to execute: status
+// ready or proposed, with every depends_on predecessor applied, in creation
+// order. It is the set generalization of nextReadyTask (limit==1): the
+// foundation for dependency-aware parallel waves, where a bounded number of
+// independent tasks can execute at once.
+func (e *Engine) nextReadyTasks(ctx context.Context, initiativeID string, limit int) ([]domain.Task, error) {
+	tasks, err := e.db.ListTasks(ctx, initiativeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Task, 0, limit)
 	for _, t := range tasks {
 		if t.Status != domain.TaskReady && t.Status != domain.TaskProposed {
 			continue
 		}
 		ready, err := e.taskDependenciesApplied(ctx, initiativeID, t.ID)
 		if err != nil {
-			return domain.Task{}, err
+			return nil, err
 		}
 		if ready {
-			return t, nil
+			out = append(out, t)
+			if len(out) >= limit {
+				break
+			}
 		}
 	}
-	return domain.Task{}, fmt.Errorf("%w for initiative %q (dependencies not satisfied)", ErrNoReadyTask, initiativeID)
+	return out, nil
 }
 
 // taskDependenciesApplied reports whether every depends_on predecessor of taskID

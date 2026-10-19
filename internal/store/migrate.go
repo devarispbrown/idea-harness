@@ -1197,6 +1197,13 @@ CREATE TABLE IF NOT EXISTS project_memory (
 	created_at INTEGER NOT NULL
 );
 `,
+	// 52: revised_at records the one time a revision changed a requirement's
+	// statement/acceptance criteria in place, so its derived delta
+	// (added/modified/removed) can be computed at read time without a parallel
+	// column that could drift from status/SupersededBy.
+	`
+ALTER TABLE requirements ADD COLUMN revised_at INTEGER;
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

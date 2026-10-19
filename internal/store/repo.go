@@ -666,7 +666,7 @@ func (db *DB) CreateRequirement(ctx context.Context, r *domain.Requirement) erro
 // ListRequirements returns requirements for an initiative.
 func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]domain.Requirement, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, code, statement, acceptance_criteria_json, priority, status, source_assertion_id, provenance_json, produced_by_run_id, superseded_by, verified_at, created_at
+		SELECT id, initiative_id, code, statement, acceptance_criteria_json, priority, status, source_assertion_id, provenance_json, produced_by_run_id, superseded_by, verified_at, created_at, revised_at
 		FROM requirements WHERE initiative_id = ? ORDER BY created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -676,10 +676,10 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 	for rows.Next() {
 		var r domain.Requirement
 		var ac, prov string
-		var verified sql.NullInt64
+		var verified, revised sql.NullInt64
 		var created int64
 		if err := rows.Scan(&r.ID, &r.InitiativeID, &r.Code, &r.Statement, &ac, &r.Priority, &r.Status,
-			&r.SourceAssertionID, &prov, &r.ProducedByRun, &r.SupersededBy, &verified, &created); err != nil {
+			&r.SourceAssertionID, &prov, &r.ProducedByRun, &r.SupersededBy, &verified, &created, &revised); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.UnixMilli(created)
@@ -687,9 +687,14 @@ func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]doma
 			t := time.UnixMilli(verified.Int64)
 			r.VerifiedAt = &t
 		}
+		if revised.Valid {
+			t := time.UnixMilli(revised.Int64)
+			r.RevisedAt = &t
+		}
 		json.Unmarshal([]byte(ac), &r.AcceptanceCriteria)
 		json.Unmarshal([]byte(prov), &r.Provenance)
 		r.ObjectiveIDs = []string{}
+		r.ChangeKind = r.DeriveChangeKind()
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -804,14 +809,19 @@ func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) erro
 		newCriteriaJSON := mustJSON(r.AcceptanceCriteria)
 		subjectChanged := curStatement != r.Statement || curCriteriaJSON != newCriteriaJSON
 		reopenVerification := subjectChanged && curStatus != domain.RequirementDraft && curStatus != domain.RequirementRemoved
+		var revisedAt *int64
+		if subjectChanged {
+			now := time.Now().UTC().UnixMilli()
+			revisedAt = &now
+		}
 
 		if reopenVerification {
 			_, err := tx.Exec(`
 				UPDATE requirements
 				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?,
-				    status = ?, verified_at = NULL
+				    status = ?, verified_at = NULL, revised_at = ?
 				WHERE id = ?`,
-				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, domain.RequirementApproved, r.ID)
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, domain.RequirementApproved, revisedAt, r.ID)
 			if err != nil {
 				return err
 			}
@@ -821,9 +831,9 @@ func (db *DB) UpdateRequirement(ctx context.Context, r *domain.Requirement) erro
 		} else {
 			_, err := tx.Exec(`
 				UPDATE requirements
-				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?
+				SET statement = ?, acceptance_criteria_json = ?, priority = ?, produced_by_run_id = ?, revised_at = ?
 				WHERE id = ?`,
-				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, r.ID)
+				r.Statement, newCriteriaJSON, r.Priority, r.ProducedByRun, revisedAt, r.ID)
 			if err != nil {
 				return err
 			}

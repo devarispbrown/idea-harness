@@ -49,6 +49,18 @@ type Assertion struct {
 }
 
 // Requirement is a first-class structured requirement (§17).
+// RequirementChangeKind is the derived delta a requirement represents relative
+// to a prior revision: added (new), modified (revised in place), or removed
+// (superseded/removed). It is computed at read time from the row's own
+// lifecycle, never stored, so it cannot drift from status/SupersededBy.
+type RequirementChangeKind string
+
+const (
+	RequirementChangeAdded    RequirementChangeKind = "added"
+	RequirementChangeModified RequirementChangeKind = "modified"
+	RequirementChangeRemoved  RequirementChangeKind = "removed"
+)
+
 type Requirement struct {
 	ID                 string                `json:"id"`
 	InitiativeID       string                `json:"initiative_id"`
@@ -61,7 +73,13 @@ type Requirement struct {
 	Provenance         []ProvenanceRef       `json:"provenance"`
 	ProducedByRun      string                `json:"produced_by_run,omitempty"`
 	SupersededBy       string                `json:"superseded_by,omitempty"`
-	VerifiedAt         *time.Time            `json:"verified_at,omitempty"`
+	// RevisedAt is set (once) when a revision changes the requirement's
+	// statement or acceptance criteria in place (store.UpdateRequirement).
+	RevisedAt *time.Time `json:"revised_at,omitempty"`
+	// ChangeKind is the derived delta (added/modified/removed), populated at
+	// read time by DeriveChangeKind — never a stored column.
+	ChangeKind RequirementChangeKind `json:"change_kind,omitempty"`
+	VerifiedAt *time.Time            `json:"verified_at,omitempty"`
 	// EvidenceTests is the test-run evidence mapped to this requirement (C2,
 	// wave 3 contract): every test the verification plan (or a name match on
 	// this requirement's code) associates with it, and whether it last passed
@@ -77,6 +95,19 @@ type Requirement struct {
 	// PRD's deterministic outcome check reports.
 	ObjectiveIDs []string  `json:"objective_ids"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// DeriveChangeKind reports the requirement's delta relative to a prior
+// revision, derived from its own lifecycle fields: removed wins, then modified
+// (revised in place), else added.
+func (r Requirement) DeriveChangeKind() RequirementChangeKind {
+	if r.Status == RequirementRemoved || r.SupersededBy != "" {
+		return RequirementChangeRemoved
+	}
+	if r.RevisedAt != nil {
+		return RequirementChangeModified
+	}
+	return RequirementChangeAdded
 }
 
 // EvidenceTest is one test-run result mapped to a requirement (C2, wave 3

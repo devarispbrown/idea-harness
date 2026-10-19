@@ -114,6 +114,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 - **Requirement→task coverage gate.** Plan review's deterministic checks now also flag every
   live requirement with no implementing task (an `EdgeVerifies` does not count), closing the
   direction that previously only `idea gaps` reported non-blocking.
+- **Requirement deltas.** Each requirement now carries a derived `change_kind` — `added`,
+  `modified` (revised in place, `revised_at` set by migration 52), or `removed` (superseded) —
+  computed at read time from the row's own lifecycle rather than a stored column that could
+  drift.
 - **`docs/failure-modes.md`.** Five classes of refusal/stall a founder journey actually hit,
   each as symptom → diagnostic command → expected output → recovery, quoting the real message
   verbatim (several are `%s`-templated, shown as a rendered example): a change set whose
