@@ -10,37 +10,59 @@ review (see [`icp-and-channels.md`](icp-and-channels.md) and
 The remote-access *mechanism* is already documented in
 [`configuration.md`](configuration.md#remote-access) — `tailscale serve`, the
 `daemon:` settings, `idea ui pair`. This page is the *operational* walkthrough:
-how to keep the daemon running, on each platform.
-
-## What you need
-
-- **The binary with the web UI embedded.** Use a release binary, or build it with
-  `make build`. Do **not** use `go install ./cmd/idea` for self-hosting: that
-  builds the CLI without the web UI, so a remote browser gets a "web UI not
-  built" page and there is nothing to pair into.
-- **Tailscale** (free) on the box and on every device you create or judge from.
-- **Docker**, only if you want a real coding agent (`hermes`/`omp`/`acp`/
-  `openhands`). The deterministic `internal` placeholder needs no Docker and no
-  model key, so you can stand the whole thing up first and wire an agent later.
-- **A model provider key**, when you move off the placeholder — held in the
-  daemon's environment or the project's `.env` (see
-  [`agents.md`](agents.md) and [`configuration.md`](configuration.md)).
+try it, keep it running, then add a real agent.
 
 State lives under `~/.local/share/idea-harness/` on every platform, or
 `$IDEA_HARNESS_STATE` if you point it elsewhere.
 
-## Local (headless)
+## 1. Try it in five minutes
 
-Run `idea daemon` in the foreground under the OS's service manager so it starts
-at boot and restarts after a crash. Then add remote access once, with
-`tailscale serve --bg 8787` and the machine's MagicDNS name in `allowed_hosts`
-([`configuration.md`](configuration.md#remote-access); the security policy is
-[`security-model.md`](security-model.md#remote-access)), and `idea ui pair` to
-sign your phone in.
+Prove the whole remote path on your own machine before you make anything
+permanent or spend a cent on a box.
 
-### Linux — systemd
+**Install two things:** the release binary (the web UI is built in — do **not**
+use `go install ./cmd/idea`, which omits it), and Tailscale on this machine *and*
+on your phone. Sign both in to the same tailnet.
 
-A **user** unit (no root) at `~/.config/systemd/user/idea-harness.service`:
+**Turn on remote access:**
+
+```bash
+tailscale serve --bg 8787            # prints https://<machine>.ts.net — copy the hostname
+idea daemon stop
+idea daemon --allowed-hosts <machine>.ts.net   # foreground; leave this terminal open
+```
+
+In a second terminal:
+
+```bash
+idea ui pair --qr                    # scan from your phone
+```
+
+**Did it work?** Open the `tailscale serve` address on your phone, enter the code,
+and you land on the Home page. A **403 "invalid host"** means the name passed to
+`--allowed-hosts` is not the one the browser sent — re-check `tailscale serve`'s
+output and restart. A **401** means the pairing code was wrong or expired — run
+`idea ui pair` again.
+
+The policy behind `tailscale serve` and the remote listener:
+[`configuration.md`](configuration.md#remote-access),
+[`security-model.md`](security-model.md#remote-access).
+
+Once the phone is signed in, everything below just **keeps it running** and,
+optionally, gives it a real coding agent.
+
+## 2. Keep it running
+
+Wrap `idea daemon` in the OS's service manager so it starts at boot and restarts
+after a crash. If you just did the try-it path, `idea daemon stop` first, so the
+service takes over. The service runs `idea daemon` with no flags, so move the
+hostname into `config.yaml`'s `daemon:` section (`daemon.allowed_hosts`) first —
+the key and its policy are in [`configuration.md`](configuration.md#remote-access)
+and [`security-model.md`](security-model.md#remote-access).
+
+### Local — Linux (systemd, user unit)
+
+`~/.config/systemd/user/idea-harness.service`:
 
 ```ini
 [Unit]
@@ -60,10 +82,10 @@ WantedBy=default.target
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now idea-harness
-loginctl enable-linger          # keep it running while you're logged out
+loginctl enable-linger            # keep it running while you're logged out
 ```
 
-### macOS — launchd
+### Local — macOS (launchd)
 
 `~/Library/LaunchAgents/com.idea-harness.daemon.plist`:
 
@@ -85,7 +107,7 @@ loginctl enable-linger          # keep it running while you're logged out
 launchctl load ~/Library/LaunchAgents/com.idea-harness.daemon.plist
 ```
 
-### Windows — NSSM
+### Local — Windows (NSSM)
 
 Install [NSSM](https://nssm.cc/), then from an elevated PowerShell:
 
@@ -99,19 +121,18 @@ nssm start idea-harness
 (Task Scheduler with "run whether the user is logged on or not" also works, but
 NSSM restarts a crashed daemon, which is what you want.)
 
-## Cloud VPS
+### Cloud — a box that's always on
 
-Any small Linux box works; the recipe is the same everywhere. A plain VPS is a
-better fit than a PaaS like Render for a stateful daemon — Render's filesystem is
-ephemeral unless you attach a persistent disk, so a VPS with a real disk is
-simpler. Ubuntu 22.04/24.04 LTS is the safe default.
+A plain VPS is a better fit than a PaaS like Render for a stateful daemon —
+Render's filesystem is ephemeral unless you attach a persistent disk. Ubuntu
+22.04/24.04 LTS is the safe default. You have already done the remote-access step
+above; the only new part is the box and the service.
 
-1. **Provision** the box (table below) and note its Tailnet IP.
+1. **Provision** the box (table below).
 2. **Install Tailscale:** `curl -fsSL https://tailscale.com/install.sh | sh && tailscale up`.
-3. **Install Docker** (for a real agent) and the `idea` release binary at
-   `/usr/local/bin/idea`.
+3. **Install the `idea` release binary** at `/usr/local/bin/idea`.
 4. **Write a system service** at `/etc/systemd/system/idea-harness.service`
-   (add `User=idea` and run as a dedicated user, not root):
+   (run as a dedicated user, not root):
 
    ```ini
    [Unit]
@@ -133,13 +154,9 @@ simpler. Ubuntu 22.04/24.04 LTS is the safe default.
    systemctl daemon-reload && systemctl enable --now idea-harness
    ```
 
-5. **Expose it on the tailnet only:** run `tailscale serve --bg 8787`, then add
-   the box's MagicDNS name to `daemon.allowed_hosts` in `config.yaml` — settings
-   in [`configuration.md`](configuration.md#remote-access), security policy in
-   [`security-model.md`](security-model.md#remote-access).
-6. **Pair your phone:** `idea ui pair --qr` on the box, scan from the phone, done.
-
-### Provider notes
+5. **Expose it on the tailnet only:** repeat the "turn on remote access" step —
+   `tailscale serve --bg 8787`, pass the box's MagicDNS name to `--allowed-hosts`
+   (or set it in `config.yaml`), then `idea ui pair --qr`.
 
 | Provider | Sizing | Notes |
 |---|---|---|
@@ -149,7 +166,17 @@ simpler. Ubuntu 22.04/24.04 LTS is the safe default.
 | **GCP** | `e2-micro` (free-tier eligible) or `e2-small` | Leave the default deny-inbound firewall; nothing needs to reach the box from outside the tailnet. |
 | **Render** | paid service | Possible but awkward: attach a persistent disk for state. Prefer a VPS for a stateful daemon. |
 
-## Security and operations
+## 3. Give it a real coding agent (optional)
+
+Everything above works with the deterministic `internal` executor, which writes a
+placeholder and needs no Docker and no key. To write real code:
+
+- **Install Docker** on the box.
+- **Configure a model key** — in the daemon's environment or the project's
+  `.env` (see [`agents.md`](agents.md)).
+- **Choose an executor:** `idea executors setup --kind hermes --model <provider/model> --smoke`.
+
+## 4. Keep it safe
 
 - **No public ports.** Tailscale needs no inbound firewall holes (it does NAT
   traversal), so leave the cloud firewall default-deny inbound. Only outbound is
