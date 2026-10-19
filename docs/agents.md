@@ -4,6 +4,22 @@ This guide explains which executor `idea execute` uses by default, how to choose
 agent (Hermes, OMP, any Agent Client Protocol agent, or an OpenHands Agent Server), and — critically — the security tradeoff
 you accept when you do.
 
+## Quick start: pick an agent
+
+All four go through one command. Copy the line that matches your agent, and add `--smoke` to
+verify it with a trivial task first (it uses `--model`, or your configured default model):
+
+| Agent | One command | Needs |
+|---|---|---|
+| **Hermes** (default) | `idea executors setup --model anthropic/claude-sonnet-5 --yes` | Docker + that provider's key |
+| **Claude Code** (via ACP) | `idea executors setup --kind acp --image ghcr.io/you/claude-acp:1 --acp-command claude-code-acp --model anthropic/claude-sonnet-5 --yes` | Docker + a built image |
+| **OMP** | `idea executors setup --kind omp --image ghcr.io/you/omp:latest --model anthropic/claude-sonnet-5 --yes` | Docker + a built image |
+| **OpenHands** (remote) | `idea executors setup --kind openhands --url https://agents.example.com --model anthropic/claude-sonnet-5 --yes` | A running Agent Server |
+
+Not sure you're ready? `idea doctor` says what the next run would use and exactly what is missing
+(no model, key unset, Docker down, …). Every agent's security tradeoff is the same shape and is
+spelled out in [Security / trust tradeoff](#security--trust-tradeoff---read-this-before-wiring-an-agent).
+
 ## The default: `auto`, with a loud placeholder fallback
 
 Out of the box, `harness.executor.kind` is unset, which means `auto`. Each run resolves it:

@@ -536,7 +536,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		if image == "" {
 			return usageErrorf("--image is required: no canonical %s image (provide one you trust)", kind)
 		}
-		fmt.Fprintln(stderr, muted("no --image; using pinned default ")+code(image)+muted(" and downloading it now"))
+		fmt.Fprintln(stderr, muted("no --image; using pinned default ")+code(image)+muted(" (downloaded on confirmation, several GB)"))
 	}
 
 	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" a "+kind+" executor runs with network egress and auto-approve, and receives its provider API key. Only use an image you trust.")
