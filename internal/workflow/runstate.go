@@ -70,27 +70,51 @@ const (
 	LiveFinished = "finished" // the agent is done; the run is in its checks
 )
 
+// liveKey keys the live map per (initiative, task), so a parallel wave's tasks
+// each register their own running agent without clobbering one another.
+func liveKey(initiativeID, taskID string) string {
+	return initiativeID + "\x00" + taskID
+}
+
+// firstLiveFor returns the first running entry for an initiative (deterministic
+// by sorted key), for the initiative-level read surfaces (output, run view,
+// steering) that predate per-task liveness.
+func (e *Engine) firstLiveFor(initiativeID string) *liveAttempt {
+	prefix := initiativeID + "\x00"
+	best := ""
+	for k := range e.live {
+		if strings.HasPrefix(k, prefix) && (best == "" || k < best) {
+			best = k
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	return e.live[best]
+}
+
 // setLiveStarting registers a run that has not started its agent yet, so the
 // UI does not read "nothing registered" as "the agent finished" through the
 // planner call and the workspace copy.
-func (e *Engine) setLiveStarting(initiativeID string) {
+func (e *Engine) setLiveStarting(initiativeID, taskID string) {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
 	if e.live == nil {
 		e.live = map[string]*liveAttempt{}
 	}
-	e.live[initiativeID] = &liveAttempt{redactor: e.redactor}
+	e.live[liveKey(initiativeID, taskID)] = &liveAttempt{redactor: e.redactor}
 }
 
-func (e *Engine) setLive(initiativeID string, t executor.OutputTailer, attemptID string) {
+func (e *Engine) setLive(initiativeID, taskID string, t executor.OutputTailer, attemptID string) {
+	key := liveKey(initiativeID, taskID)
 	e.liveMu.Lock()
-	a := e.live[initiativeID]
+	a := e.live[key]
 	if a == nil {
 		if e.live == nil {
 			e.live = map[string]*liveAttempt{}
 		}
 		a = &liveAttempt{redactor: e.redactor}
-		e.live[initiativeID] = a
+		e.live[key] = a
 	}
 	e.liveMu.Unlock()
 	a.mu.Lock()
@@ -104,9 +128,9 @@ func (e *Engine) setLive(initiativeID string, t executor.OutputTailer, attemptID
 //
 // final is the agent's last output, read before Collect removed it, so the
 // view keeps the end of the log rather than a cache up to 1.5 s old.
-func (e *Engine) markLiveDone(initiativeID, final string) {
+func (e *Engine) markLiveDone(initiativeID, taskID, final string) {
 	e.liveMu.Lock()
-	a := e.live[initiativeID]
+	a := e.live[liveKey(initiativeID, taskID)]
 	e.liveMu.Unlock()
 	if a != nil {
 		a.mu.Lock()
@@ -118,9 +142,9 @@ func (e *Engine) markLiveDone(initiativeID, final string) {
 	}
 }
 
-func (e *Engine) clearLive(initiativeID string) {
+func (e *Engine) clearLive(initiativeID, taskID string) {
 	e.liveMu.Lock()
-	delete(e.live, initiativeID)
+	delete(e.live, liveKey(initiativeID, taskID))
 	e.liveMu.Unlock()
 }
 
@@ -129,7 +153,7 @@ func (e *Engine) clearLive(initiativeID string) {
 // takes e.mu.
 func (e *Engine) AgentOutput(ctx context.Context, initiativeID string) (state string, output string) {
 	e.liveMu.Lock()
-	a := e.live[initiativeID]
+	a := e.firstLiveFor(initiativeID)
 	e.liveMu.Unlock()
 	if a == nil {
 		return LiveIdle, ""

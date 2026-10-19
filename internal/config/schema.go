@@ -150,7 +150,8 @@ var harnessSchema = `{
     "execute": {
       "type": "object",
       "properties": {
-        "max_files": { "type": "integer", "minimum": 0 }
+        "max_files": { "type": "integer", "minimum": 0 },
+        "max_parallel": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },

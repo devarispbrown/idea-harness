@@ -76,6 +76,7 @@ review:
 # "Blast radius" below.
 execute:
   max_files: 10
+  # max_parallel: 2   # run up to N independent ready tasks at once (default 1)
 
 # Research sources (fetched — public addresses only — during research when
 # network is enabled). Offline/empty means the researcher marks everything as
@@ -183,6 +184,7 @@ Top-level fields:
 | `build_cmd`, `test_cmd` | deterministic check commands; config-supplied, never model output | unset — derived from the project's own toolchain markers when unambiguous, otherwise the check is recorded `not_applicable` (see "Check auto-detection" below) |
 | `check_timeout_seconds` | per-check timeout | `600` |
 | `execute.max_files` | the **blast-radius guard** (review C): the most files a single change set's diff may touch before `idea execute` refuses it, before the adversarial review ever runs. Counts only what `fsdiff.Diff` reports, which already excludes its own well-known-dir/control-plane paths and (for the produced image) the workspace's own `.gitignore` — a lockfile regen or another generated/ignored file never counts against it. `0` is **not** unlimited: the engine coerces any value `<= 0` to `10`. See "Blast radius" below | `10` |
+| `execute.max_parallel` | how many independent ready tasks `idea execute` runs at once (a wave): tasks whose `depends_on` predecessors are applied run concurrently, each in its own work root. Independent tasks editing overlapping files are caught at apply by the stale-base guard (the later change set is refused as stale and re-run). `0`/unset means `1` — serial | `1` |
 | `git_commit` | also create a git commit (repository hooks disabled) for each applied change set | `false` |
 | `git.allow_default_branch` | let commit-on-apply commit while the repository's default branch is checked out | `false` |
 | `git.branch_per_initiative` | create and check out `idea/<slug>` on an initiative's first apply, and commit each of its change sets there. **Implies committing on its own** — setting this alone, with `git_commit` left `false`, is sufficient (review defect D) | `false` |

@@ -1405,6 +1405,19 @@ func (r *Runtime) ExecuteInitiativeFreshWithNote(ctx context.Context, projectID,
 					"initiative", initiativeID, "op", opID, "error", err)
 			}
 		}
+		maxParallel := pr.cfg.Harness.Execute.EffectiveMaxParallel()
+		if maxParallel > 1 {
+			css, runErr := pr.engine.ExecuteWave(bg, initiativeID, maxParallel)
+			if runErr != nil {
+				release()
+				r.failOperation(opID, initiativeID, "execute failed", bg, pr, runErr, false)
+				return
+			}
+			release()
+			pr.db.SetOperationStatus(context.WithoutCancel(bg), opID, domain.OperationSucceeded, "")
+			r.log.Info("execute wave complete", "initiative", initiativeID, "change_sets", len(css))
+			return
+		}
 		cs, runErr := pr.engine.Execute(bg, initiativeID)
 		if runErr != nil {
 			// Released to where it started, not failed: an execute failure is

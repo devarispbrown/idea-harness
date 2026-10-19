@@ -367,11 +367,11 @@ func TestAModifiedFileIsCarried(t *testing.T) {
 // output -- not "running" with an empty log through the build checks.
 func TestLiveStateAfterTheAgentFinishes(t *testing.T) {
 	eng, _, _ := newScriptedFixture(t)
-	eng.setLiveStarting("ini")
+	eng.setLiveStarting("ini", "t")
 	if st, _ := eng.AgentOutput(context.Background(), "ini"); st != LiveStarting {
 		t.Errorf("before the agent starts: %s, want starting", st)
 	}
-	eng.markLiveDone("ini", "last line from the agent")
+	eng.markLiveDone("ini", "t", "last line from the agent")
 	st, out := eng.AgentOutput(context.Background(), "ini")
 	if st != LiveFinished || out != "last line from the agent" {
 		t.Errorf("after the agent: %s %q, want finished with its final output", st, out)

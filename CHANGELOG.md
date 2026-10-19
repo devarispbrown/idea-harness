@@ -122,6 +122,11 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   existing one's live requirements (codes preserved) so the PRD revises them into an
   added/modified/removed delta instead of authoring from scratch — the `change_kind` field above
   is the surface of that delta.
+- **Parallel task execution (`execute.max_parallel`).** Set `execute.max_parallel: N` (default `1`)
+  and `idea execute` runs up to N independent ready tasks in one wave — each in its own work root
+  and partial, with per-task live state — instead of one at a time. A dependent task runs only
+  once its `depends_on` predecessor is applied; independent tasks editing overlapping files are
+  caught at apply by the stale-base guard.
 - **`docs/failure-modes.md`.** Five classes of refusal/stall a founder journey actually hit,
   each as symptom → diagnostic command → expected output → recovery, quoting the real message
   verbatim (several are `%s`-templated, shown as a rendered example): a change set whose

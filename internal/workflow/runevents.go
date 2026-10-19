@@ -233,7 +233,7 @@ var ErrNoLiveRun = errors.New("workflow: that run is not running")
 func (e *Engine) liveRunFor(initiativeID string) *liveRun {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
-	if a := e.live[initiativeID]; a != nil {
+	if a := e.firstLiveFor(initiativeID); a != nil {
 		return a.run
 	}
 	return nil
@@ -244,7 +244,7 @@ func (e *Engine) liveRunFor(initiativeID string) *liveRun {
 func (e *Engine) LiveRun(initiativeID string) (LiveRunInfo, bool) {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
-	a := e.live[initiativeID]
+	a := e.firstLiveFor(initiativeID)
 	if a == nil || a.run == nil || a.run.runID == "" {
 		return LiveRunInfo{}, false
 	}
@@ -260,16 +260,17 @@ func (e *Engine) LiveRun(initiativeID string) (LiveRunInfo, bool) {
 // initiative's live entry (created by setLiveStarting). The run exists only
 // once the planner has written the brief, so there is nothing to steer
 // before then: the run view shows the run as starting.
-func (e *Engine) registerLiveRun(initiativeID, runID string, exec executor.Executor, rec *runRecorder) {
+func (e *Engine) registerLiveRun(initiativeID, taskID, runID string, exec executor.Executor, rec *runRecorder) {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
 	if e.live == nil {
 		e.live = map[string]*liveAttempt{}
 	}
-	a := e.live[initiativeID]
+	key := liveKey(initiativeID, taskID)
+	a := e.live[key]
 	if a == nil {
 		a = &liveAttempt{redactor: e.redactor}
-		e.live[initiativeID] = a
+		e.live[key] = a
 	}
 	a.run = &liveRun{runID: runID, exec: exec, rec: rec}
 }
@@ -308,10 +309,10 @@ func (e *Engine) holdNote(ctx context.Context, initiativeID string, lr *liveRun,
 }
 
 // setLiveAttempt records the executor's attempt id once Start returned.
-func (e *Engine) setLiveAttempt(initiativeID, attemptID string) {
+func (e *Engine) setLiveAttempt(initiativeID, taskID, attemptID string) {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
-	if a := e.live[initiativeID]; a != nil && a.run != nil {
+	if a := e.live[liveKey(initiativeID, taskID)]; a != nil && a.run != nil {
 		a.run.attemptID = attemptID
 	}
 }
@@ -320,7 +321,7 @@ func (e *Engine) setLiveAttempt(initiativeID, attemptID string) {
 func (e *Engine) liveSteering(initiativeID string) []domain.SteeringNote {
 	e.liveMu.Lock()
 	defer e.liveMu.Unlock()
-	if a := e.live[initiativeID]; a != nil && a.run != nil {
+	if a := e.firstLiveFor(initiativeID); a != nil && a.run != nil {
 		return append([]domain.SteeringNote(nil), a.run.steering...)
 	}
 	return nil
@@ -354,8 +355,19 @@ func (e *Engine) SteerRun(ctx context.Context, initiativeID, runID, note string,
 		return SteerResult{}, fmt.Errorf("workflow: steer: the note is empty")
 	}
 	e.liveMu.Lock()
-	a := e.live[initiativeID]
-	if a == nil || a.run == nil || (runID != "" && a.run.runID != runID) {
+	var a *liveAttempt
+	if runID != "" {
+		// A runID names one task's run; find it among the initiative's entries.
+		for _, cand := range e.live {
+			if cand.run != nil && cand.run.runID == runID {
+				a = cand
+				break
+			}
+		}
+	} else {
+		a = e.firstLiveFor(initiativeID)
+	}
+	if a == nil || a.run == nil {
 		e.liveMu.Unlock()
 		return SteerResult{}, ErrNoLiveRun
 	}

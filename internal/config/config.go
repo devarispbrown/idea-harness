@@ -273,6 +273,11 @@ type ExecuteConfig struct {
 	// MaxFiles caps the file count a change set's diff may touch. <=0 (unset)
 	// uses defaultMaxFiles — see EffectiveMaxFiles.
 	MaxFiles int `json:"max_files,omitempty" yaml:"max_files,omitempty"`
+	// MaxParallel is how many independent ready tasks `idea execute` runs at
+	// once (a wave). <=0 (unset) means 1 — the serial behaviour. Independent
+	// tasks whose depends_on predecessors are applied run concurrently;
+	// overlapping edits are caught at apply by fsdiff.StaleBase.
+	MaxParallel int `json:"max_parallel,omitempty" yaml:"max_parallel,omitempty"`
 }
 
 // EffectiveMaxFiles is execute.max_files as Execute actually enforces it —
@@ -282,6 +287,15 @@ func (c ExecuteConfig) EffectiveMaxFiles() int {
 		return defaultMaxFiles
 	}
 	return c.MaxFiles
+}
+
+// EffectiveMaxParallel is execute.max_parallel as Execute actually enforces it:
+// <=0 (unset) means 1 — serial.
+func (c ExecuteConfig) EffectiveMaxParallel() int {
+	if c.MaxParallel <= 0 {
+		return 1
+	}
+	return c.MaxParallel
 }
 
 // OutcomesConfig configures how outcome metrics are measured

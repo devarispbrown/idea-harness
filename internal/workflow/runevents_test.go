@@ -144,11 +144,11 @@ func (f *fakeSteerer) Steer(_ context.Context, attemptID, note string, interrupt
 // liveFixture registers a live run the way Execute does, for SteerRun.
 func liveFixture(t *testing.T, eng *Engine, iniID string, exec executor.Executor) *runRecorder {
 	t.Helper()
-	eng.setLiveStarting(iniID)
+	eng.setLiveStarting(iniID, "t")
 	rec := eng.newRunRecorder("run-live", "", iniID, "task-x", exec.Name())
-	eng.registerLiveRun(iniID, "run-live", exec, rec)
-	eng.setLiveAttempt(iniID, "att-1")
-	t.Cleanup(func() { rec.Close(); eng.clearLive(iniID) })
+	eng.registerLiveRun(iniID, "t", "run-live", exec, rec)
+	eng.setLiveAttempt(iniID, "t", "att-1")
+	t.Cleanup(func() { rec.Close(); eng.clearLive(iniID, "t") })
 	return rec
 }
 
@@ -197,7 +197,7 @@ func TestSteerRunHoldsTheNoteForTheNextRunWhenUnsupported(t *testing.T) {
 	if got := eng.PendingNotes(context.Background(), iniID); len(got) != 1 || got[0] != "prefer small commits" {
 		t.Fatalf("pending = %v", got)
 	}
-	eng.clearLive(iniID)
+	eng.clearLive(iniID, "t")
 
 	// A daemon restart between the note and the next run: a new engine over
 	// the same database still has it (held notes used to live in memory).

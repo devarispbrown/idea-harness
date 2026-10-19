@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/devarispbrown/idea-harness/internal/blob"
@@ -441,25 +442,81 @@ func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.Chang
 	if err != nil {
 		return domain.ChangeSet{}, err
 	}
-	return e.executeTask(ctx, initiativeID, task)
+	return e.executeTask(ctx, initiativeID, task, false)
+}
+
+// ExecuteWave runs up to maxParallel ready tasks concurrently, each through the
+// per-task pipeline, returning the change sets produced (in task order) and the
+// first error. It is the dependency-aware parallel execution primitive:
+// independent tasks whose depends_on predecessors are applied run in one wave;
+// a dependent becomes ready only in a later wave after its predecessor is
+// applied. Overlapping edits by independent peers are caught at apply by
+// fsdiff.StaleBase (the clean, existing conflict path).
+func (e *Engine) ExecuteWave(ctx context.Context, initiativeID string, maxParallel int) ([]domain.ChangeSet, error) {
+	if maxParallel < 1 {
+		maxParallel = 1
+	}
+	tasks, err := e.nextReadyTasks(ctx, initiativeID, maxParallel)
+	if err != nil {
+		return nil, err
+	}
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("%w for initiative %q (dependencies not satisfied)", ErrNoReadyTask, initiativeID)
+	}
+	results := make([]domain.ChangeSet, len(tasks))
+	errs := make([]error, len(tasks))
+	var wg sync.WaitGroup
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(i int, task domain.Task) {
+			defer wg.Done()
+			results[i], errs[i] = e.executeTask(ctx, initiativeID, task, true)
+		}(i, task)
+	}
+	wg.Wait()
+
+	out := make([]domain.ChangeSet, 0, len(tasks))
+	var firstErr error
+	for i := range tasks {
+		if errs[i] != nil && firstErr == nil {
+			firstErr = errs[i]
+		}
+		if results[i].ID != "" {
+			out = append(out, results[i])
+		}
+	}
+	if firstErr != nil {
+		return out, firstErr
+	}
+	return out, nil
 }
 
 // executeTask runs the per-task pipeline for one task: the unit a dependency-
 // aware parallel wave fans out over (Execute is its limit==1 case).
-func (e *Engine) executeTask(ctx context.Context, initiativeID string, task domain.Task) (domain.ChangeSet, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+//
+// It does NOT hold e.mu: the config-derived fields it reads (cfg/redactor/
+// blobs/registry) are stable for the whole operation because ReloadProject
+// refuses to reload while any operation is running (daemon/runtime.go), and
+// executeTask never mutates the canonical workspace (only its own per-task work
+// root and the DB, which SQLite serializes). Apply/Revert keep e.mu for the
+// canonical workspace.
+func (e *Engine) executeTask(ctx context.Context, initiativeID string, task domain.Task, wave bool) (domain.ChangeSet, error) {
 	// D-a: a rerun note applies to this one Execute only (see currentNoteOverride
 	// below), the same lifetime as SetModelOverride/clearModelOverride for retry.
 	defer e.clearNoteOverride(initiativeID)
 
-	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
-		return domain.ChangeSet{}, err
+	// In a wave, independent peers run concurrently from the same base, so a
+	// peer's open change set is expected, not a refusal; overlapping edits are
+	// caught at apply by fsdiff.StaleBase. Serial Execute keeps the guard.
+	if !wave {
+		if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
+			return domain.ChangeSet{}, err
+		}
 	}
 	// Visible to the running card from here, as "starting", until the agent
 	// runs (runstate.go).
-	e.setLiveStarting(initiativeID)
-	defer e.clearLive(initiativeID)
+	e.setLiveStarting(initiativeID, task.ID)
+	defer e.clearLive(initiativeID, task.ID)
 
 	// Select the executor before anything is spent or changed. It is where a
 	// missing provider key or an unresolvable provider is refused, and it ran
@@ -609,7 +666,7 @@ func (e *Engine) executeTask(ctx context.Context, initiativeID string, task doma
 	// the final file list. Closed (flushed) before the live entry goes.
 	rec := e.newRunRecorder(agentRunID, e.db.RunningOperationID(ctx, initiativeID), initiativeID, task.ID, exec.Name())
 	defer rec.Close()
-	e.registerLiveRun(initiativeID, agentRunID, exec, rec)
+	e.registerLiveRun(initiativeID, task.ID, agentRunID, exec, rec)
 	req.RunID, req.Events = agentRunID, rec.Sink()
 	rec.Emit(domain.RunEvent{Kind: domain.RunEventStatus, Status: "starting",
 		Title: fmt.Sprintf("Starting %s on the %s executor", task.Code, exec.Name())})
@@ -648,9 +705,9 @@ func (e *Engine) executeTask(ctx context.Context, initiativeID string, task doma
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	if t, ok := exec.(executor.OutputTailer); ok {
-		e.setLive(initiativeID, t, attempt.ID)
+		e.setLive(initiativeID, task.ID, t, attempt.ID)
 	}
-	e.setLiveAttempt(initiativeID, attempt.ID)
+	e.setLiveAttempt(initiativeID, task.ID, attempt.ID)
 	// Coarse events for an executor with no structured ones of its own.
 	pumpCtx, stopPump := context.WithCancel(ctx)
 	defer stopPump()
@@ -753,7 +810,7 @@ func (e *Engine) executeTask(ctx context.Context, initiativeID string, task doma
 		return domain.ChangeSet{}, fmt.Errorf("workflow: execute: %w", err)
 	}
 	completed = true
-	e.markLiveDone(initiativeID, agentOutput)
+	e.markLiveDone(initiativeID, task.ID, agentOutput)
 
 	// Snapshot AFTER and compute the orchestrator-authored diff. The agent's
 	// container had network egress, so what it wrote back is untrusted:
