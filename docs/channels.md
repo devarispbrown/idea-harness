@@ -92,8 +92,9 @@ work alongside the slash commands.
 Email is notifications-only (never a capture channel): the daemon emails you the
 same "needs your judgment" events it sends to Slack and Web Push.
 
-**1. Get SMTP credentials** — a transactional provider (Postmark, Resend, SES) or
-your own server: host, port, username/password, and a from address.
+**1. Get SMTP credentials** — a transactional provider (Postmark, Resend, SES,
+SendGrid) or Gmail. Per-provider snippets (hosts, ports, the exact
+username/password to use): [`email-providers.md`](email-providers.md).
 
 **2. Put the password in an env var:**
 

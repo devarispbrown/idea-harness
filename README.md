@@ -209,7 +209,7 @@ configured, idea-harness runs in demo mode and labels its synthetic output every
 | | [Coding agents](docs/agents.md) | [Security model](docs/security-model.md) |
 | | [MCP](docs/mcp.md) and [integrations](docs/integrations.md) | [Hosting the API reference](docs/api-reference-hosting.md) |
 | | [Self-hosting](docs/self-hosting.md) (run it always-on) | |
-| | [Channels](docs/channels.md) (Telegram/Slack/email) | |
+| | [Channels](docs/channels.md) (Telegram/Slack/email) and [email providers](docs/email-providers.md) | |
 
 Project records: [`CHANGELOG.md`](CHANGELOG.md) (breaking changes and migrations),
 [`CONTRIBUTING.md`](CONTRIBUTING.md), [`RELEASING.md`](RELEASING.md),
