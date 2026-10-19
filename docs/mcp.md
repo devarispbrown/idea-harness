@@ -117,7 +117,7 @@ to the most recently created initiative — the same default every `idea` comman
 
 | Tool | Does | CLI equivalent |
 | --- | --- | --- |
-| `new_initiative` | starts an initiative from an idea; calls the model provider; returns an `operation_id` | `idea new --no-wait` |
+| `new_initiative` | starts an initiative from an idea (`from` seeds an existing initiative's requirements); calls the model provider; returns an `operation_id` | `idea new --no-wait` |
 | `answer_question` | records an answer | `idea answer` |
 | `resolve_decision` | resolves a decision by option number or text | `idea resolve` |
 | `review_change_set` | `approve`, `reject`, `changes_requested`, or `rerun` (returns an `operation_id`); `accept_findings` with `approve` | `idea review` |
@@ -130,6 +130,16 @@ which is a person's call, like `execute`.
 
 `verify` runs the gate and records no evidence. `idea verify REQ-n --pass|--fail|--waive` records
 evidence as a person's word, so it stays something a person types.
+
+Two behaviours ride on these tools without a separate tool: `resolve_decision` (and
+`accept_recommendations`) append the resolution to the project's cross-initiative **memory**, which
+later initiatives read as authoritative context; and `list_questions` marks a question
+`needs_clarification` when the model flagged it `[NEEDS CLARIFICATION]` instead of guessing —
+`approve` (the CLI `idea approve`, or the daemon endpoint) refuses while such a question is open.
+
+`new_initiative` takes an optional `from` (an initiative id from `list_initiatives`), mirroring
+`idea new --from`: the source's live requirements seed the new initiative so the PRD revises them
+into an added/modified/removed delta.
 
 Not exposed: `advance`, `execute` and `next --until-human`, which spend model budget on design and
 implementation runs; `approve`/`revise` for the PRD and plan. `next_step` names the CLI command

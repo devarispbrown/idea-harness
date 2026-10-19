@@ -370,10 +370,12 @@ behind the daemon again -- it went ten endpoints stale under a hand-counted tota
 | POST | `/projects/{projectId}/decisions/{id}/reopen` | Undo a resolution, returning the decision to open. Also marks stale (review A4 #5) the LIVE requirements that cite it (never one a later PRD revision superseded/removed — ICP re-run defect #4: a superseded requirement keeps its old `derived_from` edge forever, so without this filter a reopen surfaced only long-dead requirements instead of whatever live one now covers the decision's subject), their tasks, and the applied change sets for those tasks — see `stale_items` on `/guidance` and `staleness` on `/impact`. |
 | GET | `/projects/{projectId}/decisions/{id}/discussion` | The decision's discussion thread. |
 | POST | `/projects/{projectId}/decisions/{id}/discuss` | One human→AI discussion turn: `{"message": …}`. |
-| GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions. |
+| GET | `/projects/{projectId}/initiatives/{id}/questions` | List open questions; each carries `needs_clarification` when the model flagged it `[NEEDS CLARIFICATION]` instead of guessing (a `POST …/approve` refuses while such a question is open). |
 | POST | `/projects/{projectId}/questions/{id}/answer` | Record `{"answer": …}`. |
 | POST | `/projects/{projectId}/initiatives/{id}/suggest-answers` | Ask the model to propose answers for the open questions. **202** |
 | GET | `/projects/{projectId}/initiatives/{id}/suggested-answers` | The persisted AI-suggested answers. |
+
+Requirements (listed by `/understanding` and elsewhere) carry a derived `change_kind` — `added`, `modified` (a `revised_at` was recorded when a revision changed the requirement in place), or `removed` (superseded) — so a brownfield `idea new --from` revision's delta is visible per requirement.
 
 ### Product graph reads
 

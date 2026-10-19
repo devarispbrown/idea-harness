@@ -6205,6 +6205,14 @@ components:
           items: { $ref: "#/components/schemas/ProvenanceRef" }
         produced_by_run: { type: string }
         superseded_by: { type: string }
+        revised_at:
+          type: [string, "null"]
+          format: date-time
+          description: Set once when a revision changes the requirement's statement/acceptance criteria in place; drives `change_kind`.
+        change_kind:
+          type: string
+          enum: [added, modified, removed]
+          description: The requirement's derived delta relative to a prior revision, computed at read time (never stored).
         verified_at:
           type: [string, "null"]
           format: date-time
@@ -6535,6 +6543,9 @@ components:
         id: { type: string }
         initiative_id: { type: string }
         question: { type: string }
+        needs_clarification:
+          type: boolean
+          description: True when the model flagged the question [NEEDS CLARIFICATION] rather than guessing; approve refuses while it is open.
         status:
           type: string
           enum: [open, resolved]

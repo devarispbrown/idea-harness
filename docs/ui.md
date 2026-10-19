@@ -195,7 +195,8 @@ card:
   **Accept risk**, **Not applicable**, **Defer**, with **Fixed**, **Duplicate** and **Rejected**
   behind the `…` overflow.
 - **Questions** — an answer box, plus **✨ Suggest** (`POST …/suggest-answers`) which fills in a
-  suggested answer you can accept with **Use**.
+  suggested answer you can accept with **Use**. A question the model flagged `[NEEDS CLARIFICATION]`
+  instead of guessing is labelled as such; approving the PRD while one is still open is refused.
 
 **Accept all recommendations** (`POST …/decisions/accept-recommendations`, `idea
 accept-recommendations`) appears while a decision is open and resolves every open decision with its

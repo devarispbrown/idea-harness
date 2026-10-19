@@ -210,6 +210,9 @@ type mcpArgs struct {
 	Requirement    string `json:"requirement"`
 	OperationID    string `json:"operation_id"`
 	Metric         string `json:"metric"`
+	// From seeds the new initiative from an existing one's live requirements
+	// (brownfield `idea new --from`), by initiative id from list_initiatives.
+	From string `json:"from"`
 	// Value is a pointer so record_metric can tell 0 from absent.
 	Value *float64 `json:"value"`
 	Note  string   `json:"note"`
@@ -380,7 +383,10 @@ func mcpToolTable(tier mcpTier) []mcpToolDef {
 		{tier: mcpTierJudgment, Tool: mcp.Tool{
 			Name: "new_initiative", Title: "Start a new initiative",
 			Description: "Create an initiative from an idea and start its workflow (framing, research, a reviewed PRD). Calls the configured model provider and spends its budget. Returns at once with an operation_id; poll get_operation or status.",
-			InputSchema: mcpObject(map[string]any{"idea": mcpString("The idea, in a sentence or a paragraph.")}, "idea"),
+			InputSchema: mcpObject(map[string]any{
+				"idea": mcpString("The idea, in a sentence or a paragraph."),
+				"from": mcpString("Optional: an initiative id from list_initiatives; its live requirements seed this initiative so the PRD revises them into an added/modified/removed delta (brownfield)."),
+			}, "idea"),
 			Annotations: mcp.Annotations{OpenWorldHint: true},
 			Handler:     mcpHandler(mcpNewInitiative),
 		}},
@@ -1049,8 +1055,12 @@ func mcpNewInitiative(a mcpArgs) (mcp.Result, error) {
 	if err != nil {
 		return mcp.Result{}, err
 	}
-	// Title and description are both the idea, exactly as `idea new` sends.
+	// Title and description are both the idea, exactly as `idea new` sends;
+	// `from` seeds the initiative from an existing one's requirements (brownfield).
 	body := map[string]string{"title": idea, "description": idea}
+	if a.From != "" {
+		body["from_initiative"] = a.From
+	}
 	var out map[string]string
 	if err := c.do("POST", "/api/v1/projects/"+url.PathEscape(projectID)+"/initiatives", body, &out); err != nil {
 		return mcp.Result{}, err

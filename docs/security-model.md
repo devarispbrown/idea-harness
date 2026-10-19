@@ -692,6 +692,13 @@ page had was an unscoped generalisation, not a typo.
 - **Uploaded images skip redaction entirely**: stored verbatim, served verbatim,
   and sent unredacted to the vision provider. Text documents are swept; images
   are not.
+- **Project memory and the constitution are injected into every model call.** The
+  accumulated `project_memory` (each resolved decision as `DEC-n: question →
+  resolution`) and the `constitution` list are added to the context bundle of every
+  stage and reviewer, so they egress to the model provider like any other context.
+  They are not secrets: decision text is credential-swept before it is stored, and
+  the constitution is the operator's own config — but their content leaves the
+  machine on every model call.
 - **A root daemon's containers run as the project's owner.** That uid is
   unprivileged, but it owns your files, so a container escape lands as you, as it
   does under a daemon you run yourself. Only projects owned by root, and the
