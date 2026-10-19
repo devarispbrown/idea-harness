@@ -230,6 +230,10 @@ sends anything (`outcomes.metricEditBody`): numbers that are numbers, a maintain
 not negative, a cadence `domain.ParseCadence` accepts, a command source with a command, a URL source
 with an http(s) URL and a pointer starting with `/`. A changed source is sent whole.
 
+**Requirements** lists the PRD's live requirements, each with its code, statement, status and a
+**Why / Impact** disclosure. A requirement revised in place (its derived `change_kind` is
+`modified`, e.g. after a brownfield `idea new --from` revision) is marked with a **modified** pill.
+
 The bar at the bottom is the phase's commit action:
 
 | Status | Bar |

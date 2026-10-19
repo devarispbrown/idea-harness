@@ -9,6 +9,9 @@ interface Requirement {
   statement: string;
   status: string;
   priority?: string;
+  // change_kind (brownfield delta): "added" (default), "modified" (revised in
+  // place), or "removed" (superseded; filtered out here).
+  change_kind?: string;
 }
 
 // RequirementsLineage lists the PRD's live requirements on Define, each with
@@ -52,6 +55,7 @@ export default function RequirementsLineage({ projectId, initiativeId }: { proje
               <div className="health-sub">
                 {r.priority ? `${r.priority} · ` : ""}
                 {r.status.replace(/_/g, " ")}
+                {r.change_kind === "modified" && <span className="phase-pill pill-modified">modified</span>}
               </div>
               <LineagePanel projectId={projectId} initiativeId={initiativeId} type="requirement" id={r.id} code={r.code} />
             </div>
