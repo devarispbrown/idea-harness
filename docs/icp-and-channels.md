@@ -100,6 +100,6 @@ below).
    (Windows/macOS/Linux) + cloud (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale, plus
    `idea remote enable|disable|status`.
 3. **Slack control plane** — slash commands for create / monitor / operate, with
-   context-before-action. (Needs a Slack app + hosting.)
-4. **Telegram capture + judgment taps** — the solo-builder entry. (Needs a bot token.)
-5. **Email notifications** — outbound only. (Needs SMTP.)
+   context-before-action. (Needs a Slack app + hosting; wiring in [`channels.md`](channels.md).)
+4. **Telegram capture + judgment taps** — the solo-builder entry. (Needs a bot token; wiring in [`channels.md`](channels.md).)
+5. **Email notifications** — outbound only. (Needs SMTP; wiring in [`channels.md`](channels.md).)
