@@ -64,9 +64,9 @@ export SLACK_BOT_TOKEN="xoxb-…"
 export SLACK_APP_TOKEN="xapp-…"
 ```
 
-**4. Configure `integrations.slack`** in `harness.yaml` — `channel` (a channel ID)
-and `allowed_users` (who may act; empty means notify-only) — then **invite the
-bot to the channel** (`/invite @<bot>`).
+**4. Configure `integrations.slack`** — one command (or hand-edit `harness.yaml`):
+`idea channel slack --channel <id> --allowed-users U0123`. Then **invite the bot
+to the channel** (`/invite @<bot>`).
 
 **5. Restart the daemon** and check it: `idea integrations test slack`. Then use:
 

@@ -172,6 +172,20 @@ integrations:
     # events: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
 ```
 
+## Telegram
+
+`integrations.telegram` turns on capture: the daemon long-polls the bot and turns each text
+message into a **draft** initiative in this project. The project is implicit — no `project` field.
+
+```yaml
+integrations:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN   # env var NAME holding the @BotFather token
+```
+
+Create the bot (with `@BotFather`), put the token in that env var, and `idea channel telegram`
+writes the section for you. Full walkthrough: [`channels.md`](channels.md).
+
 ## Linear
 
 ### 1. Get a key
