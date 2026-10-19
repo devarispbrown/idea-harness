@@ -423,6 +423,22 @@ func (a *daemonActions) ListInitiatives(ctx context.Context, projectID string) (
 	return out, err
 }
 
+func (a *daemonActions) ApproveInitiative(ctx context.Context, projectID, initiativeID string) error {
+	return a.do(ctx, http.MethodPost, pp(projectID)+"/initiatives/"+url.PathEscape(initiativeID)+"/approve", nil, nil)
+}
+
+func (a *daemonActions) AdvanceInitiative(ctx context.Context, projectID, initiativeID string) error {
+	return a.do(ctx, http.MethodPost, pp(projectID)+"/initiatives/"+url.PathEscape(initiativeID)+"/advance", nil, nil)
+}
+
+func (a *daemonActions) ExecuteInitiative(ctx context.Context, projectID, initiativeID string) error {
+	return a.do(ctx, http.MethodPost, pp(projectID)+"/initiatives/"+url.PathEscape(initiativeID)+"/execute", nil, nil)
+}
+
+func (a *daemonActions) ApplyChangeSet(ctx context.Context, projectID, changeSetID string) error {
+	return a.do(ctx, http.MethodPost, pp(projectID)+"/change-sets/"+url.PathEscape(changeSetID)+"/apply", nil, nil)
+}
+
 // ---------- status + test endpoints ----------
 
 // IntegrationStatus is one integration's health (GET .../integrations).

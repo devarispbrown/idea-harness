@@ -20,6 +20,11 @@ type Actions interface {
 	AnswerQuestion(ctx context.Context, projectID, questionID, answer string) error
 	CreateInitiative(ctx context.Context, projectID string, in NewInitiative) (initiativeID string, err error)
 	ListInitiatives(ctx context.Context, projectID string) ([]InitiativeSummary, error)
+	// Operate actions (slash commands): the same gates as the CLI.
+	ApproveInitiative(ctx context.Context, projectID, initiativeID string) error
+	AdvanceInitiative(ctx context.Context, projectID, initiativeID string) error
+	ExecuteInitiative(ctx context.Context, projectID, initiativeID string) error
+	ApplyChangeSet(ctx context.Context, projectID, changeSetID string) error
 }
 
 // NewInitiative is a request to start an initiative.

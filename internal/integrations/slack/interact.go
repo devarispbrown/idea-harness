@@ -357,7 +357,7 @@ func (h *SocketHub) handleViewSubmission(ctx context.Context, routes map[string]
 	return nil
 }
 
-const slashUsage = "Usage: `/idea new <your idea>` starts an initiative · `/idea status` lists this project's initiatives."
+const slashUsage = "Usage: `/idea new <your idea>` · `/idea status` · `/idea approve <id>` · `/idea advance <id>` · `/idea execute <id>` · `/idea review <change-set> approve|reject` · `/idea apply <change-set>`"
 
 // handleSlash serves /idea. The reply rides on the ack itself
 // (accepts_response_payload), so both subcommands answer synchronously.
@@ -391,6 +391,48 @@ func (h *SocketHub) handleSlash(ctx context.Context, routes map[string]Route, p 
 			return ephemeral(":no_entry: " + escape(actionMessage(err)))
 		}
 		return ephemeral(statusText(list))
+	case "approve":
+		if rest == "" {
+			return ephemeral(slashUsage)
+		}
+		if err := r.Actions.ApproveInitiative(actx, r.ProjectID, rest); err != nil {
+			return ephemeral(":no_entry: " + escape(actionMessage(err)))
+		}
+		return ephemeral(":white_check_mark: Approved initiative `" + escape(rest) + "`.")
+	case "advance":
+		if rest == "" {
+			return ephemeral(slashUsage)
+		}
+		if err := r.Actions.AdvanceInitiative(actx, r.ProjectID, rest); err != nil {
+			return ephemeral(":no_entry: " + escape(actionMessage(err)))
+		}
+		return ephemeral(":white_check_mark: Advanced initiative `" + escape(rest) + "`. See `/idea status` for where it landed.")
+	case "execute":
+		if rest == "" {
+			return ephemeral(slashUsage)
+		}
+		if err := r.Actions.ExecuteInitiative(actx, r.ProjectID, rest); err != nil {
+			return ephemeral(":no_entry: " + escape(actionMessage(err)))
+		}
+		return ephemeral(":rocket: Execute started for initiative `" + escape(rest) + "`. Poll `/idea status`.")
+	case "apply":
+		if rest == "" {
+			return ephemeral(slashUsage)
+		}
+		if err := r.Actions.ApplyChangeSet(actx, r.ProjectID, rest); err != nil {
+			return ephemeral(":no_entry: " + escape(actionMessage(err)))
+		}
+		return ephemeral(":white_check_mark: Apply started for change set `" + escape(rest) + "`.")
+	case "review":
+		cs, verdict, _ := strings.Cut(rest, " ")
+		verdict = strings.ToLower(strings.TrimSpace(verdict))
+		if cs == "" || (verdict != "approve" && verdict != "reject") {
+			return ephemeral(slashUsage)
+		}
+		if err := r.Actions.ReviewChangeSet(actx, r.ProjectID, cs, verdict); err != nil {
+			return ephemeral(":no_entry: " + escape(actionMessage(err)))
+		}
+		return ephemeral(":white_check_mark: Reviewed change set `" + escape(cs) + "` → " + escape(verdict) + ".")
 	}
 	return ephemeral(slashUsage)
 }

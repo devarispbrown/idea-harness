@@ -99,7 +99,9 @@ below).
 2. ✅ **Always-on setup guide** — [`self-hosting.md`](self-hosting.md): local
    (Windows/macOS/Linux) + cloud (Render/DigitalOcean/Hetzner/AWS/GCP) over Tailscale, plus
    `idea remote enable|disable|status`.
-3. **Slack control plane** — slash commands for create / monitor / operate, with
-   context-before-action. (Needs a Slack app + hosting; wiring in [`channels.md`](channels.md).)
-4. **Telegram capture + judgment taps** — the solo-builder entry. (Needs a bot token; wiring in [`channels.md`](channels.md).)
+3. ✅ **Slack control plane** — `/idea new|status|approve|advance|execute|review|apply`
+   slash commands over Socket Mode, plus the notification buttons. (Needs a Slack
+   app; wiring in [`channels.md`](channels.md).)
+4. ✅ **Telegram capture** — the native poller turns each message into a draft.
+   (Needs a bot token; wiring in [`channels.md`](channels.md).)
 5. **Email notifications** — outbound only. (Needs SMTP; wiring in [`channels.md`](channels.md).)

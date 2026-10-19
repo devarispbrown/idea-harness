@@ -48,37 +48,42 @@ the Home page as a **draft** initiative. Open it → **Start**.
 
 ---
 
-## Slack (create / monitor / operate) — needs an adapter
+## Slack (create / monitor / operate) — native
 
-The daemon side is ready (capture, and the existing read/judgment routes). What
-is missing is the **adapter**: a small service that receives Slack slash commands
-and calls the daemon API. This is the next build.
+The daemon runs the Slack adapter itself over **Socket Mode** (no public URL —
+the daemon opens a WebSocket to Slack). Configure `integrations.slack` in
+`harness.yaml` (socket mode on, `allowed_users`, `channel`, and the app/bot token
+env names), as in [`configuration.md`](configuration.md) and
+[`integrations.md`](integrations.md). Then add the app:
 
 **1. Create the app.** <https://api.slack.com/apps> → **Create New App** → **from
 scratch** → name it, pick a workspace.
 
-**2. Enable Socket Mode** (so Slack reaches the adapter without a public URL):
-**Socket Mode** → on → copy the **app-level token** (`xapp-…`).
+**2. Enable Socket Mode** → on → copy the **app-level token** (`xapp-…`).
 
-**3. Add a slash command.** **Slash Commands** → **Create New Command** → command
-`/idea` → description "Start or steer an initiative". In socket mode the request
-URL is unused, but Slack still wants a placeholder.
+**3. Add a slash command** `/idea`. In socket mode the request URL is unused.
 
 **4. Copy the bot token** (`xoxb-…`) under **OAuth & Permissions**.
 
-**5. The adapter** (to build) connects to Slack over socket mode and maps:
+**5. Put both tokens in the env vars** your `harness.yaml` names, restart the
+daemon, and use:
 
-| Slash command | Daemon call |
+| Slash command | Does |
 |---|---|
-| `/idea <brief>` | `POST /api/v1/capture` `{token, brief}` |
-| `/idea status` | `GET /api/v1/projects/{id}/initiatives` |
-| `/idea approve <id>` | `POST …/initiatives/{id}/approve` |
-| `/idea next <id>` | `GET …/initiatives/{id}/guidance` |
+| `/idea new <idea>` | start an initiative |
+| `/idea status` | list this project's initiatives |
+| `/idea approve <id>` | approve a PRD |
+| `/idea advance <id>` | advance to design & plan |
+| `/idea execute <id>` | run the coding agent |
+| `/idea review <change-set> approve\|reject` | review a change set |
+| `/idea apply <change-set>` | apply a change set |
 
-Every **operate** action must obey context-before-action (render the diff,
-findings, or options before the button) — see [`icp-and-channels.md`](icp-and-channels.md).
-The capture token scopes to draft creation only; operate uses the daemon API
-token held by the adapter on the box.
+Operate commands go through the same gates as the CLI — a refusal from Slack is
+the same message the terminal would print. A change-set review that refuses over
+blocking findings is resolved by accepting them: `idea review CHG-1 approve
+--accept-findings` from the CLI. The buttons in the notification threads
+(approve/reject a change set, accept recommendations, answer a question) still
+work alongside the slash commands.
 
 ---
 

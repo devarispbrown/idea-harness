@@ -184,6 +184,22 @@ func (a *fakeActions) ListInitiatives(_ context.Context, p string) ([]integratio
 	a.record("list " + p)
 	return []integrations.InitiativeSummary{{ID: "ini-1", Title: "Dark mode", Status: "needs_human_judgment", JudgmentReason: "prd_review"}}, nil
 }
+func (a *fakeActions) ApproveInitiative(_ context.Context, p, ini string) error {
+	a.record("approve " + p + " " + ini)
+	return nil
+}
+func (a *fakeActions) AdvanceInitiative(_ context.Context, p, ini string) error {
+	a.record("advance " + p + " " + ini)
+	return nil
+}
+func (a *fakeActions) ExecuteInitiative(_ context.Context, p, ini string) error {
+	a.record("execute " + p + " " + ini)
+	return nil
+}
+func (a *fakeActions) ApplyChangeSet(_ context.Context, p, cs string) error {
+	a.record("apply " + p + " " + cs)
+	return nil
+}
 
 func startHub(t *testing.T, f *fakeSlack, routes ...Route) (*SocketHub, *fakeSocket) {
 	t.Helper()
@@ -335,9 +351,30 @@ func TestSlashCommands(t *testing.T) {
 	if got := slash("C1", "frobnicate"); !strings.Contains(got, "Usage") {
 		t.Fatalf("usage reply = %q", got)
 	}
+	if got := slash("C1", "approve ini-1"); !strings.Contains(got, "Approved") {
+		t.Fatalf("approve reply = %q", got)
+	}
+	if got := slash("C1", "advance ini-1"); !strings.Contains(got, "Advanced") {
+		t.Fatalf("advance reply = %q", got)
+	}
+	if got := slash("C1", "execute ini-1"); !strings.Contains(got, "Execute started") {
+		t.Fatalf("execute reply = %q", got)
+	}
+	if got := slash("C1", "review CHG-1 approve"); !strings.Contains(got, "Reviewed") {
+		t.Fatalf("review reply = %q", got)
+	}
+	if got := slash("C1", "apply CHG-1"); !strings.Contains(got, "Apply started") {
+		t.Fatalf("apply reply = %q", got)
+	}
 	calls := acts.callList()
-	if len(calls) != 2 || calls[0] != "new p2 Add dark mode" || calls[1] != "list p1" {
+	want := []string{"new p2 Add dark mode", "list p1", "approve p1 ini-1", "advance p1 ini-1", "execute p1 ini-1", "review p1 CHG-1 approve", "apply p1 CHG-1"}
+	if len(calls) != len(want) {
 		t.Fatalf("slash routed wrong: %v", calls)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("slash routed wrong: %v", calls)
+		}
 	}
 }
 

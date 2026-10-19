@@ -192,6 +192,11 @@ func (a *fakeActions) CreateInitiative(ctx context.Context, _ string, in integra
 	return ini.ID, nil
 }
 
+func (a *fakeActions) ApproveInitiative(context.Context, string, string) error { return nil }
+func (a *fakeActions) AdvanceInitiative(context.Context, string, string) error { return nil }
+func (a *fakeActions) ExecuteInitiative(context.Context, string, string) error { return nil }
+func (a *fakeActions) ApplyChangeSet(context.Context, string, string) error    { return nil }
+
 type fixture struct {
 	f    *fakeLinear
 	db   *store.DB
