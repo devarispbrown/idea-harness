@@ -308,6 +308,21 @@ var harnessSchema = `{
           },
           "required": ["team_key"],
           "additionalProperties": false
+        },
+        "email": {
+          "type": "object",
+          "properties": {
+            "to":                { "type": "string" },
+            "from":              { "type": "string" },
+            "smtp_host":         { "type": "string" },
+            "smtp_port":         { "type": "integer", "minimum": 1 },
+            "smtp_user":         { "type": "string" },
+            "smtp_password_env": { "type": "string" },
+            "events":            { "type": "array", "items": { "enum": [` + integrationEventEnum + `] } },
+            "ui_base_url":       { "type": "string" }
+          },
+          "required": ["to", "from", "smtp_host"],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

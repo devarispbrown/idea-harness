@@ -104,4 +104,5 @@ below).
    app; wiring in [`channels.md`](channels.md).)
 4. ✅ **Telegram capture** — the native poller turns each message into a draft.
    (Needs a bot token; wiring in [`channels.md`](channels.md).)
-5. **Email notifications** — outbound only. (Needs SMTP; wiring in [`channels.md`](channels.md).)
+5. ✅ **Email notifications** — outbound SMTP notifier. (Needs SMTP credentials;
+   wiring in [`channels.md`](channels.md).)

@@ -12,10 +12,11 @@ import (
 type IntegrationsConfig struct {
 	Slack  *SlackConfig  `json:"slack,omitempty" yaml:"slack,omitempty"`
 	Linear *LinearConfig `json:"linear,omitempty" yaml:"linear,omitempty"`
+	Email  *EmailConfig  `json:"email,omitempty" yaml:"email,omitempty"`
 }
 
 // Configured reports whether any integration is configured.
-func (c IntegrationsConfig) Configured() bool { return c.Slack != nil || c.Linear != nil }
+func (c IntegrationsConfig) Configured() bool { return c.Slack != nil || c.Linear != nil || c.Email != nil }
 
 // IntegrationEventKinds is the vocabulary of domain events the integration bus
 // publishes (internal/integrations: Kind). It lives here, in the leaf config
@@ -100,6 +101,47 @@ func (s SlackConfig) EffectiveEvents() []string {
 	}
 	return s.Events
 }
+
+// EmailConfig is `integrations.email`: outbound notifications over SMTP. Like
+// Slack, it is notifications-only — email is never a capture channel. The
+// password is an env-var NAME, never a value.
+type EmailConfig struct {
+	// To is the recipient address (one address; a distribution list is fine).
+	To string `json:"to" yaml:"to"`
+	// From is the From address.
+	From string `json:"from" yaml:"from"`
+	// SMTPHost / SMTPPort are the submission endpoint (default port 587).
+	SMTPHost string `json:"smtp_host" yaml:"smtp_host"`
+	SMTPPort int    `json:"smtp_port,omitempty" yaml:"smtp_port,omitempty"`
+	// SMTPUser is the login; empty means unauthenticated.
+	SMTPUser string `json:"smtp_user,omitempty" yaml:"smtp_user,omitempty"`
+	// SMTPPasswordEnv names the environment variable holding the password.
+	SMTPPasswordEnv string `json:"smtp_password_env,omitempty" yaml:"smtp_password_env,omitempty"`
+	// Events narrows what is emailed (IntegrationEventKinds). Empty means
+	// DefaultSlackEvents.
+	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+	// UIBaseURL is prefixed to deep links, like Slack's.
+	UIBaseURL string `json:"ui_base_url,omitempty" yaml:"ui_base_url,omitempty"`
+}
+
+// EffectiveEvents returns Events, or DefaultSlackEvents when unset.
+func (e EmailConfig) EffectiveEvents() []string {
+	if len(e.Events) == 0 {
+		return DefaultSlackEvents
+	}
+	return e.Events
+}
+
+// EffectivePort returns SMTPPort, or 587 when unset.
+func (e EmailConfig) EffectivePort() int {
+	if e.SMTPPort == 0 {
+		return 587
+	}
+	return e.SMTPPort
+}
+
+// SMTPPasswordEnvName returns the password's environment variable name.
+func (e EmailConfig) SMTPPasswordEnvName() string { return orDefault(e.SMTPPasswordEnv, "SMTP_PASSWORD") }
 
 // SocketModeEnabled reports the effective socket_mode (default true).
 func (s SlackConfig) SocketModeEnabled() bool { return s.SocketMode == nil || *s.SocketMode }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/devarispbrown/idea-harness/internal/config"
 	"github.com/devarispbrown/idea-harness/internal/integrations"
+	"github.com/devarispbrown/idea-harness/internal/integrations/email"
 	"github.com/devarispbrown/idea-harness/internal/integrations/linear"
 	"github.com/devarispbrown/idea-harness/internal/integrations/slack"
 	"github.com/devarispbrown/idea-harness/internal/store"
@@ -114,13 +115,16 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 	hub := r.integrations()
 	cfg := pr.cfg.Harness.Integrations
 
-	var slackBot, slackApp, linearKey string
+	var slackBot, slackApp, linearKey, smtpPass string
 	if s := cfg.Slack; s != nil {
 		slackBot = lookupEnv(s.BotTokenEnvName(), pr.dotEnv)
 		slackApp = lookupEnv(s.AppTokenEnvName(), pr.dotEnv)
 	}
 	if l := cfg.Linear; l != nil {
 		linearKey = lookupEnv(l.APIKeyEnvName(), pr.dotEnv)
+	}
+	if e := cfg.Email; e != nil {
+		smtpPass = lookupEnv(e.SMTPPasswordEnvName(), pr.dotEnv)
 	}
 	// Browsers subscribed to push notifications are bus subscribers too
 	// (push.go): a project with any needs a dispatcher even when it
@@ -130,7 +134,7 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		r.log.Warn("push: listing subscriptions", "project", projectID, "err", err)
 		pushSubs = nil
 	}
-	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, pushFingerprint(pushSubs))
+	fp := integrationsFingerprint(cfg, slackBot, slackApp, linearKey, smtpPass, pushFingerprint(pushSubs))
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -190,6 +194,18 @@ func (r *Runtime) configureIntegrations(projectID string, pr *projectRuntime) {
 		}
 		if len(s.AllowedUsers) == 0 {
 			pi.problems["slack"] = append(pi.problems["slack"], "allowed_users is empty: Slack is notify-only (buttons and /idea are refused)")
+		}
+	}
+
+	if e := cfg.Email; e != nil {
+		if e.SMTPHost == "" || e.To == "" || e.From == "" {
+			pi.problems["email"] = append(pi.problems["email"], "smtp_host, to and from are all required: email is off")
+		} else {
+			uiBase := e.UIBaseURL
+			if uiBase == "" {
+				uiBase = hub.uiBase
+			}
+			subs = append(subs, &email.Notifier{Cfg: *e, Password: smtpPass, UIBase: uiBase, Redact: redact})
 		}
 	}
 

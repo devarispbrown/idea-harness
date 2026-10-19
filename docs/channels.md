@@ -87,16 +87,34 @@ work alongside the slash commands.
 
 ---
 
-## Email (outbound notifications) — needs an SMTP notifier
+## Email (outbound notifications) — native
 
 Email is notifications-only (never a capture channel): the daemon emails you the
-same "needs your judgment" events it already sends to Slack and Web Push. The
-notifier is not built yet — it is the smallest remaining piece, mirroring the
-existing Slack notifier.
+same "needs your judgment" events it sends to Slack and Web Push.
 
 **1. Get SMTP credentials** — a transactional provider (Postmark, Resend, SES) or
-your own server: host, port, username/password (or API key), and a from address.
+your own server: host, port, username/password, and a from address.
 
-**2. The notifier** (to build) adds `notifications.email` to `harness.yaml` and a
-delivery path on the integration bus, next to Slack and Web Push. The credential
-would follow the existing rule: an env-var *name* in config, never the secret.
+**2. Put the password in an env var:**
+
+```bash
+export SMTP_PASSWORD="…"
+```
+
+**3. Configure `integrations.email` in `harness.yaml`:**
+
+```yaml
+integrations:
+  email:
+    to: you@example.com
+    from: idea@example.com
+    smtp_host: smtp.postmarkapp.com
+    smtp_port: 587                  # default 587
+    smtp_user: <your-api-key>
+    smtp_password_env: SMTP_PASSWORD   # env var NAME, never the password
+    # events: [initiative.needs_judgment, change_set.ready_for_review, verify.failed, outcome.drifted]
+```
+
+**4. Restart the daemon.** Each wanted event lands in your inbox as a one-line
+subject with the reason and a deep link. `events` defaults to the same set Slack
+uses; narrow it to just the four "needs you" kinds if you only want pings.
