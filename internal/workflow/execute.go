@@ -437,16 +437,22 @@ func effectiveCheckCommand(configured string, detected detectedCommand) string {
 // checks → review_required/rejected. The adversarial reviewer runs at review time
 // (§50).
 func (e *Engine) Execute(ctx context.Context, initiativeID string) (domain.ChangeSet, error) {
+	task, err := e.nextReadyTask(ctx, initiativeID)
+	if err != nil {
+		return domain.ChangeSet{}, err
+	}
+	return e.executeTask(ctx, initiativeID, task)
+}
+
+// executeTask runs the per-task pipeline for one task: the unit a dependency-
+// aware parallel wave fans out over (Execute is its limit==1 case).
+func (e *Engine) executeTask(ctx context.Context, initiativeID string, task domain.Task) (domain.ChangeSet, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	// D-a: a rerun note applies to this one Execute only (see currentNoteOverride
 	// below), the same lifetime as SetModelOverride/clearModelOverride for retry.
 	defer e.clearNoteOverride(initiativeID)
 
-	task, err := e.nextReadyTask(ctx, initiativeID)
-	if err != nil {
-		return domain.ChangeSet{}, err
-	}
 	if err := e.refuseWhileAnotherChangeSetIsOpen(ctx, initiativeID, task.ID); err != nil {
 		return domain.ChangeSet{}, err
 	}
