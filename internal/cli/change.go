@@ -529,9 +529,6 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		return usageErrorf("--acp-command is required for --kind acp: the agent's argv inside the image, e.g. --acp-command claude-code-acp " +
 			"or --acp-command \"gemini --experimental-acp\"")
 	}
-	if smoke && model == "" {
-		return usageErrorf("--smoke requires --model (to resolve the provider API key)")
-	}
 	// Resolve the image: Hermes has a pinned default (auto-downloaded); OMP has
 	// no canonical image so --image is required.
 	if image == "" {
@@ -551,13 +548,30 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// --smoke can ride the configured default model: the user already chose one
+	// with `idea model set`, so asking for --model again is friction. Resolve it
+	// from the daemon (the same providers view `idea retry` uses) and smoke
+	// that. `model` stays the value written to harness.yaml, so a default model
+	// is not frozen into executor.model by a smoke run alone.
+	effectiveModel := model
+	if smoke && effectiveModel == "" {
+		var view cliProvidersView
+		if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
+			return err
+		}
+		effectiveModel = view.DefaultModel
+		if effectiveModel == "" {
+			return usageErrorf("--smoke needs a model: pass --model <provider>/<model>, or set a default with `idea model set <provider>/<model>`")
+		}
+		fmt.Fprintln(stderr, muted("no --model; smoking the configured default ")+code(effectiveModel))
+	}
 	// Checked before the pull, which is several gigabytes. A misspelled or
 	// unsupported provider used to download the image, verify it, write the
 	// config and only then fail -- or, with --smoke, surface as an agent that
 	// "produced no files".
 	var provider executor.AgentProvider
-	if model != "" {
-		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
+	if effectiveModel != "" {
+		if provider, err = checkAgentProvider(c, projectID, effectiveModel, stderr); err != nil {
 			return err
 		}
 		// Known-incompatible and untested combinations (docs/agents.md, "Known
@@ -565,7 +579,7 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		// bad pairing (§ ICP walkthrough: hermes + gpt-4.1-mini failed every
 		// time) refuses outright; an untested one warns and points at --smoke,
 		// same as the model-warning above.
-		if compat := executor.CheckModelCompat(kind, model); compat.Message != "" {
+		if compat := executor.CheckModelCompat(kind, effectiveModel); compat.Message != "" {
 			if compat.Blocked {
 				return errorf(kindConfigInvalid, "%s", compat.Message)
 			}
@@ -635,10 +649,10 @@ func cmdExecutorSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		}
 		var serr error
 		if kind == "acp" {
-			opts := executor.ACPOptions{Image: image, Model: model, Command: acpCommand, KeyEnv: acpKeyEnv}
+			opts := executor.ACPOptions{Image: image, Model: effectiveModel, Command: acpCommand, KeyEnv: acpKeyEnv}
 			serr = executor.SmokeACPAgent(sctx, opts, provider, lookup, "")
 		} else {
-			serr = executor.SmokeAgent(sctx, kind, image, model, provider, lookup, "")
+			serr = executor.SmokeAgent(sctx, kind, image, effectiveModel, provider, lookup, "")
 		}
 		if serr != nil {
 			return errorf(kindRunFailed, "smoke failed: %w", serr)
@@ -687,10 +701,6 @@ func cmdOpenHandsSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if err := config.ValidateExecutor(config.ExecutorConfig{OpenHands: oh}); err != nil {
 		return usageErrorf("%v", strings.TrimPrefix(err.Error(), "config: "))
 	}
-	if smoke && model == "" {
-		return usageErrorf("--smoke requires --model (the agent's coding model)")
-	}
-
 	fmt.Fprintln(stderr, warn("⚠ security tradeoff:")+" openhands sends the work root (a copy of this workspace, minus .env and credential-looking files), "+
 		"the task brief, and the coding model's provider key (unless executor.openhands.withhold_provider_key is set) to "+serverURL+
 		", where the agent runs with auto-approve. Only use a server you trust.")
@@ -722,12 +732,24 @@ func cmdOpenHandsSetup(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var provider executor.AgentProvider
-	if model != "" {
-		if provider, err = checkAgentProvider(c, projectID, model, stderr); err != nil {
+	effectiveModel := model
+	if smoke && effectiveModel == "" {
+		var view cliProvidersView
+		if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(projectID)+"/providers", nil, &view); err != nil {
 			return err
 		}
-		if compat := executor.CheckModelCompat("openhands", model); compat.Message != "" {
+		effectiveModel = view.DefaultModel
+		if effectiveModel == "" {
+			return usageErrorf("--smoke needs a model: pass --model <provider>/<model>, or set a default with `idea model set <provider>/<model>`")
+		}
+		fmt.Fprintln(stderr, muted("no --model; smoking the configured default ")+code(effectiveModel))
+	}
+	var provider executor.AgentProvider
+	if effectiveModel != "" {
+		if provider, err = checkAgentProvider(c, projectID, effectiveModel, stderr); err != nil {
+			return err
+		}
+		if compat := executor.CheckModelCompat("openhands", effectiveModel); compat.Message != "" {
 			if compat.Blocked {
 				return errorf(kindConfigInvalid, "%s", compat.Message)
 			}
@@ -760,7 +782,7 @@ func cmdOpenHandsSetup(a cmdArgs, stdout, stderr io.Writer) error {
 		defer stop()
 		sctx, cancel := context.WithTimeout(sctx, 15*time.Minute)
 		defer cancel()
-		opts := executor.OpenHandsOptions{URL: serverURL, APIKeyEnv: sessionKeyEnv, Agent: agent, ACPCommand: acpCommand, Model: model}
+		opts := executor.OpenHandsOptions{URL: serverURL, APIKeyEnv: sessionKeyEnv, Agent: agent, ACPCommand: acpCommand, Model: effectiveModel}
 		if err := executor.SmokeOpenHands(sctx, opts, provider, lookup, ""); err != nil {
 			return errorf(kindRunFailed, "smoke failed: %w", err)
 		}

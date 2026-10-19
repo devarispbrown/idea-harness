@@ -607,6 +607,7 @@ func cmdInit(a cmdArgs, stdout io.Writer) error {
 	// port -- or hitting `idea dev`'s bind error moments later trying to guess.
 	fmt.Fprintln(stdout, muted("web UI: ")+bold(uiURL()))
 	fmt.Fprintln(stdout, muted("next: ")+bold("idea new")+muted(" \"<describe your idea>\""))
+	fmt.Fprintln(stdout, muted("agent: ")+bold("idea executors setup")+muted(" to wire a real coding agent (until then, runs write a placeholder)"))
 	fmt.Fprintln(stdout, muted("channel: ")+bold("idea channel telegram|slack|email")+muted(" to capture/judge from anywhere"))
 	return nil
 }

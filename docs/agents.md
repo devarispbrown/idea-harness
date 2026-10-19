@@ -65,12 +65,14 @@ given. For **OMP** `--image` is
 required. `--model` is optional if a default model is already configured. There is **no silent
 fallback** — pass `--kind omp` explicitly to choose OMP.
 
-Add `--smoke` (with `--model`) to also run a trivial coding task through the agent and assert it
+Add `--smoke` to also run a trivial coding task through the agent and assert it
 produces a real file change — this verifies the agent CLI contract end-to-end, not just that the
-binary exists:
+binary exists. `--smoke` runs `--model`, or the configured default model when `--model` is omitted
+(so a model already chosen with `idea model set` need not be named twice):
 
 ```bash
 idea executors setup --kind hermes --model anthropic/claude-sonnet-5 --smoke --yes
+idea executors setup --smoke --yes          # smokes the configured default model
 ```
 
 ### Choose a provider and model
@@ -525,7 +527,8 @@ one small real model call. The last result stays on the Settings page. The same 
 `POST /api/v1/projects/{projectId}/executors/smoke`.
 
 **From the CLI:** `idea executors setup --kind hermes --model <provider/model> --smoke --yes`
-runs it in your terminal's environment, which is not always the daemon's.
+runs it in your terminal's environment, which is not always the daemon's. `--model` is optional
+here too: omit it and the smoke uses the configured default model.
 
 **In CI:** [`scripts/agent-smoke.sh`](../scripts/agent-smoke.sh) runs a real Hermes coding task end-to-end in
 the isolated container and asserts that it produces a real file diff. It is **opt-in**: it requires
