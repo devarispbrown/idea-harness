@@ -993,8 +993,14 @@ func (e *Engine) deterministicPlanChecks(ctx context.Context, initiativeID strin
 			continue
 		}
 		if !implemented[r.ID] {
+			// Medium, not high: a requirement legitimately served by a
+			// verification task (EdgeVerifies) or by design/verification rather
+			// than a dedicated coding task has no implements edge, and blocking
+			// plan approval on that is too strict (the eval's scripted plans
+			// would never converge). This surfaces in the plan review and
+			// `idea gaps` without blocking.
 			out = append(out, domain.Finding{
-				Severity: domain.SeverityHigh, Confidence: domain.ConfidenceHigh,
+				Severity: domain.SeverityMedium, Confidence: domain.ConfidenceHigh,
 				Category:       "traceability",
 				Finding:        fmt.Sprintf("%s has no implementing task", r.Code),
 				Evidence:       r.Statement,
