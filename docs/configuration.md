@@ -921,6 +921,22 @@ The daemon refuses to start on a `listen` it will not allow, and logs a warning 
 allows without TLS. Loopback (`IDEA_HARNESS_ADDR`, default `127.0.0.1:8787`) is served exactly as
 before either way, and keeps handing the token to the local UI.
 
+### Channels
+
+`config.yaml` also takes a `channels:` section for the native channel adapters
+(Telegram today; Slack and email follow). Credentials are env-var **names**, never
+values, so the file stays committable:
+
+```yaml
+channels:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN   # env var holding the @BotFather token
+    project: <project-id>               # where captured briefs land as drafts
+```
+
+The daemon long-polls the bot and turns each text message into a draft
+initiative. Wiring and the Slack/email shapes: [`channels.md`](channels.md).
+
 ### Recommended: Tailscale
 
 [`tailscale serve`](https://tailscale.com/kb/1312/serve) gives the daemon an HTTPS address on your

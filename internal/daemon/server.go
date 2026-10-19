@@ -139,6 +139,13 @@ func RunWith(addr, stateRoot string, log *slog.Logger, onReady func(), override 
 	}
 	rt.setIntegrationUIBase("http://" + ln.Addr().String())
 	rt.configureRemote(dcfg, plan)
+	// Channels: the native adapters (Telegram first), configured in config.yaml.
+	// Each poller stops with rt.lifetime, cancelled by Close.
+	if channels, err := LoadChannelsConfig(stateRoot); err != nil {
+		log.Warn("could not load channel config; channels are off", "err", err)
+	} else {
+		rt.startTelegram(rt.lifetime, channels.Telegram)
+	}
 
 	// The remote listener, when configured: the same handler, which serves it
 	// a token-free page and accepts only a header token or a paired session.

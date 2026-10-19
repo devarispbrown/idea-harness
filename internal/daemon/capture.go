@@ -54,6 +54,13 @@ func (r *Runtime) CaptureInitiative(ctx context.Context, token, brief string) (s
 	if err != nil {
 		return "", err
 	}
+	return r.createDraft(ctx, projectID, brief)
+}
+
+// createDraft is the trusted in-daemon capture: it creates a draft initiative in
+// projectID without going through the token check. Used by the native channel
+// adapters (the Telegram poller), which run inside the daemon's trust boundary.
+func (r *Runtime) createDraft(ctx context.Context, projectID, brief string) (string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", err

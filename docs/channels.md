@@ -1,59 +1,49 @@
 # Wiring a channel
 
-The capture endpoint (`POST /api/v1/capture`) and the capture token (`idea
-capture token`) are built. This page is the explicit, copy-pasteable wiring for
-the three channels: **Telegram** (capture — ready to wire today), **Slack**
-(create/monitor/operate — needs an adapter), and **email** (outbound
+The capture endpoint (`POST /api/v1/capture`), the capture token (`idea capture
+token`), and the native Telegram poller are built. This page is the wiring for
+the three channels: **Telegram** (capture — the daemon runs the bot itself),
+**Slack** (create/monitor/operate — needs an adapter), and **email** (outbound
 notifications — needs an SMTP notifier).
 
-Every channel needs the same two prerequisites first.
+Channels are configured in `<state root>/config.yaml` under a `channels:` section.
+Credentials are **env-var names, never values**, so the file stays committable.
 
-## Prerequisites (all channels)
+## Prerequisite (all channels)
 
-1. **An always-on daemon.** A channel's bot has to reach the daemon, so it must
-   be running somewhere reachable — your box or a VPS. See
-   [`self-hosting.md`](self-hosting.md) and `idea remote enable`.
-2. **A capture token**, minted in the project the captures should land in:
-
-   ```bash
-   idea capture token --label telegram    # prints the token ONCE; store it
-   ```
-
-   The capture endpoint is `POST /api/v1/capture`, body `{"token":"…","brief":"…"}`.
-   A successful call returns `{"initiative_id":"…"}` and the brief becomes a
-   **draft** initiative (pipeline not started). You open it and press **Start**,
-   or `POST …/initiatives/{id}/start`.
+**An always-on daemon.** A channel's bot has to reach the daemon, so run it on a
+box or VPS — see [`self-hosting.md`](self-hosting.md) and `idea remote enable`.
 
 ---
 
-## Telegram (capture) — ready today
+## Telegram (capture) — native, ready today
+
+The daemon long-polls the bot and turns each text message into a **draft**
+initiative. No separate script, no capture token.
 
 **1. Create the bot.** In Telegram, message `@BotFather`, send `/newbot`, name
 it, and copy the bot token (`1234567890:AA…`).
 
-**2. Run this adapter** on the always-on box. It long-polls the bot and forwards
-each text message to the capture endpoint. Needs `curl` and `jq`.
+**2. Put the token in the daemon's environment:**
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}"
-: "${CAPTURE_TOKEN:?set CAPTURE_TOKEN (from idea capture token)}"
-DAEMON="${IDEA_HARNESS_ADDR:-http://127.0.0.1:8787}"
-offset=0
-while true; do
-  updates=$(curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates" \
-    --get --data-urlencode "timeout=30" --data-urlencode "offset=${offset}") || { sleep 2; continue; }
-  echo "$updates" | jq -r '.result[]?.message.text | select(. != null)' | while IFS= read -r brief; do
-    jq -n --arg t "$CAPTURE_TOKEN" --arg b "$brief" '{token:$t, brief:$b}' \
-      | curl -sf -X POST "$DAEMON/api/v1/capture" -H 'Content-Type: application/json' --data-binary @- >/dev/null \
-      || echo "capture failed" >&2
-  done
-  offset=$(echo "$updates" | jq -r '.result[-1].update_id + 1 // 0')
-done
+export TELEGRAM_BOT_TOKEN="1234567890:AA…"
 ```
 
-**3. Verify.** Text your bot "A recipe sharing app for home cooks"; it appears on
+**3. Configure the channel** in `~/.local/share/idea-harness/config.yaml` (or
+`$IDEA_HARNESS_STATE/config.yaml`):
+
+```yaml
+channels:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN   # the env var name, never the token itself
+    project: <project-id>               # where drafts land (idea status shows ids)
+```
+
+**4. Restart the daemon** so it picks up the config: `idea daemon stop`, then any
+command starts it again.
+
+**5. Verify.** Text your bot "A recipe sharing app for home cooks"; it appears on
 the Home page as a **draft** initiative. Open it → **Start**.
 
 ---
