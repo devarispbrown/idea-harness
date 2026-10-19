@@ -663,6 +663,37 @@ func (db *DB) CreateRequirement(ctx context.Context, r *domain.Requirement) erro
 	})
 }
 
+// SeedRequirementsFrom copies a source initiative's live requirements into dest,
+// preserving their codes so a subsequent PRD run treats them as continuing (and
+// thus emits added/modified/removed deltas). Removed/superseded requirements are
+// not copied — the delta is what the new initiative changes, not what the source
+// had already dropped. Returns the number of requirements seeded.
+func (db *DB) SeedRequirementsFrom(ctx context.Context, destInitiativeID, sourceInitiativeID string) (int, error) {
+	src, err := db.ListRequirements(ctx, sourceInitiativeID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range src {
+		if r.Status == domain.RequirementRemoved || r.SupersededBy != "" {
+			continue
+		}
+		seed := domain.Requirement{
+			InitiativeID:       destInitiativeID,
+			Code:               r.Code,
+			Statement:          r.Statement,
+			AcceptanceCriteria: r.AcceptanceCriteria,
+			Priority:           r.Priority,
+			Status:             domain.RequirementApproved, // an existing baseline, not a fresh draft
+		}
+		if err := db.CreateRequirement(ctx, &seed); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // ListRequirements returns requirements for an initiative.
 func (db *DB) ListRequirements(ctx context.Context, initiativeID string) ([]domain.Requirement, error) {
 	rows, err := db.SQL().QueryContext(ctx, `

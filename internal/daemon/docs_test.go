@@ -268,7 +268,7 @@ func TestStartInitiativeWithDocs(t *testing.T) {
 
 	iniID, opID, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
 		{Content: "# PRD\n\ngrounding", Kind: "prd", Title: "spec.md"},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestStartInitiativeWithDocsRejectsCredential(t *testing.T) {
 
 	_, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
 		{Content: "key=sk_live_4eC39HqLyjWDarjtT1zdp7dc", Kind: "prd", Title: "spec.md"},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected a credential rejection")
 	}
@@ -380,7 +380,7 @@ func TestStartInitiativeWithDocsRejectsOversizedAtomically(t *testing.T) {
 
 	_, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
 		{Content: strings.Repeat("A", maxDocFileBytes+1), Kind: "prd", Title: "big.md"},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected an oversized-document rejection")
 	}
@@ -424,7 +424,7 @@ func TestStartInitiativeWithDocsFailsRatherThanStranding(t *testing.T) {
 		t.Fatalf("could not sabotage the operations table: %v", err)
 	}
 
-	if _, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", nil); err == nil {
+	if _, _, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", nil, ""); err == nil {
 		t.Fatal("expected CreateOperation to fail with the table dropped")
 	}
 
@@ -474,7 +474,7 @@ func TestStartInitiativeWithDocsImage(t *testing.T) {
 
 	iniID, opID, err := rt.StartInitiativeWithDocs(t.Context(), p["project_id"], "idea", "idea", []InitiativeDocInput{
 		{Data: tinyPNG, Filename: "mockup.png", Kind: "design", Title: "mockup.png"},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

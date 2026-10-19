@@ -100,6 +100,14 @@ stored inline.
 > printf '%s\n' 'A recipe-sharing app' 'for home cooks who…' | idea new - --doc notes.txt
 > ```
 >
+> To evolve an existing initiative's scope rather than start fresh (brownfield), seed from its
+> requirements — the PRD then revises them into an added/modified/removed delta instead of
+> authoring from scratch:
+>
+> ```bash
+> idea new "Add CSV export" --from <initiative-id>   # idea status lists the ids
+> ```
+>
 > Add more material after the initiative exists with `idea docs add` (paste text from stdin with
 > `-`); the new-idea compose in the web UI takes files the same way as `--doc`:
 >

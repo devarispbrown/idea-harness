@@ -96,7 +96,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{names: []string{"init"}, usage: "init [<dir>]", summary: "initialize a project (defaults to the current directory)", flags: flagSpec{}, run: func(a cmdArgs, stdout, _ io.Writer) error { return cmdInit(a, stdout) }, inHelp: true},
-		{names: []string{"new"}, usage: `new "<idea>" [--doc <path> …] [--file <path>|-] [--no-wait]`, summary: "create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), and --doc attaches any text or image files", flags: flagSpec{"--doc": flagRepeated, "--file": flagValue, "--no-wait": flagBool, "--wait": flagBool}, run: cmdNew, inHelp: true},
+		{names: []string{"new"}, usage: `new "<idea>" [--doc <path> …] [--file <path>|-] [--from <initiative>] [--no-wait]`, summary: "create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), --doc attaches any text or image files, and --from seeds the initiative from an existing initiative's requirements", flags: flagSpec{"--doc": flagRepeated, "--file": flagValue, "--from": flagValue, "--no-wait": flagBool, "--wait": flagBool}, run: cmdNew, inHelp: true},
 		{names: []string{"status"}, usage: "status [<initiative>]", summary: "show initiative + current work", flags: jsonFlag, maxPositional: 1, run: cmdStatus, inHelp: true},
 		{names: []string{"changed"}, usage: "changed [<initiative>]", summary: "show What Changed since last look", flags: jsonFlag, maxPositional: 1, run: cmdChanged, inHelp: true},
 		{names: []string{"decisions"}, usage: "decisions", summary: "list open/blocked decisions", flags: jsonFlag, maxPositional: 1, run: cmdDecisions, inHelp: true},
@@ -720,15 +720,23 @@ func cmdNew(a cmdArgs, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	fromID := ""
+	if ref := a.value("--from"); ref != "" {
+		fromID, err = resolveInitiative(c, projectID, []string{ref})
+		if err != nil {
+			return err
+		}
+	}
 	var out map[string]string
 	if len(files) > 0 {
 		err = c.doMultipartFiles("POST", "/api/v1/projects/"+projectID+"/initiatives",
-			map[string]string{"title": title, "description": description}, files, &out)
+			map[string]string{"title": title, "description": description, "from_initiative": fromID}, files, &out)
 	} else {
 		body := struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-		}{Title: title, Description: description}
+			Title          string `json:"title"`
+			Description    string `json:"description"`
+			FromInitiative string `json:"from_initiative,omitempty"`
+		}{Title: title, Description: description, FromInitiative: fromID}
 		err = c.do("POST", "/api/v1/projects/"+projectID+"/initiatives", body, &out)
 	}
 	if err != nil {

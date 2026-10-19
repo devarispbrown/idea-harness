@@ -946,7 +946,7 @@ func (d InitiativeDocInput) isImage() bool { return d.Data != nil }
 // StartInitiative creates an initiative + operation and runs the workflow
 // asynchronously (§34). Returns the initiative and operation ids.
 func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, description string) (string, string, error) {
-	return r.StartInitiativeWithDocs(ctx, projectID, title, description, nil)
+	return r.StartInitiativeWithDocs(ctx, projectID, title, description, nil, "")
 }
 
 // StartInitiativeWithDocs creates an initiative, ingests its context docs, and
@@ -955,7 +955,12 @@ func (r *Runtime) StartInitiative(ctx context.Context, projectID, title, descrip
 // validated BEFORE the initiative is created, so a rejected doc never leaves a
 // half-created row; anything that fails after creation marks the initiative
 // failed rather than stranding it in `running`.
-func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title, description string, docs []InitiativeDocInput) (string, string, error) {
+//
+// When sourceInitiativeID is non-empty (brownfield `idea new --from`), the
+// source's live requirements are seeded into the new initiative (preserving
+// codes) before the run, so the PRD stage emits added/modified/removed deltas
+// against them rather than authoring from scratch.
+func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title, description string, docs []InitiativeDocInput, sourceInitiativeID string) (string, string, error) {
 	pr, err := r.EnsureProject(ctx, projectID)
 	if err != nil {
 		return "", "", err
@@ -1039,6 +1044,16 @@ func (r *Runtime) StartInitiativeWithDocs(ctx context.Context, projectID, title,
 			_, err = pr.ingestTextDoc(ctx, ini.ID, d.Content, d.Kind, d.Title)
 		}
 		if err != nil {
+			return fail(err)
+		}
+	}
+
+	// Brownfield: seed the source initiative's live requirements (preserving
+	// codes) so the PRD stage revises them into a delta instead of authoring
+	// from scratch. A seed failure marks the initiative failed, like a doc
+	// ingest failure.
+	if sourceInitiativeID != "" {
+		if _, err := pr.db.SeedRequirementsFrom(ctx, ini.ID, sourceInitiativeID); err != nil {
 			return fail(err)
 		}
 	}

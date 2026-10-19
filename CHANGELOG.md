@@ -118,6 +118,10 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
   `modified` (revised in place, `revised_at` set by migration 52), or `removed` (superseded) —
   computed at read time from the row's own lifecycle rather than a stored column that could
   drift.
+- **Brownfield initiatives (`idea new --from <initiative>`).** Seed a new initiative from an
+  existing one's live requirements (codes preserved) so the PRD revises them into an
+  added/modified/removed delta instead of authoring from scratch — the `change_kind` field above
+  is the surface of that delta.
 - **`docs/failure-modes.md`.** Five classes of refusal/stall a founder journey actually hit,
   each as symptom → diagnostic command → expected output → recovery, quoting the real message
   verbatim (several are `%s`-templated, shown as a rendered example): a change set whose

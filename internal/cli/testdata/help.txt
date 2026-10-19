@@ -3,7 +3,7 @@ idea-harness — a local-first AI product-development control plane
 Usage: idea <command>
 Commands:
   init [<dir>]         initialize a project (defaults to the current directory)
-  new "<idea>" [--doc <path> …] [--file <path>|-] [--no-wait] create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), and --doc attaches any text or image files
+  new "<idea>" [--doc <path> …] [--file <path>|-] [--from <initiative>] [--no-wait] create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), --doc attaches any text or image files, and --from seeds the initiative from an existing initiative's requirements
   status [<initiative>] show initiative + current work
   changed [<initiative>] show What Changed since last look
   decisions            list open/blocked decisions

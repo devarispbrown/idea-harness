@@ -303,6 +303,9 @@ paths:
                   type: string
                   description: Required; the one-line statement of the idea.
                 description: { type: string }
+                from_initiative:
+                  type: string
+                  description: Optional source initiative id; its live requirements are seeded (codes preserved) so the PRD emits a delta (`idea new --from`).
                 docs:
                   type: array
                   description: Inline context docs, ingested before the pipeline starts (`idea new --doc`).
@@ -328,6 +331,9 @@ paths:
                 description:
                   type: string
                   description: The full brief; defaults to `title` when empty.
+                from_initiative:
+                  type: string
+                  description: Optional source initiative id; its live requirements are seeded (codes preserved) so the PRD emits a delta.
                 file:
                   type: array
                   description: One or more grounding files (`.md/.txt/.pdf/.docx/.xlsx/.jpg/.png/…`); each is sniffed as text (extracted) or image (vision-described).

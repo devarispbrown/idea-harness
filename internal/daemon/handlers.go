@@ -84,20 +84,21 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
-	var title, description string
+	var title, description, fromInitiative string
 	var docs []InitiativeDocInput
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		var err error
-		title, description, docs, err = s.readCreateMultipart(w, r)
+		title, description, fromInitiative, docs, err = s.readCreateMultipart(w, r)
 		if err != nil {
 			return // readCreateMultipart already wrote the error
 		}
 	} else {
 		var body struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Docs        []struct {
+			Title         string `json:"title"`
+			Description   string `json:"description"`
+			FromInitiative string `json:"from_initiative"`
+			Docs          []struct {
 				Content string `json:"content"`
 				Kind    string `json:"kind"`
 				Title   string `json:"title"`
@@ -116,7 +117,7 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		title, description = body.Title, body.Description
+		title, description, fromInitiative = body.Title, body.Description, body.FromInitiative
 		for _, d := range body.Docs {
 			docs = append(docs, InitiativeDocInput{Content: d.Content, Kind: d.Kind, Title: d.Title})
 		}
@@ -125,7 +126,7 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
-	iniID, opID, err := s.rt.StartInitiativeWithDocs(r.Context(), projectID, title, description, docs)
+	iniID, opID, err := s.rt.StartInitiativeWithDocs(r.Context(), projectID, title, description, docs, fromInitiative)
 	if err != nil {
 		var ie ingestError
 		if errors.As(err, &ie) {
@@ -143,7 +144,7 @@ func (s *Server) handleCreateInitiative(w http.ResponseWriter, r *http.Request) 
 // it to text (extract) or image (raw bytes). Kind/title derive from the
 // filename, matching readMultipartFile. On failure it writes the error and
 // returns a non-nil err.
-func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (string, string, []InitiativeDocInput, error) {
+func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (string, string, string, []InitiativeDocInput, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxDocBodyBytes*maxContextDocsPerInitiative)
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		var mbe *http.MaxBytesError
@@ -152,12 +153,13 @@ func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (st
 		} else {
 			writeError(w, http.StatusBadRequest, "invalid multipart body")
 		}
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	defer r.MultipartForm.RemoveAll()
 
 	title := strings.TrimSpace(r.FormValue("title"))
 	description := strings.TrimSpace(r.FormValue("description"))
+	fromInitiative := strings.TrimSpace(r.FormValue("from_initiative"))
 	if description == "" {
 		description = title
 	}
@@ -167,17 +169,17 @@ func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (st
 		f, err := fh.Open()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "could not read file")
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		data, err := io.ReadAll(io.LimitReader(f, maxDocFileBytes+1))
 		f.Close()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "could not read file")
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if len(data) > maxDocFileBytes {
 			writeError(w, http.StatusRequestEntityTooLarge, "document too large")
-			return "", "", nil, fmt.Errorf("document too large")
+			return "", "", "", nil, fmt.Errorf("document too large")
 		}
 		filename := fh.Filename
 		kind := docparse.InferKind(filename)
@@ -188,12 +190,12 @@ func (s *Server) readCreateMultipart(w http.ResponseWriter, r *http.Request) (st
 			extracted, err := docparse.ExtractText(filename, data)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "could not parse document")
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 			docs = append(docs, InitiativeDocInput{Content: extracted, Kind: kind, Title: docTitle})
 		}
 	}
-	return title, description, docs, nil
+	return title, description, fromInitiative, docs, nil
 }
 
 func (s *Server) handleListInitiatives(w http.ResponseWriter, r *http.Request) {
