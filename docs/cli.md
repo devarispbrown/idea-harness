@@ -16,7 +16,7 @@ if this file has drifted.
 | Command | What it does | Flags | `--json` |
 | --- | --- | --- | --- |
 | `idea init [<dir>]` | initialize a project (defaults to the current directory) | none | takes no flags |
-| `idea new "<idea>" [--doc <path> …] [--file <path>\|-] [--from <initiative>] [--no-wait]` | create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), --doc attaches any text or image files, and --from seeds the initiative from an existing initiative's requirements | `--doc`, `--file`, `--from`, `--no-wait`, `--wait` | no |
+| `idea new "<idea>" [--doc <path> …] [--file <path>\|-] [--from <initiative>] [--no-wait]` | create an initiative and start the workflow; brief from --file/stdin or --doc | `--doc`, `--file`, `--from`, `--no-wait`, `--wait` | no |
 | `idea status [<initiative>]` | show initiative + current work | `--json` | yes |
 | `idea changed [<initiative>]` | show What Changed since last look | `--json` | yes |
 | `idea decisions` | list open/blocked decisions | `--json` | yes |
@@ -39,18 +39,18 @@ if this file has drifted.
 | `idea prd` | render the reviewed PRD in your terminal | none | takes no flags |
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |
-| `idea advance [--wait]` | run Design → Execution Plan (M2); returns a handle immediately unless --wait | `--wait` | no |
+| `idea advance [--wait]` | run Design → Execution Plan | `--wait` | no |
 | `idea approve` | accept the reviewed PRD as it stands | none | takes no flags |
 | `idea revise` | regenerate the PRD from the review findings | none | takes no flags |
 | `idea approve-plan` | accept the execution plan as it stands | none | takes no flags |
-| `idea revise-plan [--note <text>]` | regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes | `--note` | no |
+| `idea revise-plan [--note <text>]` | regenerate the execution plan | `--note` | no |
 | `idea plan` | render the execution plan | `--json` | rejected — use `idea tasks --json` |
 | `idea tasks` | list the ordered plan tasks | `--json` | yes |
-| `idea add-task "<title>" --requirement <ref> [--statement <text>] [--priority must\|should\|could] [--estimate <text>] [--depends-on <ref>] [<initiative>]` | add a plan task (at least one --requirement is required) | `--depends-on`, `--estimate`, `--priority`, `--requirement`, `--statement` | no |
-| `idea merge-tasks <task1> <task2> [<initiative>] [--yes]` | merge two tasks into one, deleting the second (--yes required) | `--yes` | no |
-| `idea split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>]` | split a task into two or more (repeat --title/--requirements/--statement in order; --yes required) | `--requirements`, `--statement`, `--title`, `--yes` | no |
-| `idea depends-on <task> --on <ref> [--on <ref>...] [<initiative>]` | set a task's dependencies (--clear to depend on nothing) | `--clear`, `--on` | no |
-| `idea reorder <task1> <task2> ... [--initiative <ref>]` | reorder the plan's tasks (name every task, in the new order) | `--initiative` | no |
+| `idea add-task "<title>" --requirement <ref> [--statement <text>] [--priority must\|should\|could] [--estimate <text>] [--depends-on <ref>] [<initiative>]` | add a plan task | `--depends-on`, `--estimate`, `--priority`, `--requirement`, `--statement` | no |
+| `idea merge-tasks <task1> <task2> [<initiative>] [--yes]` | merge two tasks into one | `--yes` | no |
+| `idea split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>]` | split a task into two or more | `--requirements`, `--statement`, `--title`, `--yes` | no |
+| `idea depends-on <task> --on <ref> [--on <ref>...] [<initiative>]` | set a task's dependencies | `--clear`, `--on` | no |
+| `idea reorder <task1> <task2> ... [--initiative <ref>]` | reorder the plan's tasks | `--initiative` | no |
 | `idea why <type> <id>` | show the provenance chain | `--json` | yes |
 | `idea impact <type> <id>` | show dependents + staleness | `--json` | yes |
 | `idea trace <type> <id>` | show provenance + dependents | `--json` | yes |
@@ -58,38 +58,38 @@ if this file has drifted.
 | `idea assumption <id> accept\|dispute\|retract` | judge an assumption or hypothesis (closes an unvalidated_assumption gap) | none | takes no flags |
 | `idea objectives [<initiative>]` | list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it | `--json` | yes |
 | `idea objective add\|edit\|link` | add, edit or link an objective (see the rows below) | `add --json`, `add --owner`, `add --rationale`, `edit --json`, `edit --owner`, `edit --rationale`, `edit --statement`, `edit --status`, `link --json`, `link --unlink` | takes no flags |
-| `idea objective add "<statement>"` | add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision | — | — |
-| `idea objective edit <OBJ>` | change --statement, --rationale, --owner or --status active\|achieved\|abandoned | — | — |
+| `idea objective add "<statement>"` | add an objective (never rewritten by a PRD revision) | — | — |
+| `idea objective edit <OBJ>` | edit an objective's statement, rationale, owner, or status | — | — |
 | `idea objective link <REQ> <OBJ>` | record that a requirement serves an objective (--unlink removes it) | — | — |
-| `idea budget [<initiative>] [--set <usd>\|--clear]` | show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted | `--clear`, `--json`, `--set` | yes |
+| `idea budget [<initiative>] [--set <usd>\|--clear]` | show spend against the cap, and set or clear it; agent spend that isn't reported isn't counted | `--clear`, `--json`, `--set` | yes |
 | `idea metrics [<initiative>]` | list outcome metrics with their drift: on track, off track, regressed, stale or no data | `--json` | yes |
 | `idea metric add\|edit\|record\|measure` | add, edit, record or measure an outcome metric (see the rows below) | `add --baseline`, `add --cadence`, `add --command`, `add --definition`, `add --direction`, `add --guardrail`, `add --hypothesis`, `add --json`, `add --manual`, `add --pointer`, `add --target`, `add --unit`, `add --url`, `edit --baseline`, `edit --cadence`, `edit --clear-baseline`, `edit --clear-guardrail`, `edit --command`, `edit --definition`, `edit --direction`, `edit --guardrail`, `edit --json`, `edit --manual`, `edit --name`, `edit --objective`, `edit --pointer`, `edit --target`, `edit --unit`, `edit --url`, `measure --json`, `record --at`, `record --json`, `record --note` | takes no flags |
-| `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective: --direction increase\|decrease\|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual | — | — |
-| `idea metric edit <MET>` | change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source | — | — |
-| `idea metric record <MET> <value>` | record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value | — | — |
-| `idea metric measure [<MET>]` | run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources | — | — |
+| `idea metric add <OBJ> "<name>" --target <n>` | add a metric to an objective (--target, --direction, source via --command/--url) | — | — |
+| `idea metric edit <MET>` | edit a metric's flags or drop its source | — | — |
+| `idea metric record <MET> <value>` | record a measured value and show drift (--note, --at) | — | — |
+| `idea metric measure [<MET>]` | run a metric's command/url source now and record what it reads | — | — |
 | `idea diff` | structured requirement/decision diff | `--json` | yes |
-| `idea execute [--note <text>] [--wait]` | run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait | `--note`, `--wait` | no |
+| `idea execute [--note <text>] [--wait]` | run the next ready task into a change set | `--note`, `--wait` | no |
 | `idea reopen-phase <architecture\|product_design\|verification_design> [<initiative>] [--no-wait]` | reopen a design phase | `--no-wait` | no |
-| `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative; --note steers this retry (joins the framing prompt) | `--model`, `--no-wait`, `--note` | no |
+| `idea retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]` | re-run a failed initiative | `--model`, `--no-wait`, `--note` | no |
 | `idea changes` | list change sets | `--json` | yes |
 | `idea change <id>` | show a change set | `--json` | yes |
-| `idea apply <id> [--wait]` | apply an approved (or reverted) change set; returns a handle immediately unless --wait | `--wait` | no |
-| `idea revert <id> [--wait]` | roll back a change set; returns a handle immediately unless --wait | `--wait` | no |
+| `idea apply <id> [--wait]` | apply an approved change set | `--wait` | no |
+| `idea revert <id> [--wait]` | roll back a change set | `--wait` | no |
 | `idea pr [<initiative>]` | open a pull request for the initiative's branch (git.branch_per_initiative) | `--json`, `checks --json` | yes |
 | `idea pr checks <change-set-id>` | show the latest CI status via `gh pr checks` | — | — |
-| `idea review <id> <verdict> [--note <text>] [--no-wait]` | approve\|reject\|changes_requested\|rerun; --note with changes_requested\|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without | `--accept-findings`, `--no-wait`, `--note` | no |
-| `idea verify [<req>]` | run the verification gate; --pass\|--fail\|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard | `--confirm-passing-tests`, `--fail`, `--json`, `--no-measure`, `--note`, `--pass`, `--waive` | yes |
+| `idea review <id> <verdict> [--note <text>] [--no-wait]` | approve, reject, request changes on, or rerun a change-set review; --accept-findings signs off findings | `--accept-findings`, `--no-wait`, `--note` | no |
+| `idea verify [<req>]` | run the verification gate; record evidence with --pass/--fail/--waive | `--confirm-passing-tests`, `--fail`, `--json`, `--no-measure`, `--note`, `--pass`, `--waive` | yes |
 | `idea next [--until-human]` | run the next automatable step (--until-human: keep going until a human decision) | `--until-human` | no |
 | `idea risk` | show the deterministic risk profile | `--json` | yes |
 | `idea executors` | list executors + capabilities | `--json`, `setup --acp-command`, `setup --acp-key-env`, `setup --agent`, `setup --api-key-env`, `setup --image`, `setup --kind`, `setup --model`, `setup --smoke`, `setup --url`, `setup --yes` | yes |
-| `idea executors setup [<kind>]` | wire a coding agent: hermes\|omp\|acp\|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands\|acp) | — | — |
+| `idea executors setup [<kind>]` | wire a coding agent (hermes, omp, acp, or openhands) | — | — |
 | `idea integrations [status]` | show Slack/Linear integration health: tokens present, deliveries, socket and poll state | `--json`, `status --json`, `test --json` | yes |
-| `idea integrations test slack\|linear` | post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label | — | — |
+| `idea integrations test slack\|linear` | post a Slack test message or validate the Linear setup | — | — |
 | `idea watch` | watch a run live | none | takes no flags |
-| `idea run events <run-id\|current> [<initiative>] [--follow] [--json]` | print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line | `events --follow`, `events --json` | takes no flags |
-| `idea runs remote [<initiative>] [--all] [--json]` | list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative) | `remote --all`, `remote --json` | takes no flags |
-| `idea steer <run-id\|current> "<note>" [<initiative>] [--interrupt]` | send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run | `--interrupt`, `--json` | yes |
+| `idea run events <run-id\|current> [<initiative>] [--follow] [--json]` | print a coding-agent run's events (--follow tails live, --json one object per line) | `events --follow`, `events --json` | takes no flags |
+| `idea runs remote [<initiative>] [--all] [--json]` | list the OpenHands executor's remote runs (--all: every initiative) | `remote --all`, `remote --json` | takes no flags |
+| `idea steer <run-id\|current> "<note>" [<initiative>] [--interrupt]` | send a note to a running coding agent (--interrupt ends the turn first) | `--interrupt`, `--json` | yes |
 | `idea cancel <op-id>` | interrupt a running operation | none | takes no flags |
 | `idea config` | show or validate .idea-harness config | `validate` | takes no flags |
 | `idea config validate` | validate .idea-harness/harness.yaml (non-zero exit when invalid) | — | — |
@@ -97,26 +97,26 @@ if this file has drifted.
 | `idea docs` | list uploaded context docs | `--json`, `add --kind`, `add --title` | yes |
 | `idea docs add <path>` | upload a context doc (--kind, --title) | — | — |
 | `idea logs [-f] [n]` | show (or follow) the daemon log | `--follow`, `-f`, `-n` | no |
-| `idea daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]` | run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access") | `--allowed-hosts`, `--listen`, `--tls-cert`, `--tls-key`, `status`, `stop` | no |
+| `idea daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]` | run the daemon in the foreground (loopback is always served) | `--allowed-hosts`, `--listen`, `--tls-cert`, `--tls-key`, `status`, `stop` | no |
 | `idea daemon status\|stop` | manage the managed daemon | — | — |
 | `idea ui pair\|sessions` | sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below) | `pair --json`, `pair --label`, `pair --qr`, `sessions --all`, `sessions --json` | takes no flags |
-| `idea ui pair [--label <name>] [--qr]` | mint a one-time pairing code (10 minutes) a remote browser exchanges for a session; the API token never leaves this machine. --qr also draws the sign-in address as a terminal QR code (the code itself is never in it) | — | — |
+| `idea ui pair [--label <name>] [--qr]` | mint a one-time pairing code for a remote browser (--qr draws a QR) | — | — |
 | `idea ui sessions [revoke <id>\|--all]` | list remote browser sessions; revoke one, or every one | — | — |
-| `idea remote enable\|disable\|status` | turn remote access on or off over Tailscale (see docs/self-hosting.md): enable detects the MagicDNS name, runs `tailscale serve`, and records it as an allowed host; disable reverses it; status shows the current setup | `disable`, `enable`, `status` | takes no flags |
-| `idea remote enable` | turn remote access on: detect the Tailscale MagicDNS name, run `tailscale serve`, set the allowed host, restart the daemon | — | — |
+| `idea remote enable\|disable\|status` | turn remote access on or off over Tailscale (enable/disable/status) | `disable`, `enable`, `status` | takes no flags |
+| `idea remote enable` | turn remote access on over Tailscale | — | — |
 | `idea remote disable` | turn remote access off: clear the allowed host and stop `tailscale serve` | — | — |
 | `idea remote status` | show the daemon's remote listener and allowed hosts, and whether tailscale serve is up | — | — |
-| `idea capture token\|list` | mint a capture token for the unauthenticated POST /api/v1/capture route (a channel presents it to create a draft initiative), or list this project's tokens | `list`, `token --label` | takes no flags |
-| `idea capture token [--label <name>]` | mint a capture token and show it once; present it to POST /api/v1/capture to create a draft | — | — |
+| `idea capture token\|list` | mint a capture token, or list this project's tokens | `list`, `token --label` | takes no flags |
+| `idea capture token [--label <name>]` | mint a one-time capture token (present it to POST /api/v1/capture) | — | — |
 | `idea capture list` | list this project's capture tokens (id, label, last used) — never the secret | — | — |
-| `idea channel telegram\|slack\|email\|show` | configure a channel by writing harness.yaml's integrations section (no hand-editing): telegram, slack, email, or show the current setup | `email --from`, `email --smtp-host`, `email --smtp-password-env`, `email --smtp-port`, `email --smtp-user`, `email --to`, `show`, `slack --allowed-users`, `slack --app-token-env`, `slack --bot-token-env`, `slack --channel`, `telegram --token-env` | takes no flags |
+| `idea channel telegram\|slack\|email\|show` | configure a channel (telegram, slack, email) or show the current setup | `email --from`, `email --smtp-host`, `email --smtp-password-env`, `email --smtp-port`, `email --smtp-user`, `email --to`, `show`, `slack --allowed-users`, `slack --app-token-env`, `slack --bot-token-env`, `slack --channel`, `telegram --token-env` | takes no flags |
 | `idea channel telegram [--token-env <name>]` | turn on Telegram capture; the bot token comes from the named env var (default TELEGRAM_BOT_TOKEN) | — | — |
 | `idea channel slack --channel <id> [--allowed-users u1,u2] [--bot-token-env n] [--app-token-env n]` | turn on Slack (notifications + /idea); a channel ID, not a #name | — | — |
 | `idea channel email --to <a> --from <a> --smtp-host <h> [--smtp-port n] [--smtp-user u] [--smtp-password-env n]` | turn on email notifications over SMTP | — | — |
 | `idea channel show` | print the current channel configuration | — | — |
 | `idea dev` | start the daemon and serve the web UI | none | takes no flags |
-| `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md) | `--allow-apply`, `--dir`, `--read-only` | no |
-| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve\|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--max-cost`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
+| `idea mcp [--read-only\|--allow-apply] [--dir <path>]` | serve this project to MCP clients (Claude Code, Cursor, Codex) | `--allow-apply`, `--dir`, `--read-only` | no |
+| `idea eval [--suite <name\|file>] [--model <provider/model>] [--case <name>]` | run the eval suite end to end and report per-case results and cost | `--baseline`, `--case`, `--harness`, `--json-out`, `--keep`, `--max-cost`, `--md-out`, `--model`, `--policy`, `--suite`, `--timeout` | no |
 | `idea version` | print the version, commit and build state | none | takes no flags |
 | `idea help [--format=md]` | show this command list (--format=md emits the docs/cli.md table) | `--format` | no |
 
