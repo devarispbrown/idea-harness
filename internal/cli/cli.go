@@ -383,13 +383,28 @@ func cmdHelp(a cmdArgs, stdout, stderr io.Writer) error {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, heading("idea-harness")+" — a local-first AI product-development control plane\n\n")
-	fmt.Fprintln(w, bold("Usage:"), "idea <command>")
-	fmt.Fprintln(w, bold("Commands:"))
-	for _, c := range commands() {
-		if !c.inHelp {
+
+	// The happy path, before the full command list.
+	fmt.Fprintln(w, bold("Quickstart"))
+	fmt.Fprintln(w, muted("the whole loop on the demo provider — no key, about two minutes"))
+	qw := quickstartWidth()
+	for _, s := range quickstart {
+		fmt.Fprintf(w, "  %s %s\n", accent(padRight(s.cmd, qw)), muted(s.note))
+	}
+	fmt.Fprintln(w)
+
+	// Commands, grouped by workflow phase.
+	fmt.Fprintln(w, bold("Commands"))
+	for _, g := range helpGroups {
+		rows := groupRows(g.id)
+		if len(rows) == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "  %-20s %s\n", accent(c.usage), c.summary)
+		fmt.Fprintf(w, "\n%s\n", bold(g.title))
+		width := groupColumnWidth(rows)
+		for _, r := range rows {
+			fmt.Fprintf(w, "  %s %s\n", accent(padRight(r.usage, width)), r.summary)
+		}
 	}
 	fmt.Fprintf(w, "\n%s\n", muted("State commands support --json."))
 }
