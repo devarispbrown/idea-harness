@@ -155,6 +155,7 @@ func TestSandboxedHermesArgs(t *testing.T) {
 	for _, want := range []string{
 		"--read-only",
 		"hermes chat --yolo -q Build the core -m opus",
+		"--max-turns 100", // bounds a runaway loop; every turn is a paid call
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("docker args %q missing %q", args, want)

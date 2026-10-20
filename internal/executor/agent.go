@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,12 +109,20 @@ func hermesArgs(req Request, model, provider string) []string {
 	// The model is passed BARE. The provider is pinned separately by a generated
 	// custom_provider, so a `provider/model` spec here would be handed to the
 	// endpoint verbatim and rejected.
-	args := []string{"hermes", "chat", "--yolo", "-q", stmt, "-m", bareModel(model)}
+	args := []string{"hermes", "chat", "--yolo", "-q", stmt, "-m", bareModel(model), "--max-turns", strconv.Itoa(hermesMaxTurns)}
 	if provider != "" {
 		args = append(args, "--provider", hermesProviderSlug(provider))
 	}
 	return args
 }
+
+// hermesMaxTurns bounds one coding-agent run. Hermes otherwise loops until the
+// container's wall-clock timeout, and every turn is a paid model call, so a
+// stuck agent would burn credit for the full timeout. 100 turns is generous for
+// a real task (the smoke's "write one file" needs ~5) but a hard ceiling on a
+// runaway loop. `--max-turns` is verified present in the pinned image's
+// `hermes chat --help`.
+const hermesMaxTurns = 100
 
 // bareModel strips the `provider/` prefix, and only the first one: an
 // OpenRouter id legitimately contains a slash (`openrouter/anthropic/x` becomes

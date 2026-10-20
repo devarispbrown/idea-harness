@@ -174,7 +174,7 @@ echo "--- IMPACT requirement REQ-1 ---"
 echo "--- PLAN (head) ---"
 "$ROOT/bin/idea" plan 2>&1 | head -12
 echo "--- EXECUTE (M3) ---"
-"$ROOT/bin/idea" execute
+"$ROOT/bin/idea" execute --wait
 wait_for "CHG-1 to appear in changes" 30 chg1_in_changes
 echo "--- CHANGES ---"
 "$ROOT/bin/idea" changes
