@@ -151,7 +151,17 @@ func loadWorkspaceIgnore(workspaceRoot string, candidates []string) (*workspaceI
 	if workspaceRoot == "" {
 		return &workspaceIgnore{}, nil
 	}
-	if err := exec.Command("git", "-C", workspaceRoot, "rev-parse", "--is-inside-work-tree").Run(); err == nil {
+	// A workspace that is itself gitignored (e.g. a scratch dir under the
+	// repo's .smoke/) makes `git check-ignore` report every file it holds as
+	// ignored, silently emptying the after-snapshot and therefore the diff.
+	// There is no meaningful project .gitignore in that case, so skip the git
+	// path and fall through to the parsed-.gitignore fallback (which finds no
+	// .gitignore in a scratch dir and ignores nothing).
+	inGit := exec.Command("git", "-C", workspaceRoot, "rev-parse", "--is-inside-work-tree").Run() == nil
+	if inGit && exec.Command("git", "-C", workspaceRoot, "check-ignore", "-q", "--", ".").Run() == nil {
+		inGit = false
+	}
+	if inGit {
 		ignored, err := gitCheckIgnore(workspaceRoot, candidates)
 		if err != nil {
 			// Fail open on a git-invocation problem: this is an additional

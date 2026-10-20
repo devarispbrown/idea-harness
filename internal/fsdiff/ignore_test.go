@@ -70,6 +70,49 @@ func TestSnapshotWorkspaceIgnoreGit(t *testing.T) {
 	}
 }
 
+// TestSnapshotWorkspaceIgnoreGitIgnoredWorkspace is a regression test for the
+// smoke/agent scratch-dir bug: when the workspace sits inside a gitignored
+// directory of its own parent repo (e.g. the harness's .smoke/), git
+// check-ignore reports every file the workspace holds as ignored, which
+// silently emptied the after-snapshot and therefore the diff. A workspace
+// that is itself ignored has no meaningful project .gitignore, so the git
+// path must be skipped and its files must survive the snapshot.
+func TestSnapshotWorkspaceIgnoreGitIgnoredWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	writeFile(t, repo, ".gitignore", "/.smoke/\n")
+	run("add", "-A")
+	run("commit", "-q", "-m", "init")
+
+	// The workspace is a scratch dir inside the repo's gitignored .smoke/.
+	workspace := filepath.Join(repo, ".smoke", "123", "project")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := t.TempDir()
+	writeFile(t, workRoot, "hello.txt", "hello\n")
+
+	m, err := Snapshot(workRoot, WithWorkspaceIgnore(workspace))
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(m) != 1 || m[0].Path != "hello.txt" {
+		t.Fatalf("Snapshot() = %+v, want hello.txt kept (workspace is gitignored, not a real project)", m)
+	}
+}
+
 // TestSnapshotWorkspaceIgnoreFallback exercises the non-git fallback matcher
 // (WithWorkspaceIgnore against a workspace that is not a git repository).
 func TestSnapshotWorkspaceIgnoreFallback(t *testing.T) {
