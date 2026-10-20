@@ -106,13 +106,8 @@ before=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
 echo "=== EXECUTE ($AGENT_KIND, sandboxed) ==="
 "$ROOT/bin/idea" execute --wait >/dev/null
 
-echo "=== STATE FILES (post-execute, where did the agent write?) ==="
-find "$STATE" -type f -not -name '*.db' 2>/dev/null | sed "s|$STATE/||" | sort | head -50
-
 echo "=== CHANGES ==="
 "$ROOT/bin/idea" changes
-echo "=== CHANGE CHG-1 (diagnostic) ==="
-"$ROOT/bin/idea" change CHG-1 --json
 
 "$ROOT/bin/idea" review CHG-1 approve >/dev/null
 "$ROOT/bin/idea" apply CHG-1 --wait
