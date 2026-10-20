@@ -86,11 +86,16 @@ executor:
 YAML
 fi
 
-# Restart the daemon so the cached runtime re-reads harness.yaml.
+# Restart the daemon so the cached runtime re-reads harness.yaml. The old
+# daemon's listen socket may not release instantly, so retry the start until one
+# binds (a fixed sleep raced it: "bind: address already in use").
 kill "$DPID" 2>/dev/null || true
 wait "$DPID" 2>/dev/null || true
-sleep 0.5
-DPID=$(start_daemon)
+for _ in $(seq 1 10); do
+  DPID=$(start_daemon)
+  sleep 1
+  if "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; then break; fi
+done
 
 "$ROOT/bin/idea" new "Build a recipe sharing app" >/dev/null
 "$ROOT/bin/idea" advance --wait >/dev/null
