@@ -5,8 +5,8 @@
 {"Time":"2026-09-10T09:02:21.536616-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"\n"}
 {"Time":"2026-09-10T09:02:21.536627-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"goroutine 20 [running]:\n"}
 {"Time":"2026-09-10T09:02:21.53664-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"fx/d.TestGoroutinePanic.func1()\n"}
-{"Time":"2026-09-10T09:02:21.536652-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"\t/private/tmp/claude-501/-Users-devarisbrown-Code-projects-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/d/d_test.go:3 +0x2c\n"}
+{"Time":"2026-09-10T09:02:21.536652-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"\t/private/tmp/sandbox/home-user-Code-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/d/d_test.go:3 +0x2c\n"}
 {"Time":"2026-09-10T09:02:21.536676-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"created by fx/d.TestGoroutinePanic in goroutine 19\n"}
-{"Time":"2026-09-10T09:02:21.536693-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"\t/private/tmp/claude-501/-Users-devarisbrown-Code-projects-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/d/d_test.go:3 +0x24\n"}
+{"Time":"2026-09-10T09:02:21.536693-07:00","Action":"output","Package":"fx/d","Test":"TestGoroutinePanic","Output":"\t/private/tmp/sandbox/home-user-Code-idea-harness/bbd4ad9a-ca23-47a2-b7da-5db120ba7208/scratchpad/fixtures/d/d_test.go:3 +0x24\n"}
 {"Time":"2026-09-10T09:02:21.537433-07:00","Action":"output","Package":"fx/d","Output":"FAIL\tfx/d\t0.243s\n"}
 {"Time":"2026-09-10T09:02:21.537471-07:00","Action":"fail","Package":"fx/d","Elapsed":0.243}
