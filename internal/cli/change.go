@@ -29,6 +29,7 @@ type cliChangeSet struct {
 	PatchDigest    string `json:"patch_digest"`
 	ReviewID       string `json:"review_id"`
 	GitCommitSHA   string `json:"git_commit_sha"`
+	AgentOutput    string `json:"agent_output,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	// ReviewCompletedAt mirrors domain.ChangeSet.ReviewCompletedAt (omitted by
 	// the API when nil, same as there): non-nil once the adversarial reviewer

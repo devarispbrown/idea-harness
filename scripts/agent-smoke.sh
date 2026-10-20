@@ -109,7 +109,7 @@ echo "=== EXECUTE ($AGENT_KIND, sandboxed) ==="
 echo "=== CHANGES ==="
 "$ROOT/bin/idea" changes
 echo "=== CHANGE CHG-1 (diagnostic) ==="
-"$ROOT/bin/idea" change CHG-1
+"$ROOT/bin/idea" change CHG-1 --json
 
 "$ROOT/bin/idea" review CHG-1 approve >/dev/null
 "$ROOT/bin/idea" apply CHG-1 --wait
