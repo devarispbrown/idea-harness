@@ -11,6 +11,7 @@ idea → reviewed PRD → execution plan → change set → apply → verify →
 **Status:** pre-1.0. The whole pipeline runs end to end. With no API key it runs on a built-in
 demo provider, so you can try everything before paying for a model call.
 
+- [Why idea-harness](#why-idea-harness)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Using the web UI](#using-the-web-ui)
@@ -19,6 +20,24 @@ demo provider, so you can try everything before paying for a model call.
 - [Other ways in](#other-ways-in)
 - [Documentation](#documentation)
 - [Development](#development)
+
+## Why idea-harness
+
+idea-harness is the **control plane around a coding agent, not another coding agent.** Most tools
+stop at "generate code." idea-harness runs the whole arc — an idea to a *verified* product with
+objectives and outcome metrics — and you hold every decision in between.
+
+| | **idea-harness** | Coding agents<br>(Claude Code, Cursor, Copilot, Aider) | Autonomous SWEs<br>(Devin, OpenHands) | Text-to-app<br>(v0, Lovable, Bolt) |
+|---|---|---|---|---|
+| **Scope** | idea → reviewed PRD → plan → change sets → verification → metrics | edit code in a repo | resolve an issue | prompt → first draft |
+| **You decide** | approve or revise the PRD, plan, and every change set | accept each edit | approve the PR | accept or regenerate |
+| **Traceability** | Product Graph — every requirement, decision, task, and change set is a node: `idea why`, `idea impact`, `idea gaps` | git history only | the issue + PR | none |
+| **Verification** | per-requirement evidence + a 7-dimension quality scorecard | your tests | your CI | none |
+| **Outcomes** | objectives + metrics, with drift and regressions flagged | — | — | — |
+| **Agent** | drives Hermes, Claude Code, Codex (ACP), OMP, or OpenHands — swap without rewriting | is the agent | is the agent | fixed model |
+| **Runs on** | your machine, your keys | your machine | cloud | cloud |
+| **Guardrails** | hard-deny, secret/PII sweep, no-network sandbox, spending caps, byte-for-byte revert | partial | partial | none |
+| **Try first** | built-in demo provider, no key | key or subscription | cloud account | cloud account |
 
 ## Install
 
