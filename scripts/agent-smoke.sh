@@ -106,9 +106,14 @@ echo "=== CHANGES ==="
 
 "$ROOT/bin/idea" review CHG-1 approve >/dev/null
 "$ROOT/bin/idea" apply CHG-1 >/dev/null
-sleep 2
 
-after=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
+# apply is async; poll for the applied files to land rather than a fixed sleep.
+after=""
+for _ in $(seq 1 120); do
+  after=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
+  [ "$before" != "$after" ] && break
+  sleep 1
+done
 if [ "$before" = "$after" ]; then
   echo "FAIL: the $AGENT_KIND agent produced no real file diff in the workspace"
   exit 1
