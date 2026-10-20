@@ -92,16 +92,15 @@ homebrew_casks:
       name: homebrew-tap
       # A fine-grained PAT with contents:write on the tap only. GITHUB_TOKEN
       # cannot push to another repository.
-      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
     directory: Casks
     commit_author:
       name: idea-harness release
       email: noreply@github.com
     commit_msg_template: "idea-harness {{ .Tag }}"
-    # Skipped outright when the tap token is absent, so a fork or a repository
-    # without the secret still releases instead of failing at the push. With
-    # the token, `auto` still skips prereleases (v1.0.0-rc1).
-    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}auto{{ end }}'
+    # `auto` skips the push when the tap token is absent (a fork or a repo
+    # without the secret still releases) and for prereleases (v1.0.0-rc1).
+    skip_upload: auto
     hooks:
       post:
         # The binary is not Apple-notarized, and Homebrew quarantines what a
