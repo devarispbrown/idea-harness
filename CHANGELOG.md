@@ -9,6 +9,25 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-20
+
+### Changed
+
+- **`idea help` is grouped by workflow phase and opens with a quickstart.** The command list was
+  one undifferentiated block; it is now eight phases (Start, Explore & define, Design & plan,
+  Build, Verify & review, Understand the graph, Configure & connect, Run & administer) with a
+  "Quickstart" happy-path block, per-group column alignment, and long usages wrapping their summary
+  onto the next line.
+- **Every command now appears in `idea help`.** `objectives`/`objective`, `metrics`/`metric`, `mcp`,
+  `eval`, `model ls`/`model set`/`model add`, and `config validate` were documented in `docs/cli.md`
+  but never printed; they are now listed, so the help screen and the reference agree.
+- **Command summaries are one line.** Summaries no longer inline every flag and caveat; that detail
+  stays in `idea <command> --help` and the docs Flags column.
+- **Docs.** `docs/agents.md` now distinguishes the executor smoke (the agent writes one file) from
+  the full-pipeline smoke (execute → review → apply → a real diff), and a root `AGENTS.md` records
+  the operating contract (prime directive, ceremony, product judgment, red-team/release gate,
+  communication, permissions).
+
 ## [0.7.1] - 2026-10-20
 
 ### Fixed
