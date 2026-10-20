@@ -9,6 +9,31 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-20
+
+### Fixed
+
+- **Agent output was silently dropped when the workspace sat inside a gitignored directory.** The
+  after-snapshot applies the workspace's `.gitignore` through `git check-ignore`, and a workspace
+  under a gitignored path (a scratch dir inside the repo's own `.smoke/`, for example) made git
+  report every file the agent wrote as ignored. The diff came out empty — a `NoOp` change set — and
+  `apply` wrote nothing, even though the files were on disk the whole time. The git path is now
+  skipped when the workspace directory is itself gitignored, so a scratch-dir workspace has no
+  project `.gitignore` to apply and the agent's files survive into the diff.
+
+### Changed
+
+- **`go install …@latest` now ships the full web UI.** The built web UI is committed (it used to be
+  a placeholder), so `go install` and a clean `go build` embed the real UI with no Node toolchain,
+  matching Homebrew and `make build`. A staleness check (`make check-embed`) rebuilds and diffs it
+  in CI so the committed UI cannot drift from the source.
+- **The coding-agent smoke now runs a real model end to end in CI (opt-in).** `scripts/agent-smoke.sh`
+  runs a real Hermes task through the whole pipeline (execute → review → apply → a real file diff),
+  and its async waits and daemon restart were hardened against races. This was the first time the
+  real-model path was exercised end to end, and it is what surfaced the gitignore fix above.
+- **README** gains a "Why idea-harness" comparison table, and the install section now documents
+  Homebrew and `go install` together.
+
 ## [0.7.0] - 2026-10-19
 
 ### Changed — BREAKING
