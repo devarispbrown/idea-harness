@@ -97,7 +97,7 @@ for _ in $(seq 1 10); do
   if "$ROOT/bin/idea" daemon status 2>/dev/null | grep -q running; then break; fi
 done
 
-"$ROOT/bin/idea" new "Build a recipe sharing app" >/dev/null
+"$ROOT/bin/idea" new "Create a file named hello.txt in the project root containing the exact text 'hello from idea-harness'" >/dev/null
 "$ROOT/bin/idea" advance --wait >/dev/null
 
 # Snapshot the canonical workspace before the agent runs (exclude .idea-harness).
@@ -112,7 +112,7 @@ echo "=== CHANGE CHG-1 (diagnostic) ==="
 "$ROOT/bin/idea" change CHG-1
 
 "$ROOT/bin/idea" review CHG-1 approve >/dev/null
-"$ROOT/bin/idea" apply CHG-1 >/dev/null
+"$ROOT/bin/idea" apply CHG-1 --wait
 
 # apply is async; poll for the applied files to land rather than a fixed sleep.
 after=""
