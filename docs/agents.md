@@ -190,7 +190,7 @@ since nobody has actually run it through `--smoke` yet.
 
 | Kind | Model | Verdict | Why |
 |---|---|---|---|
-| `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested end to end on 2026-09-17. |
+| `hermes` | any of the "Verified" models in the table above | OK | Smoke-tested (the agent wrote a real file) on 2026-09-17. The full pipeline — execute → review → apply → a real file diff — is exercised end to end in CI for Anthropic since v0.7.1 (`scripts/agent-smoke.sh`, opt-in). |
 | `hermes` | anything else | Warned | Not verified — run `--smoke` before relying on it. |
 | `acp` | any | Warned | No ACP agent has been smoke-tested against a real model yet; run `--smoke` (with `--image` and `--acp-command`) first. |
 | `openhands` | any | Warned | No Agent Server run has been smoke-tested against a real model yet; run `--smoke` (with `--url`) first. |
