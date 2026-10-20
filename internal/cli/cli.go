@@ -114,9 +114,9 @@ func commands() []command {
 			"add": {"--type": flagValue, "--base-url": flagValue, "--key-env": flagValue},
 		}, subsAreRequired: true, run: cmdModel, inHelp: true},
 		{usage: "model list [<provider>] [--all]", summary: "list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider", inHelp: true},
-		{usage: "model ls <provider>", summary: "list a provider's models live (falls back to the catalog offline)"},
-		{usage: "model set <provider/model>", summary: "set the default model (--role <role> sets one role only)"},
-		{usage: "model add <name>", summary: "add a provider (--type, --base-url, --key-env)"},
+		{usage: "model ls <provider>", summary: "list a provider's models live (falls back to the catalog offline)", inHelp: true},
+		{usage: "model set <provider/model>", summary: "set the default model (--role <role> sets one role only)", inHelp: true},
+		{usage: "model add <name>", summary: "add a provider (--type, --base-url, --key-env)", inHelp: true},
 		{names: []string{"key"}, usage: "key set <provider> [--stdin] | key list", summary: "set or list the API keys providers read (set prompts for the key and writes it to .env, never shown)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"set":  {"--stdin": flagBool},
 			"list": {},
@@ -143,17 +143,17 @@ func commands() []command {
 		{names: []string{"trace"}, usage: "trace <type> <id>", summary: "show provenance + dependents", flags: jsonFlag, maxPositional: 3, run: cmdTrace, inHelp: true},
 		{names: []string{"gaps"}, usage: "gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all]", summary: "list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)", flags: gapsFlags, maxPositional: 1, run: cmdGaps, inHelp: true},
 		{names: []string{"assumption"}, usage: "assumption <id> accept|dispute|retract", summary: "judge an assumption or hypothesis (closes an unvalidated_assumption gap)", flags: flagSpec{}, maxPositional: 3, run: cmdAssumption, inHelp: true},
-		{names: []string{"objectives"}, usage: "objectives [<initiative>]", summary: "list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it", flags: jsonFlag, maxPositional: 1, run: cmdObjectives},
+		{names: []string{"objectives"}, usage: "objectives [<initiative>]", summary: "list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it", flags: jsonFlag, maxPositional: 1, run: cmdObjectives, inHelp: true},
 		{names: []string{"objective"}, usage: "objective add|edit|link", summary: "add, edit or link an objective (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"add":  {"--rationale": flagValue, "--owner": flagValue, "--json": flagBool},
 			"edit": {"--statement": flagValue, "--rationale": flagValue, "--owner": flagValue, "--status": flagValue, "--json": flagBool},
 			"link": {"--unlink": flagBool, "--json": flagBool},
-		}, subsAreRequired: true, maxPositional: 3, run: cmdObjective},
-		{usage: `objective add "<statement>"`, summary: "add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision"},
-		{usage: "objective edit <OBJ>", summary: "change --statement, --rationale, --owner or --status active|achieved|abandoned"},
-		{usage: "objective link <REQ> <OBJ>", summary: "record that a requirement serves an objective (--unlink removes it)"},
+		}, subsAreRequired: true, maxPositional: 3, run: cmdObjective, inHelp: true},
+		{usage: `objective add "<statement>"`, summary: "add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision", inHelp: true},
+		{usage: "objective edit <OBJ>", summary: "change --statement, --rationale, --owner or --status active|achieved|abandoned", inHelp: true},
+		{usage: "objective link <REQ> <OBJ>", summary: "record that a requirement serves an objective (--unlink removes it)", inHelp: true},
 		{names: []string{"budget"}, usage: "budget [<initiative>] [--set <usd>|--clear]", summary: "show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted", flags: budgetFlags, maxPositional: 1, run: cmdBudget, inHelp: true},
-		{names: []string{"metrics"}, usage: "metrics [<initiative>]", summary: "list outcome metrics with their drift: on track, off track, regressed, stale or no data", flags: jsonFlag, maxPositional: 1, run: cmdMetrics},
+		{names: []string{"metrics"}, usage: "metrics [<initiative>]", summary: "list outcome metrics with their drift: on track, off track, regressed, stale or no data", flags: jsonFlag, maxPositional: 1, run: cmdMetrics, inHelp: true},
 		{names: []string{"metric"}, usage: "metric add|edit|record|measure", summary: "add, edit, record or measure an outcome metric (see the rows below)", flags: flagSpec{}, subs: map[string]flagSpec{
 			"add": {"--target": flagValue, "--direction": flagValue, "--baseline": flagValue, "--guardrail": flagValue, "--unit": flagValue,
 				"--definition": flagValue, "--cadence": flagValue, "--command": flagValue, "--url": flagValue, "--pointer": flagValue,
@@ -164,11 +164,11 @@ func commands() []command {
 				"--manual": flagBool, "--json": flagBool},
 			"record":  {"--note": flagValue, "--at": flagValue, "--json": flagBool},
 			"measure": {"--json": flagBool},
-		}, subsAreRequired: true, maxPositional: 3, run: cmdMetric},
-		{usage: `metric add <OBJ> "<name>" --target <n>`, summary: "add a metric to an objective: --direction increase|decrease|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual"},
-		{usage: "metric edit <MET>", summary: "change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source"},
-		{usage: "metric record <MET> <value>", summary: "record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value"},
-		{usage: "metric measure [<MET>]", summary: "run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources"},
+		}, subsAreRequired: true, maxPositional: 3, run: cmdMetric, inHelp: true},
+		{usage: `metric add <OBJ> "<name>" --target <n>`, summary: "add a metric to an objective: --direction increase|decrease|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual", inHelp: true},
+		{usage: "metric edit <MET>", summary: "change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source", inHelp: true},
+		{usage: "metric record <MET> <value>", summary: "record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value", inHelp: true},
+		{usage: "metric measure [<MET>]", summary: "run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources", inHelp: true},
 		{names: []string{"diff"}, usage: "diff", summary: "structured requirement/decision diff", flags: jsonFlag, maxPositional: 1, run: cmdDiff, inHelp: true},
 		{names: []string{"execute"}, usage: "execute [--note <text>] [--wait]", summary: "run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait", flags: flagSpec{"--note": flagValue, "--wait": flagBool}, maxPositional: 1, run: cmdExecute, inHelp: true},
 		{names: []string{"reopen-phase"}, usage: "reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait]", summary: "reopen a design phase", flags: flagSpec{"--no-wait": flagBool}, maxPositional: 2, run: cmdReopenPhase, inHelp: true},
@@ -206,7 +206,7 @@ func commands() []command {
 		{names: []string{"steer"}, usage: `steer <run-id|current> "<note>" [<initiative>] [--interrupt]`, summary: "send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run", flags: flagSpec{"--interrupt": flagBool, "--json": flagBool}, maxPositional: 3, run: cmdSteer, inHelp: true},
 		{names: []string{"cancel"}, usage: "cancel <op-id>", summary: "interrupt a running operation", flags: flagSpec{}, maxPositional: 1, run: cmdCancel, inHelp: true},
 		{names: []string{"config"}, usage: "config", summary: "show or validate .idea-harness config", flags: flagSpec{}, subs: map[string]flagSpec{"validate": {}}, subsAreRequired: true, run: cmdConfig, inHelp: true},
-		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)"},
+		{usage: "config validate", summary: "validate .idea-harness/harness.yaml (non-zero exit when invalid)", inHelp: true},
 		{names: []string{"doctor"}, usage: "doctor", summary: "check daemon/config/state health", flags: flagSpec{}, run: func(_ cmdArgs, stdout, _ io.Writer) error { return cmdDoctor(stdout) }, inHelp: true},
 		{names: []string{"docs"}, usage: "docs", summary: "list uploaded context docs", flags: jsonFlag, subs: map[string]flagSpec{
 			"add": {"--kind": flagValue, "--title": flagValue},
@@ -246,8 +246,8 @@ func commands() []command {
 		{usage: "channel email --to <a> --from <a> --smtp-host <h> [--smtp-port n] [--smtp-user u] [--smtp-password-env n]", summary: "turn on email notifications over SMTP", inHelp: true},
 		{usage: "channel show", summary: "print the current channel configuration", inHelp: true},
 		{names: []string{"dev"}, usage: "dev", summary: "start the daemon and serve the web UI", flags: flagSpec{}, run: cmdDev, inHelp: true},
-		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP},
-		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep", flags: evalFlags, maxPositional: 0, run: cmdEval},
+		{names: []string{"mcp"}, usage: "mcp [--read-only|--allow-apply] [--dir <path>]", summary: "serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)", flags: flagSpec{"--read-only": flagBool, "--allow-apply": flagBool, "--dir": flagValue}, run: cmdMCP, inHelp: true},
+		{names: []string{"eval"}, usage: "eval [--suite <name|file>] [--model <provider/model>] [--case <name>]", summary: "run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep", flags: evalFlags, maxPositional: 0, run: cmdEval, inHelp: true},
 		{names: []string{"version", "--version", "-v"}, usage: "version", summary: "print the version, commit and build state", flags: flagSpec{}, run: cmdVersion, inHelp: true},
 		{names: []string{"help", "--help", "-h"}, usage: "help [--format=md]", summary: "show this command list (--format=md emits the docs/cli.md table)", flags: flagSpec{"--format": flagValue}, run: cmdHelp, inHelp: true},
 	}
@@ -403,7 +403,7 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "\n%s\n", bold(g.title))
 		width := groupColumnWidth(rows)
 		for _, r := range rows {
-			fmt.Fprintf(w, "  %s %s\n", accent(padRight(r.usage, width)), r.summary)
+			fmt.Fprint(w, helpRow(r, width))
 		}
 	}
 	fmt.Fprintf(w, "\n%s\n", muted("State commands support --json."))

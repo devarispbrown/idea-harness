@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -58,10 +59,10 @@ var commandGroup = map[string]string{
 
 	"model": "configure", "key": "configure", "config": "configure",
 	"integrations": "configure", "channel": "configure", "capture": "configure",
-	"remote": "configure", "ui": "configure", "docs": "configure",
+	"remote": "configure", "ui": "configure", "docs": "configure", "mcp": "configure",
 
 	"daemon": "admin", "logs": "admin", "dev": "admin",
-	"mcp": "admin", "eval": "admin",
+	"eval": "admin",
 	"version": "admin", "help": "admin",
 }
 
@@ -146,4 +147,14 @@ func quickstartWidth() int {
 		}
 	}
 	return w
+}
+
+// helpRow renders one command row. The usage is coloured and padded to the
+// column width; when a usage is longer than the column, the summary drops to
+// the next line, indented to the summary column so every summary still aligns.
+func helpRow(r command, width int) string {
+	if lipgloss.Width(r.usage) > width {
+		return fmt.Sprintf("  %s\n%s%s\n", accent(r.usage), strings.Repeat(" ", width+3), r.summary)
+	}
+	return fmt.Sprintf("  %s %s\n", accent(padRight(r.usage, width)), r.summary)
 }

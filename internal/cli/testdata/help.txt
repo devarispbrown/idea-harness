@@ -19,11 +19,14 @@ Start
   doctor                 check daemon/config/state health
 
 Explore & define
-  new "<idea>" [--doc <path> …] [--file <path>|-] [--from <initiative>] [--no-wait] create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), --doc attaches any text or image files, and --from seeds the initiative from an existing initiative's requirements
+  new "<idea>" [--doc <path> …] [--file <path>|-] [--from <initiative>] [--no-wait]
+                                             create an initiative and start the workflow (waits by default; --no-wait returns a handle immediately); the brief may come from --file or stdin (-), --doc attaches any text or image files, and --from seeds the initiative from an existing initiative's requirements
   decisions                                  list open/blocked decisions
   questions                                  list open/answered questions
-  answer <question> "<answer>" [<initiative>] answer an open question
-  resolve <decision> <option#>|"<resolution>" [<initiative>] resolve an open decision, by option number or free text
+  answer <question> "<answer>" [<initiative>]
+                                             answer an open question
+  resolve <decision> <option#>|"<resolution>" [<initiative>]
+                                             resolve an open decision, by option number or free text
   reopen-decision <decision> [<initiative>]  return a resolved decision to open
   accept-recommendations                     resolve every open decision with its own recommendation
   triage                                     show the ranked "needs your judgment" view
@@ -39,32 +42,44 @@ Design & plan
   revise-plan [--note <text>]                regenerate the execution plan; --note says what to change (joins the planner's inputs). An identical plan keeps its version and task codes
   plan                                       render the execution plan
   tasks                                      list the ordered plan tasks
-  add-task "<title>" --requirement <ref> [--statement <text>] [--priority must|should|could] [--estimate <text>] [--depends-on <ref>] [<initiative>] add a plan task (at least one --requirement is required)
-  merge-tasks <task1> <task2> [<initiative>] [--yes] merge two tasks into one, deleting the second (--yes required)
-  split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>] split a task into two or more (repeat --title/--requirements/--statement in order; --yes required)
-  depends-on <task> --on <ref> [--on <ref>...] [<initiative>] set a task's dependencies (--clear to depend on nothing)
-  reorder <task1> <task2> ... [--initiative <ref>] reorder the plan's tasks (name every task, in the new order)
-  reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait] reopen a design phase
+  add-task "<title>" --requirement <ref> [--statement <text>] [--priority must|should|could] [--estimate <text>] [--depends-on <ref>] [<initiative>]
+                                             add a plan task (at least one --requirement is required)
+  merge-tasks <task1> <task2> [<initiative>] [--yes]
+                                             merge two tasks into one, deleting the second (--yes required)
+  split-task <task> --title "<title>" --requirements <ref>[,<ref>...] [--statement <text>] [--yes] [<initiative>]
+                                             split a task into two or more (repeat --title/--requirements/--statement in order; --yes required)
+  depends-on <task> --on <ref> [--on <ref>...] [<initiative>]
+                                             set a task's dependencies (--clear to depend on nothing)
+  reorder <task1> <task2> ... [--initiative <ref>]
+                                             reorder the plan's tasks (name every task, in the new order)
+  reopen-phase <architecture|product_design|verification_design> [<initiative>] [--no-wait]
+                                             reopen a design phase
 
 Build
   execute [--note <text>] [--wait]           run the next ready task → change set; --note steers this run (appended to the implementer's brief); returns a handle immediately unless --wait
-  retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait] re-run a failed initiative; --note steers this retry (joins the framing prompt)
+  retry [<initiative>] [--model <provider/model>] [--note <text>] [--no-wait]
+                                             re-run a failed initiative; --note steers this retry (joins the framing prompt)
   changes                                    list change sets
   change <id>                                show a change set
   apply <id> [--wait]                        apply an approved (or reverted) change set; returns a handle immediately unless --wait
   revert <id> [--wait]                       roll back a change set; returns a handle immediately unless --wait
-  review <id> <verdict> [--note <text>] [--no-wait] approve|reject|changes_requested|rerun; --note with changes_requested|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
+  review <id> <verdict> [--note <text>] [--no-wait]
+                                             approve|reject|changes_requested|rerun; --note with changes_requested|reject says what to change, and the task's next run carries it (rerun re-runs an adversarial review that never completed, e.g. cancelled mid-review or truncated at the model's output ceiling even after a retry; a real model call, waits by default -- --no-wait returns a handle immediately). approve --accept-findings needs a completed review UNLESS one was attempted and explicitly recorded as unable to complete, which it may then approve without
   executors                                  list executors + capabilities
   executors setup [<kind>]                   wire a coding agent: hermes|omp|acp|openhands, default hermes (or --kind; acp needs --image and --acp-command; openhands needs --url, optional --api-key-env, --agent openhands|acp)
   watch                                      watch a run live
-  run events <run-id|current> [<initiative>] [--follow] [--json] print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line
-  runs remote [<initiative>] [--all] [--json] list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative)
-  steer <run-id|current> "<note>" [<initiative>] [--interrupt] send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run
+  run events <run-id|current> [<initiative>] [--follow] [--json]
+                                             print a coding-agent run's events, one per line (current: the initiative's running or most recent run); --follow tails the live stream, resuming after a dropped connection, until the run ends; --json prints each event as one JSON object per line
+  runs remote [<initiative>] [--all] [--json]
+                                             list the openhands executor's remote runs, newest first: task, status, attempt, server, conversation id, last event, error (--all: every initiative)
+  steer <run-id|current> "<note>" [<initiative>] [--interrupt]
+                                             send a note to a running coding agent: acp takes it as its next turn (--interrupt ends the current one first), openhands as a message; any other executor holds it for the task's next run
   cancel <op-id>                             interrupt a running operation
 
 Verify & review
   reviews                                    list review findings
-  disposition <finding> <fixed|accepted_risk|not_applicable|duplicate|deferred|rejected|mitigate|not_a_secret> [--note <text>] [<initiative>] disposition a review finding (not_a_secret also allowlists it)
+  disposition <finding> <fixed|accepted_risk|not_applicable|duplicate|deferred|rejected|mitigate|not_a_secret> [--note <text>] [<initiative>]
+                                             disposition a review finding (not_a_secret also allowlists it)
   pr [<initiative>]                          open a pull request for the initiative's branch (git.branch_per_initiative)
   pr checks <change-set-id>                  show the latest CI status via `gh pr checks`
   verify [<req>]                             run the verification gate; --pass|--fail|--waive [--note <text>] record human evidence; --confirm-passing-tests confirms every requirement whose mapped tests all passed; measures stale quality dimensions first (--no-measure skips) and shows their scorecard
@@ -75,20 +90,37 @@ Understand the graph
   why <type> <id>                            show the provenance chain
   impact <type> <id>                         show dependents + staleness
   trace <type> <id>                          show provenance + dependents
-  gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all] list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)
+  gaps [<initiative>] [--kind k,...] [--fail-on <sev>] [--all]
+                                             list Product Graph gaps, each with the command that closes it (--fail-on: exit 5 at or above a severity)
   assumption <id> accept|dispute|retract     judge an assumption or hypothesis (closes an unvalidated_assumption gap)
-  budget [<initiative>] [--set <usd>|--clear] show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted
+  objectives [<initiative>]                  list the initiative's objectives: what each is for, how many requirements serve it, how many metrics measure it
+  objective add|edit|link                    add, edit or link an objective (see the rows below)
+  objective add "<statement>"                add an objective (--rationale, --owner); a human-added objective is never rewritten by a PRD revision
+  objective edit <OBJ>                       change --statement, --rationale, --owner or --status active|achieved|abandoned
+  objective link <REQ> <OBJ>                 record that a requirement serves an objective (--unlink removes it)
+  budget [<initiative>] [--set <usd>|--clear]
+                                             show spend against the spending cap; --set caps one initiative (or, with no initiative, sets the project default), --clear returns an initiative to the project default. A run that reaches its cap stops before the next model or agent call; raising the cap puts it back where it stopped. Agent spend hermes/omp do not report is not counted
+  metrics [<initiative>]                     list outcome metrics with their drift: on track, off track, regressed, stale or no data
+  metric add|edit|record|measure             add, edit, record or measure an outcome metric (see the rows below)
+  metric add <OBJ> "<name>" --target <n>     add a metric to an objective: --direction increase|decrease|maintain (default increase), --baseline, --guardrail, --unit, --cadence, --definition, --hypothesis; source --command <sh> (no-network sandbox) or --url <url> --pointer </json/ptr>, default manual
+  metric edit <MET>                          change any metric flag above, --clear-baseline, --clear-guardrail, or --manual to drop a command/url source
+  metric record <MET> <value>                record a measured value (--note, --at <RFC3339>); prints the metric's drift and how many change sets landed since the last value
+  metric measure [<MET>]                     run command/url sources now and record what they read; a command runs in the no-network check sandbox, never on the host; url sources need outcomes.allow_url_sources
   diff                                       structured requirement/decision diff
 
 Configure & connect
   model [--provider <name>] [--all]          show the current model + a curated set (Gemini, OpenAI, …)
   model list [<provider>] [--all]            list providers; a provider (by name or --provider) shows it in full, --all shows every model of every provider
+  model ls <provider>                        list a provider's models live (falls back to the catalog offline)
+  model set <provider/model>                 set the default model (--role <role> sets one role only)
+  model add <name>                           add a provider (--type, --base-url, --key-env)
   key set <provider> [--stdin] | key list    set or list the API keys providers read (set prompts for the key and writes it to .env, never shown)
   key set <provider> [--stdin]               set a provider's API key: prompts (or reads --stdin) and writes it to .env, then reloads the daemon
   key list                                   list each provider's key variable and whether it is set
   integrations [status]                      show Slack/Linear integration health: tokens present, deliveries, socket and poll state
   integrations test slack|linear             post a Slack test message (and check the Socket Mode token) / validate the Linear key, team, states and label
   config                                     show or validate .idea-harness config
+  config validate                            validate .idea-harness/harness.yaml (non-zero exit when invalid)
   docs                                       list uploaded context docs
   docs add <path>                            upload a context doc (--kind, --title)
   ui pair|sessions                           sign a browser on another device in to the web UI, and list or revoke those sessions (see the rows below)
@@ -103,15 +135,22 @@ Configure & connect
   capture list                               list this project's capture tokens (id, label, last used) — never the secret
   channel telegram|slack|email|show          configure a channel by writing harness.yaml's integrations section (no hand-editing): telegram, slack, email, or show the current setup
   channel telegram [--token-env <name>]      turn on Telegram capture; the bot token comes from the named env var (default TELEGRAM_BOT_TOKEN)
-  channel slack --channel <id> [--allowed-users u1,u2] [--bot-token-env n] [--app-token-env n] turn on Slack (notifications + /idea); a channel ID, not a #name
-  channel email --to <a> --from <a> --smtp-host <h> [--smtp-port n] [--smtp-user u] [--smtp-password-env n] turn on email notifications over SMTP
+  channel slack --channel <id> [--allowed-users u1,u2] [--bot-token-env n] [--app-token-env n]
+                                             turn on Slack (notifications + /idea); a channel ID, not a #name
+  channel email --to <a> --from <a> --smtp-host <h> [--smtp-port n] [--smtp-user u] [--smtp-password-env n]
+                                             turn on email notifications over SMTP
   channel show                               print the current channel configuration
+  mcp [--read-only|--allow-apply] [--dir <path>]
+                                             serve this project to MCP clients (Claude Code, Cursor, Codex) over stdio: read + judgment tools by default; --read-only exposes only reads, --allow-apply adds apply/revert (see docs/mcp.md)
 
 Run & administer
   logs [-f] [n]                              show (or follow) the daemon log
-  daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>] run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access")
+  daemon [--listen <ip:port>] [--tls-cert <file> --tls-key <file>] [--allowed-hosts <h,...>]
+                                             run the daemon in the foreground; the flags override config.yaml's daemon: section for remote browsers (loopback is always served; see docs/configuration.md "Remote access")
   daemon status|stop                         manage the managed daemon
   dev                                        start the daemon and serve the web UI
+  eval [--suite <name|file>] [--model <provider/model>] [--case <name>]
+                                             run the eval suite end to end on a private in-process daemon and report per case: how far it got, whether the PRD and plan reviews converged, human-judgment stops, cost, tokens, time. Without --model it runs the deterministic scripted provider; --policy approve|stop, --harness <file> (extra harness.yaml), --json-out/--md-out <file>, --baseline <report.json> (non-zero exit on a regression), --timeout <per-case>, --max-cost <usd> (caps the whole run: each case's initiative is held to what is left, and no case starts once it is spent), --keep
   version                                    print the version, commit and build state
   help [--format=md]                         show this command list (--format=md emits the docs/cli.md table)
 
