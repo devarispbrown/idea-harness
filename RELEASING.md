@@ -226,8 +226,16 @@ brew install devarispbrown/tap/idea-harness
 ```
 
 goreleaser writes a cask (`homebrew_casks`, not the deprecated `brews` formula)
-to `Casks/idea-harness.rb` in `devarispbrown/homebrew-tap`. Two things have to
-be true before that command works for anyone:
+to `Casks/idea-harness.rb` in `devarispbrown/homebrew-tap`.
+
+**The cask updates itself — there is no manual Homebrew step.** Every release
+runs goreleaser in the `release` job, which regenerates the cask from the new
+tag (version, download URL, sha256, homepage) and pushes it to the tap with the
+commit message `idea-harness vX.Y.Z`. Tagging a release *is* the trigger; the
+only thing a maintainer does is publish the draft. `brew upgrade idea-harness`
+then picks the new cask up like any other tap.
+
+Two things have to be true before that command works for anyone:
 
 - **The tap exists and the release job can push to it.** Create the public
   repository `devarispbrown/homebrew-tap` (empty is fine), then a fine-grained
@@ -235,12 +243,11 @@ be true before that command works for anyone:
   only, stored in this repository as the Actions secret
   `HOMEBREW_TAP_GITHUB_TOKEN`. `GITHUB_TOKEN` cannot push to another
   repository. Without the secret the release still succeeds and the cask push
-  is skipped; prerelease tags (`v1.0.0-rc1`) are skipped either way.
+  is skipped (`skip_upload: auto` in `.goreleaser.yaml`); prerelease tags
+  (`v1.0.0-rc1`) are skipped either way.
 - **The release archives are downloadable.** The cask fetches them from this
   repository's release, and while this repository is private they 404 for
-  anyone without access — Homebrew sends no credentials. Until the repository
-  is public the tap installs nothing for anyone, and the canonical install stays
-  `git clone` + `go install ./cmd/idea` (README, "Install").
+  anyone without access — Homebrew sends no credentials.
 
 The binary is not Apple-notarized. The cask's post-install hook removes the
 quarantine attribute Homebrew applies, or Gatekeeper would refuse to run it; the

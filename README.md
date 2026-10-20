@@ -22,24 +22,35 @@ demo provider, so you can try everything before paying for a model call.
 
 ## Install
 
-You need **Go 1.25.5 or newer** on **macOS or Linux** (Windows is not supported). Node.js and pnpm
-are needed only to build the web UI.
+**Homebrew** (macOS — the release binary, web UI built in):
+
+```bash
+brew install devarispbrown/tap/idea-harness
+```
+
+**Go install** (macOS/Linux — CLI only, no web UI; needs Go 1.25.5+):
+
+```bash
+go install github.com/devarispbrown/idea-harness/cmd/idea@latest
+```
+
+**From source** (macOS/Linux — needs Go, Node.js and pnpm for the web UI):
 
 ```bash
 git clone git@github.com:devarispbrown/idea-harness.git
 cd idea-harness
-make build                     # builds the web UI and the binary (needs Node.js + pnpm)
+make build                     # builds the web UI and the binary
 export PATH="$PWD/bin:$PATH"   # add to your shell profile to keep it
 idea doctor                    # checks your setup
 ```
 
-No Node? `go install ./cmd/idea` gives you the complete CLI, but the web UI then shows a "web UI
-not built" page. Release binaries have the UI built in. Once the repository is public, Homebrew
-will install them: `brew install devarispbrown/tap/idea-harness`.
+Release binaries and Homebrew ship the web UI built in; `go install` and `make build` without the
+web build leave a "web UI not built" page in its place. Windows is not supported.
 
 **Upgrading:** the daemon runs in the background and outlives the binary that started it. After
-installing a new build, run `idea daemon stop`; the next command starts the new one. If you forget,
-`idea doctor` fails and names both builds.
+installing a new build (`brew upgrade idea-harness`, `go install …@latest`, or a rebuild), run
+`idea daemon stop`; the next command starts the new one. If you forget, `idea doctor` fails and
+names both builds.
 
 Supported platforms, and how to verify a signed release: [`RELEASING.md`](RELEASING.md).
 
@@ -64,10 +75,11 @@ the command to run next. `idea new` waits for the run it starts (`--no-wait` ret
 
 **With a real model:**
 
-1. Export your key **before** `idea init`: `export OPENAI_API_KEY=sk-…`. The daemon reads the
-   environment once, when it starts. If you forgot, run `idea daemon stop` and continue.
-   `idea doctor` asks the **daemon** whether it has the key, so it catches this.
-2. Pick a model: `idea model set openai/gpt-5.6-luna`. Only set a model whose key you have.
+1. Set the key: `idea key set <provider>` (prompts, writes `.env`, reloads — never shown, no shell
+   history). Or export it **before** `idea init`: `export OPENAI_API_KEY=sk-…`. The daemon reads the
+   environment once, when it starts, so an exported key set after `idea init` needs `idea daemon stop`
+   to be seen. `idea doctor` asks the **daemon** whether it has the key, so it catches this.
+2. Pick a model: `idea model set anthropic/claude-sonnet-5`. Only set a model whose key you have.
 3. With Docker running too, `idea execute` uses a real coding agent automatically.
 
 A real model's reviewer can push back, so the loop may stop earlier and ask you to `idea approve`
