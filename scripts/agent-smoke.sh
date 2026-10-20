@@ -93,16 +93,13 @@ sleep 0.5
 DPID=$(start_daemon)
 
 "$ROOT/bin/idea" new "Build a recipe sharing app" >/dev/null
-sleep 4
-"$ROOT/bin/idea" advance >/dev/null
-sleep 4
+"$ROOT/bin/idea" advance --wait >/dev/null
 
 # Snapshot the canonical workspace before the agent runs (exclude .idea-harness).
 before=$(find "$PROJ" -type f -not -path '*/.idea-harness/*' | sort)
 
 echo "=== EXECUTE ($AGENT_KIND, sandboxed) ==="
-"$ROOT/bin/idea" execute >/dev/null
-sleep 12 # a real coding agent takes a while
+"$ROOT/bin/idea" execute --wait >/dev/null
 
 echo "=== CHANGES ==="
 "$ROOT/bin/idea" changes
