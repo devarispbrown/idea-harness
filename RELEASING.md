@@ -25,6 +25,45 @@ on a single OS.
 or is on an explicit exemption list, so a job added later cannot quietly sit
 outside the gate.
 
+## First public release (runbook)
+
+The one-time path from private → public with a working
+`brew install devarispbrown/tap/idea-harness`. Do these in order; each step
+points at the ongoing-release mechanics below.
+
+1. **Make the repository public** — Settings → General → Change visibility.
+   Do this *before* the first tag, not after: signing a private repository's
+   release discloses the repository name on the public Rekor log (see
+   [Signing on a private repository](#signing-on-a-private-repository)), and a
+   public repo is what makes `go install …@latest` and the tap's download URLs
+   work from the first release. Also note `go install` needs the module path to
+   be publicly fetchable, which only a public repo provides.
+
+2. **Create the tap** — a public repository `devarispbrown/homebrew-tap`;
+   empty is fine. goreleaser will write `Casks/idea-harness.rb` into it.
+
+3. **Grant push access** — a fine-grained personal access token with
+   **Contents: read and write** on `devarispbrown/homebrew-tap` only, stored as
+   the Actions secret `HOMEBREW_TAP_GITHUB_TOKEN` on
+   `devarispbrown/idea-harness`. (`GITHUB_TOKEN` cannot push to another
+   repository.) Without it the release still succeeds and the cask push is
+   silently skipped.
+
+4. **Cut `v0.7.0`** — [Before you tag](#before-you-tag), then
+   [Tagging](#tagging). The release job gates on every guard, signs, records the
+   build provenance (now that the repo is public), and pushes the cask to the
+   tap.
+
+5. **Publish the draft release** — see [After](#after). The cask's download URLs
+   404 until the draft is published, so `brew install` fails for everyone in
+   between.
+
+6. **Verify once, end to end** — [Verifying a release](#verifying-a-release),
+   then the command a user would run: `brew install devarispbrown/tap/idea-harness`.
+
+The notarization caveat is under [Homebrew](#homebrew); the arm64-Linux test gap
+is under [Platforms](#platforms).
+
 ## Before you tag
 
 1. **Decide the version.** Pre-1.0, breaking changes go in a minor bump —
