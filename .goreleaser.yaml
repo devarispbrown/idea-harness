@@ -4,9 +4,9 @@
 # embeds the builder's home directory in the binary (readable with
 # `go version -m`), which -trimpath removes.
 #
-# The web UI must be built and embedded BEFORE goreleaser runs — the committed
-# internal/web/dist/index.html is a placeholder, so a release built without the
-# `make embed-web` hook below would ship a binary whose UI says "not built".
+# The web UI is rebuilt and embedded before goreleaser runs, so the release
+# always ships the current UI (the committed dist is a convenience for
+# `go install`, not what the release trusts).
 version: 2
 
 project_name: idea-harness

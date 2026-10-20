@@ -55,9 +55,6 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Committed embed placeholder is intact
-        run: make check-embed
-
       # The gate this job exists for (BROKEN_CANONICAL_INSTALL): the binary a
       # clean checkout produces must actually run and serve the UI route, not
       # merely compile.
@@ -240,6 +237,9 @@ jobs:
 
       - name: Build web UI and embed into the binary
         run: make embed-web
+
+      - name: Committed embed is not stale
+        run: make check-embed
 
       # `make build` and not just `go build ./...`: the make target is what
       # CONTRIBUTING documents, and it differs -- it embeds the web UI, stamps

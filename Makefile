@@ -1,4 +1,4 @@
-.PHONY: build test lint vet e2e web web-build embed-web web-deps-update restore-embed check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check version-check
+.PHONY: build test lint vet e2e web web-build embed-web web-deps-update check-embed docs docs-check api-check api-docs-dist clean api-docs api-docs-check docs-lint claims-check ledger-check enum-check version-check
 
 BINARY := bin/idea
 MODULE := github.com/devarispbrown/idea-harness
@@ -11,12 +11,11 @@ VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 LDFLAGS := -X '$(MODULE)/internal/buildinfo.version=$(VERSION)' -X '$(MODULE)/internal/buildinfo.commit=$(COMMIT)'
 
-# The binary embeds the real UI at compile time, then the placeholder goes back
-# on disk: the build leaves no modified tracked file, so `git commit -a` cannot
-# ship an index.html that points at assets git does not track.
+# The binary embeds the real UI at compile time. The UI is committed, so a clean
+# `go install` and `go build` embed it too, with no Node toolchain; `make build`
+# just rebuilds it fresh.
 build: embed-web
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/idea
-	$(MAKE) restore-embed
 
 # Build the web UI and copy the dist into the Go embed directory.
 #
@@ -36,17 +35,13 @@ embed-web:
 web-deps-update:
 	cd web && pnpm install --no-frozen-lockfile
 
-# Put the committed placeholder back after a real build, so `git commit -a`
-# cannot ship an index.html that references assets nobody committed.
-restore-embed:
-	cp internal/web/placeholder.html internal/web/dist/index.html
-
-# Fails when the committed index.html is a real build rather than the
-# placeholder (CI runs this; see check-embed in .github/workflows/ci.yml).
+# Fails when the committed UI is stale: run after `make embed-web`, a non-empty
+# diff means a frontend change landed without a rebuilt dist. CI runs the two
+# together (see check-embed in .github/workflows/ci.yml).
 check-embed:
-	@cmp -s internal/web/placeholder.html internal/web/dist/index.html || { \
-		echo "internal/web/dist/index.html is not the committed placeholder."; \
-		echo "Run 'make restore-embed' before committing (a real build belongs in a release, not in git)."; \
+	@git diff --exit-code -- internal/web/dist/ || { \
+		echo "internal/web/dist is stale: it does not match the web source."; \
+		echo "Run 'make embed-web' and commit the result."; \
 		exit 1; }
 
 # Regenerate the command table in docs/cli.md from the CLI's own table

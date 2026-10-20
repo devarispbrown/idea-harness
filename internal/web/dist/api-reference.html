@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      No idea-token meta tag, unlike index.html: this page reads the OpenAPI
+      description, which the daemon serves unauthenticated at /openapi.yaml, and
+      it never calls the API. Keeping the token off the page is why the daemon
+      can serve it with ordinary caching rules instead of no-store.
+    -->
+    <title>idea-harness API reference</title>
+    <script type="module" crossorigin src="/assets/api-reference-CGcbViAe.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="stylesheet" crossorigin href="/assets/api-reference-DnSW8QcP.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

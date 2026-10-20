@@ -28,24 +28,23 @@ demo provider, so you can try everything before paying for a model call.
 brew install devarispbrown/tap/idea-harness
 ```
 
-**Go install** (macOS/Linux — CLI only, no web UI; needs Go 1.25.5+):
+**Go install** (macOS/Linux — full CLI + web UI; needs Go 1.25.5+):
 
 ```bash
 go install github.com/devarispbrown/idea-harness/cmd/idea@latest
 ```
 
-**From source** (macOS/Linux — needs Go, Node.js and pnpm for the web UI):
+**From source** (macOS/Linux — needs Go; Node.js + pnpm only to *rebuild* the web UI):
 
 ```bash
 git clone git@github.com:devarispbrown/idea-harness.git
 cd idea-harness
-make build                     # builds the web UI and the binary
+make build                     # builds the binary (web UI is already committed)
 export PATH="$PWD/bin:$PATH"   # add to your shell profile to keep it
 idea doctor                    # checks your setup
 ```
 
-Release binaries and Homebrew ship the web UI built in; `go install` and `make build` without the
-web build leave a "web UI not built" page in its place. Windows is not supported.
+Every install path ships the web UI. Windows is not supported.
 
 **Upgrading:** the daemon runs in the background and outlives the binary that started it. After
 installing a new build (`brew upgrade idea-harness`, `go install …@latest`, or a rebuild), run
