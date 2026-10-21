@@ -16,7 +16,7 @@ import {
   type FindingItem,
   type QuestionItem,
 } from "./JudgmentCard";
-import { blockingFindingsFirst, decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings, sortFindingsBlockingFirst } from "./judgmentScope";
+import { blockingFindingsFirst, decisionsForDefine, decisionTypeLabel, findingsForDefine, isBlockingFinding, otherOpenFindings, sortFindingsBlockingFirst } from "./judgmentScope";
 import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
 import { optionalLabel, partitionByTriage, type TriageItemLike } from "./triage";
 
@@ -201,6 +201,10 @@ export default function DefinePage({
     await post(`/projects/${projectId}/initiatives/${initiativeId}/revise`, {});
     await load();
   };
+  const approve = async () => {
+    await post(`/projects/${projectId}/initiatives/${initiativeId}/approve`, {});
+    await load();
+  };
   const advance = async () => {
     await post(`/projects/${projectId}/initiatives/${initiativeId}/advance`, {});
     await load();
@@ -233,7 +237,9 @@ export default function DefinePage({
 
   // The advancing action must stay live through the whole phase (rule 2/3): the
   // bar never vanishes while judgment is still the next step.
-  let commit: { explanation: string; actionLabel: string; onAction: () => void } | undefined;
+  let commit:
+    | { explanation: string; actionLabel: string; onAction: () => void; secondary?: { label: string; onAction: () => void } }
+    | undefined;
   if (status === "approved") {
     commit = {
       explanation: "The PRD is reviewed and agreed.",
@@ -245,6 +251,7 @@ export default function DefinePage({
     // prd_review (or the undefined legacy case) is Define's to resolve — a
     // plan_review/plan_dependencies/verification park shows no commit bar
     // here at all, because "Revise PRD" would not be the right action.
+    const hasBlocking = openFindings.some(isBlockingFinding);
     commit = {
       explanation:
         openCount > 0
@@ -252,6 +259,12 @@ export default function DefinePage({
           : "All resolved — regenerate the PRD.",
       actionLabel: `Revise PRD to v${nextVersion} →`,
       onAction: revise,
+      // P1.4: "accept the reviewed PRD as it stands" (idea approve) is now a
+      // first-class action, offered only when nothing blocking is open — an
+      // approve the daemon would system-deny is never dangled.
+      ...(hasBlocking
+        ? {}
+        : { secondary: { label: "Approve as-is", onAction: approve } }),
     };
   }
 
