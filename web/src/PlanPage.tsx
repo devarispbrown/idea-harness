@@ -815,7 +815,7 @@ export default function PlanPage({
                   aria-label={`Select ${t.code} to merge`}
                 />
               )}
-              <span className="plan-grab">⠿</span>
+              <span className="plan-grab" aria-hidden="true">⠿</span>
               <span className="plan-code">{t.code}</span>
               <div className="plan-body">
                 <div className="plan-title">{t.title}</div>
