@@ -543,3 +543,47 @@ func TestPlanEditingJourneyNoRawHTTP(t *testing.T) {
 		}
 	}
 }
+
+// ---------- `idea tasks` slice status + change set ----------
+
+func TestTasksShowsStatusAndChangeSet(t *testing.T) {
+	f := newFakeDaemon(t)
+	seedTaskInitiative(f)
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/tasks", []map[string]any{
+		{"id": "task-1", "code": "TASK-1", "title": "Implement billing", "priority": "must", "status": "done"},
+		{"id": "task-2", "code": "TASK-2", "title": "Implement metering", "priority": "should", "status": "ready"},
+		{"id": "task-3", "code": "TASK-3", "title": "Implement alerts", "priority": "could", "status": "blocked"},
+	})
+	f.json("GET /api/v1/projects/{projectId}/initiatives/{id}/change-sets", []map[string]any{
+		{"id": "cs-1", "human_id": "CHG-1", "task_id": "task-1", "status": "applied"},
+	})
+
+	stdout, _, err := run(t, "tasks")
+	if err != nil {
+		t.Fatalf("idea tasks: %v", err)
+	}
+	// The status word per slice, and the done slice's change set + status.
+	for _, want := range []string{"done", "ready", "blocked", "CHG-1", "applied"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in output:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestTaskStatusLabel pins the label mapping and that unknown statuses fall
+// through to their raw value rather than being blanked.
+func TestTaskStatusLabel(t *testing.T) {
+	colorEnabled = false
+	for in, want := range map[string]string{
+		"done":      "done",
+		"ready":     "ready",
+		"proposed":  "proposed",
+		"blocked":   "blocked",
+		"cancelled": "cancelled",
+		"mystery":   "mystery",
+	} {
+		if got := taskStatusLabel(in); got != want {
+			t.Errorf("taskStatusLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

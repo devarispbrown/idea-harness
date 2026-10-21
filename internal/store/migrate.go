@@ -1219,6 +1219,13 @@ CREATE TABLE IF NOT EXISTS project_memory (
 	`
 ALTER TABLE requirements ADD COLUMN revised_at INTEGER;
 `,
+	// 53: env_vars on tasks — the planner declares the environment variables a
+	// slice's code reads (name, how to obtain it, and where), so the harness
+	// can prompt the human to set them instead of a failing build surprising
+	// them with an undocumented name. JSON-encoded []domain.EnvVar.
+	`
+ALTER TABLE tasks ADD COLUMN env_vars TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate applies any pending migrations transactionally, recording each in

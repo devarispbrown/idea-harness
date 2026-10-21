@@ -311,7 +311,20 @@ const ExecutionPlan = `{
           "requirements": {"type": "array", "items": {"type": "string"}, "description": "One or more requirement codes this task implements."},
           "priority": {"enum": ["must", "should", "could"]},
           "estimate": {"type": "string"},
-          "depends_on": {"type": "array", "items": {"type": "string"}}
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "env_vars": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string", "description": "The exact environment variable name the code reads (e.g. STRIPE_SECRET_KEY)."},
+                "how": {"type": "string", "description": "One sentence telling the human how to obtain the value."},
+                "url": {"type": "string", "description": "The URL of the page where the human creates/reads the value."}
+              },
+              "required": ["name", "how"]
+            },
+            "description": "Every environment variable this task's code reads from the process environment. Declare each so the harness can prompt the human to set it, with the URL. Omit when the task needs none."
+          }
         },
         "required": ["title", "statement", "priority"]
       }

@@ -2059,6 +2059,21 @@ func objSlice(v any) []map[string]any {
 	return out
 }
 
+// envVarsOf parses a task's `env_vars` field (schema.ExecutionPlan): an array
+// of {name, how, url}. Entries missing a name are dropped so an empty name can
+// never be prompted for.
+func envVarsOf(v any) []domain.EnvVar {
+	var out []domain.EnvVar
+	for _, item := range objSlice(v) {
+		name := str(item["name"])
+		if name == "" {
+			continue
+		}
+		out = append(out, domain.EnvVar{Name: name, How: str(item["how"]), URL: str(item["url"])})
+	}
+	return out
+}
+
 // contextDocsMaxPerDoc caps a single context document's contribution so one
 // oversized upload cannot crowd out the rest of the prompt (§48 input budget).
 const contextDocsMaxPerDoc = 32000

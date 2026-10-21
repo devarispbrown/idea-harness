@@ -105,6 +105,21 @@ func (db *DB) CreateTask(ctx context.Context, t *domain.Task, implementsRequirem
 	return db.createTask(ctx, t, domain.EdgeImplements, ids, dependsOn)
 }
 
+// marshalEnvVars JSON-encodes a task's declared environment variables for the
+// env_vars TEXT column. An empty slice encodes to "" so the column's NOT NULL
+// DEFAULT '' stays meaningful (no "null" and no "[]" noise for a task that
+// declared nothing).
+func marshalEnvVars(vars []domain.EnvVar) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(vars)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // CreateTaskMulti inserts an execution-plan task and wires an `implements`
 // edge to each requirement it implements (N:M, review A4 #4: a task-level
 // requirement reference used to be a single free-text field matched against
@@ -177,9 +192,9 @@ func (db *DB) createTaskTx(tx *sql.Tx, t *domain.Task, edgeType domain.EdgeType,
 		return err
 	}
 	if _, err := tx.Exec(`
-		INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, t.CreatedAt.UnixMilli()); err != nil {
+		INSERT INTO tasks (id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, position, env_vars, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.InitiativeID, t.Code, t.Title, t.Statement, t.Status, t.Priority, t.Estimate, t.ProducedByRun, t.SupersededBy, pos, marshalEnvVars(t.EnvVars), t.CreatedAt.UnixMilli()); err != nil {
 		return err
 	}
 	var edges []EdgeToWrite
@@ -305,7 +320,7 @@ func (db *DB) SetTaskStatus(ctx context.Context, taskID string, status domain.Ta
 // ListTasks returns tasks for an initiative, oldest first.
 func (db *DB) ListTasks(ctx context.Context, initiativeID string) ([]domain.Task, error) {
 	rows, err := db.SQL().QueryContext(ctx, `
-		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at
+		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, env_vars, created_at
 		FROM tasks WHERE initiative_id = ? ORDER BY position ASC, created_at ASC`, initiativeID)
 	if err != nil {
 		return nil, err
@@ -315,10 +330,12 @@ func (db *DB) ListTasks(ctx context.Context, initiativeID string) ([]domain.Task
 	for rows.Next() {
 		var t domain.Task
 		var created int64
-		if err := rows.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &created); err != nil {
+		var envVars string
+		if err := rows.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &envVars, &created); err != nil {
 			return nil, err
 		}
 		t.CreatedAt = time.UnixMilli(created)
+		_ = json.Unmarshal([]byte(envVars), &t.EnvVars)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -327,11 +344,12 @@ func (db *DB) ListTasks(ctx context.Context, initiativeID string) ([]domain.Task
 // GetTask returns a single task by id.
 func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) {
 	row := db.SQL().QueryRowContext(ctx, `
-		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at
+		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, env_vars, created_at
 		FROM tasks WHERE id = ?`, taskID)
 	var t domain.Task
 	var created int64
-	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &created); err != nil {
+	var envVars string
+	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &envVars, &created); err != nil {
 		// Currently unreachable through HTTP: all three task handlers do their
 		// own existence check first and answer "task not found" before this
 		// error can surface, which is why no test pins it. Wrapped anyway, so
@@ -340,6 +358,7 @@ func (db *DB) GetTask(ctx context.Context, taskID string) (*domain.Task, error) 
 		return nil, notFoundIfNoRows(err, "task", taskID)
 	}
 	t.CreatedAt = time.UnixMilli(created)
+	_ = json.Unmarshal([]byte(envVars), &t.EnvVars)
 	return &t, nil
 }
 

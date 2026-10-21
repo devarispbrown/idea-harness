@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { derivePhases, PHASE_LABELS, PHASE_PURPOSE, rollupPhaseSource } from "./phases";
+import { derivePhases, nextAction, PHASE_LABELS, PHASE_PURPOSE, rollupPhaseSource } from "./phases";
 import type { InitiativeRollup } from "./phases";
 import { PHASES, type PhaseName } from "./router";
 import { get, resource } from "./api";
@@ -315,6 +315,7 @@ export default function ProductHome({
               const phases: { phase: PhaseName; state: string }[] = rollup
                 ? derivePhases(rollupPhaseSource(rollup)).map((s) => ({ phase: s.phase, state: s.state }))
                 : [];
+              const next = rollup ? nextAction(rollupPhaseSource(rollup)) : undefined;
               const since = sinceLastVisit[i.id] ?? [];
               const isExpanded = !!expandedSince[i.id];
               return (
@@ -348,6 +349,11 @@ export default function ProductHome({
                       </div>
                     ))}
                   </div>
+                  {next && (
+                    <div className="ph-next">
+                      <span className="muted">Next:</span> {next.action}
+                    </div>
+                  )}
                   {since.length > 0 && (
                     <button
                       className="w3-since-last"

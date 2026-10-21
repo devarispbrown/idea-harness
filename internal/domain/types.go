@@ -551,6 +551,16 @@ type GraphEdge struct {
 	CreatedAt    time.Time      `json:"created_at"`
 }
 
+// EnvVar is one environment variable a task's code reads from the process
+// environment (process.env.X / os.Getenv), declared by the planner so the
+// harness can prompt the human to set it — with how to obtain it and where —
+// instead of leaving them to discover the name from a failing build.
+type EnvVar struct {
+	Name string `json:"name"`
+	How  string `json:"how"`
+	URL  string `json:"url,omitempty"`
+}
+
 // Task is one unit of the execution plan (§12, M2).
 type Task struct {
 	ID            string              `json:"id"`
@@ -570,6 +580,7 @@ type Task struct {
 	// (an empty task has both as `[]`, not `null`).
 	RequirementIDs []string  `json:"requirement_ids"`
 	DependsOn      []string  `json:"depends_on"`
+	EnvVars        []EnvVar  `json:"env_vars,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 

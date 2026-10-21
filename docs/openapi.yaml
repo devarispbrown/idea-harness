@@ -6996,6 +6996,22 @@ components:
       title: TaskStatus
       enum: [proposed, ready, blocked, done, cancelled]
 
+    EnvVar:
+      type: object
+      title: EnvVar
+      description: One environment variable a task's code reads from the process environment (`domain.EnvVar`), declared by the planner so the harness can prompt the human to set it.
+      properties:
+        name:
+          type: string
+          description: The exact environment variable name, e.g. `STRIPE_SECRET_KEY`.
+        how:
+          type: string
+          description: One sentence on how to obtain the value.
+        url:
+          type: string
+          description: The page where the value is created/read.
+      required: [name, how]
+
     Task:
       type: object
       title: Task
@@ -7025,6 +7041,12 @@ components:
           description: |
             The task ids this task depends on. Computed at read time from the task's `depends_on`
             graph edges; always an array, never `null`.
+        env_vars:
+          type: array
+          items: { $ref: "#/components/schemas/EnvVar" }
+          description: |
+            The environment variables this task's code reads from the process environment,
+            declared by the planner. Omitted when the task declares none.
         created_at: { type: string, format: date-time }
       required: [id, initiative_id, code, title, statement, status, priority, requirement_ids, depends_on, created_at]
 

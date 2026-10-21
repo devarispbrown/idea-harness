@@ -248,3 +248,75 @@ export function currentPill(status: string): { pill: string; note: string } {
       return { pill: "", note: "" };
   }
 }
+
+// ---- goal-shaped stages (docs/plans/ui-ux-optimization-plan.md P0.1) ----
+//
+// The six engine phases (Explore/Define/Design/Plan/Build/Verify) are a
+// backend shape, not a user's job. These four stages are the job: Shape the
+// idea into a reviewed plan, Decide the calls that unblock it, Build the code,
+// Ship the verified result. The six phases stay URL-addressable (and in the
+// sidebar) as detail; Decide is a state, not a linear milestone.
+
+export type StageName = "shape" | "decide" | "build" | "ship";
+
+export const STAGE_LABELS: Record<StageName, string> = {
+  shape: "Shape",
+  decide: "Decide",
+  build: "Build",
+  ship: "Ship",
+};
+
+export const STAGE_PURPOSE: Record<StageName, string> = {
+  shape: "Understand the idea and its reviewed plan.",
+  decide: "The calls that unblock this.",
+  build: "The code, written, reviewed, applied.",
+  ship: "Verified — and what is not yet.",
+};
+
+// PHASE_TO_STAGE collapses the six phases into the four stages.
+export const PHASE_TO_STAGE: Record<PhaseName, StageName> = {
+  explore: "shape",
+  define: "shape",
+  design: "shape",
+  plan: "build",
+  build: "build",
+  verify: "ship",
+};
+
+// currentStage is the stage a user thinks in: parked on a judgment → Decide;
+// done → Ship; otherwise the stage of the rail's current phase.
+export function currentStage(src: PhaseSource): StageName {
+  if (src.status === "complete") return "ship";
+  if (src.status === "needs_human_judgment") return "decide";
+  return PHASE_TO_STAGE[currentPhase(src)];
+}
+
+// nextAction names the single next step as an imperative, with the CLI command
+// that performs it. Coarse by design: the exact server-side step resolution
+// (`idea next`) is the follow-up; this is legible from frontend state alone.
+export function nextAction(src: PhaseSource): { action: string; command?: string } {
+  switch (src.status) {
+    case "complete":
+      return { action: "Done — review what shipped." };
+    case "failed":
+      return { action: "Check the logs, fix the cause, then start again.", command: "idea new" };
+    case "running":
+      return { action: "Building — watch it live.", command: "idea watch" };
+    case "needs_human_judgment":
+      switch (src.judgmentReason) {
+        case "plan_review":
+        case "plan_dependencies":
+          return { action: "Approve or revise the plan.", command: "idea approve-plan" };
+        case "verification":
+          return { action: "Record verification evidence.", command: "idea verify" };
+        default:
+          return { action: "Approve or revise the PRD.", command: "idea approve" };
+      }
+    case "plan_approved":
+      return { action: "Run the next task to build.", command: "idea execute" };
+    case "approved":
+      return { action: "Advance to the execution plan.", command: "idea advance" };
+    default:
+      return { action: "Keep shaping the idea.", command: "idea next" };
+  }
+}

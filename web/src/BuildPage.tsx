@@ -59,11 +59,17 @@ const ACTION_DONE: Record<string, string> = {
   "rerun-review": "review re-run",
 };
 
+interface EnvVar {
+  name: string;
+  how: string;
+  url?: string;
+}
 interface Task {
   id: string;
   code: string;
   title: string;
   status: string;
+  env_vars?: EnvVar[];
 }
 interface ChangeSet {
   id: string;
@@ -555,6 +561,23 @@ export default function BuildPage({
       ? initiative.partial_work.note
       : null;
 
+  // The environment variables the plan declared its tasks' code will read,
+  // aggregated across tasks and deduplicated by name, so the human can set
+  // them before the agent runs instead of a failing build surprising them.
+  const requiredEnvVars = (() => {
+    const seen = new Set<string>();
+    const out: EnvVar[] = [];
+    for (const t of tasks) {
+      for (const v of t.env_vars ?? []) {
+        if (v.name && !seen.has(v.name)) {
+          seen.add(v.name);
+          out.push(v);
+        }
+      }
+    }
+    return out;
+  })();
+
   return (
     <div className="phase-page">
       <PhaseHeader
@@ -564,6 +587,28 @@ export default function BuildPage({
       />
       <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
       <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
+
+      {requiredEnvVars.length > 0 && (
+        <section className="env-vars-card">
+          <div className="env-vars-head">
+            <h2 className="section-title">Required environment variables</h2>
+            <span className="muted">set these before the agent runs — idea env set &lt;NAME&gt;</span>
+          </div>
+          {requiredEnvVars.map((v) => (
+            <div key={v.name} className="env-var-row">
+              <code className="env-var-name">{v.name}</code>
+              <div className="env-var-body">
+                {v.how && <div className="env-var-how">{v.how}</div>}
+                {v.url && (
+                  <a className="env-var-url" href={v.url} target="_blank" rel="noreferrer">
+                    {v.url}
+                  </a>
+                )}
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* task 3: the initiative's dedicated branch and its PR, once
           git.branch_per_initiative has created one. Absent (not just

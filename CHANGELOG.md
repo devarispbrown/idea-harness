@@ -9,6 +9,24 @@ entry itself. Once 1.0 ships, this project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`idea tasks` shows each slice's status and its change set.** The plan list now renders each
+  task's lifecycle (`done` green, `blocked` red, `ready`/`proposed` muted, `cancelled` dim) and,
+  when a task has produced one, its `CHG-n` with the change-set status — so the plan is also the
+  "what is done, what is left" view. The web Plan page shows the same status pill and change-set
+  link on every row.
+- **`idea env` prompts for the variables a plan's tasks need.** The planner now declares, per task,
+  the environment variables its code reads (`env_vars`: name, how to obtain it, and the URL).
+  `idea env` lists them (deduplicated across tasks), and `idea env set <NAME>` prints the
+  instructions and URL, prompts, and writes the value to `.env` — never shown back, never written to
+  `harness.yaml`. The Build page lists the required variables with their URLs before the agent runs.
+
+### Changed
+
+- **`GET …/tasks` returns `env_vars`** on each task (the declared environment variables), and the
+  tasks table gained an `env_vars` column (migration 53).
+
 ## [0.7.2] - 2026-10-20
 
 ### Changed

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -195,14 +196,16 @@ func (db *DB) MergeTasks(ctx context.Context, initiativeID, keepID, mergeID stri
 // blocks forever waiting for another).
 func getTaskTx(tx *sql.Tx, taskID string) (*domain.Task, error) {
 	row := tx.QueryRow(`
-		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, created_at
+		SELECT id, initiative_id, code, title, statement, status, priority, estimate, produced_by_run, superseded_by, env_vars, created_at
 		FROM tasks WHERE id = ?`, taskID)
 	var t domain.Task
 	var created int64
-	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &created); err != nil {
+	var envVars string
+	if err := row.Scan(&t.ID, &t.InitiativeID, &t.Code, &t.Title, &t.Statement, &t.Status, &t.Priority, &t.Estimate, &t.ProducedByRun, &t.SupersededBy, &envVars, &created); err != nil {
 		return nil, notFoundIfNoRows(err, "task", taskID)
 	}
 	t.CreatedAt = time.UnixMilli(created)
+	_ = json.Unmarshal([]byte(envVars), &t.EnvVars)
 	return &t, nil
 }
 

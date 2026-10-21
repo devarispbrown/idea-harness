@@ -23,6 +23,17 @@ type cliTask struct {
 	// dependencies at all, and a caller had to fall back to raw HTTP).
 	RequirementIDs []string `json:"requirement_ids"`
 	DependsOn      []string `json:"depends_on"`
+	// EnvVars are the environment variables the planner declared this task's
+	// code reads (see `idea env`).
+	EnvVars []cliEnvVar `json:"env_vars,omitempty"`
+}
+
+// cliEnvVar mirrors domain.EnvVar: one environment variable a task needs,
+// with how to obtain it and where.
+type cliEnvVar struct {
+	Name string `json:"name"`
+	How  string `json:"how"`
+	URL  string `json:"url,omitempty"`
 }
 
 // resolveInitiative returns the initiative id (args[0] or the newest).
@@ -126,11 +137,46 @@ func cmdTasks(a cmdArgs, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, muted("No tasks yet — run `idea advance`."))
 		return nil
 	}
+	// Map each task to the change set it produced (if any), so the list shows a
+	// slice's build outcome — CHG-n applied, rejected, awaiting review — rather
+	// than only its position in the plan. A task with several change sets shows
+	// the first one the API returned, matching the order `idea changes` uses.
+	csByTask := map[string]cliChangeSet{}
+	var changes []cliChangeSet
+	if err := c.do("GET", initiativeResource(projectID, iniID, "change-sets"), nil, &changes); err == nil {
+		for _, cs := range changes {
+			if cs.TaskID != "" {
+				if _, seen := csByTask[cs.TaskID]; !seen {
+					csByTask[cs.TaskID] = cs
+				}
+			}
+		}
+	}
 	fmt.Fprintln(stdout, heading("Execution Plan Tasks"))
 	for _, t := range tasks {
-		fmt.Fprintf(stdout, "  %s [%s] %s\n", code(t.Code), t.Priority, t.Title)
+		line := fmt.Sprintf("  %s [%s] %s", code(t.Code), t.Priority, t.Title)
+		if cs, ok := csByTask[t.ID]; ok {
+			line += "  " + code(cs.HumanID) + " " + muted(changeSetReviewStatusLabel(cs))
+		}
+		fmt.Fprintln(stdout, line+"  "+taskStatusLabel(t.Status))
 	}
 	return nil
+}
+
+// taskStatusLabel renders a TaskStatus as a short, colored word: done reads
+// green, blocked red, cancelled dim, and proposed/ready muted so the eye lands
+// on the two that mean "work remains" vs "work is stuck" vs "work is done".
+func taskStatusLabel(status string) string {
+	switch status {
+	case "done":
+		return ok("done")
+	case "blocked":
+		return errText("blocked")
+	case "cancelled":
+		return dim("cancelled")
+	default: // proposed, ready
+		return muted(status)
+	}
 }
 
 type idCode struct {

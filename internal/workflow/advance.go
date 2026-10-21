@@ -570,7 +570,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 	scale := projectScaleOf(ctx, e.workspaceRoot)
 	rigor := calibrateRigor(RigorLevel(e.snapshotConfig().cfg.Review.Rigor), scale, changeSize{Requirements: len(reqs)})
 	inputs := []ccontext.Input{
-		{Selector: "immutable_policy", Content: "Decompose the converged design into 2-4 Tasks, each shipping a working vertical slice end to end -- not one task per layer or per requirement. A Task implements one or more Requirements (referenced by code); it is fine, and expected, for one task to implement several. Only go finer than 2-4 tasks when the plan is genuinely that granular (many independent, unrelated slices). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title."},
+		{Selector: "immutable_policy", Content: "Decompose the converged design into 2-4 Tasks, each shipping a working vertical slice end to end -- not one task per layer or per requirement. A Task implements one or more Requirements (referenced by code); it is fine, and expected, for one task to implement several. Only go finer than 2-4 tasks when the plan is genuinely that granular (many independent, unrelated slices). A decided human decision is authoritative and must not be contradicted. Keep the dependency graph acyclic; list dependencies by task title. For each task, declare every environment variable its code will read from process.env under env_vars: the exact name (e.g. STRIPE_SECRET_KEY), one sentence saying how the human obtains it, and the URL of the page where they create/read it. Omit env_vars entirely when a task needs none."},
 		{Selector: "project_scale", Content: scaleAndConventions(scale, changeSize{Requirements: len(reqs)}, rigor, projectConventions(e.workspaceRoot))},
 		{Selector: "task", Content: ini.Description},
 		{Selector: "requirements", Content: renderRequirements(reqs)},
@@ -629,6 +629,7 @@ func (e *Engine) runExecutionPlan(ctx context.Context, initiativeID string) erro
 			Priority:      domain.RequirementPriority(str(t["priority"])),
 			Estimate:      str(t["estimate"]),
 			ProducedByRun: runID,
+			EnvVars:       envVarsOf(t["env_vars"]),
 		}
 		if code, ok := keepCodes[norm(task.Title)]; ok {
 			task.Code = code

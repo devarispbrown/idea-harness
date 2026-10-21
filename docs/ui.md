@@ -129,6 +129,26 @@ Six phases in fixed order — **Explore → Define → Design → Plan → Build
 **current** (▶, with a live pill), or **future** (no marker). There are no blocked or locked states,
 and no counts are rendered under the rail.
 
+The six phases are grouped under the four **goal-shaped stages** (`PHASE_TO_STAGE` in `phases.ts`),
+shown as small headers in the rail: **Shape** (Explore/Define/Design), **Build** (Plan/Build), and
+**Ship** (Verify). **Decide** is a state, not a rail entry — it is the live "waiting on you" pill,
+not a milestone. The six phases stay URL-addressable (and in the rail) as detail.
+
+## The Now · Needs you · Next strip
+
+Above every initiative view (not Home/Settings) a persistent strip (`NowNext.tsx`) answers the three
+questions a user has at any moment:
+
+- **Now** — the current stage (Shape / Decide / Build / Ship) with a live pill
+  (`working…` / `waiting on you` / `failed`) and the stage's one-line purpose.
+- **Needs you** — the initiative's open judgment count (decisions + questions + findings), linked to
+  the phase where those items live. Zero when nothing is waiting.
+- **Next** — the single next action as an imperative, with the CLI command that performs it
+  (`nextAction` in `phases.ts`), e.g. "Approve or revise the plan · idea approve-plan".
+
+It is an `aria-live` region fed by the existing attention rollup, so it updates with the page's own
+poll without a separate request.
+
 Completion is derived client-side from the initiative's status plus its artifacts, tasks and change
 sets:
 

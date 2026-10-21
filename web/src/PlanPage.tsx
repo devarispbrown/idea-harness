@@ -32,6 +32,15 @@ interface Task {
   requirement_ids?: string[];
   depends_on?: string[];
 }
+// ChangeSetRef is just enough of a change set to show each task's build
+// outcome next to its row: the human id (CHG-n) and its status. task_id links
+// it to the plan task that produced it.
+interface ChangeSetRef {
+  id: string;
+  human_id: string;
+  task_id: string;
+  status: string;
+}
 interface Artifact {
   id: string;
   kind: string;
@@ -63,7 +72,7 @@ export default function PlanPage({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState(emptyDraft());
   const [adding, setAdding] = useState(false);
-  const [hasChangeSets, setHasChangeSets] = useState(false);
+  const [changeSets, setChangeSets] = useState<ChangeSetRef[]>([]);
   const [error, setError] = useState("");
   // "Ask for a revision" takes a note: null while the form is closed, the
   // draft while it is open. It used to post straight away with no input, so
@@ -104,8 +113,9 @@ export default function PlanPage({
       get<Task[]>(`/projects/${projectId}/initiatives/${initiativeId}/tasks`).catch(() => []),
       get<Artifact[]>(resource(projectId, initiativeId, "artifacts")).catch(() => []),
       // Change sets, because both plan-level actions are refused once one
-      // exists — revising a plan whose work has started would orphan it.
-      get<{ id: string }[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
+      // exists — revising a plan whose work has started would orphan it. Each
+      // task's row also shows the change set it produced (CHG-n + status).
+      get<ChangeSetRef[]>(resource(projectId, initiativeId, "change-sets")).catch(() => []),
       // D1: the plan-review findings belong here, not on Define — see
       // judgmentScope.ts for why target_type is what tells them apart.
       get<FindingItem[]>(resource(projectId, initiativeId, "findings")).catch(() => []),
@@ -115,7 +125,7 @@ export default function PlanPage({
     ]);
     setTasks(t ?? []);
     setArtifacts(a ?? []);
-    setHasChangeSets((c ?? []).length > 0);
+    setChangeSets(c ?? []);
     setFindings(f ?? []);
     setRequirements(r ?? []);
   }, [projectId, initiativeId]);
@@ -454,7 +464,7 @@ export default function PlanPage({
   // sets appear (`execute` runs from there), while no ordinary path reaches
   // needs_human_judgment with change sets present. The comment claimed the bar
   // went away; it did not.
-  const planCommandsAvailable = !hasChangeSets;
+  const planCommandsAvailable = changeSets.length === 0;
 
   const awaitingApproval =
     status === "needs_human_judgment" &&
@@ -493,6 +503,31 @@ export default function PlanPage({
 
   const requirementLabel = (id: string) => requirements.find((r) => r.id === id)?.code ?? id;
 
+  // Map task id -> the change set that task produced, so a row can show "CHG-4
+  // applied" next to "done" instead of only the plan position.
+  const csByTask = new Map<string, ChangeSetRef>();
+  for (const cs of changeSets) {
+    if (cs.task_id && !csByTask.has(cs.task_id)) csByTask.set(cs.task_id, cs);
+  }
+  // Mirror the daemon's ChangeSetStatus labels (internal/cli/change.go
+  // humanStatus) so the plan page and `idea changes` read the same.
+  const changeSetStatusLabel = (s: string): string =>
+    ({
+      draft: "draft",
+      checks_running: "checking",
+      review_required: "needs approval",
+      rejected: "rejected",
+      changes_requested: "changes requested",
+      superseded: "superseded",
+      approved: "approved — apply it",
+      applying: "applying",
+      applied: "applied",
+      reverted: "reverted",
+      conflicted: "conflicted",
+    })[s] ?? s;
+  const taskStatusLabel = (s: string): string =>
+    ({ proposed: "proposed", ready: "ready", blocked: "blocked", done: "done", cancelled: "cancelled" })[s] ?? s;
+
   const pill: StatusPill | undefined = awaitingApproval
     ? { label: "needs approval", state: "needs-you" }
     : parkedElsewhere
@@ -525,7 +560,7 @@ export default function PlanPage({
             actionLabel: "Ask for a revision…",
             onAction: openRevision,
           }
-        : status === "plan_approved" && hasChangeSets
+        : status === "plan_approved" && changeSets.length > 0
           ? {
               // The bar used to vanish here, so the page simply lost its
               // footer once Build started (it read as missing on a phone).
@@ -779,6 +814,12 @@ export default function PlanPage({
               </div>
               <span className={`plan-prio prio-${t.priority}`}>{t.priority}</span>
               <span className="plan-est">{t.estimate || "–"}</span>
+              <span className={`plan-status st-${t.status}`}>{taskStatusLabel(t.status)}</span>
+              {csByTask.has(t.id) && (
+                <span className="plan-change" title="Change set for this task">
+                  {csByTask.get(t.id)!.human_id} · {changeSetStatusLabel(csByTask.get(t.id)!.status)}
+                </span>
+              )}
               {(() => {
                 // J: seven possible buttons in a row squeeze the title to one
                 // word per line at narrow widths. Built once, rendered twice

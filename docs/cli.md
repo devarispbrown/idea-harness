@@ -36,6 +36,8 @@ if this file has drifted.
 | `idea key set <provider> [--stdin] \| key list` | set or list the API keys providers read (set prompts for the key and writes it to .env, never shown) | `list`, `set --stdin` | takes no flags |
 | `idea key set <provider> [--stdin]` | set a provider's API key: prompts (or reads --stdin) and writes it to .env, then reloads the daemon | — | — |
 | `idea key list` | list each provider's key variable and whether it is set | — | — |
+| `idea env [--json] \| env set <NAME> [--stdin]` | list the environment variables the plan's tasks need, or set one (prompts and writes it to .env, never shown) | `--json`, `set --stdin` | yes |
+| `idea env set <NAME> [--stdin]` | set an environment variable the plan declared: prints how to obtain it and its URL, prompts (or reads --stdin), and writes it to .env | — | — |
 | `idea prd` | render the reviewed PRD in your terminal | none | takes no flags |
 | `idea explain` | show the Current Understanding | `--json` | yes |
 | `idea export [kind]` | export an artifact as markdown | none | takes no flags |

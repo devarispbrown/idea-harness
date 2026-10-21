@@ -1,7 +1,7 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
-import { currentPill, type PhaseState } from "./phases";
+import { currentPill, PHASE_TO_STAGE, STAGE_LABELS, type PhaseState } from "./phases";
 import { displayTitle } from "./title";
 import CostLine from "./CostLine";
 import GraphNavLinks from "./GraphNavLinks";
@@ -105,27 +105,36 @@ export default function PhaseNav({
               const on = active === p.phase;
               const isLast = i === phases.length - 1;
               const live = p.state === "current" ? cur : null;
+              // P0.1: group the six phases under the goal-shaped stages. A
+              // stage header appears before the first phase of each stage
+              // (Shape = Explore/Define/Design, Build = Plan/Build, Ship =
+              // Verify). Decide has no phase list — it is a state, shown as the
+              // live "waiting on you" pill, not a rail entry.
+              const stage = PHASE_TO_STAGE[p.phase];
+              const newStage = i === 0 || PHASE_TO_STAGE[phases[i - 1].phase] !== stage;
               return (
-                <button
-                  key={p.phase}
-                  className={`pn-phase ${p.state} ${on ? "on" : ""}`}
-                  onClick={() => onNavigate(phaseHref(initiative.id, p.phase))}
-                >
-                  <span className="pn-dot-wrap">
-                    <span className="pn-dot">{p.state === "done" ? "✓" : p.state === "current" ? "▶" : ""}</span>
-                    {!isLast && <span className="pn-line" />}
-                  </span>
-                  <span className="pn-phase-body">
-                    <span className="pn-phase-row">
-                      <span className="pn-phase-label">{p.label}</span>
-                      {p.state === "current" && live && live.pill && (
-                        <span className={`pn-pill state-${p.state}`}>{live.pill}</span>
-                      )}
+                <Fragment key={p.phase}>
+                  {newStage && <div className="pn-stage">{STAGE_LABELS[stage]}</div>}
+                  <button
+                    className={`pn-phase ${p.state} ${on ? "on" : ""}`}
+                    onClick={() => onNavigate(phaseHref(initiative.id, p.phase))}
+                  >
+                    <span className="pn-dot-wrap">
+                      <span className="pn-dot">{p.state === "done" ? "✓" : p.state === "current" ? "▶" : ""}</span>
+                      {!isLast && <span className="pn-line" />}
                     </span>
-                    {p.state === "done" && <span className="pn-note">{p.summary}</span>}
-                    {p.state === "current" && live && live.note && <span className="pn-note live">{live.note}</span>}
-                  </span>
-                </button>
+                    <span className="pn-phase-body">
+                      <span className="pn-phase-row">
+                        <span className="pn-phase-label">{p.label}</span>
+                        {p.state === "current" && live && live.pill && (
+                          <span className={`pn-pill state-${p.state}`}>{live.pill}</span>
+                        )}
+                      </span>
+                      {p.state === "done" && <span className="pn-note">{p.summary}</span>}
+                      {p.state === "current" && live && live.note && <span className="pn-note live">{live.note}</span>}
+                    </span>
+                  </button>
+                </Fragment>
               );
             })}
           </nav>

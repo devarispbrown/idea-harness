@@ -31,6 +31,7 @@ import OutcomesPage from "./OutcomesPage";
 import QualityPage from "./QualityPage";
 import NotFound from "./NotFound";
 import LiveAnnouncer from "./LiveAnnouncer";
+import NowNext from "./NowNext";
 import ShortcutsDialog from "./ShortcutsDialog";
 import { focusTarget, useRouteFocus } from "./focus";
 import type { StatusPill } from "./PhaseHeader";
@@ -590,6 +591,15 @@ export default function App() {
   // queue from Home and Settings, and from the top bar on a phone.
   const needsYou = attention.reduce((n, r) => n + attentionCount(r), 0);
 
+  // P0.1: the current initiative's own open-judgment count, for the strip, and
+  // the phase those items live on (where "Needs you" links to).
+  const currentRollup = currentInitiativeId ? attention.find((r) => r.id === currentInitiativeId) : undefined;
+  const currentNeedsYou = currentRollup ? attentionCount(currentRollup) : 0;
+  const needsYouHref =
+    currentInitiativeId && currentNeedsYou > 0
+      ? phaseHref(currentInitiativeId, currentPhase(phaseSource))
+      : undefined;
+
   return (
     <div className="app-root" style={{ ["--app-banner-h" as string]: `${bannerHeight}px` }}>
       {/* The first Tab stop on every page: past the sidebar's dozen links
@@ -667,6 +677,13 @@ export default function App() {
               reason={currentInitiative.failure_reason}
               defaultModel={defaultModel || "idea-harness-default"}
             />
+          )}
+
+          {/* P0.1: the persistent "Now · Needs you · Next" strip — the answer
+              to "where am I, what's waiting on me, what's the one next step",
+              on every initiative view (not Home/Settings). */}
+          {currentInitiativeId && route.name !== "home" && (
+            <NowNext phaseSource={phaseSource} needsYou={currentNeedsYou} needsYouHref={needsYouHref} />
           )}
 
           {currentInitiativeId && (

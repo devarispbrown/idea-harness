@@ -123,6 +123,10 @@ func commands() []command {
 		}, subsAreRequired: true, run: cmdKey, inHelp: true},
 		{usage: "key set <provider> [--stdin]", summary: "set a provider's API key: prompts (or reads --stdin) and writes it to .env, then reloads the daemon", inHelp: true},
 		{usage: "key list", summary: "list each provider's key variable and whether it is set", inHelp: true},
+		{names: []string{"env"}, usage: "env [--json] | env set <NAME> [--stdin]", summary: "list the environment variables the plan's tasks need, or set one (prompts and writes it to .env, never shown)", flags: jsonFlag, subs: map[string]flagSpec{
+			"set": {"--stdin": flagBool},
+		}, maxPositional: 1, run: cmdEnv, inHelp: true},
+		{usage: "env set <NAME> [--stdin]", summary: "set an environment variable the plan declared: prints how to obtain it and its URL, prompts (or reads --stdin), and writes it to .env", inHelp: true},
 		{names: []string{"prd"}, usage: "prd", summary: "render the reviewed PRD in your terminal", flags: flagSpec{}, maxPositional: 2, run: cmdPRD, inHelp: true},
 		{names: []string{"explain"}, usage: "explain", summary: "show the Current Understanding", flags: jsonFlag, maxPositional: 1, run: cmdExplain, inHelp: true},
 		{names: []string{"export"}, usage: "export [kind]", summary: "export an artifact as markdown", flags: flagSpec{}, maxPositional: 2, run: cmdExport, inHelp: true},

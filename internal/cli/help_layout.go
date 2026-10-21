@@ -57,7 +57,7 @@ var commandGroup = map[string]string{
 	"budget": "understand", "metrics": "understand", "metric": "understand",
 	"diff": "understand",
 
-	"model": "configure", "key": "configure", "config": "configure",
+	"model": "configure", "key": "configure", "env": "configure", "config": "configure",
 	"integrations": "configure", "channel": "configure", "capture": "configure",
 	"remote": "configure", "ui": "configure", "docs": "configure", "mcp": "configure",
 
