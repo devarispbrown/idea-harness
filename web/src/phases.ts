@@ -266,6 +266,12 @@ export const STAGE_LABELS: Record<StageName, string> = {
   ship: "Ship",
 };
 
+// STAGE_ORDER is the goal-shaped order the user is taught (Shape → Decide →
+// Build → Ship). Decide is a state the initiative passes through, not a
+// milestone to check off, but it is listed so the "waiting on you" moment has
+// a name.
+export const STAGE_ORDER: StageName[] = ["shape", "decide", "build", "ship"];
+
 export const STAGE_PURPOSE: Record<StageName, string> = {
   shape: "Understand the idea and its reviewed plan.",
   decide: "The calls that unblock this.",

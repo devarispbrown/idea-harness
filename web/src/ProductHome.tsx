@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { derivePhases, nextAction, PHASE_LABELS, PHASE_PURPOSE, rollupPhaseSource } from "./phases";
+import { derivePhases, nextAction, PHASE_LABELS, rollupPhaseSource, STAGE_LABELS, STAGE_ORDER, STAGE_PURPOSE } from "./phases";
 import type { InitiativeRollup } from "./phases";
-import { PHASES, type PhaseName } from "./router";
+import type { PhaseName } from "./router";
 import { get, resource } from "./api";
 import { displayTitle } from "./title";
 import { isSubmitShortcut } from "./shortcuts";
@@ -305,6 +305,21 @@ export default function ProductHome({
             </p>
           )}
         </div>
+        {/* P1.1: a one-line "how it works" so returning users (who never see the
+            empty-state explainer) still learn the loop. */}
+        <div className="ph-stages">
+          <span className="ph-stages-label">How it works:</span>
+          {STAGE_ORDER.map((s, i) => (
+            <span key={s} className="ph-stage">
+              {i > 0 && (
+                <span className="ph-stage-arrow" aria-hidden="true">
+                  →
+                </span>
+              )}
+              <span className="ph-stage-name">{STAGE_LABELS[s]}</span>
+            </span>
+          ))}
+        </div>
         {initiatives.length === 0 ? (
           <ProductHomeExplainer />
         ) : (
@@ -392,14 +407,14 @@ function ProductHomeExplainer() {
   return (
     <div className="ph-empty">
       <p className="ph-empty-lead">
-        Every idea moves through the same six phases, in order, from a rough idea to something
-        verified against its own requirements:
+        Every idea moves through four stages, from a rough idea to something verified against its
+        own requirements:
       </p>
       <ol className="ph-empty-phases">
-        {PHASES.map((phase) => (
-          <li key={phase} className="ph-empty-phase">
-            <span className="ph-empty-phase-name">{PHASE_LABELS[phase]}</span>
-            <span className="ph-empty-phase-purpose">{PHASE_PURPOSE[phase]}</span>
+        {STAGE_ORDER.map((stage) => (
+          <li key={stage} className="ph-empty-phase">
+            <span className="ph-empty-phase-name">{STAGE_LABELS[stage]}</span>
+            <span className="ph-empty-phase-purpose">{STAGE_PURPOSE[stage]}</span>
           </li>
         ))}
       </ol>

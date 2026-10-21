@@ -2431,6 +2431,19 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   border: 1px solid var(--line);
   border-radius: 12px;
 }
+.ph-stages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ph-stages-label { color: var(--text-faint); font-weight: 600; }
+.ph-stage { display: inline-flex; align-items: center; gap: 6px; }
+.ph-stage-arrow { color: var(--text-faint); }
+.ph-stage-name { font-weight: 600; color: var(--text-secondary); }
 .ph-empty-lead {
   margin: 0 0 14px;
   color: var(--text-body);
