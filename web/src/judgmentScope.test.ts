@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { DecisionItem, FindingItem } from "./JudgmentCard";
 import {
+  blockingFindingsFirst,
   decisionsForDefine,
   decisionTypeLabel,
   findingsForDefine,
   findingsForPlan,
+  isBlockingFinding,
   otherOpenFindings,
+  severityRank,
+  sortFindingsBlockingFirst,
 } from "./judgmentScope";
 
 function finding(target_type: string, overrides: Partial<FindingItem> = {}): FindingItem {
@@ -143,5 +147,66 @@ describe("decisionTypeLabel", () => {
 
   it("treats an undefined type as the legacy PRD case", () => {
     expect(decisionTypeLabel(undefined)).toBe("PRD");
+  });
+});
+
+// P0.2 — blocking-first ordering.
+describe("sortFindingsBlockingFirst / isBlockingFinding", () => {
+  it("orders critical → high → medium → low → observation", () => {
+    const all = [
+      finding("prd", { id: "low", severity: "low" }),
+      finding("prd", { id: "critical", severity: "critical" }),
+      finding("prd", { id: "medium", severity: "medium" }),
+      finding("prd", { id: "high", severity: "high" }),
+      finding("prd", { id: "observation", severity: "observation" }),
+    ];
+    expect(sortFindingsBlockingFirst(all).map((f) => f.id)).toEqual([
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "observation",
+    ]);
+  });
+
+  it("sorts an unknown severity last, never dropping it", () => {
+    const all = [
+      finding("prd", { id: "mystery", severity: "mystery" }),
+      finding("prd", { id: "high", severity: "high" }),
+    ];
+    expect(sortFindingsBlockingFirst(all).map((f) => f.id)).toEqual(["high", "mystery"]);
+  });
+
+  it("treats critical and high as blocking, the rest as advisory", () => {
+    expect(isBlockingFinding(finding("prd", { severity: "critical" }))).toBe(true);
+    expect(isBlockingFinding(finding("prd", { severity: "high" }))).toBe(true);
+    expect(isBlockingFinding(finding("prd", { severity: "medium" }))).toBe(false);
+    expect(isBlockingFinding(finding("prd", { severity: "low" }))).toBe(false);
+  });
+
+  it("severityRank is monotonically increasing with severity", () => {
+    expect(severityRank("critical")).toBeLessThan(severityRank("high"));
+    expect(severityRank("high")).toBeLessThan(severityRank("medium"));
+    expect(severityRank("medium")).toBeLessThan(severityRank("low"));
+  });
+});
+
+describe("blockingFindingsFirst", () => {
+  it("promotes a blocking finding triage ranked below the top-N", () => {
+    const sorted = sortFindingsBlockingFirst([
+      finding("prd", { id: "crit", severity: "critical" }),
+      finding("prd", { id: "med", severity: "medium" }),
+    ]);
+    const split = { needsYou: [], optional: sorted }; // triage ranked neither priority
+    const out = blockingFindingsFirst(sorted, split);
+    expect(out.needsYou.map((f) => f.id)).toEqual(["crit"]);
+    expect(out.optional.map((f) => f.id)).toEqual(["med"]);
+  });
+
+  it("keeps a non-blocking finding collapsed when triage did not rank it", () => {
+    const sorted = sortFindingsBlockingFirst([finding("prd", { id: "med", severity: "medium" })]);
+    const out = blockingFindingsFirst(sorted, { needsYou: [], optional: sorted });
+    expect(out.needsYou).toHaveLength(0);
+    expect(out.optional).toHaveLength(1);
   });
 });

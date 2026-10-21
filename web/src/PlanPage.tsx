@@ -6,7 +6,7 @@ import { navigate } from "./router";
 import type { StatusPill } from "./PhaseHeader";
 import type { DocumentRowProps } from "./DocumentRow";
 import { FindingCard, type FindingItem } from "./JudgmentCard";
-import { findingsForPlan } from "./judgmentScope";
+import { findingsForPlan, isBlockingFinding, sortFindingsBlockingFirst } from "./judgmentScope";
 import { planTaskActions } from "./judgmentCopy";
 import LineagePanel from "./LineagePanel";
 import ReviewConvergence from "./ReviewConvergence";
@@ -491,7 +491,11 @@ export default function PlanPage({
   // target_type (see judgmentScope.ts) — this is what used to render nothing
   // here while Define rendered them instead.
   const planFindings = findingsForPlan(findings);
-  const openPlanFindings = planFindings.filter((f) => !f.disposition);
+  // P0.2: blocking-first — critical/high findings always shown, the rest
+  // collapsed behind "show all".
+  const openPlanFindings = sortFindingsBlockingFirst(planFindings.filter((f) => !f.disposition));
+  const blockingPlanFindings = openPlanFindings.filter(isBlockingFinding);
+  const nonBlockingPlanFindings = openPlanFindings.filter((f) => !isBlockingFinding(f));
   const resolvedPlanFindings = planFindings.filter((f) => !!f.disposition);
 
   // D2: once approved, the plan is the fixed input to Build — Edit/Delete are
@@ -613,15 +617,29 @@ export default function PlanPage({
             {status === "needs_human_judgment"
               ? "the plan review raised these before it can be approved"
               : "raised by the plan review"}
+            {nonBlockingPlanFindings.length > 0 ? " — blocking first" : ""}
           </span>
         </div>
       )}
-      {openPlanFindings.length > 0 && (
+      {blockingPlanFindings.length > 0 && (
         <div className="judgment-list">
-          {openPlanFindings.map((f) => (
+          {blockingPlanFindings.map((f) => (
             <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
           ))}
         </div>
+      )}
+      {nonBlockingPlanFindings.length > 0 && (
+        <details className="w3-triage-optional">
+          <summary>
+            {nonBlockingPlanFindings.length} advisory finding
+            {nonBlockingPlanFindings.length === 1 ? "" : "s"} (medium/low)
+          </summary>
+          <div className="judgment-list">
+            {nonBlockingPlanFindings.map((f) => (
+              <FindingCard key={f.id} f={f} onDisposition={(dis) => dispositionFinding(f.id, dis)} />
+            ))}
+          </div>
+        </details>
       )}
       {resolvedPlanFindings.length > 0 && (
         <>

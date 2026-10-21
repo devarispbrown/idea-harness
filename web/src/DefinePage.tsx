@@ -16,7 +16,7 @@ import {
   type FindingItem,
   type QuestionItem,
 } from "./JudgmentCard";
-import { decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings } from "./judgmentScope";
+import { blockingFindingsFirst, decisionsForDefine, decisionTypeLabel, findingsForDefine, otherOpenFindings, sortFindingsBlockingFirst } from "./judgmentScope";
 import { openItemsNote, showsRevisePrd } from "./judgmentCopy";
 import { optionalLabel, partitionByTriage, type TriageItemLike } from "./triage";
 
@@ -106,7 +106,8 @@ export default function DefinePage({
   const otherFindings = otherOpenFindings(findings).filter((f) => !f.disposition);
 
   const openDecisions = prdDecisions.filter((d) => d.status === "open");
-  const openFindings = prdFindings.filter((f) => !f.disposition);
+  // P0.2: findings are sorted blocking-first (critical/high before the rest).
+  const openFindings = sortFindingsBlockingFirst(prdFindings.filter((f) => !f.disposition));
   const openQuestions = questions.filter((q) => q.status === "open");
   const openCount = openDecisions.length + openFindings.length + openQuestions.length;
 
@@ -122,7 +123,12 @@ export default function DefinePage({
   // the page's pre-wave-3 behavior, never to an empty list.
   const triageItems = triage ?? [];
   const decisionsSplit = partitionByTriage(openDecisions, triageItems);
-  const findingsSplit = partitionByTriage(openFindings, triageItems);
+  // P0.2: blocking (critical/high) findings are never collapsed behind the
+  // triage "optional" <details>, even when triage ranked them below the top-N.
+  const findingsSplit = blockingFindingsFirst(
+    openFindings,
+    partitionByTriage(openFindings, triageItems),
+  );
   const questionsSplit = partitionByTriage(openQuestions, triageItems);
   const hasTriage = triage !== null;
   const optionalCount =

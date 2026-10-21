@@ -97,3 +97,55 @@ export function decisionTypeLabel(type: string | undefined): string {
       return type as string;
   }
 }
+
+// ---- blocking-first ordering (P0.2) ----
+//
+// A finding's severity says whether it blocks an approve: critical and high
+// are blocking, everything below is advisory. The pages render the blocking
+// findings first and collapse the rest behind "show all", so the eye lands on
+// what actually stops progress (the same "blocking-first" principle the CLI's
+// system-deny uses).
+
+const SEVERITY_RANK: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  observation: 4,
+};
+
+// severityRank maps a severity to its ordering weight; unknown values sort
+// last and are never dropped.
+export function severityRank(severity: string): number {
+  return SEVERITY_RANK[severity] ?? 5;
+}
+
+// isBlockingFinding reports whether a finding blocks an approve (critical or
+// high) as opposed to advisory (medium/low/observation).
+export function isBlockingFinding(f: FindingItem): boolean {
+  return severityRank(f.severity) <= 1;
+}
+
+// sortFindingsBlockingFirst returns a new array ordered critical → high →
+// medium → low → observation (unknown severities last), stable within a
+// severity (Array.prototype.sort is stable in modern engines).
+export function sortFindingsBlockingFirst(findings: FindingItem[]): FindingItem[] {
+  return [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+}
+
+// blockingFindingsFirst reconciles triage with severity: given the findings
+// sorted blocking-first and their triage partition (top-N "priority" vs the
+// collapsed "optional" rest), it returns a partition where blocking
+// (critical/high) findings are ALWAYS in `needsYou` — never hidden behind the
+// "show more" collapse, even when triage ranked them outside the top-N.
+export function blockingFindingsFirst<T extends FindingItem>(
+  sorted: T[],
+  split: { needsYou: T[]; optional: T[] },
+): { needsYou: T[]; optional: T[] } {
+  const blocking = new Set(sorted.filter(isBlockingFinding).map((f) => f.id));
+  const needsYou = sorted.filter(
+    (f) => blocking.has(f.id) || split.needsYou.some((n) => n.id === f.id),
+  );
+  const kept = new Set(needsYou.map((f) => f.id));
+  return { needsYou, optional: sorted.filter((f) => !kept.has(f.id)) };
+}
