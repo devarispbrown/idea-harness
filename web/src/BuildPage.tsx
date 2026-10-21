@@ -6,6 +6,7 @@ import QualityScorecard from "./QualityScorecard";
 import LineagePanel from "./LineagePanel";
 import RunPanel from "./RunPanel";
 import BudgetMeter from "./BudgetMeter";
+import { denyFromError } from "./denyCodes";
 import {
   acceptableFindingCount,
   advisoryBacklogLabel,
@@ -1240,7 +1241,24 @@ export default function BuildPage({
                   : "the run after this one was given this note."}
               </p>
             )}
-            {actionError && <p className="error">{actionError}</p>}
+            {actionError && (
+              <div className="error">
+                <p>{actionError}</p>
+                {(() => {
+                  // P0.3: a system-deny refusal (approve blocked, blast_radius)
+                  // renders what/why/next, not just the raw string.
+                  const d = denyFromError(actionError);
+                  return d ? (
+                    <div className="jc-deny-body" style={{ marginTop: 6 }}>
+                      <p>
+                        <strong>Next:</strong> {d.next}
+                      </p>
+                      {d.command && <code className="nn-command">{d.command}</code>}
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+            )}
           </section>
         );
       })}

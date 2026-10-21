@@ -1704,6 +1704,27 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   margin: 6px 0 0;
 }
 .jc-rec strong { color: var(--text-body); }
+.jc-system-deny { border-left: 3px solid var(--failing-line); }
+.jc-deny { margin: 8px 0 0; }
+.jc-deny-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--failing-fg);
+  cursor: pointer;
+}
+.jc-deny-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--line-soft);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.jc-deny-body strong { color: var(--text-body); }
+.jc-deny-body .nn-command { margin-top: 2px; }
 .jc-resolution {
   font-size: 12.5px;
   color: var(--text-muted);

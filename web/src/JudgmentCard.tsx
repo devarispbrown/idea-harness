@@ -2,6 +2,7 @@ import { useState } from "react";
 import LineageChip from "./LineageChip";
 import InlinePanel from "./InlinePanel";
 import { isSubmitShortcut } from "./shortcuts";
+import { denyExplanation } from "./denyCodes";
 
 export interface DecisionItem {
   id: string;
@@ -33,6 +34,10 @@ export interface FindingItem {
   // happens to carry -- C2: this is the second, independent way a finding is
   // recognized as Plan's, since older rows' target_type alone is ambiguous.
   review_run_id?: string;
+  // The machine-readable system-deny code (domain.DenyCode), when this finding
+  // is a deterministic system refusal (secret_sweep, blast_radius, …) rather
+  // than a model's review finding. Empty for model findings.
+  code?: string;
 }
 export interface QuestionItem {
   id: string;
@@ -175,6 +180,7 @@ export function FindingCard({
   onDisposition: (disposition: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const deny = denyExplanation(f.code);
   if (f.disposition) {
     const label = DISPOSITIONS.find((d) => d.value === f.disposition)?.label ?? f.disposition;
     return (
@@ -190,11 +196,31 @@ export function FindingCard({
     );
   }
   return (
-    <section className="judgment-card">
+    <section className={`judgment-card${deny ? " jc-system-deny" : ""}`}>
       <div className="jc-head">
         <IdChip label={f.severity.toUpperCase()} className={severityClass(f.severity)} />
+        {deny && <IdChip label="SYSTEM DENY" className="chip-failing" />}
         <span className="jc-title">{f.finding}</span>
       </div>
+      {deny && (
+        // P0.3: a system deny renders as what / why / next, one line by
+        // default, expandable — never a raw "system deny <code>" string.
+        <details className="jc-deny">
+          <summary className="jc-deny-summary">{deny.label}</summary>
+          <div className="jc-deny-body">
+            <p>
+              <strong>What:</strong> {deny.what}
+            </p>
+            <p>
+              <strong>Why:</strong> {deny.why}
+            </p>
+            <p>
+              <strong>Next:</strong> {deny.next}
+            </p>
+            {deny.command && <code className="nn-command">{deny.command}</code>}
+          </div>
+        </details>
+      )}
       {f.recommendation && (
         <p className="jc-rec">
           Recommendation: <strong>{f.recommendation}</strong>
