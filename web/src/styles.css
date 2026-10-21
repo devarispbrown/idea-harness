@@ -2871,7 +2871,7 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
   flex: none;
 }
 .plan-actions-menu {
-  display: none;
+  display: block;
   flex: none;
   position: relative;
 }
@@ -2911,9 +2911,6 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 @media (max-width: 600px) {
   .plan-row-actions {
     display: none;
-  }
-  .plan-actions-menu {
-    display: block;
   }
 }
 

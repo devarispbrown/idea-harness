@@ -839,17 +839,17 @@ export default function PlanPage({
                 </span>
               )}
               {(() => {
-                // J: seven possible buttons in a row squeeze the title to one
-                // word per line at narrow widths. Built once, rendered twice
-                // below (flat above 600px, in a "⋯" menu under it) so the
-                // wiring can't drift between the two layouts.
-                const actions: { key: string; label: string; aria?: string; onClick: () => void }[] = [
-                  ...(can.reorder
-                    ? [
-                        { key: "up", label: "↑", aria: `Move ${t.code} up`, onClick: () => move(i, -1) },
-                        { key: "down", label: "↓", aria: `Move ${t.code} down`, onClick: () => move(i, 1) },
-                      ]
-                    : []),
+                // P2.1: reorder (↑/↓) stays inline; every other action lives in
+                // the ⋯ menu, always available, so the row no longer squeezes
+                // the title to one word per line at desktop widths.
+                type Action = { key: string; label: string; aria?: string; onClick: () => void };
+                const primary: Action[] = can.reorder
+                  ? [
+                      { key: "up", label: "↑", aria: `Move ${t.code} up`, onClick: () => move(i, -1) },
+                      { key: "down", label: "↓", aria: `Move ${t.code} down`, onClick: () => move(i, 1) },
+                    ]
+                  : [];
+                const rest: Action[] = [
                   ...(tasksEditable
                     ? [
                         {
@@ -872,22 +872,24 @@ export default function PlanPage({
                 return (
                   <>
                     <span className="plan-row-actions">
-                      {actions.map((a) => (
+                      {primary.map((a) => (
                         <button key={a.key} className="plan-act" aria-label={a.aria} onClick={a.onClick}>
                           {a.label}
                         </button>
                       ))}
                     </span>
-                    <details className="plan-actions-menu">
-                      <summary aria-label={`More actions for ${t.code}`}>⋯</summary>
-                      <div className="plan-actions-menu-list">
-                        {actions.map((a) => (
-                          <button key={a.key} className="plan-act" aria-label={a.aria} onClick={a.onClick}>
-                            {a.label}
-                          </button>
-                        ))}
-                      </div>
-                    </details>
+                    {rest.length > 0 && (
+                      <details className="plan-actions-menu">
+                        <summary aria-label={`More actions for ${t.code}`}>⋯</summary>
+                        <div className="plan-actions-menu-list">
+                          {[...primary, ...rest].map((a) => (
+                            <button key={a.key} className="plan-act" aria-label={a.aria} onClick={a.onClick}>
+                              {a.label}
+                            </button>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </>
                 );
               })()}
