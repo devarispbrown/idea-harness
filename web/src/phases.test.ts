@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attentionCount, currentPill, derivePhases, rollupPhaseSource, type PhaseSource } from "./phases";
+import { attentionCount, currentPill, currentStage, derivePhases, nextAction, rollupPhaseSource, type PhaseSource } from "./phases";
 
 // The Define phase used to be derived from the presence of the execution-plan
 // ARTIFACT, as the disambiguator between an M1-review park and an M2-plan park,
@@ -204,5 +204,51 @@ describe("rollupPhaseSource", () => {
     });
     expect(src.judgmentReason).toBe("plan_dependencies");
     expect(defineDone(src)).toBe(true);
+  });
+});
+
+// P0.1/P1.1 regression review: nextAction must name the right action for every
+// status/reason the daemon can produce — the two a naive mapping got wrong were
+// a failed initiative (retry, not "start again") and a budget stop (raise the
+// cap, not "approve the PRD").
+describe("nextAction", () => {
+  const src = (status: string, judgmentReason?: string): PhaseSource => ({
+    status,
+    judgmentReason,
+    artifacts: [],
+    tasks: [],
+    changeSets: [],
+    verifiedRequirements: 0,
+  });
+
+  it("failed → retry, not start-over", () => {
+    const n = nextAction(src("failed"));
+    expect(n.command).toBe("idea retry");
+  });
+
+  it("budget_exceeded → raise the cap, not approve the PRD", () => {
+    const n = nextAction(src("needs_human_judgment", "budget_exceeded"));
+    expect(n.action).toContain("spending cap");
+    expect(n.command).toContain("idea budget");
+  });
+
+  it("verification park → verify", () => {
+    expect(nextAction(src("needs_human_judgment", "verification")).command).toBe("idea verify");
+  });
+
+  it("plan_review park → approve-plan", () => {
+    expect(nextAction(src("needs_human_judgment", "plan_review")).command).toBe("idea approve-plan");
+  });
+
+  it("prd_review (default) park → approve", () => {
+    expect(nextAction(src("needs_human_judgment", "prd_review")).command).toBe("idea approve");
+  });
+});
+
+describe("currentStage", () => {
+  it("maps parked → decide, complete → ship, otherwise the phase's stage", () => {
+    expect(currentStage({ status: "needs_human_judgment", artifacts: [], tasks: [], changeSets: [], verifiedRequirements: 0 })).toBe("decide");
+    expect(currentStage({ status: "complete", artifacts: [], tasks: [], changeSets: [], verifiedRequirements: 0 })).toBe("ship");
+    expect(currentStage({ status: "plan_approved", artifacts: [{ kind: "execution_plan", version: 1 }], tasks: [], changeSets: [], verifiedRequirements: 0 })).toBe("build");
   });
 });

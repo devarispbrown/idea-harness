@@ -290,11 +290,24 @@ export const PHASE_TO_STAGE: Record<PhaseName, StageName> = {
 };
 
 // currentStage is the stage a user thinks in: parked on a judgment → Decide;
-// done → Ship; otherwise the stage of the rail's current phase.
+// done → Ship. The definitive statuses map directly (plan_approved → Build,
+// approved → Shape, the plan/PRD are the gates that move between stages); only
+// running/failed/draft fall back to the rail's current phase, since those carry
+// no stage of their own and the artifacts are the only evidence of how far the
+// initiative got.
 export function currentStage(src: PhaseSource): StageName {
-  if (src.status === "complete") return "ship";
-  if (src.status === "needs_human_judgment") return "decide";
-  return PHASE_TO_STAGE[currentPhase(src)];
+  switch (src.status) {
+    case "complete":
+      return "ship";
+    case "needs_human_judgment":
+      return "decide";
+    case "plan_approved":
+      return "build";
+    case "approved":
+      return "shape";
+    default:
+      return PHASE_TO_STAGE[currentPhase(src)];
+  }
 }
 
 // nextAction names the single next step as an imperative, with the CLI command
@@ -305,7 +318,7 @@ export function nextAction(src: PhaseSource): { action: string; command?: string
     case "complete":
       return { action: "Done — review what shipped." };
     case "failed":
-      return { action: "Check the logs, fix the cause, then start again.", command: "idea new" };
+      return { action: "Re-run the failed step.", command: "idea retry" };
     case "running":
       return { action: "Building — watch it live.", command: "idea watch" };
     case "needs_human_judgment":
@@ -315,6 +328,8 @@ export function nextAction(src: PhaseSource): { action: string; command?: string
           return { action: "Approve or revise the plan.", command: "idea approve-plan" };
         case "verification":
           return { action: "Record verification evidence.", command: "idea verify" };
+        case "budget_exceeded":
+          return { action: "Raise or clear the spending cap.", command: "idea budget --set <usd>" };
         default:
           return { action: "Approve or revise the PRD.", command: "idea approve" };
       }
