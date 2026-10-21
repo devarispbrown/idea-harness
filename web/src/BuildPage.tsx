@@ -587,7 +587,17 @@ export default function BuildPage({
         meta={buildHeaderMeta(executorName)}
       />
       <RunPanel projectId={projectId} initiativeId={initiativeId} active={false} idleOnly />
-      <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
+      {/* P2.2: budget, env variables and git are secondary to "run" and "needs
+          your review" — collapsed behind one summary row so the change-set
+          cards surface first, with the env count surfaced in the summary. */}
+      <details className="build-details">
+        <summary>
+          Setup &amp; details
+          {requiredEnvVars.length > 0
+            ? ` · ${requiredEnvVars.length} env variable${requiredEnvVars.length === 1 ? "" : "s"} required`
+            : ""}
+        </summary>
+        <BudgetMeter projectId={projectId} initiativeId={initiativeId} variant="build" onChanged={load} />
 
       {requiredEnvVars.length > 0 && (
         <section className="env-vars-card">
@@ -670,6 +680,7 @@ export default function BuildPage({
           )}
         </section>
       )}
+      </details>
 
       {failedExecute && (
         <FailedBanner

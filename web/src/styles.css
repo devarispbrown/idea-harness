@@ -2186,6 +2186,22 @@ button.idchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .env-var-body { min-width: 0; }
 .env-var-how { font-size: 12px; color: var(--text-muted); }
 .env-var-url { font-size: 12px; color: var(--accent); word-break: break-all; }
+.build-details {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin: 12px 0;
+  background: var(--surface);
+}
+.build-details > summary {
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.build-details > summary::-webkit-details-marker { display: none; }
+.build-details[open] > summary { border-bottom: 1px solid var(--line-soft); }
 .now-next {
   display: flex;
   border: 1px solid var(--line);
