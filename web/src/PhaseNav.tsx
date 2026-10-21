@@ -1,10 +1,11 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import type { PhaseName } from "./router";
 import { phaseHref } from "./router";
 import { currentPill, PHASE_TO_STAGE, STAGE_LABELS, type PhaseState } from "./phases";
 import { displayTitle } from "./title";
 import CostLine from "./CostLine";
 import GraphNavLinks from "./GraphNavLinks";
+import GlossaryDialog from "./GlossaryDialog";
 import type { CostsView } from "./cost";
 
 interface InboxItem {
@@ -53,6 +54,7 @@ export default function PhaseNav({
   switcher,
 }: Props) {
   const cur = initiative ? currentPill(initiative.status) : { pill: "", note: "" };
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
 
   return (
     <aside className="phase-nav">
@@ -189,7 +191,11 @@ export default function PhaseNav({
           <span>Settings</span>
           <span className="pn-kbd">⌘K</span>
         </button>
+        <button className="pn-settings" onClick={() => setGlossaryOpen(true)}>
+          <span>Glossary</span>
+        </button>
       </div>
+      <GlossaryDialog open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
     </aside>
   );
 }

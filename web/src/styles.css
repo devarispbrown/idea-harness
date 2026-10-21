@@ -3962,6 +3962,10 @@ kbd {
 .shortcuts-list { margin: 0; }
 .shortcuts-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 5px 0; font-size: 13px; color: var(--text-body); }
 .shortcuts-row dd { margin: 0; }
+.glossary-row { display: grid; grid-template-columns: 140px 1fr; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 13px; }
+.glossary-row:first-child { border-top: none; }
+.glossary-term { font-weight: 600; color: var(--text); }
+.glossary-def { margin: 0; color: var(--text-muted); }
 
 /* Define's Objectives: edit forms and unlink. */
 .obj-actions { margin-top: 4px; }
